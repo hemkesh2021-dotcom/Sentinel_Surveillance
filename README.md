@@ -70,6 +70,13 @@ Ollama, no CPU fallback, no cloud.
 
 ## System Architecture
 
+<div align="center">
+  <img src="system_architecture.jpeg" alt="Smart Surveillance System using NVIDIA Jetson Nano" width="100%">
+  <p><em>Smart Surveillance System Architecture and Processing Flow</em></p>
+</div>
+
+### Component Data Flow
+
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                        RTSP Camera                           │
