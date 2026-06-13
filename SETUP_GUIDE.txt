@@ -43,10 +43,75 @@ Software you need installed before starting:
        - Copy the token it gives you
        - Get your Chat ID by messaging @userinfobot
 
-  6. An RTSP-capable IP camera (Dahua, Hikvision, or any ONVIF camera)
+  6. An ONVIF / RTSP-capable IP camera
+       Tested with: Imou Ranger S2 (ONVIF, 1080p, pan/tilt)
+       Also works:  Dahua IPC, Hikvision DS-2CD, Reolink RLC, or any ONVIF camera
 
 --------------------------------------------------------------------------------
-SECTION 2 — INSTALLATION
+SECTION 2 — CAMERA SETUP
+--------------------------------------------------------------------------------
+
+  Tested Camera
+  -------------
+  SENTINEL was tested with the Imou Ranger S2 — an ONVIF-compatible 1080p
+  pan/tilt camera. Any camera that exposes an RTSP stream or supports the
+  ONVIF protocol will work.
+
+  Compatible Cameras
+  ------------------
+  Camera               Protocol       Resolution   Notes
+  -------------------  -------------  -----------  ----------------------------
+  Imou Ranger S2       ONVIF + RTSP   1080p        Pan/tilt, tested hardware
+  Dahua IPC Series     ONVIF + RTSP   Up to 4K     Reliable H.264/H.265 stream
+  Hikvision DS-2CD     ONVIF + RTSP   Up to 4K     Industry standard
+  Reolink RLC Series   RTSP           1080p – 4K   Budget-friendly option
+  Any ONVIF camera     ONVIF + RTSP   720p+        Discover URL via ONVIF tool
+
+  Setting Up the Imou Ranger S2
+  -----------------------------
+  1. Power on the camera and connect it to your router via ethernet or Wi-Fi.
+  2. Find its IP using the Imou Life app or your router's DHCP client list.
+  3. Enable RTSP and ONVIF in the camera's web interface:
+       http://CAMERA_IP  ->  Configuration -> Network -> Advanced -> RTSP
+  4. Set a username and password (default is often admin / blank).
+  5. Test the stream in VLC before starting SENTINEL:
+       VLC -> Media -> Open Network Stream ->
+         rtsp://admin:PASSWORD@CAMERA_IP:554/cam/realmonitor?channel=1&subtype=1
+
+  Discovering RTSP URL for Unknown Cameras
+  -----------------------------------------
+  If your camera's RTSP URL is not listed above, use one of these methods:
+
+    Method 1 — ONVIF Device Manager (Windows GUI):
+      Download from: https://sourceforge.net/projects/onvifdm/
+      It auto-discovers all ONVIF cameras on your network and shows the URL.
+
+    Method 2 — onvif-util (Linux / Jetson terminal):
+      pip install onvif-zeep
+      python3 -c "
+      from onvif import ONVIFCamera
+      cam = ONVIFCamera('CAMERA_IP', 80, 'admin', 'PASSWORD')
+      media = cam.create_media_service()
+      profiles = media.GetProfiles()
+      uri = media.GetStreamUri({'StreamSetup': {'Stream': 'RTP-Unicast',
+            'Transport': {'Protocol': 'RTSP'}}, 'ProfileToken': profiles[0].token})
+      print(uri.Uri)
+      "
+
+    Method 3 — Try common URL patterns:
+      rtsp://admin:PASSWORD@CAMERA_IP:554/stream1
+      rtsp://admin:PASSWORD@CAMERA_IP:554/live/ch0
+      rtsp://admin:PASSWORD@CAMERA_IP:554/h264
+
+  Camera Placement Tips
+  ---------------------
+  - Mount at 2.0 – 2.5 m height, angled slightly downward
+  - Ensure faces are well-lit and cover at least 80x80 pixels in frame
+  - Avoid backlighting (camera facing a bright window)
+  - Use sub-stream (subtype=1) to reduce network and CPU load
+
+--------------------------------------------------------------------------------
+SECTION 3 — INSTALLATION
 --------------------------------------------------------------------------------
 
 Step 1 — Clone the repository
@@ -81,7 +146,7 @@ Step 5 — Download YuNet face detector (needed by DeepFace)
     https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
 
 --------------------------------------------------------------------------------
-SECTION 3 — BUILDING YOUR FACE DATABASE
+SECTION 4 — BUILDING YOUR FACE DATABASE
 --------------------------------------------------------------------------------
 
 The face database tells SENTINEL who the "known" people are. Anyone not in it
@@ -108,7 +173,7 @@ is classified as a Stranger.
          "✅ 2 persons: ['Hemkesh', 'Yogesh']"
 
 --------------------------------------------------------------------------------
-SECTION 4 — CONFIGURATION (.env FILE)
+SECTION 5 — CONFIGURATION (.env FILE)
 --------------------------------------------------------------------------------
 
 Copy the template and fill in your values:
@@ -121,8 +186,29 @@ Variables explained:
   RTSP_URL
     Full URL to your camera's RTSP stream.
     Format:  rtsp://USERNAME:PASSWORD@CAMERA_IP:PORT/path
-    Example: rtsp://admin:mypass@192.168.1.100:554/cam/realmonitor?channel=1&subtype=1
-    Tip: Use subtype=1 for sub-stream (lower resolution, saves bandwidth).
+
+    URL by camera model:
+
+      Imou Ranger S2 (tested):
+        rtsp://admin:PASSWORD@CAMERA_IP:554/cam/realmonitor?channel=1&subtype=1
+
+      Dahua IPC Series:
+        rtsp://admin:PASSWORD@CAMERA_IP:554/cam/realmonitor?channel=1&subtype=1
+
+      Hikvision DS-2CD Series:
+        rtsp://admin:PASSWORD@CAMERA_IP:554/Streaming/Channels/101
+
+      Reolink RLC Series:
+        rtsp://admin:PASSWORD@CAMERA_IP:554/h264Preview_01_sub
+
+      Generic ONVIF camera:
+        Use ONVIF Device Manager (Windows) or onvif-util (Linux) to
+        discover the stream URL automatically:
+          pip install onvif-zeep
+          python -c "from onvif import ONVIFCamera; ..."
+
+    Tip: Use subtype=1 (sub-stream) where available — lower resolution
+         reduces CPU load without affecting detection accuracy.
 
   TELEGRAM_BOT_TOKEN
     The token from @BotFather. Looks like: 123456789:ABCdefGHI-jklMNOpqrSTUvwx
@@ -145,7 +231,7 @@ Variables explained:
     Default: ~/intruder_log.json
 
 --------------------------------------------------------------------------------
-SECTION 5 — RUNNING SENTINEL
+SECTION 6 — RUNNING SENTINEL
 --------------------------------------------------------------------------------
 
 You need TWO terminal windows (or use tmux / screen).
@@ -187,7 +273,7 @@ You need TWO terminal windows (or use tmux / screen).
     hostname -I | awk '{print $1}'
 
 --------------------------------------------------------------------------------
-SECTION 6 — USING THE DASHBOARD
+SECTION 7 — USING THE DASHBOARD
 --------------------------------------------------------------------------------
 
   LIVE FEED
@@ -229,7 +315,7 @@ SECTION 6 — USING THE DASHBOARD
     NETWORK — green if dashboard is reachable
 
 --------------------------------------------------------------------------------
-SECTION 7 — TELEGRAM ALERTS
+SECTION 8 — TELEGRAM ALERTS
 --------------------------------------------------------------------------------
 
 SENTINEL sends you a Telegram message with a photo for:
@@ -249,7 +335,7 @@ To test your bot:
   Then trigger a detection (walk in front of the camera as a stranger).
 
 --------------------------------------------------------------------------------
-SECTION 8 — TUNING & TIPS
+SECTION 9 — TUNING & TIPS
 --------------------------------------------------------------------------------
 
   Poor face recognition?
@@ -276,7 +362,7 @@ SECTION 8 — TUNING & TIPS
     - Check your network stability and camera firmware
 
 --------------------------------------------------------------------------------
-SECTION 9 — RUNNING ON STARTUP (SYSTEMD)
+SECTION 10 — RUNNING ON STARTUP (SYSTEMD)
 --------------------------------------------------------------------------------
 
 To start SENTINEL automatically on boot:
@@ -306,7 +392,7 @@ To start SENTINEL automatically on boot:
   Repeat with a separate .service file for dashboard.py and llama-server.
 
 --------------------------------------------------------------------------------
-SECTION 10 — TROUBLESHOOTING
+SECTION 11 — TROUBLESHOOTING
 --------------------------------------------------------------------------------
 
   "No module named 'dotenv'"
