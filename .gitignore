@@ -1,0 +1,22 @@
+# Secrets
+.env
+
+# Virtual environment
+onvif_env/
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Model & database files (large binaries)
+*.engine
+*.pkl
+*.pt
+
+# Runtime files
+/tmp/
+*.jpg
+*.png
+intruder_log.json
+alert_*.jpg
+intruder_*.jpg
