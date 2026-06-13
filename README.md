@@ -1,13 +1,13 @@
-<![CDATA[<div align="center">
+<div align="center">
 
-<pre>
-███████╗███████╗███╗   ██╗████████╗██╗███╗   ██╗███████╗██╗
-██╔════╝██╔════╝████╗  ██║╚══██╔══╝██║████╗  ██║██╔════╝██║
-███████╗█████╗  ██╔██╗ ██║   ██║   ██║██╔██╗ ██║█████╗  ██║
-╚════██║██╔══╝  ██║╚██╗██║   ██║   ██║██║╚██╗██║██╔══╝  ██║
+```
+███████╗███████╗███╗   ██╗████████╗██╗███╗   ██╗███████╗██╗     
+██╔════╝██╔════╝████╗  ██║╚══██╔══╝██║████╗  ██║██╔════╝██║     
+███████╗█████╗  ██╔██╗ ██║   ██║   ██║██╔██╗ ██║█████╗  ██║     
+╚════██║██╔══╝  ██║╚██╗██║   ██║   ██║██║╚██╗██║██╔══╝  ██║     
 ███████║███████╗██║ ╚████║   ██║   ██║██║ ╚████║███████╗███████╗
 ╚══════╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝
-</pre>
+```
 
 **AI-Powered Home Surveillance System**
 
@@ -20,16 +20,15 @@
 ![Flask](https://img.shields.io/badge/Flask-Dashboard-000000?style=for-the-badge&logo=flask&logoColor=white)
 ![YOLOv8](https://img.shields.io/badge/YOLOv8-TensorRT-FF6F00?style=for-the-badge&logo=nvidia&logoColor=white)
 ![Telegram](https://img.shields.io/badge/Telegram-Alerts-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)
-![Jetson](https://img.shields.io/badge/NVIDIA-Jetson-76B900?style=for-the-badge&logo=nvidia&logoColor=white)
+![Jetson](https://img.shields.io/badge/NVIDIA-Jetson_Orin-76B900?style=for-the-badge&logo=nvidia&logoColor=white)
 
 </div>
 
 ---
 
 ## What is SENTINEL?
-...
 
-SENTINEL is a self-hosted, edge-AI surveillance system built for **NVIDIA Jetson** hardware. It fuses classical computer vision with modern language-vision models to give you a complete picture of your space — who is there, what they are doing, and whether anything needs your attention — all in real time, with zero cloud dependency for inference.
+SENTINEL is a self-hosted, edge-AI surveillance system built for **NVIDIA Jetson** hardware. It fuses classical computer vision with modern language-vision models to give you a complete picture of your space — who is there, what they are doing, and whether anything needs your attention — all in real time, with **zero cloud dependency** for inference.
 
 ---
 
@@ -57,33 +56,33 @@ SENTINEL is a self-hosted, edge-AI surveillance system built for **NVIDIA Jetson
 └────────────────────────────┬─────────────────────────────────┘
                              │
                     ┌────────▼────────┐
-                    │  FrameReader    │  (background thread)
+                    │   FrameReader   │  (background thread)
                     └────────┬────────┘
                              │
           ┌──────────────────┼──────────────────┐
           │                  │                  │
-  ┌───────▼──────┐  ┌────────▼───────┐  ┌──────▼──────────┐
-  │  YOLOv8n +   │  │   LFM2-VL 1.6B │  │  Frame Writer   │
-  │  ByteTrack   │  │  (llama.cpp)   │  │  /tmp/frame.jpg │
-  └───────┬──────┘  └────────┬───────┘  └──────────────────┘
+   ┌──────▼──────┐  ┌────────▼───────┐  ┌──────▼──────────┐
+   │  YOLOv8n +  │  │  LFM2-VL 1.6B  │  │  Frame Writer   │
+   │  ByteTrack  │  │  (llama.cpp)   │  │  /tmp/frame.jpg │
+   └──────┬──────┘  └────────┬───────┘  └─────────────────┘
           │                  │
-  ┌───────▼──────┐  ┌────────▼───────┐
-  │  DeepFace    │  │  Threat / Fire │
-  │  Facenet512  │  │  Evaluator     │
-  └───────┬──────┘  └────────┬───────┘
+   ┌──────▼──────┐  ┌────────▼───────┐
+   │  DeepFace   │  │ Threat / Fire  │
+   │  Facenet512 │  │   Evaluator    │
+   └──────┬──────┘  └────────┬───────┘
           │                  │
           └────────┬─────────┘
                    │
       ┌────────────▼────────────┐
-      │    Dashboard State      │  /tmp/surv_state.json
+      │     Dashboard State     │  /tmp/surv_state.json
       └────────────┬────────────┘
                    │
        ┌───────────┴────────────┐
        │                        │
 ┌──────▼──────┐        ┌────────▼──────┐
-│   Flask     │        │   Telegram    │
+│    Flask    │        │   Telegram    │
 │  Dashboard  │        │   Bot Alerts  │
-│  :5000      │        │               │
+│   :5000     │        │               │
 └─────────────┘        └───────────────┘
 ```
 
@@ -124,10 +123,9 @@ source venv/bin/activate
 
 ### 3. Install dependencies
 
-**Jetson (JetPack OpenCV is pre-installed — skip the wheel):**
+**Jetson** (JetPack OpenCV is pre-installed — do NOT pip-install it):
 ```bash
 pip install -r requirements.txt
-# Do NOT install opencv-python on Jetson — use the JetPack system OpenCV
 ```
 
 **Standard Linux / x86:**
@@ -144,13 +142,17 @@ nano .env          # fill in your values (see Configuration section)
 
 ### 5. Build your face database
 
-Place reference photos in a folder (one subfolder per person):
+Place reference photos in a folder, one subfolder per person:
 ```
 faces/
-  Hemkesh/  photo1.jpg  photo2.jpg
-  Yogesh/   photo1.jpg
+  Hemkesh/
+    photo1.jpg
+    photo2.jpg
+  Yogesh/
+    photo1.jpg
 ```
-Then run the builder script (from the original project):
+
+Then run the builder script:
 ```bash
 python build_face_db.py --input faces/ --output face_db.pkl
 ```
@@ -158,7 +160,6 @@ python build_face_db.py --input faces/ --output face_db.pkl
 ### 6. Start the AI engine (LFM2-VL)
 
 ```bash
-# Download the model if you haven't already, then:
 ./llama-server -m lfm2-vl-1.6b-q4.gguf --port 8080 --n-gpu-layers 999
 ```
 
@@ -174,7 +175,7 @@ python surveillance3_10.py
 python dashboard.py
 ```
 
-Open your browser at `http://<device-ip>:5000` (or `http://localhost:5000`).
+Open in your browser: `http://<device-ip>:5000` or `http://localhost:5000`
 
 ---
 
@@ -196,20 +197,20 @@ Open your browser at `http://<device-ip>:5000` (or `http://localhost:5000`).
 ```
 ┌─────────────────────────────────────────┐
 │  ◉ SENTINEL              CAM-01  LIVE   │
-│─────────────────────────────────────────│
+├─────────────────────────────────────────┤
 │                                         │
-│         [ Live MJPEG Feed ]             │
+│          [ Live MJPEG Stream ]          │
 │                                         │
-│─────────────────────────────────────────│
-│  STATUS    THREAT    ROOM    PERSONS    │
-│─────────────────────────────────────────│
-│  Detected Persons  ●Hemkesh ✓  ●Yogesh │
-│─────────────────────────────────────────│
-│  Live AI Analysis  (LFM2-VL scene desc) │
-│─────────────────────────────────────────│
+├──────────┬──────────┬────────┬──────────┤
+│  STATUS  │  THREAT  │  ROOM  │ PERSONS  │
+├─────────────────────────────────────────┤
+│  Detected Persons:  ● Hemkesh ✓  ● Yogesh│
+├─────────────────────────────────────────┤
+│  Live AI Analysis:  (LFM2-VL scene desc)│
+├─────────────────────────────────────────┤
 │  NEURAL ASSISTANT  [chat with camera]   │
-│─────────────────────────────────────────│
-│  Event Log  [ ALL | HIGH | MED | INFO ] │
+├─────────────────────────────────────────┤
+│  Event Log  [ ALL │ HIGH │ MED │ INFO ] │
 └─────────────────────────────────────────┘
 ```
 
@@ -226,9 +227,9 @@ SENTINEL sends alerts automatically:
 
 | Event | Priority | Condition |
 |---|---|---|
-| 🔥 Fire / Smoke | P1 (immediate) | LFM2 fire_smoke flag |
-| ⚠️ High/Medium Threat | P2 | LFM2 harmful flag |
-| 🚨 Intruder | P2 | Stranger + restricted hours |
+| 🔥 Fire / Smoke | P1 — immediate | LFM2 fire_smoke flag |
+| ⚠️ High / Medium Threat | P2 | LFM2 harmful flag |
+| 🚨 Intruder | P2 | Stranger + restricted hours (22:00 – 06:00) |
 
 All alerts include a **photo snapshot** and timestamp.
 
@@ -243,6 +244,7 @@ Sentinel_Surveillance/
 ├── requirements.txt      # Python dependencies
 ├── .env.example          # Environment variable template
 ├── .gitignore
+├── SETUP_GUIDE.txt       # Full step-by-step setup guide
 └── README.md
 ```
 
@@ -250,10 +252,14 @@ Sentinel_Surveillance/
 
 ## Authors
 
+<div align="center">
+
 | Name | Role | GitHub |
 |---|---|---|
 | Hemkesh | Lead Developer | [@hemkesh2021-dotcom](https://github.com/hemkesh2021-dotcom) |
 | V S Yogeshvar | Co-Developer | [@Yogeshvar425](https://github.com/Yogeshvar425) |
+
+</div>
 
 ---
 
@@ -264,6 +270,7 @@ This project is for personal / educational use. Do not deploy in public spaces w
 ---
 
 <div align="center">
+
 Built on NVIDIA Jetson &nbsp;·&nbsp; Powered by YOLOv8, DeepFace & LFM2-VL &nbsp;·&nbsp; Alerts via Telegram
+
 </div>
-]]>
