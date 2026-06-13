@@ -1,11 +1,19 @@
 <div align="center">
 
-<h1>&#128308; SENTINEL</h1>
-<h3>AI-Powered Home Surveillance System</h3>
+```
+███████╗███████╗███╗   ██╗████████╗██╗███╗   ██╗███████╗██╗     
+██╔════╝██╔════╝████╗  ██║╚══██╔══╝██║████╗  ██║██╔════╝██║     
+███████╗█████╗  ██╔██╗ ██║   ██║   ██║██╔██╗ ██║█████╗  ██║     
+╚════██║██╔══╝  ██║╚██╗██║   ██║   ██║██║╚██╗██║██╔══╝  ██║     
+███████║███████╗██║ ╚████║   ██║   ██║██║ ╚████║███████╗███████╗
+╚══════╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝
+```
 
-<p><em>Real-time person detection &nbsp;&middot;&nbsp; Face recognition &nbsp;&middot;&nbsp; Scene analysis &nbsp;&middot;&nbsp; Instant alerts</em></p>
+**AI-Powered Home Surveillance System**
 
-<br/>
+*Real-time person detection · Face recognition · Scene analysis · Instant alerts*
+
+---
 
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![OpenCV](https://img.shields.io/badge/OpenCV-4.5+-5C3EE8?style=for-the-badge&logo=opencv&logoColor=white)
@@ -14,15 +22,13 @@
 ![Telegram](https://img.shields.io/badge/Telegram-Alerts-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)
 ![Jetson](https://img.shields.io/badge/NVIDIA-Jetson_Orin-76B900?style=for-the-badge&logo=nvidia&logoColor=white)
 
-<br/>
-
 </div>
 
 ---
 
 ## What is SENTINEL?
 
-SENTINEL is a self-hosted, edge-AI surveillance system built for **NVIDIA Jetson** hardware. It fuses classical computer vision with modern vision-language models to give you a complete picture of your space — who is there, what they are doing, and whether anything needs your attention — all in real time, with **zero cloud dependency** for inference.
+SENTINEL is a self-hosted, edge-AI surveillance system built for **NVIDIA Jetson** hardware. It fuses classical computer vision with modern language-vision models to give you a complete picture of your space — who is there, what they are doing, and whether anything needs your attention — all in real time, with **zero cloud dependency** for inference.
 
 ---
 
@@ -38,53 +44,53 @@ SENTINEL is a self-hosted, edge-AI surveillance system built for **NVIDIA Jetson
 | Instant alerts | Telegram Bot API (photo + caption) |
 | Entry / exit counting | Horizontal trip-line counter |
 | Fire & smoke detection | LFM2-VL scene analysis flag |
-| Restricted-hours mode | Escalates alerts between 22:00 - 06:00 |
+| Restricted-hours mode | Escalates alerts between 22:00 – 06:00 |
 
 ---
 
 ## System Architecture
 
 ```
-+--------------------------------------------------------------+
-|                        RTSP Camera                           |
-+-----------------------------+--------------------------------+
-                              |
-                     +--------v--------+
-                     |   FrameReader   |  (background thread)
-                     +--------+--------+
-                              |
-          +-------------------+-------------------+
-          |                   |                   |
-   +------v------+   +--------v-------+   +-------v--------+
-   | YOLOv8n +   |   |  LFM2-VL 1.6B  |   |  Frame Writer  |
-   | ByteTrack   |   |  (llama.cpp)   |   | /tmp/frame.jpg |
-   +------+------+   +--------+-------+   +----------------+
-          |                   |
-   +------v------+   +--------v-------+
-   |  DeepFace   |   | Threat / Fire  |
-   |  Facenet512 |   |   Evaluator    |
-   +------+------+   +--------+-------+
-          |                   |
-          +--------+----------+
-                   |
-      +------------v------------+
-      |     Dashboard State     |  /tmp/surv_state.json
-      +------------+------------+
-                   |
-       +-----------+-----------+
-       |                       |
-+------v------+       +--------v------+
-|    Flask    |       |   Telegram    |
-|  Dashboard  |       |  Bot Alerts   |
-|   :5000     |       |               |
-+-------------+       +---------------+
+┌──────────────────────────────────────────────────────────────┐
+│                        RTSP Camera                           │
+└────────────────────────────┬─────────────────────────────────┘
+                             │
+                    ┌────────▼────────┐
+                    │   FrameReader   │  (background thread)
+                    └────────┬────────┘
+                             │
+          ┌──────────────────┼──────────────────┐
+          │                  │                  │
+   ┌──────▼──────┐  ┌────────▼───────┐  ┌──────▼──────────┐
+   │  YOLOv8n +  │  │  LFM2-VL 1.6B  │  │  Frame Writer   │
+   │  ByteTrack  │  │  (llama.cpp)   │  │  /tmp/frame.jpg │
+   └──────┬──────┘  └────────┬───────┘  └─────────────────┘
+          │                  │
+   ┌──────▼──────┐  ┌────────▼───────┐
+   │  DeepFace   │  │ Threat / Fire  │
+   │  Facenet512 │  │   Evaluator    │
+   └──────┬──────┘  └────────┬───────┘
+          │                  │
+          └────────┬─────────┘
+                   │
+      ┌────────────▼────────────┐
+      │     Dashboard State     │  /tmp/surv_state.json
+      └────────────┬────────────┘
+                   │
+       ┌───────────┴────────────┐
+       │                        │
+┌──────▼──────┐        ┌────────▼──────┐
+│    Flask    │        │   Telegram    │
+│  Dashboard  │        │   Bot Alerts  │
+│   :5000     │        │               │
+└─────────────┘        └───────────────┘
 ```
 
 ---
 
 ## Hardware Requirements
 
-> **Tested on:** NVIDIA Jetson Orin Nano Super — 8 GB &nbsp;|&nbsp; This is the hardware this project was built and validated on.
+> **Tested on:** NVIDIA Jetson Orin Nano Super — 8 GB RAM · This is the hardware this project was built and validated on.
 
 | Component | Tested Hardware | Minimum |
 |---|---|---|
@@ -162,14 +168,14 @@ python build_face_db.py --input faces/ --output face_db.pkl
 Open two terminals:
 
 ```bash
-# Terminal 1 - surveillance engine
+# Terminal 1 — surveillance engine
 python surveillance3_10.py
 
-# Terminal 2 - web dashboard
+# Terminal 2 — web dashboard
 python dashboard.py
 ```
 
-Open in your browser: `http://<device-ip>:5000` &nbsp;or&nbsp; `http://localhost:5000`
+Open in your browser: `http://<device-ip>:5000` or `http://localhost:5000`
 
 ---
 
@@ -189,23 +195,23 @@ Open in your browser: `http://<device-ip>:5000` &nbsp;or&nbsp; `http://localhost
 ## Dashboard
 
 ```
-+------------------------------------------+
-|  [*] SENTINEL              CAM-01  LIVE  |
-+------------------------------------------+
-|                                          |
-|          [ Live MJPEG Stream ]           |
-|                                          |
-+------------------------------------------+
-|  STATUS  |  THREAT  |  ROOM  | PERSONS  |
-+------------------------------------------+
-|  Detected Persons:  [Hemkesh v]  [Yogesh]|
-+------------------------------------------+
-|  Live AI Analysis:  (LFM2-VL scene desc) |
-+------------------------------------------+
-|  NEURAL ASSISTANT   [chat with camera]   |
-+------------------------------------------+
-|  Event Log  [ ALL | HIGH | MED | INFO ]  |
-+------------------------------------------+
+┌─────────────────────────────────────────┐
+│  ◉ SENTINEL              CAM-01  LIVE   │
+├─────────────────────────────────────────┤
+│                                         │
+│          [ Live MJPEG Stream ]          │
+│                                         │
+├──────────┬──────────┬────────┬──────────┤
+│  STATUS  │  THREAT  │  ROOM  │ PERSONS  │
+├─────────────────────────────────────────┤
+│  Detected Persons:  ● Hemkesh ✓  ● Yogesh│
+├─────────────────────────────────────────┤
+│  Live AI Analysis:  (LFM2-VL scene desc)│
+├─────────────────────────────────────────┤
+│  NEURAL ASSISTANT  [chat with camera]   │
+├─────────────────────────────────────────┤
+│  Event Log  [ ALL │ HIGH │ MED │ INFO ] │
+└─────────────────────────────────────────┘
 ```
 
 - **Live stream** — MJPEG feed with auto-reconnect
@@ -221,9 +227,9 @@ SENTINEL sends alerts automatically:
 
 | Event | Priority | Condition |
 |---|---|---|
-| Fire / Smoke | P1 — immediate | LFM2 fire_smoke flag |
-| High / Medium Threat | P2 | LFM2 harmful flag |
-| Intruder | P2 | Stranger + restricted hours (22:00-06:00) |
+| 🔥 Fire / Smoke | P1 — immediate | LFM2 fire_smoke flag |
+| ⚠️ High / Medium Threat | P2 | LFM2 harmful flag |
+| 🚨 Intruder | P2 | Stranger + restricted hours (22:00 – 06:00) |
 
 All alerts include a **photo snapshot** and timestamp.
 
@@ -233,13 +239,13 @@ All alerts include a **photo snapshot** and timestamp.
 
 ```
 Sentinel_Surveillance/
-|-- surveillance3_10.py    # Main engine - detection, recognition, alerts
-|-- dashboard.py           # Flask web dashboard + AI chat API
-|-- requirements.txt       # Python dependencies
-|-- .env.example           # Environment variable template
-|-- .gitignore
-|-- SETUP_GUIDE.txt        # Full step-by-step setup guide
-`-- README.md
+├── surveillance3_10.py   # Main engine — detection, recognition, alerts
+├── dashboard.py          # Flask web dashboard + AI chat API
+├── requirements.txt      # Python dependencies
+├── .env.example          # Environment variable template
+├── .gitignore
+├── SETUP_GUIDE.txt       # Full step-by-step setup guide
+└── README.md
 ```
 
 ---
@@ -265,6 +271,6 @@ This project is for personal / educational use. Do not deploy in public spaces w
 
 <div align="center">
 
-Built on NVIDIA Jetson &nbsp;&middot;&nbsp; Powered by YOLOv8, DeepFace & LFM2-VL &nbsp;&middot;&nbsp; Alerts via Telegram
+Built on NVIDIA Jetson &nbsp;·&nbsp; Powered by YOLOv8, DeepFace & LFM2-VL &nbsp;·&nbsp; Alerts via Telegram
 
 </div>
