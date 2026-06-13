@@ -1,0 +1,341 @@
+================================================================================
+  SENTINEL SURVEILLANCE SYSTEM — COMPLETE SETUP & USAGE GUIDE
+  Version 3.10  |  Authors: Hemkesh & V S Yogeshvar
+================================================================================
+
+This guide walks you through every step needed to get SENTINEL running on a
+fresh NVIDIA Jetson device or standard Linux machine.
+
+--------------------------------------------------------------------------------
+SECTION 1 — PREREQUISITES
+--------------------------------------------------------------------------------
+
+  Tested Hardware
+  ---------------
+  This project was developed and validated on:
+    Board   : NVIDIA Jetson Orin Nano Super (8 GB)
+    JetPack : 6.x
+    Camera  : Dahua RTSP IP Camera
+    Storage : microSD / NVMe SSD
+
+  All performance figures and tuning recommendations in this guide are based
+  on the Jetson Orin Nano Super 8 GB. Results may differ on other hardware.
+
+Software you need installed before starting:
+
+  1. Python 3.10 or newer
+       sudo apt install python3.10 python3.10-venv python3-pip
+
+  2. OpenCV (Jetson — use JetPack's system OpenCV, do NOT pip-install it)
+       Verify:  python3 -c "import cv2; print(cv2.__version__)"
+
+  3. CUDA & TensorRT (Jetson — included with JetPack 6.x)
+       Verify:  nvcc --version
+
+  4. llama.cpp with LFM2-VL model (local AI engine)
+       Build:   git clone https://github.com/ggerganov/llama.cpp
+                cd llama.cpp && cmake -B build -DGGML_CUDA=ON && cmake --build build
+       Model:   download lfm2-vl-1.6b-q4_K_M.gguf and place in ~/models/
+
+  5. A Telegram Bot token
+       - Open Telegram, search @BotFather
+       - Send /newbot, follow the prompts
+       - Copy the token it gives you
+       - Get your Chat ID by messaging @userinfobot
+
+  6. An RTSP-capable IP camera (Dahua, Hikvision, or any ONVIF camera)
+
+--------------------------------------------------------------------------------
+SECTION 2 — INSTALLATION
+--------------------------------------------------------------------------------
+
+Step 1 — Clone the repository
+  git clone https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance.git
+  cd Sentinel_Surveillance
+
+Step 2 — Create a virtual environment
+  python3 -m venv venv
+  source venv/bin/activate          # Linux / Jetson
+  # On Windows: venv\Scripts\activate
+
+Step 3 — Install Python dependencies
+  pip install -r requirements.txt
+
+  NOTE for Jetson users:
+    Do NOT run "pip install opencv-python" — the JetPack OpenCV is GPU-
+    accelerated and pip would overwrite it with a CPU-only version.
+
+Step 4 — Download YOLOv8 model
+  Option A — TensorRT engine (Jetson, fastest):
+    pip install ultralytics
+    yolo export model=yolov8n.pt format=engine device=0
+    mv yolov8n.engine ~/yolov8n.engine
+
+  Option B — PyTorch weights (any machine, easier):
+    wget -O ~/yolov8n.pt https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt
+    # Then update YOLO_MODEL in .env to point to the .pt file
+
+Step 5 — Download YuNet face detector (needed by DeepFace)
+  mkdir -p ~/.deepface/weights
+  wget -O ~/.deepface/weights/face_detection_yunet_2023mar.onnx \
+    https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
+
+--------------------------------------------------------------------------------
+SECTION 3 — BUILDING YOUR FACE DATABASE
+--------------------------------------------------------------------------------
+
+The face database tells SENTINEL who the "known" people are. Anyone not in it
+is classified as a Stranger.
+
+  1. Create a folder structure like this:
+       faces/
+         YourName/
+           photo1.jpg
+           photo2.jpg
+         FamilyMember/
+           photo1.jpg
+
+       Tips for good photos:
+         - Clear face, good lighting
+         - At least 2–3 photos per person from slightly different angles
+         - Face should take up at least 30% of the frame
+
+  2. Run the face database builder:
+       python build_face_db.py --input faces/ --output ~/face_db.pkl
+
+  3. Verify it loaded correctly:
+       The surveillance script prints on startup:
+         "✅ 2 persons: ['Hemkesh', 'Yogesh']"
+
+--------------------------------------------------------------------------------
+SECTION 4 — CONFIGURATION (.env FILE)
+--------------------------------------------------------------------------------
+
+Copy the template and fill in your values:
+
+  cp .env.example .env
+  nano .env
+
+Variables explained:
+
+  RTSP_URL
+    Full URL to your camera's RTSP stream.
+    Format:  rtsp://USERNAME:PASSWORD@CAMERA_IP:PORT/path
+    Example: rtsp://admin:mypass@192.168.1.100:554/cam/realmonitor?channel=1&subtype=1
+    Tip: Use subtype=1 for sub-stream (lower resolution, saves bandwidth).
+
+  TELEGRAM_BOT_TOKEN
+    The token from @BotFather. Looks like: 123456789:ABCdefGHI-jklMNOpqrSTUvwx
+
+  TELEGRAM_CHAT_ID
+    Your personal Telegram ID (get it from @userinfobot).
+    Can also be a group chat ID (prefix with -100 for supergroups).
+
+  YOLO_MODEL
+    Full path to your YOLOv8 model file.
+    Default: ~/yolov8n.engine   (Jetson TensorRT)
+    x86:     ~/yolov8n.pt
+
+  FACE_DB_PATH
+    Full path to the face_db.pkl file you built in Section 3.
+    Default: ~/face_db.pkl
+
+  INTRUDER_LOG
+    Where the JSON event log is saved.
+    Default: ~/intruder_log.json
+
+--------------------------------------------------------------------------------
+SECTION 5 — RUNNING SENTINEL
+--------------------------------------------------------------------------------
+
+You need TWO terminal windows (or use tmux / screen).
+
+  Terminal 1 — Start the AI Vision Engine (LFM2-VL)
+  -------------------------------------------------
+  ~/llama.cpp/build/bin/llama-server \
+      -m ~/models/lfm2-vl-1.6b-q4_K_M.gguf \
+      --port 8080 \
+      --n-gpu-layers 999 \
+      --ctx-size 2048
+
+  Wait until you see: "llama server listening"
+
+  Terminal 2 — Start the Surveillance Engine
+  ------------------------------------------
+  source venv/bin/activate
+  python surveillance3_10.py
+
+  You will see:
+    Loading face database...
+    ✅ 2 persons: ['Hemkesh', 'Yogesh']
+    Loading YOLO...
+    Loading DeepFace...
+    Warming up LFM2-VL...
+    ✅ LFM2-VL ready!
+    🟢 Surveillance + LFM2-VL started!
+
+  Terminal 3 — Start the Web Dashboard
+  -------------------------------------
+  source venv/bin/activate
+  python dashboard.py
+
+  Open in your browser:
+    Same device:   http://localhost:5000
+    Phone / iPad:  http://YOUR_JETSON_IP:5000
+
+  To find your Jetson IP:
+    hostname -I | awk '{print $1}'
+
+--------------------------------------------------------------------------------
+SECTION 6 — USING THE DASHBOARD
+--------------------------------------------------------------------------------
+
+  LIVE FEED
+    The top of the page shows a live MJPEG stream from your camera.
+    The feed auto-reconnects if the connection drops.
+
+  STATUS BAR
+    Shows one of: MONITORING / KNOWN / STRANGER / INTRUDER / FIRE!
+    FPS counter is shown on the right.
+
+  CARDS
+    Threat level (none / low / medium / high)
+    Room count (people currently inside)
+    Person count (detected in current frame)
+
+  DETECTED PERSONS
+    Green chip = known face (name + confidence score)
+    Red chip   = stranger or unidentified
+
+  LIVE AI ANALYSIS
+    10-word scene description from LFM2-VL, updated every 4 seconds.
+
+  NEURAL ASSISTANT (AI Chat)
+    Type any question about the live scene:
+      "Who is in the room?"
+      "Is anyone behaving suspiciously?"
+      "Describe what you see"
+    The AI analyses the current camera frame and responds.
+
+  EVENT LOG
+    Chronological list of all detected events.
+    Filter by: ALL / HIGH / MED / LOW / INFO
+    Last 12 events are shown (full log saved to intruder_log.json).
+
+  HEALTH BAR (bottom)
+    CAMERA  — green if FPS > 0
+    AI      — green if LFM2-VL is responding
+    FACE-ID — green if at least one known person is identified
+    NETWORK — green if dashboard is reachable
+
+--------------------------------------------------------------------------------
+SECTION 7 — TELEGRAM ALERTS
+--------------------------------------------------------------------------------
+
+SENTINEL sends you a Telegram message with a photo for:
+
+  Priority 1 (immediate, 30s cooldown)
+    🔥 Fire or smoke detected by LFM2-VL
+
+  Priority 2 (10s cooldown)
+    ⚠️  High or medium threat detected
+    🚨  Stranger detected during restricted hours (22:00 – 06:00)
+
+  Priority 3
+    ✅  System online notification on startup
+
+To test your bot:
+  Open Telegram → search your bot by name → send /start
+  Then trigger a detection (walk in front of the camera as a stranger).
+
+--------------------------------------------------------------------------------
+SECTION 8 — TUNING & TIPS
+--------------------------------------------------------------------------------
+
+  Poor face recognition?
+    - Add more reference photos per person (aim for 5+)
+    - Ensure good lighting in the camera's field of view
+    - Lower FACE_MATCH_THRESH in surveillance3_10.py (e.g. 0.35)
+    - Increase FACE_MAX_RETRIES for harder faces
+
+  Too many false Stranger alerts?
+    - Raise FACE_MATCH_THRESH slightly (e.g. 0.45)
+    - Increase CONFIRM_FRAMES (default 2) to require more frames
+
+  High CPU / thermal throttling on Jetson?
+    - Increase YOLO_FRAME_SKIP (default 2) to process fewer frames
+    - Increase LFM2_INTERVAL (default 4.0 seconds) for less AI load
+    - Reduce LFM2_IMG_W / LFM2_IMG_H for smaller images sent to LFM2
+
+  Dashboard stream laggy?
+    - Lower DISPLAY_WIDTH / DISPLAY_HEIGHT in surveillance3_10.py
+    - Reduce MJPEG quality in frame_feeder (change IMWRITE_JPEG_QUALITY)
+
+  Camera disconnects frequently?
+    - FrameReader auto-reconnects after 2 seconds
+    - Check your network stability and camera firmware
+
+--------------------------------------------------------------------------------
+SECTION 9 — RUNNING ON STARTUP (SYSTEMD)
+--------------------------------------------------------------------------------
+
+To start SENTINEL automatically on boot:
+
+  1. Create /etc/systemd/system/sentinel.service:
+
+       [Unit]
+       Description=SENTINEL Surveillance Engine
+       After=network.target
+
+       [Service]
+       User=YOUR_USERNAME
+       WorkingDirectory=/path/to/Sentinel_Surveillance
+       ExecStart=/path/to/venv/bin/python surveillance3_10.py
+       Restart=always
+       RestartSec=5
+
+       [Install]
+       WantedBy=multi-user.target
+
+  2. Enable and start:
+       sudo systemctl daemon-reload
+       sudo systemctl enable sentinel
+       sudo systemctl start sentinel
+       sudo systemctl status sentinel
+
+  Repeat with a separate .service file for dashboard.py and llama-server.
+
+--------------------------------------------------------------------------------
+SECTION 10 — TROUBLESHOOTING
+--------------------------------------------------------------------------------
+
+  "No module named 'dotenv'"
+    pip install python-dotenv
+
+  "RTSP stream not opening"
+    - Check the camera IP and credentials
+    - Try the URL in VLC first: Media → Open Network Stream → paste URL
+    - Ensure your device is on the same network as the camera
+
+  "LFM2-VL warmup failed"
+    - Make sure llama-server is running on port 8080
+    - Check: curl http://localhost:8080/health
+
+  "face_db.pkl not found"
+    - Build the database first (Section 3)
+    - Check the FACE_DB_PATH in your .env
+
+  "ImportError: libcuda.so not found"
+    - Source JetPack environment: source /opt/ros/... or check /usr/local/cuda
+
+  Dashboard shows "OFFLINE"
+    - surveillance3_10.py must be running to write /tmp/surv_state.json
+    - Start the engine first, then the dashboard
+
+--------------------------------------------------------------------------------
+
+  Repository:  https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance
+  Authors:     Hemkesh (hemkesh.2021@gmail.com)
+               V S Yogeshvar (vsyogeshvar425@gmail.com)
+
+================================================================================
