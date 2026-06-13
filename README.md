@@ -98,10 +98,34 @@ SENTINEL is a self-hosted, edge-AI surveillance system built for **NVIDIA Jetson
 | RAM | **8 GB** | 4 GB |
 | Storage | **microSD / NVMe SSD** | 32 GB microSD |
 | GPU | **1024-core Ampere (Jetson Orin)** | Any CUDA-capable GPU |
-| Camera | **Dahua RTSP IP Camera** | Any RTSP IP camera |
+| Camera | **Imou Ranger S2 (ONVIF · RTSP)** | Any ONVIF-compatible IP camera |
 | JetPack | **6.x** | 5.x |
 
 > Works on standard x86 Linux too — disable TensorRT and switch `device=0` to `device='cpu'` in `surveillance3_10.py`.
+
+### Compatible Cameras
+
+Any camera that supports **ONVIF** or **RTSP** streaming will work with SENTINEL. Tested with:
+
+| Camera | Protocol | Resolution | Notes |
+|---|---|---|---|
+| **Imou Ranger S2** | ONVIF · RTSP | 1080p | Pan/tilt, used in this project |
+| Dahua IPC Series | ONVIF · RTSP | Up to 4K | Reliable H.264/H.265 stream |
+| Hikvision DS-2CD Series | ONVIF · RTSP | Up to 4K | Industry standard |
+| Reolink RLC Series | RTSP | 1080p – 4K | Budget-friendly option |
+| Any ONVIF camera | ONVIF · RTSP | 720p+ | Use subtype=1 for sub-stream |
+
+**Finding your RTSP URL:**
+```
+# Imou Ranger S2
+rtsp://<user>:<pass>@<camera-ip>:554/cam/realmonitor?channel=1&subtype=1
+
+# Hikvision
+rtsp://<user>:<pass>@<camera-ip>:554/Streaming/Channels/101
+
+# Reolink
+rtsp://<user>:<pass>@<camera-ip>:554/h264Preview_01_sub
+```
 
 ---
 
