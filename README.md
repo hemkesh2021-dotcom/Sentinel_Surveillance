@@ -47,6 +47,26 @@ SENTINEL is a self-hosted, edge-AI surveillance system built for **NVIDIA Jetson
 | Restricted-hours mode | Escalates alerts between 22:00 – 06:00 |
 
 ---
+## Why This Is Different — Edge Deployment on Shared Memory
+
+The Jetson Orin Nano Super has **no dedicated VRAM** — CPU and GPU share one 8 GB
+pool (unified memory). A stock CUDA build of llama.cpp tries to allocate GPU tensors
+with `cudaMalloc` (dedicated-VRAM semantics) and **fails to load LFM2-VL even with
+several GB free**:
+
+```
+NvMapMemAllocInternalTagged: error 12
+cudaMalloc failed: out of memory
+```
+
+SENTINEL builds llama.cpp with `GGML_CUDA_ENABLE_UNIFIED_MEMORY=ON`, routing
+allocations through `cudaMallocManaged`. This is the single change that takes
+LFM2-VL from *failing to load* to *fully GPU-accelerated* on the shared pool — no
+Ollama, no CPU fallback, no cloud.
+
+➡️ Full TensorRT export + llama.cpp unified-memory build steps: **[BUILD.md](BUILD.md)**
+
+---
 
 ## System Architecture
 
