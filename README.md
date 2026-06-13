@@ -1,13 +1,13 @@
 <![CDATA[<div align="center">
 
-```
+<pre>
 ███████╗███████╗███╗   ██╗████████╗██╗███╗   ██╗███████╗██╗
 ██╔════╝██╔════╝████╗  ██║╚══██╔══╝██║████╗  ██║██╔════╝██║
 ███████╗█████╗  ██╔██╗ ██║   ██║   ██║██╔██╗ ██║█████╗  ██║
 ╚════██║██╔══╝  ██║╚██╗██║   ██║   ██║██║╚██╗██║██╔══╝  ██║
 ███████║███████╗██║ ╚████║   ██║   ██║██║ ╚████║███████╗███████╗
 ╚══════╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝
-```
+</pre>
 
 **AI-Powered Home Surveillance System**
 
@@ -27,6 +27,7 @@
 ---
 
 ## What is SENTINEL?
+...
 
 SENTINEL is a self-hosted, edge-AI surveillance system built for **NVIDIA Jetson** hardware. It fuses classical computer vision with modern language-vision models to give you a complete picture of your space — who is there, what they are doing, and whether anything needs your attention — all in real time, with zero cloud dependency for inference.
 
