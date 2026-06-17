@@ -212,9 +212,19 @@ python build_face_db.py --input faces/ --output face_db.pkl
 
 ### 6. Start the AI engine (LFM2-VL)
 
+Set the unified-memory flag and launch with the vision projector (mmproj):
+
 ```bash
-./llama-server -m lfm2-vl-1.6b-q4.gguf --port 8080 --n-gpu-layers 999
+GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 ./llama-server \
+  -m LFM2-VL-1.6B-Q4_0.gguf \
+  --mmproj mmproj-LFM2-VL-1.6B-Q8_0.gguf \
+  --port 8080 \
+  --n-gpu-layers 999 \
+  --ctx-size 4096
 ```
+
+The `--mmproj` file is required — without it the server loads text-only and the
+scene-analysis image requests will fail.
 
 ### 7. Run SENTINEL
 
