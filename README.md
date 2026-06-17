@@ -30,6 +30,8 @@
 
 SENTINEL is a self-hosted, edge-AI surveillance system built for **NVIDIA Jetson** hardware. It fuses classical computer vision with modern language-vision models to give you a complete picture of your space — who is there, what they are doing, and whether anything needs your attention — all in real time, with **zero cloud dependency** for inference.
 
+Read the full build story: [Why cudaMalloc fails on Jetson Orin Nano Super](https://dev.to/hemkesh2021dotcom/why-cudamalloc-fails-on-nvidia-jetson-orin-nano-super-and-the-one-flag-that-fixes-it-1b0n)
+
 ---
 
 ## Features
