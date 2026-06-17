@@ -238,7 +238,7 @@ Open in your browser: `http://<device-ip>:5000` or `http://localhost:5000`
 |---|---|---|
 | `RTSP_URL` | Full RTSP stream URL with credentials | `rtsp://admin:pass@192.168.1.100:554/...` |
 | `TELEGRAM_BOT_TOKEN` | Token from [@BotFather](https://t.me/BotFather) | `123456:ABC-DEF...` |
-| `TELEGRAM_CHAT_ID` | Your Telegram user/group ID | `5227029589` |
+| `TELEGRAM_CHAT_ID` | Your Telegram user/group ID | `1223049319` |
 | `YOLO_MODEL` | Path to YOLOv8 `.engine` or `.pt` file | `~/yolov8n.engine` |
 | `FACE_DB_PATH` | Path to built face database pickle | `~/face_db.pkl` |
 | `INTRUDER_LOG` | Path where event log is written | `~/intruder_log.json` |
