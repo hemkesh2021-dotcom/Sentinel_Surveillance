@@ -16,3 +16,12 @@ gunicorn>=20.1.0
 lightphe>=0.0.15
 lightdsa>=0.0.3
 python-dotenv>=1.0.1
+ultralytics==8.2.103     # adds YOLOv8 + ByteTrack (pulls torch/torchvision)
+deepface==0.0.93         # adds face recognition (pulls tensorflow, retina-face, mtcnn, gdown, pandas…)
+tf-keras==2.17.0         # Keras-2 shim DeepFace needs on TF >= 2.16
+numpy==1.26.4            # pinned < 2.0 for Jetson/TF/Ultralytics
+Flask==3.0.3
+requests==2.32.3
+python-dotenv==1.0.1
+# opencv-python / tensorflow: x86 uncomment; Jetson uses NVIDIA/JetPack wheels
+
