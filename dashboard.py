@@ -31,6 +31,26 @@ INTRUDER_LOG = "/home/villain8001/intruder_log.json"
 LFM2_SERVER  = "http://localhost:8080"
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 8192
+_chat_slot = threading.BoundedSemaphore(1)
+_auth_lock = threading.Lock()
+_auth_failures = {}
+
+def auth_blocked(ip):
+    now = time.monotonic()
+    with _auth_lock:
+        for key in list(_auth_failures):
+            if _auth_failures[key][1] <= now:
+                del _auth_failures[key]
+        return _auth_failures.get(ip, (0, 0))[0] >= 10 or (ip not in _auth_failures and len(_auth_failures) >= 4096)
+
+def record_auth_failure(ip):
+    with _auth_lock:
+        if ip not in _auth_failures and len(_auth_failures) >= 4096:
+            return
+        count, expiry = _auth_failures.get(ip, (0, time.monotonic() + 60))
+        _auth_failures[ip] = (count + 1, expiry)
+
 
 # ══════════════════════════════════════════════════════════════
 # PATCH 5 — HTTP Basic Auth (covers page, MJPEG stream, and all fetch calls)
@@ -41,13 +61,17 @@ DASH_PASS = os.environ.get("DASH_PASS")          # no default → fail closed if
 def _check(u, p):
     if not DASH_PASS:
         return False
-    return hmac.compare_digest(u, DASH_USER) and hmac.compare_digest(p, DASH_PASS)
+    return hmac.compare_digest(u.encode(), DASH_USER.encode()) and hmac.compare_digest(p.encode(), DASH_PASS.encode())
 
 def require_auth(f):
     @wraps(f)
     def wrapper(*a, **kw):
+        ip = freq.remote_addr or 'unknown'
+        if auth_blocked(ip):
+            return Response("Too many login attempts", 429, {"Retry-After": "60"})
         auth = freq.authorization
         if not auth or not _check(auth.username or "", auth.password or ""):
+            record_auth_failure(ip)
             return Response("Authentication required", 401,
                             {"WWW-Authenticate": 'Basic realm="SENTINEL"'})
         return f(*a, **kw)
@@ -798,18 +822,28 @@ def log():
 @app.route('/chat', methods=['POST'])
 @require_auth
 def chat():
-    data = freq.get_json(force=True) or {}
-    question = data.get('message', '').strip()
+    data = freq.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get('message'), str):
+        return jsonify({"response": "A JSON message string is required."}), 400
+    question = data['message'].strip()
+    if len(question) > 2000:
+        return jsonify({"response": "Keep questions to 2000 characters."}), 400
     if not question:
-        return jsonify({"response": "Please ask a question."})
-    answer = ask_ai(question)
-    return jsonify({"response": answer})
+        return jsonify({"response": "Please ask a question."}), 400
+    if not _chat_slot.acquire(blocking=False):
+        return jsonify({"response": "AI is busy. Please retry shortly."}), 429
+    try:
+        answer = ask_ai(question)
+        return jsonify({"response": answer})
+    finally:
+        _chat_slot.release()
 
 
 if __name__ == '__main__':
     if not DASH_PASS:
         print("⚠  DASH_PASS is not set — every request will be rejected (401).")
         print("   Set it first, e.g.:  export DASH_PASS='your-strong-passphrase'")
-    print("🌐 SENTINEL Dashboard  →  http://0.0.0.0:5000")
-    print("   iPhone / iPad       →  http://192.168.55.1:5000")
-    app.run(host='0.0.0.0', port=5000, threaded=True)
+    print("🌐 SENTINEL Dashboard  →  http://127.0.0.1:5000")
+    print("   Remote access requires an SSH tunnel or HTTPS reverse proxy.")
+    app.run(host=os.environ.get('DASH_HOST', '127.0.0.1'), port=5000, threaded=True)
+
