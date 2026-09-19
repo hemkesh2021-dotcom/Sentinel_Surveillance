@@ -222,7 +222,13 @@ The `--mmproj` file is required — without it the server loads text-only and im
 </details>
 
 ### 7. Open the dashboard
-`http://<device-ip>:5000` — log in with `DASH_USER` / `DASH_PASS` from your `.env`.
+The dashboard binds to `127.0.0.1` by default. For a remote computer, open an encrypted SSH tunnel:
+
+```bash
+ssh -N -L 5000:127.0.0.1:5000 your-user@your-device
+```
+
+Then visit `http://127.0.0.1:5000` on that computer and log in with `DASH_USER` / `DASH_PASS`. The local browser connection travels through the encrypted tunnel. For phone/tablet or shared access, put an HTTPS reverse proxy in front of the loopback listener; do not expose Basic Auth over plain HTTP. `DASH_HOST` can override the bind address only for a deliberately secured deployment.
 > Use **Chrome** for the live video (Safari renders MJPEG unreliably).
 
 ---
@@ -328,3 +334,15 @@ This project is for personal / educational use. Do not deploy in public spaces w
 <div align="center">
 Built on NVIDIA Jetson &nbsp;·&nbsp; Powered by YOLOv8, DeepFace & LFM2-VL &nbsp;·&nbsp; Alerts via Telegram
 </div>
+
+
+## Dashboard regression checks
+
+The dashboard can be tested without a camera or inference hardware:
+
+```bash
+python -m pip install Flask==3.0.3 requests==2.32.3 python-dotenv==1.0.1
+python -m unittest discover -s tests
+```
+
+The dashboard rejects oversized/invalid chat messages, admits one interactive AI call at a time, and throttles failed authentication attempts per socket address. Behind a proxy, clients may share that address; configure edge authentication/rate limits for a production deployment. The dashboard semaphore does not coordinate other processes using the model. Hardware throughput, alerts, and recognition still require device testing.
