@@ -38,6 +38,47 @@ def test_pts_resets_do_not_recycle_frame_identity(
     assert verdicts == [FrameNovelty.NEW_EPOCH] + [FrameNovelty.NEW] * 5
 
 
+def test_unset_and_non_increasing_pts_at_stream_start_fall_back_to_receive_time(
+    next_frame: NextFrame, stamper: FrameStamper, clock: FakeClock
+) -> None:
+    # Measured on the camera's substream (V2-01): the first packet has no
+    # timestamp and the next timestamps can repeat or step back before they
+    # settle. Stamping must neither fail nor trust them as stream time.
+    pts_in = (None, 0, 0, 6_000, 3_000, 12_000, 18_000)
+    frames = [next_frame(pts=pts) for pts in pts_in]
+
+    assert len({frame.key for frame in frames}) == len(frames)
+    assert [frame.frame_seq for frame in frames] == list(range(len(frames)))
+    assert [frame.source_pts for frame in frames] == list(pts_in)  # kept for diagnostics
+    assert [frame.source_time_quality for frame in frames] == [
+        SourceTimeQuality.NONE,  # unset
+        SourceTimeQuality.STREAM_RELATIVE,  # first timestamp seen
+        SourceTimeQuality.NONE,  # repeated
+        SourceTimeQuality.STREAM_RELATIVE,
+        SourceTimeQuality.NONE,  # stepped back
+        SourceTimeQuality.STREAM_RELATIVE,
+        SourceTimeQuality.STREAM_RELATIVE,
+    ]
+    # Receive time orders every frame, whatever its source timestamp.
+    ingest = [frame.ingest_mono_ns for frame in frames]
+    assert ingest == sorted(ingest) and len(set(ingest)) == len(ingest)
+    # An explicit claim cannot upgrade a timestamp that did not advance.
+    clock.advance(1 / 15)
+    repeated = stamper.stamp(
+        native_width=640,
+        native_height=480,
+        pixel_format=PixelFormat.BGR,
+        source_pts=18_000,
+        source_time_quality=SourceTimeQuality.CAPTURE_SYNCED,
+    )
+    assert repeated.source_time_quality is SourceTimeQuality.NONE
+
+    # A new epoch starts over: RTSP timestamps begin at 0 again after reconnect.
+    stamper.disconnect()
+    stamper.connect()
+    assert next_frame(pts=0).source_time_quality is SourceTimeQuality.STREAM_RELATIVE
+
+
 def test_frozen_latest_frame_is_never_processed_twice(
     next_frame: NextFrame, stamper: FrameStamper, clock: FakeClock
 ) -> None:

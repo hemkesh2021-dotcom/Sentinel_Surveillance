@@ -31,6 +31,11 @@ class FrameStamper:
     frame_seq counts frames within an epoch. Identity never depends on clock
     readings or source PTS, so clock steps, PTS resets and runtime restarts
     cannot recycle it.
+
+    Source PTS is advisory. The camera's first packets can lack timestamps or
+    repeat/regress them, so a PTS that does not increase over the previous
+    frame's is kept for diagnostics but stamped with quality NONE: consumers
+    then fall back to the ingest (receive) time, which every frame has.
     """
 
     def __init__(self, camera_id: str, clock: Clock) -> None:
@@ -40,6 +45,7 @@ class FrameStamper:
         self._epoch = 0
         self._stream: StreamIdentity | None = None
         self._next_seq = 0
+        self._last_pts: int | None = None
 
     @property
     def current_stream(self) -> StreamIdentity | None:
@@ -56,6 +62,7 @@ class FrameStamper:
             stream_epoch=self._epoch,
         )
         self._next_seq = 0
+        self._last_pts = None
         return self._stream
 
     def disconnect(self) -> None:
@@ -78,10 +85,13 @@ class FrameStamper:
         now = self._clock.mono()
         if now.boot_id != stream.boot_id:
             raise RuntimeError("the clock's boot changed; connect() a new stream")
-        if source_time_quality is None:
-            source_time_quality = (
-                SourceTimeQuality.NONE if source_pts is None else SourceTimeQuality.STREAM_RELATIVE
-            )
+        pts_increased = source_pts is not None and (
+            self._last_pts is None or source_pts > self._last_pts
+        )
+        if not pts_increased:
+            source_time_quality = SourceTimeQuality.NONE
+        elif source_time_quality is None:
+            source_time_quality = SourceTimeQuality.STREAM_RELATIVE
         frame = FrameRef(
             camera_id=stream.camera_id,
             boot_id=stream.boot_id,
@@ -98,6 +108,8 @@ class FrameStamper:
             pixel_format=pixel_format,
         )
         self._next_seq += 1
+        if source_pts is not None:
+            self._last_pts = source_pts
         return frame
 
 
