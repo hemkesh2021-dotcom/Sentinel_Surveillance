@@ -33,3 +33,18 @@ identity:
   vote_ttl_s: 30.0       # face votes older than this no longer count
   head_fraction: 0.4     # a face centre must lie in this top part of a person box
   min_face_inside: 0.6   # and this much of the face box inside the person box
+
+# Optional adapters (guide ch. 27): scene analysis, extra detectors, face
+# recognition, notifiers. Core monitoring runs with none enabled. Each entry is
+# a versioned manifest naming a built-in adapter; configuration never names code.
+#   - adapter_id: example-scene       # must be a built-in adapter
+#     contract_version: 1             # other versions are rejected
+#     implementation_revision: "1"
+#     enabled: false
+#     input_kinds: [frame]
+#     output_kinds: [scene.report]
+#     model_revision: null
+#     resource_profile_id: null       # model adapters need a measured profile
+#     timeout_ms: 8000
+#     priority: 50
+adapters: []

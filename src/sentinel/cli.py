@@ -7,6 +7,7 @@ import sys
 from collections.abc import Sequence
 
 from . import __version__
+from .adapters import resolve
 from .config import ConfigError, load_config
 
 
@@ -29,6 +30,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"{args.path}: valid Sentinel configuration "
         f"(version {config.config_version}, camera {config.camera.id})"
     )
+    # Optional adapters never block startup; show why any cannot be used.
+    statuses = resolve(config.adapters)
+    if not statuses:
+        print("  no optional adapters configured: core monitoring only")
+    for status in statuses:
+        print(f"  adapter {status.manifest.adapter_id}: {status.state.value} ({status.reason})")
     return 0
 
 
