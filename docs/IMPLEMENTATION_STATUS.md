@@ -1,6 +1,6 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-09-29, end of session 2 (V2-01 records, V2-03 regressions R1–R3 and the portable `EdgeCore`). Requirements come from the v2 beta implementation guide (V2-01…V2-56 backlog), and corrections and regression cases from the 23 September audit review. Both documents are local-only (see D13).
+Last updated 2026-09-29, end of session 2: V2-01 records, V2-03 regressions R1–R3, the portable `EdgeCore`, V2-49, and the maintainer's decisions D22–D24. Requirements come from the v2 beta implementation guide (V2-01…V2-56 backlog), and corrections and regression cases from the 23 September audit review. Both documents are local-only (see D13).
 
 ## Position
 
@@ -9,19 +9,22 @@ Last updated 2026-09-29, end of session 2 (V2-01 records, V2-03 regressions R1�
 | Branch | `v2-beta`, created from `master`; **not pushed** |
 | Base commit | `2b2d639621e8c043cc58a126f47b1b8ab6c22135`, the commit the audit verified, confirmed as HEAD before starting |
 | Session 1 commits | `ec6698d` CLAUDE.md · `b52920f` package skeleton and portable tests · `e9f959d` clock · `bc42248` frame identity · `3b47f5f` evidence/track applicability · `ee50275` config and CLI · `6a9e71d` CI workflow · `6578ded` status record |
-| Session 2 commits | `4587021` PTS tolerance at ingest · `812b42c` V2-01 records · `e81db81` replay timelines · `86889f8` scene lane (R3) · `432dc69` live state and freshness (R2) · `66937ef` face association and identity (R1) · then the commit that updates this record |
+| Session 2 commits | `4587021` PTS tolerance at ingest · `812b42c` V2-01 records · `e81db81` replay timelines · `86889f8` scene lane (R3) · `432dc69` live state and freshness (R2) · `66937ef` face association and identity (R1) · `48d6188` status record · `9593b64` adapter manifests (V2-49) · then the commit that records the maintainer's decisions |
 | Working tree | Clean apart from ignored environments/build output and local-only files excluded through `.git/info/exclude` |
 | Local-only files | The v2 guide, the audit review and `docs/LOCAL_NOTES.md` (device-specific notes). A fresh clone does not contain them, although CLAUDE.md names the first two. |
-| Selected package | C1 is finished except V2-01 (hardware checks PENDING), V2-04's off-device checks and **V2-49** (next). |
+| Selected package | C1 is finished except V2-01 (device checks PENDING) and V2-04's off-device runs. Next: the Oct 20 path, starting with **V2-13 in demo form**. |
 | Other branches | `origin/Yogeshvar425-patch-1` (teammate) is **not merged**: a single commit `6755796` that adds @Yogeshvar425 to `.github/CODEOWNERS` (merge base `c66ebde`). `origin/codex/github-audit-fixes-2026-09-19` is already in `master` via PR #4. |
-| Effort | No team availability recorded yet (guide ch. 26 kickoff item). The C1 re-estimate is still open: V2-01's B0 run has not happened, so no optimization effort can be re-estimated. |
-| Waiting on the maintainer | **U12** (perception stream profile and FPS gate), **U13** (CUDA driver library), **U14** (runtime environment for hardware adapters), and the PENDING hardware commands |
+| Effort | Per-package estimates are in the package table (given to the maintainer on 2026-09-29). The re-estimate of optimization effort still waits for V2-01's B0 run. |
+| v1 on this device | **Not running** (maintainer, 2026-09-29). Checks must not assume v1 processes exist. |
+| Waiting on the maintainer | The PENDING checks; checks **3** and **5** are needed for the demo and decide **U13** |
 
 ## Next concrete task
 
-1. **V2-49** (C1): versioned extension/adapter manifest with the ch. 27 fields. Unknown major versions and duplicate IDs fail config validation, and disabled adapters import no ML framework (extend `test_portable_imports`). Wire the scene analyzer, detector and face adapters through it as `disabled` by default.
-2. Then the portable part of the Oct 20 path (plan below): **V2-13** restricted-zone rule (normalized polygon, bottom-centre anchor, IANA schedule across midnight, persistence), then **V2-14** SQLite incident + evidence + outbox transaction with runtime-ID deduplication, then **V2-15** leased outbox with a stdlib Telegram adapter tested against a mock (HTTP error, `ok=false`, 429, timeout, crash after send).
-3. Hardware adapters wait for U12/U14 and the PENDING checks.
+1. **V2-13, demo form:** restricted-zone rule over current `TrackObservation`s: normalized polygon, bottom-centre anchor, IANA-timezone schedule including intervals across midnight, entry persistence and gap tolerance, and a rule observation that creates a candidate incident without any identity or VLM verdict. Add deterministic replay tests, including midnight, calm entry with the scene lane off, a known person still triggering the rule, and a stall or reconnect ending the observation. Dwell and directed crossing come next in the same package.
+2. **V2-14, demo form:** SQLite schema and migration (WAL, busy timeout, single writer). One transaction deduplicates the runtime observation ID, creates or updates the incident with a revision check, appends evidence and a transition, and inserts outbox rows with `UNIQUE(incident, channel, policy_revision, message_kind)`. Test a repeated source event and a crash after commit.
+3. **V2-15, demo form:** leased outbox worker and a stdlib (`urllib`) Telegram adapter tested against a mock: HTTP error, `ok=false`, 429 with `retry_after`, timeout, and a crash after sending. Retries, dead letter, and redacted errors; no real token in tests.
+4. **V2-28, demo form (incident side):** late and enrichment evidence annotates only its own incident in the store.
+5. When the maintainer's check results arrive, record them in the V2-01 inventory as maintainer measurements and settle U13 with the maintainer. Then do the week-2 device adapters under D24: capture through `~/onvif_env`'s OpenCV/FFmpeg; legacy engine plus ByteTrack; interim face and llama-server adapters, whose admission needs U17; and `sentinel run` (D-1).
 
 ## Oct 20 demo milestone: plan and deviations from the guide order
 
@@ -29,28 +32,108 @@ Target (maintainer, 2026-09-29): a demoable end-to-end path on this Jetson by 20
 
 | Week | Work | Status |
 |---|---|---|
-| 1 (to Oct 6) | V2-49; V2-13 zone rule; V2-14 SQLite incidents/outbox; V2-15 leased outbox + Telegram (mocked). All portable. | V2-49 next |
-| 2 (to Oct 13) | Device adapters, after U12/U14: capture (substream, video only, FrameStamper; `gst-launch` pipe or CPU decode); detector + ByteTrack via the existing `yolov8n.engine` as the *legacy parity adapter*; interim face adapter (existing DeepFace/Facenet512 on CPU) feeding v2 association; llama-server scene adapter; `sentinel run` loop around `EdgeCore` | Blocked on decisions and checks |
-| 3 (to Oct 20) | Loopback-only, read-only status page (stdlib HTTP server) showing LiveState, incidents and delivery outcomes; end-to-end rehearsal with v1 stopped; demo script including camera loss and recovery | — |
+| 1 (to Oct 6) | V2-49; V2-13 zone rule; V2-14 SQLite incidents/outbox; V2-15 leased outbox + Telegram (mocked). All portable. | V2-49 done; V2-13 next |
+| 2 (to Oct 13) | Device adapters (D24): capture from the substream (profile A, D22) with `~/onvif_env`'s OpenCV/FFmpeg software decode, video only, stamped by FrameStamper; detector + ByteTrack via the existing `yolov8n.engine` as the *legacy parity adapter*; interim face adapter (existing DeepFace/Facenet512 on CPU) feeding v2 association; llama-server scene adapter; `sentinel run` loop around `EdgeCore` | Needs checks 3 and 5 (U13) and U17 |
+| 3 (to Oct 20) | Loopback-only, read-only status page (stdlib HTTP server) showing LiveState, incidents and delivery outcomes; end-to-end rehearsal; demo script including camera loss and recovery | — |
 
-**Deviations from the guide's order (flagged; each needs the maintainer's acceptance):**
+**Deviations from the guide's order.** Accepted by the maintainer (D23) **on condition that every affected package is marked "demo form, full acceptance pending" in this file and is not counted done.** The package table applies that marking.
 
 1. **Face (V2-25, C7) and VLM (V2-26, C7) come before C4–C6, via interim adapters** around the models v1 already uses: DeepFace/Facenet512 on CPU and llama-server with LFM2-VL-1.6B. Reason: the milestone requires identity and scene. The v2 association, identity and scene-lane logic is final; the adapters are labelled demo-only, uncalibrated and unbenchmarked. Enrollment will be re-created as validated non-executable data from consented photos, never by loading `face_db.pkl`.
-2. **Portable C4 packages (V2-13/14/15) before the C2/C3 hardware packages.** Reason: C2/C3 are blocked on the PENDING hardware checks and U12/U14, while C4 is portable and on the milestone path.
-3. **No go2rtc relay for the demo (V2-05 deferred).** The v2 runtime opens the substream itself as the only ingest, so v1 must be stopped during demo runs to avoid a second upstream session. Installing go2rtc is a new binary dependency that needs a decision.
-4. **Decode may be CPU for the demo** (`~/onvif_env`'s OpenCV has only its bundled FFmpeg). The hardware path (`nvv4l2decoder` in a `gst-launch-1.0` subprocess, U14 option a) is used only if PENDING check 7 passes. CPU decode of a 640×480 at 15 fps stream is expected to be cheap, but this has not been measured.
+2. **Portable C4 packages (V2-13/14/15) before the C2/C3 hardware packages.** Reason: C2/C3 are blocked on the PENDING hardware checks, while C4 is portable and on the milestone path. They must be revalidated once V2-10 and V2-11 exist.
+3. **No go2rtc relay for the demo (V2-05 deferred).** The v2 runtime opens the substream itself as the only ingest. v1 is not running on the device, so this is the only upstream session. Installing go2rtc is a new binary dependency that needs a decision.
+4. **Software decode for the demo (D24):** `~/onvif_env`'s OpenCV with its bundled FFmpeg. 640×480 at 15 fps is about 4.6 Mpx/s. GStreamer/NVDEC waits for V2-05 proper; revisit after Oct 20. The CPU cost has not been measured.
 5. **Dashboard: a loopback-only, read-only status page instead of V2-17/V2-18** (FastAPI, auth, roles, PWA). Access is over an SSH port forward. This avoids new dependencies and does not expose an unauthenticated service. FastAPI is not installed anywhere; adding it is a dependency decision.
-6. **Runtime environment for the demo:** `~/onvif_env` read-only, run as `LD_PRELOAD=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1 PYTHONPATH=src ~/onvif_env/bin/python`. The portable package passes its suite with that environment's pydantic 2.12.5 (verified below). Nothing will be installed into it; if an adapter needs anything missing, a separate environment will be proposed first.
+6. **Runtime environment for the demo (D24):** `~/onvif_env`, unchanged, with `PYTHONPATH=src`. Its CPU-only parts run as they are. GPU parts (detector engine, possibly llama-server) also need the L4T libcuda preload that `~/onvif_env/bin/activate` sets, unless U13 changes the system; that waits for checks 3 and 5. The portable package passes its suite with that environment's pydantic 2.12.5 (verified below). Nothing will be installed into it; if an adapter needs anything missing, a separate environment will be proposed first.
 
 ## Package status
 
-| Package (guide ch. 20) | Status |
-|---|---|
-| **V2-01** Hardware and v1 timing/memory baseline. *Accept:* sanitized inventory; B0/B1 workload and trace contract; provisional CPU budget; re-estimated optimization effort | **In progress.** Camera substream facts (maintainer-measured) and the `~/onvif_env` diagnostics are recorded in the V2-01 inventory. The device checks are PENDING with exact commands. There is no B0 run, trace contract, CPU budget or re-estimate yet. |
-| **V2-02** Config, frame/evidence contracts, fake clock. *Accept:* invalid config fails clearly; epoch/TTL tests pass | **Done (portable).** Session 2 extended the config with `scene`, `hazard` and `identity` sections. |
-| **V2-03** Replay fixtures and first identity/empty-scene fixes. *Accept:* multi-person and zero-person regressions recorded | **Done (synthetic replays).** R1, R2 and R3 are recorded, each next to the B0 v1 snapshot. Real-clip replay needs V2-07 consent/split manifests and a decode adapter. |
-| **V2-04** Development setup and CI skeleton. *Accept:* clean laptop runs non-GPU checks | **In progress.** No clean-laptop (x86-64/macOS) run and no GitHub Actions run yet (nothing pushed). |
-| **V2-49** Versioned extension manifest and evidence validation (C1) | **Next.** |
+Estimates as given to the maintainer on 2026-09-29. V2-49 has since been done.
+
+- **Claude h** is 0.35 h per remaining guide person-day (session pace so far is about 0.2–0.27 h), plus 0.25 h per expected device round trip, ×1.5 for UI work, rounded up to 0.5 h per package.
+- **Maintainer Jetson h** is attended time at the device or camera. It excludes unattended runs and code review.
+
+**Counting rule (D23):** a package marked **"demo form, full acceptance pending"** counts as partial at most, even when its demo form is complete. It becomes done only when its guide acceptance passes in the full form. For example: V2-05 with the relay and verified hardware decode, V2-09 with the TensorRT adapter and parity report, V2-13/14/15 revalidated after V2-10/V2-11.
+
+| Package | Title | Status | Portable or Jetson | Oct 20 path | Claude h | Maintainer Jetson h | Depends on |
+|---|---|---|---|---|---|---|---|
+| V2-01 | Hardware and v1 timing/memory baseline | in progress | Jetson | yes (checks 3, 5) | 1.5 | 3 | — |
+| V2-02 | Config, frame/evidence contracts, fake clock | done | Portable | yes | 0 | 0 | — |
+| V2-03 | Replay fixtures, first identity/empty-scene fixes | done | Portable | yes | 0 | 0 | — |
+| V2-04 | Dev setup and CI skeleton | in progress | Portable | no | 0.5 | 0 | — |
+| V2-05 | Relay ownership and hardware decode spike | not started | Jetson | yes: **demo form, full acceptance pending** | 2 | 2.5 | 01, 02 |
+| V2-06 | Browser/codec/timestamp spike | not started | Jetson | no | 2 | 3 | 05 |
+| V2-07 | Dataset consent, labels, split manifest | not started | Jetson (recording) | no | 1 | 3 | 03 |
+| V2-08 | Gate B record, recoverable device baseline | not started | Jetson | no | 1 | 4 | 01, 05, 06 |
+| V2-09 | TensorRT adapter and fixed buffers | not started | Jetson | yes: **demo form, full acceptance pending** | 2.5 | 3 | 05, 08 |
+| V2-10 | Tracker and coordinate parity | not started | Jetson | yes: **demo form, full acceptance pending** | 1.5 | 1.5 | 07, 09 |
+| V2-11 | Telemetry and runtime handoff contract | not started | Portable + device check | no | 1 | 0.5 | 02, 05 |
+| V2-12 | Overlay rendering vs timed fixtures | not started | Portable + device check | no | 1 | 1 | 06, 10 |
+| V2-13 | Zone, crossing and dwell rules | not started | Portable | yes: **demo form, full acceptance pending** | 1 | 0 | 10, 11 |
+| V2-14 | Incident transaction, SQLite migrations | not started | Portable | yes: **demo form, full acceptance pending** | 1 | 0 | 02, 11 |
+| V2-15 | Leased outbox and Telegram adapter | not started | Portable + device check | yes: **demo form, full acceptance pending** | 1 | 0.5 | 14 |
+| V2-16 | Rule evidence/correlation regression suite | partial | Portable | no | 0.5 | 0 | 13, 14 |
+| V2-17 | Sessions, roles, API, media authorization | not started | Portable + device check | no (D-2 stands in for the demo; not a substitute) | 1.5 | 0.5 | 14, 15 |
+| V2-18 | Live and Incidents web screens | not started | Portable + device check | no (D-2 stands in for the demo; not a substitute) | 2 | 1 | 12, 17 |
+| V2-19 | Runtime service supervision | not started | Jetson | no | 1 | 1.5 | 09, 11 |
+| V2-20 | Identity storage and enrollment contract | partial | Portable + device check | yes: **demo form, full acceptance pending** | 0.5 | 0.5 | 07, 10 |
+| V2-21 | Compressed ring and event clips | not started | Jetson | no | 1.5 | 2 | 05, 14 |
+| V2-22 | Retention and consistent backup | not started | Portable + device check | no | 1 | 0.5 | 14, 21 |
+| V2-23 | Installer alpha and first-run flow | not started | Jetson | no | 1.5 | 3 | 17, 19 |
+| V2-24 | Alpha replay/soak report | not started | Jetson | no | 1 | 3 | 16, 18, 22, 23 |
+| V2-25 | Face association/alignment/runtime adapter | partial | Jetson | yes: **demo form, full acceptance pending** | 2 | 4 | 20, 24 |
+| V2-26 | Small VLM vs existing model comparison | not started | Jetson | yes: **demo form, full acceptance pending** | 2 | 5 | 09, 24 |
+| V2-27 | Enrollment/revoke screens | not started | Portable + device check | no | 1 | 0.5 | 20, 25 |
+| V2-28 | Evidence enrichment isolation | partial | Portable | yes: **demo form, full acceptance pending** | 0.5 | 0 | 14, 26 |
+| V2-29 | Admission/degradation controller | not started | Jetson | no | 2.5 | 3 | 09, 25, 26 |
+| V2-30 | H3 pressure experiment and analysis | not started | Jetson | no | 1.5 | 5 | 29 |
+| V2-31 | Recovery actions, diagnostic redaction | not started | Portable + device check | no | 1 | 1 | 19, 29 |
+| V2-32 | Capability/health feedback in UI | not started | Portable | no | 0.5 | 0 | 29, 31 |
+| V2-33 | Actual-camera PTZ adapter | not started | Jetson | no | 1.5 | 2.5 | 08, 31 |
+| V2-34 | PTZ policy, override, home state machine | not started | Jetson | no | 1.5 | 1.5 | 13, 33 |
+| V2-35 | PTZ and privacy/zone validation | not started | Jetson | no | 1 | 1.5 | 25, 34 |
+| V2-36 | PTZ controls and capability fallback | not started | Portable | no | 1 | 0 | 32, 34 |
+| V2-37 | Responsive PWA and offline behaviour | not started | Portable + device check | no | 2 | 2 | 18, 27, 32 |
+| V2-38 | Webhook and optional MQTT adapter | not started | Portable | no | 1 | 0 | 15, 17 |
+| V2-39 | Upgrade/rollback and TLS drill | not started | Jetson | no | 1.5 | 3 | 22, 23, 31 |
+| V2-40 | Frozen model/config/feature manifests | not started | Portable + device check | no | 1 | 0.5 | 25, 26, 35 |
+| V2-41 | Held-out quality and scheduler evaluation | not started | Jetson | no | 1.5 | 10 | 07, 30, 40, 56 |
+| V2-42 | 24-hour soak and fault campaign | not started | Jetson | no | 1.5 | 4 | 39, 40, 56 |
+| V2-43 | Auth/media/update threat tests | not started | Portable + device check | no | 1 | 1 | 17, 38, 39 |
+| V2-44 | External install/usability rehearsal | not started | Jetson | no | 1 | 3 | 37, 39, 40 |
+| V2-45 | Fix and rerun failed mandatory gates | not started | Jetson | no | 2.5 | 4 | 41–44 |
+| V2-46 | Candidate bundle and provenance | not started | Portable + device check | no | 1 | 0.5 | 45 |
+| V2-47 | Research report, reproducibility package | not started | Portable | no | 1 | 0 | 30, 41, 45 |
+| V2-48 | Final restore/demo/release rehearsal | not started | Jetson | no | 1 | 3 | 46, 47 |
+| V2-49 | Versioned extension manifest, evidence validation | done | Portable | yes | 0 | 0 | 02 |
+| V2-50 | Camera quality observation lane | not started | Jetson | no | 1.5 | 2 | 09, 49 |
+| V2-51 | Bounded temporal sequence rules | not started | Portable | no | 1 | 0 | 13, 49 |
+| V2-52 | SQLite incident filters and FTS search | not started | Portable + device check | no | 1 | 0.25 | 14, 17 |
+| V2-53 | Review queue, versioned operator feedback | not started | Portable | no | 1.5 | 0 | 18, 22, 52 |
+| V2-54 | Optional worker lifecycle, resource manifest | partial | Jetson | no | 1.5 | 1.5 | 29, 49 |
+| V2-55 | Mock future adapter, embedding repository | not started | Portable | no | 1 | 0 | 49, 53, 54 |
+| V2-56 | Upgrade feature acceptance, manifest freeze | not started | Jetson | no | 1.5 | 1.5 | 50–55 |
+| D-1 | Demo runtime loop `sentinel run` (not in backlog) | not started | Jetson | yes (demo only) | 2 | 2.5 | demo parts of 05, 09, 10, 13–15, 20, 25, 26 |
+| D-2 | Loopback read-only status page (not in backlog) | not started | Portable + device check | yes (demo only) | 1 | 0.5 | 14, 15 |
+
+| Totals | Claude h | Maintainer Jetson h |
+|---|---|---|
+| Remaining backlog | 68.5 | 94.25 |
+| Demo-only rows D-1, D-2 | 3.0 | 3.0 |
+| **Total** | **71.5** | **97.25** |
+| Oct 20 demo scope only | 12.0 | 9.5 |
+
+Notes on partial and in-progress rows:
+
+- **In progress:**
+  - V2-01: records are done; the device checks, B0 run, trace contract, CPU budget and re-estimate are pending.
+  - V2-04: no clean-laptop or GitHub Actions run yet (nothing pushed).
+- **Done:** V2-03 with synthetic replays only; real-clip replay needs V2-07. V2-49's registry is empty until real adapters land, and its unknown-profile rule makes every model adapter unavailable until U17 is settled.
+- **Partial:**
+  - V2-16: only the scene-hazard correlation.
+  - V2-20: validated in-memory enrollment only.
+  - V2-25: the association and identity core is done; the adapter, alignment, vectorized matching and report are not.
+  - V2-28: the scene side is done; the incident side waits for V2-14.
+  - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done.
 
 ## Session 2 slice log (2026-09-29)
 
@@ -70,10 +153,12 @@ Target (maintainer, 2026-09-29): a demoable end-to-end path on this Jetson by 20
 | `src/sentinel/rules/scene_hazard.py` | `SceneHazardRule` and the `HazardCandidate` contract (D17) |
 | `src/sentinel/identity/` | `association.py` (one-to-one ownership), `matching.py` (validated enrollment, cosine, runner-up), `state.py` (derived identity states) (D19) |
 | `src/sentinel/live_state.py` | `LiveState` published on every step: video state and age, detector and face capability, occupancy with reason, people with identity, scene status and report |
-| `src/sentinel/runtime.py` | `EdgeCore`: portable composition of all of the above; `on_frame`, `tick`, `on_scene_outcome`, `request_enrichment`, `diagnostics()` |
+| `src/sentinel/runtime.py` | `EdgeCore`: portable composition of all of the above; `on_frame`, `tick`, `on_scene_outcome`, `request_enrichment`, `diagnostics()`. Runs with no scene analyzer (scene analysis published as disabled). |
+| `src/sentinel/adapters.py` (V2-49, `9593b64`) | ch. 27 `AdapterManifest` (strict config section), static `BUILTIN_ADAPTERS` registry (empty), `resolve()` (no imports), `load()` (import failures leave only that adapter unavailable), `evidence_from_adapter()` / `output_problem()` (strict parse; kind, producer and revision checked against the manifest; enabled adapters only) (D25) |
+| `src/sentinel/cli.py`, `config.py` (V2-49) | `adapters:` list in config (duplicate IDs and unknown contract versions are config errors; typos inside list items get a suggestion); `sentinel config validate` prints each adapter's state and reason |
 | `config/default.yaml` | New `scene`, `hazard` and `identity` sections, with values labelled as proposed or placeholders |
 | `tests/replay/` | `test_timeline.py`, `test_r3_stale_scene_results.py` (11), `test_r2_zero_person_scenes.py` (5), `test_r1_face_identity.py` (9); harnesses, builder, fixture and the B0 v1 snapshot |
-| `tests/unit/` | New `test_jobs.py`, `test_scene_report.py`, `test_health.py`, `test_scene_hazard.py`, `test_identity.py`; config tests extended |
+| `tests/unit/` | New `test_jobs.py`, `test_scene_report.py`, `test_health.py`, `test_scene_hazard.py`, `test_identity.py`, `test_adapters.py` (8); config tests extended; `test_portable_imports.py` adds an ML-blocked adapter resolve/load check |
 
 ### Regressions recorded (V2-03 acceptance)
 
@@ -104,7 +189,9 @@ All ran on 2026-09-29 on the Jetson from `~/sentinel-surveillance`. Nothing was 
 .venv/bin/sentinel config validate config/default.yaml      # valid, exit 0
 ```
 
-**Every session 2 commit passes its own tests** (the loop from session 1, over `6578ded..HEAD`): `4587021` 48 · `812b42c` 48 · `e81db81` 60 · `86889f8` 87 · `432dc69` 100 · `66937ef` 114 passed.
+**Every session 2 commit passes its own tests** (the loop from session 1, over `6578ded..HEAD`): `4587021` 48 · `812b42c` 48 · `e81db81` 60 · `86889f8` 87 · `432dc69` 100 · `66937ef` 114 passed. `48d6188` is documentation only.
+
+**V2-49 (`9593b64`):** 123 passed on Python 3.10.14 with pydantic 2.13.5 in the working tree before committing, and 123 with pydantic 2.12.5 in the scratch venv described below. After committing, a clean archive of HEAD on Python 3.12.3 gave 123 passed, `sentinel config validate` valid ("no optional adapters configured: core monitoring only"), and the v1 dashboard tests OK.
 
 **Clean archive of HEAD on Python 3.12.3** (fresh venv, as in session 1): 114 passed; `sentinel config validate` valid. **v1 "Dashboard checks"** in the same archive (Flask 3.0.3, requests 2.32.3, python-dotenv 1.0.1): `Ran 4 tests ... OK`.
 
@@ -124,6 +211,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src ~/onvif_env/bin/python <script>        
 
 - **R3, 15/15:** late result keeps full TTL; non-current evidence becomes scene state; held evidence never dropped; no timeout at the deadline; claimed job ID trusted; skipped jobs become scene state; older frame overwrites newer state; late evidence annotates nothing; failure keeps previous verdict; periodic checks need people; waiting enrichment never skipped; replaced enrichment silently dropped; submit exception uncaught; report accepts extra fields; worker detail unredacted.
 - **R2, 15/15:** stale stream still live; stale boundary off by one; offline never reached; reconnect without a frame counted fresh; duplicate frames reprocessed; tracks never expire; empty scene not published; detector recency ignored; detector status ignored; scene lane only with people; hazard not reset on a missing view; hazard ignores epoch change; hazard critical; hazard emits every report; hazard not reset by failure.
+- **V2-49, 16/16:** unknown contract version accepted; duplicate IDs accepted; resolve imports the module; disabled adapters enabled; implementation version ignored; declared kinds unchecked; unknown profile admitted; notifiers need a profile; load failure propagates; disabled adapter's output accepted; undeclared output kind accepted; foreign producer accepted; revision mismatch accepted; evidence contract version 2 accepted; core requires a scene analyzer; list-item suggestions lost. The R1 and R2 sweeps were re-run after the `runtime.py` change: 11/11 and 15/15.
 - **R1, 11/11:** first candidate wins; person-side uniqueness only; head region ignored; inside fraction ignored; empty-enrollment reason; single vote establishes KNOWN; low-quality faces vote; contradiction ignored; votes never expire; identity bookkeeping kept after tracks end; runner-up margin ignored.
 
 Four first-round misses were test gaps and were fixed before committing: the gap-and-reconnect hazard test confirmed before the stall; the inside-fraction face had its centre outside the box; there were no near-twin or faceless empty-enrollment cases; and identity bookkeeping was not observable (now `EdgeCore.diagnostics()`). One further miss is deliberate: redaction happens both in `WorkerOutcome` and in the lane, so removing one layer is not observable end to end. `test_jobs.py` now checks the first layer directly.
@@ -255,6 +343,7 @@ unittest discovery ignores `tests/unit/` because it has no `__init__.py`. This a
 - No v2 code runs on the camera or GPU yet. `EdgeCore` is exercised only by synthetic replays and one FakeClock smoke run in `~/onvif_env` (CPU, no camera). The other ch. 18 CLI commands, including `sentinel replay`, were intentionally not added yet.
 - The replay regressions use synthetic timelines, not the maintainer's clips. They record the behaviour of the v2 components and of a documented reference model of v1 (D12), not of the running v1 process.
 - The mutation sweeps are one-off checks whose scripts are not committed.
+- The rewritten PENDING checks 3a/3b were only syntax-checked (`bash -n`, and `py_compile` for the embedded Python). They have not been run.
 
 ## Decisions
 
@@ -286,6 +375,10 @@ D14–D21 are implementation decisions made in session 2 within the guide's rule
 - **D19. Identity.** Association accepts a face–person pair only when each is the other's sole candidate: face centre in the top 40 % of the person box, at least 60 % of the face inside it. Identity is derived on every read from the track's own votes (last 5, TTL 30 s): KNOWN or UNKNOWN after 2 consistent votes, UNCERTAIN on contradiction, else UNRESOLVED. Cosine threshold 0.5 and margin 0.05 are **placeholders until V2-25 calibration**. There is no "stranger" state. An empty enrollment is UNRESOLVED ("no identities enrolled"). Identity is context only; no rule reads it yet.
 - **D20. Replay format.** JSON-lines timelines (`src/sentinel/replay.py`) with a header, `connect`/`disconnect`, `frame` runs (people, synthetic faces and embeddings, optional PTS), `tick`, `result` and `incident` events. Fixtures live in `tests/replay/fixtures/`; long variants are built inline with `tests/replay/timeline_builder.py` on a 66 ms grid. The B0 v1 snapshot (D12) is `tests/replay/b0_v1_snapshot.py`, imported through pytest's `pythonpath`. `tests/replay/` has no `__init__.py`, so the v1 unittest job ignores it.
 - **D21. Source PTS.** A PTS that does not increase over the previous frame's in the epoch is kept but stamped `source_time_quality=none` (see V2-01 inventory).
+- **D22. Perception profile for the demo** (maintainer decision, 2026-09-29; resolves U12 for the demo). Profile A: substream only, 640×480 at 15 fps, for the Oct 20 demo. The 20–25 fps target, the restatement of the ≥15 fps gate and the beta profile (A, B or D) stay open until after the demo.
+- **D23. Demo deviations accepted** (maintainer decision, 2026-09-29), on condition that every affected package is marked "demo form, full acceptance pending" in this file and is not counted done. See the package table and its counting rule.
+- **D24. Demo runtime environment and decode** (maintainer decision, 2026-09-29; resolves U14 for the demo). The demo runs in `~/onvif_env` with `PYTHONPATH=src` and decodes with its OpenCV/FFmpeg in software (640×480 at 15 fps is about 4.6 Mpx/s, cheap on CPU). GStreamer/NVDEC waits for V2-05 proper; revisit after Oct 20.
+- **D25. Adapter manifests (V2-49, session 2 implementation decision; not yet reviewed).** Configuration names adapter IDs only; implementations come from a static registry in code. Unknown contract versions and duplicate IDs are configuration errors. Other failures leave only that adapter unavailable, with a reason shown by `sentinel config validate`. Model adapters (scene, detector, face) need a measured resource profile; notifiers do not. No profiles exist yet (U17).
 
 ## Unresolved decisions and semantics
 
@@ -300,11 +393,12 @@ D14–D21 are implementation decisions made in session 2 within the guide's rule
 - **U9.** Resolved by D12.
 - **U10. Memory units.** Decimal whole-device memory targets (5.0 / 5.4 GB) still need the kickoff confirmation asked for in guide ch. 26.
 - **U11. Live-stream announcement.** Consumers outside the runtime (core, UI) must learn the live `StreamIdentity`, including `run_id`, through the V2-11 handoff. Until then, runtime evidence is not current for them. This is the safe default, but the handoff must carry it.
-- **U12. Perception stream profile and frame-rate gate.** The 20–25 fps stretch target exceeds the measured 15 fps substream, and the ≥15 fps gate names a 1080p input. Options A–D and a recommendation are under "Conflict" in the V2-01 inventory. **Maintainer decision needed** before V2-05 fixes the ingest profile.
-- **U13. Shadowing CUDA driver library.** `libnvidia-compute-535` hides L4T's `libcuda.so.1`. Keep the `LD_PRELOAD` workaround, or remove the package or fix the loader order (a system change with v1 at stake)? Maintainer decision; nothing was changed.
-- **U14. Runtime environment for hardware adapters.** No existing interpreter has both GStreamer bindings and TensorRT. Options (a)–(c) are in the V2-01 inventory; decide when V2-05 starts.
+- **U12.** Resolved for the demo by D22. The beta profile and the 20–25 fps target remain open until after Oct 20. Original question: **Perception stream profile and frame-rate gate.** The 20–25 fps stretch target exceeds the measured 15 fps substream, and the ≥15 fps gate names a 1080p input. Options A–D and a recommendation are under "Conflict" in the V2-01 inventory. **Maintainer decision needed** before V2-05 fixes the ingest profile.
+- **U13. Shadowing CUDA driver library.** `libnvidia-compute-535` hides L4T's `libcuda.so.1`. Keep the `LD_PRELOAD` workaround, or remove the package or fix the loader order (a system change)? **Undecided until the maintainer runs checks 3 and 5** (maintainer, 2026-09-29). Nothing was changed.
+- **U14.** Resolved for the demo by D24; revisit after Oct 20. Original question: **Runtime environment for hardware adapters.** No existing interpreter has both GStreamer bindings and TensorRT. Options (a)–(c) are in the V2-01 inventory; decide when V2-05 starts.
 - **U15. Identity calibration.** D19's thresholds are placeholders. Calibrate with consented, session-separated identities (V2-07/V2-25) before any identity is shown as more than context.
 - **U16. Face stage cadence.** `EdgeCore.on_frame(..., faces=None)` means the face stage did not run on that frame. Which frames get face analysis, and whether it runs asynchronously in a worker, is V2-25/V2-29 work. The interim demo adapter will run it on sampled frames.
+- **U17. Admitting demo adapters without measured resource profiles.** V2-49 makes every model adapter unavailable until its resource profile is known, and no profile has been measured. Decide in D-1 how the demo admits the interim face and scene adapters. Options: record a provisional, clearly labelled "demo-unmeasured" profile from a first measured cold load, or run them outside the manifest path for the demo only.
 
 ## V2-01 inventory so far
 
@@ -331,7 +425,7 @@ Consequences for later packages: the capture adapter (V2-05) selects only the vi
 
 **Live runs** read the camera URL from `SENTINEL_RTSP_URL`, which the maintainer exports; Sentinel code and commands never print or log it.
 
-### Conflict: perception frame-rate target versus the substream (U12, needs a maintainer decision)
+### Conflict: perception frame-rate target versus the substream (U12; decided for the demo by D22)
 
 Guide ch. 22 sets **≥15 unique detected frames/s sustained "in the declared 1080p-input core profile"**, with **20–25 fps as a stretch target**. The measured substream is **640×480 at 15.01 fps**, so:
 
@@ -346,7 +440,9 @@ Options (for the maintainer; nothing is chosen yet):
 - **C. Main stream for perception** (resolution and rate PENDING). Meets the "1080p-input" wording, and 20–25 fps may be possible. Costs: larger decode and buffers, probably H.265 (the `~/onvif_env` restructure hints at H.265 on the main stream), more letterbox/resize work, and browser codec risk.
 - **D. Two profiles:** substream for detection and tracking, main stream for face crops, clips and live view. Best identity detail, but two upstream sessions, which guide ch. 7 requires to be counted and approved, plus cross-stream timestamp mapping.
 
-**Recommendation:** A for the Oct 20 demo and the first Gate B work, because it is the only measured profile and is enough for detection and tracking. Measure the main stream and the camera's encoder options (PENDING commands) before choosing the beta profile between A, B and D. Record the chosen profile and restated gate as a decision; changing it later is a documented gate adjustment (ch. 22) made before held-out evaluation.
+**Decision (D22):** option A for the Oct 20 demo; everything else stays open until after the demo.
+
+**Recommendation as proposed:** A for the Oct 20 demo and the first Gate B work, because it is the only measured profile and is enough for detection and tracking. Measure the main stream and the camera's encoder options (PENDING commands) before choosing the beta profile between A, B and D. Record the chosen profile and restated gate as a decision; changing it later is a documented gate adjustment (ch. 22) made before held-out evaluation.
 
 ### v1 runtime environment `~/onvif_env` (read-only diagnostics by Claude, 2026-09-29)
 
@@ -364,11 +460,11 @@ Run with `PYTHONDONTWRITEBYTECODE=1` so no files were written into the environme
 
 **Why: a desktop-GPU CUDA driver library shadows the Jetson one.** The Ubuntu package `libnvidia-compute-535` (535.309.01-0ubuntu0.24.04.1) installs `/usr/lib/aarch64-linux-gnu/libcuda.so.1`, which the loader finds before L4T's `/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1` (package `nvidia-l4t-cuda`). Measured with `ctypes`: the 535 library reports driver API 12020 and `cuInit` returns 100 (`CUDA_ERROR_NO_DEVICE`), while the L4T library initialises, reports driver API 12060 and counts 1 device. `nvidia-smi` fails with "Driver/library version mismatch" for the same reason. apt history mentions the package on 2026-03-23 (`apt upgrade -y`) and 2026-06-13 (aptdaemon, a desktop updater); which transaction installed it was not determined.
 
-- `~/onvif_env/bin/activate` works around this by exporting `LD_PRELOAD` of the L4T library. **Invoking `~/onvif_env/bin/python` directly, without `activate`, gets no GPU.** `start_sentinel.sh` does that, so v1's GPU use depends on the environment of the shell that ran the launcher. `llama-server` resolves `libcuda.so.1` the same way, so its `--n-gpu-layers 999` offload is unverified. Checks 3 and 4 below settle both.
+- `~/onvif_env/bin/activate` works around this by exporting `LD_PRELOAD` of the L4T library. **Invoking `~/onvif_env/bin/python` directly, without `activate`, gets no GPU.** `start_sentinel.sh` does that, so v1's GPU use depends on the environment of the shell that ran the launcher. `llama-server` resolves `libcuda.so.1` the same way, so its `--n-gpu-layers 999` offload is unverified. Check 3 below settles both, by starting each component briefly (v1 is not running on this device).
 - For v2 live GPU runs: `LD_PRELOAD=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1 PYTHONPATH=src ~/onvif_env/bin/python …`.
 - Removing the package or changing the loader order is a system change for the maintainer to decide (U13). Nothing was changed.
 
-**Consequence for V2-05/V2-09 (U14).** No existing interpreter has both halves of the planned media path. `~/onvif_env` (3.10) has TensorRT 10.3 but no GStreamer in OpenCV and no importable `gi`. The system Python 3.12 imports `gi` with GStreamer 1.24.2 (`python3-gi` 3.48.2, `nvidia-l4t-gstreamer` 36.4.7 installed) but has no TensorRT bindings (not checked for a 3.12 wheel). Options when V2-05 starts: (a) decode in a `gst-launch-1.0` subprocess (`nvv4l2decoder ! nvvidconv ! BGRx ! fdsink`) that any interpreter reads from a pipe, with no new Python dependencies; (b) a new, separate v2 runtime environment, never `~/onvif_env`; (c) interim CPU decode through `~/onvif_env`'s OpenCV for the Oct 20 demo only, labelled as such. Per the maintainer's rules, any new environment or dependency is proposed first.
+**Consequence for V2-05/V2-09 (U14).** No existing interpreter has both halves of the planned media path. `~/onvif_env` (3.10) has TensorRT 10.3 but no GStreamer in OpenCV and no importable `gi`. The system Python 3.12 imports `gi` with GStreamer 1.24.2 (`python3-gi` 3.48.2, `nvidia-l4t-gstreamer` 36.4.7 installed) but has no TensorRT bindings (not checked for a 3.12 wheel). **Decision for the demo (D24): option (c), software decode in `~/onvif_env`; the rest waits for V2-05 proper.** Options as recorded: (a) decode in a `gst-launch-1.0` subprocess (`nvv4l2decoder ! nvvidconv ! BGRx ! fdsink`) that any interpreter reads from a pipe, with no new Python dependencies; (b) a new, separate v2 runtime environment, never `~/onvif_env`; (c) interim CPU decode through `~/onvif_env`'s OpenCV for the Oct 20 demo only, labelled as such. Per the maintainer's rules, any new environment or dependency is proposed first.
 
 ### Other software facts (read-only, 2026-09-29)
 
@@ -407,15 +503,16 @@ No v1 code was migrated in this slice.
 
 ## Hardware checks PENDING (for the maintainer to run; none of these results exist yet)
 
-Run from any directory unless stated. Nothing below prints the camera URL: commands that open the stream send errors through `sed` to redact any `rtsp://…`, or discard stderr. Paste outputs back redacted; they will be recorded as maintainer measurements.
+Run from any directory unless stated. v1 is not running on this device, so no check assumes v1 processes. Nothing below prints the camera URL or any other secret: commands that open the stream send errors through `sed` to redact any `rtsp://…`, or discard stderr. Paste outputs back; they will be recorded as maintainer measurements. **Demo priority: checks 3 and 5** (they also decide U13). Then 6, 1 (`nvpmodel` only) and 2. Check 7 and the `gst-inspect` lines wait for V2-05 proper.
 
 ```bash
-# 1. Hardware decode and conversion elements; power mode (guide ch. 3/7)
+# 1. Power mode (V2-01). The two gst-inspect lines are for V2-05 proper (deferred by D24).
+nvpmodel -q            # use sudo if it asks
 gst-inspect-1.0 nvv4l2decoder | sed -n '1,25p'
 gst-inspect-1.0 nvvidconv | sed -n '1,25p'
-nvpmodel -q            # use sudo if it asks
 
-# 2. Main stream (subtype=0): codec, size, rate. Needs SENTINEL_RTSP_URL (substream) exported.
+# 2. Main stream (subtype=0): codec, size, rate. Informs the post-demo profile choice (D22).
+#    Needs SENTINEL_RTSP_URL (substream) exported; prints variable names, never URLs.
 MAIN_URL="${SENTINEL_RTSP_URL/subtype=1/subtype=0}"
 ffprobe -v error -rtsp_transport tcp \
   -show_entries stream=index,codec_type,codec_name,profile,level,width,height,pix_fmt,avg_frame_rate,r_frame_rate,sample_rate,channels \
@@ -430,17 +527,57 @@ for URL_VAR in MAIN_URL SENTINEL_RTSP_URL; do
 done
 unset MAIN_URL
 #    Also note from the camera's web/app settings: model, firmware, and the frame-rate
-#    choices offered for each profile (decides option B of U12).
+#    choices offered for each profile (option B of U12, after the demo).
 
-# 3. Which libcuda the running v1 processes actually map (run while v1 is running)
-for p in $(pgrep -f surveillance4_1.py) $(pgrep -f llama-server); do
-  echo "== $(ps -o comm= -p "$p") $p"; grep -o '/[^ ]*libcuda[^ ]*' /proc/"$p"/maps | sort -u
+# 3. NEEDED FOR THE DEMO; DECIDES U13. Which libcuda each v1 component resolves when
+#    started the way the launcher starts it. v1 is not running, so each component is
+#    started briefly and stopped again. Nothing here reads or prints secrets.
+# 3a. Python + TensorRT (the engine process), without and with the L4T preload.
+#     An abort ("terminate called ...", exit 134) without the preload is itself a result.
+for PRE in "" /usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1; do
+  echo "== python, LD_PRELOAD=${PRE:-<none>}"
+  env ${PRE:+LD_PRELOAD=$PRE} PYTHONDONTWRITEBYTECODE=1 ~/onvif_env/bin/python - <<'EOF' 2>&1 | tail -5
+import ctypes, json, sys
+cuda = ctypes.CDLL("libcuda.so.1")  # resolved by name, as TensorRT and torch resolve it
+print("libcuda mapped:", sorted({l.split()[-1] for l in open("/proc/self/maps") if "libcuda" in l}))
+print("cuInit:", cuda.cuInit(0), "(0 = OK, 100 = no CUDA device)")
+sys.stdout.flush()
+import tensorrt as trt
+data = open("/home/villain8001/yolov8n.engine", "rb").read()
+n = int.from_bytes(data[:4], "little")
+try:
+    json.loads(data[4:4 + n].decode()); data = data[4 + n:]
+except Exception:
+    pass
+engine = trt.Runtime(trt.Logger(trt.Logger.ERROR)).deserialize_cuda_engine(data)
+print("engine deserialized:", engine is not None)
+EOF
+  echo "exit status: ${PIPESTATUS[0]}"
+done
+# 3b. llama-server with the launcher's flags on a spare loopback port, without and with the
+#     preload: the libcuda it maps, then the CUDA and offload lines of its log (~1 min each).
+for PRE in "" /usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1; do
+  echo "== llama-server, LD_PRELOAD=${PRE:-<none>}"
+  LOG=$(mktemp)
+  env ${PRE:+LD_PRELOAD=$PRE} GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 ~/llama.cpp/build/bin/llama-server \
+    --model ~/models/lfm2-vl/LFM2-VL-1.6B-Q4_0.gguf --mmproj ~/models/lfm2-vl/mmproj-LFM2-VL-1.6B-Q8_0.gguf \
+    --host 127.0.0.1 --port 18081 --n-gpu-layers 999 --ctx-size 2048 --parallel 1 >"$LOG" 2>&1 &
+  PID=$!
+  for i in $(seq 1 60); do
+    curl -s http://127.0.0.1:18081/v1/models >/dev/null && break
+    kill -0 "$PID" 2>/dev/null || break
+    sleep 2
+  done
+  if kill -0 "$PID" 2>/dev/null; then grep -o '/[^ ]*libcuda[^ ]*' /proc/"$PID"/maps | sort -u
+  else echo "llama-server exited early"; fi
+  grep -iE 'ggml_cuda_init|CUDA devices|no usable GPU|offloaded|CUDA0|error' "$LOG" | head -20
+  kill "$PID" 2>/dev/null; wait "$PID" 2>/dev/null; rm -f "$LOG"
 done
 
-# 4. llama-server offload as logged (run while v1 is running)
-tmux capture-pane -p -t llm -S -400 | grep -iE 'ggml_cuda_init|CUDA devices|offloaded|CUDA0|no usable GPU' | head -20
+# 4. Merged into 3b. It read llama-server's log from v1's tmux pane, and v1 is not running.
 
-# 5. Detector engine: bindings, shapes, Ultralytics metadata (loads the engine on the GPU)
+# 5. NEEDED FOR THE DEMO. Detector engine: bindings, shapes, Ultralytics metadata
+#    (loads the engine on the GPU; uses the preload, as ~/onvif_env/bin/activate does).
 LD_PRELOAD=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1 PYTHONDONTWRITEBYTECODE=1 ~/onvif_env/bin/python - <<'EOF'
 import json, tensorrt as trt
 data = open('/home/villain8001/yolov8n.engine', 'rb').read()
@@ -457,11 +594,11 @@ for i in range(eng.num_io_tensors):
     print(t, eng.get_tensor_mode(t), eng.get_tensor_shape(t), eng.get_tensor_dtype(t))
 EOF
 
-# 6. Model checksums
+# 6. Model checksums (V2-01 inventory)
 sha256sum ~/yolov8n.engine ~/models/lfm2-vl/*.gguf
 
-# 7. Hardware-decode smoke test on the substream, 30 s (V2-05 discovery; not a benchmark).
-#    In a second terminal meanwhile: tegrastats --interval 1000   (save ~10 lines)
+# 7. DEFERRED with V2-05 proper (D24); not needed for the Oct 20 demo. Hardware-decode
+#    smoke test on the substream, 30 s (in a second terminal: tegrastats --interval 1000).
 timeout -s INT 30 gst-launch-1.0 -e rtspsrc location="$SENTINEL_RTSP_URL" protocols=tcp latency=200 \
   ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! 'video/x-raw,format=BGRx' \
   ! fpsdisplaysink video-sink=fakesink text-overlay=false sync=false -v 2>&1 \
