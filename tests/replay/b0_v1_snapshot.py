@@ -86,3 +86,26 @@ class V1SceneResult:
     def status_threat(self) -> str:
         """L653: what the dashboard shows as the current threat."""
         return str(self.last_ai_result.get("threat") or "none").lower()
+
+
+class V1MainLoop:
+    """One pass of the main loop ``while running:`` (L477-656), reduced to what R2 needs.
+
+    ``reader.get()`` (FrameReader L392-407) returns the newest frame and keeps
+    returning it after the stream stalls or drops; nothing marks it old. When the
+    tracker reports nobody, the empty-track branch (L505-513) ``continue``s before
+    the scene request (L565) and the dashboard update (L656), so the published
+    state keeps showing whoever was there last. There is no freshness state.
+    """
+
+    def __init__(self) -> None:
+        self.dashboard_persons: int | None = None  # what /tmp/surv_state.json last said
+        self.dashboard_updates = 0
+        self.scene_requests = 0
+
+    def iteration(self, persons_in_latest_frame: int) -> None:
+        if persons_in_latest_frame == 0:
+            return  # L505-513
+        self.scene_requests += 1  # L565 (request_ai_analysis applies its own interval, L252-258)
+        self.dashboard_persons = persons_in_latest_frame  # L649-656
+        self.dashboard_updates += 1
