@@ -30,6 +30,10 @@ class TrackTable:
         self._last_frame: FrameKey | None = None
         self.counters: Counter[str] = Counter()
 
+    @property
+    def size(self) -> int:
+        return len(self._tracks)
+
     def update(
         self,
         frame: FrameRef,

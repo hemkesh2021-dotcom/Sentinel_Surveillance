@@ -110,12 +110,29 @@ class HazardConfig(_Section):
         return round(self.max_gap_s * NS_PER_SECOND)
 
 
+class IdentityConfig(_Section):
+    """Face association and identity policy. Starting values; calibrate on held-out identities (V2-25)."""
+
+    match_threshold: Annotated[float, Field(ge=-1, le=1, allow_inf_nan=False)] = 0.5  # cosine
+    margin: Annotated[float, Field(ge=0, le=2, allow_inf_nan=False)] = 0.05
+    min_quality: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)] = 0.6
+    confirmations: Annotated[int, Field(ge=1, le=5)] = 2
+    vote_ttl_s: Seconds = 30.0
+    head_fraction: Annotated[float, Field(gt=0, le=1, allow_inf_nan=False)] = 0.4
+    min_face_inside: Annotated[float, Field(gt=0, le=1, allow_inf_nan=False)] = 0.6
+
+    @property
+    def vote_ttl_ns(self) -> int:
+        return round(self.vote_ttl_s * NS_PER_SECOND)
+
+
 class SentinelConfig(_Section):
     config_version: Literal[1]
     camera: CameraConfig
     freshness: FreshnessConfig = Field(default_factory=FreshnessConfig)
     scene: SceneConfig = Field(default_factory=SceneConfig)
     hazard: HazardConfig = Field(default_factory=HazardConfig)
+    identity: IdentityConfig = Field(default_factory=IdentityConfig)
 
 
 class ConfigError(Exception):

@@ -19,6 +19,9 @@ from dataclasses import dataclass
 
 from .config import SentinelConfig
 from .contracts import Evidence, FrameRef, StreamIdentity, TrackObservation, TrackStatus
+from .identity.association import AssociationGeometry, FaceObservation, associate
+from .identity.matching import Enrollment
+from .identity.state import IdentityPolicy, IdentityResolver, IdentityState
 from .jobs import WorkerOutcome
 from .live_state import Capability, LiveState, Occupancy, PersonState, SceneStatus
 from .media.clock import Clock, MonoInstant
@@ -53,6 +56,8 @@ class EdgeCore:
         analyzer: SceneAnalyzer,
         *,
         detector: Capability = Capability.AVAILABLE,
+        face_recognition: Capability = Capability.DISABLED,
+        enrollment: Enrollment | None = None,
         scene_id_prefix: str | None = None,
     ) -> None:
         self._config = config
@@ -67,12 +72,33 @@ class EdgeCore:
             confirmations=config.hazard.confirmations, max_gap_ns=config.hazard.max_gap_ns
         )
         self._detector = detector
+        self._face_recognition = face_recognition
+        identity = config.identity
+        self._geometry = AssociationGeometry(identity.head_fraction, identity.min_face_inside)
+        self._identities = IdentityResolver(
+            enrollment,
+            IdentityPolicy(
+                match_threshold=identity.match_threshold,
+                margin=identity.margin,
+                min_quality=identity.min_quality,
+                confirmations=identity.confirmations,
+                vote_ttl_ns=identity.vote_ttl_ns,
+            ),
+        )
         self._last_detected: FrameRef | None = None
         self._sequence = 0
 
     @property
     def lane(self) -> SceneLane:
         return self._lane
+
+    def diagnostics(self) -> dict[str, int]:
+        """Sizes of bounded internal state, for health reporting and tests."""
+        return {
+            "tracks": self._tracks.size,
+            "identity_tracks": self._identities.tracked,
+            "scene_jobs_in_flight": int(self._lane.in_flight is not None),
+        }
 
     def set_detector(self, capability: Capability) -> None:
         self._detector = capability
@@ -82,8 +108,13 @@ class EdgeCore:
         frame: FrameRef,
         persons: Sequence[TrackObservation],
         connected: StreamIdentity | None,
+        faces: Sequence[FaceObservation] | None = None,
     ) -> CoreOutput:
-        """A decoded frame and the tracker's output for it (empty when nobody is there)."""
+        """A decoded frame and the tracker's output for it (empty when nobody is there).
+
+        ``faces`` is the face stage's output for this frame, or None when it did
+        not run on this frame (it need not run on every frame).
+        """
         self._freshness.on_frame(frame)
         freshness = self._freshness.assess(connected)
         new: list[Evidence] = []
@@ -91,6 +122,8 @@ class EdgeCore:
         if novelty in (FrameNovelty.NEW, FrameNovelty.NEW_EPOCH):
             if self._detector is Capability.AVAILABLE:
                 self._last_detected = frame
+            if faces is not None and self._face_recognition is Capability.AVAILABLE:
+                self._identities.observe(persons, faces, associate(persons, faces, self._geometry))
             new += self._lane.on_frame(frame, freshness.live)
         else:
             new += self._lane.poll(freshness.live)
@@ -124,6 +157,7 @@ class EdgeCore:
         routed = tuple(RoutedEvidence(e, self._scene.offer(e, live, now)) for e in new)
         view = self._scene.view(live, now)
         tracks = self._tracks.current(live, now)
+        self._identities.retain_only(t.key for t in tracks)
         occupancy, reason = self._occupancy(freshness, tracks, now)
         people_count = None if occupancy is Occupancy.UNKNOWN else _confirmed(tracks)
         candidate = self._hazard.evaluate(view, people_count=people_count)
@@ -188,6 +222,7 @@ class EdgeCore:
             video=freshness.state,
             last_frame_age_ms=None if age is None else age // NS_PER_MS,
             detector=self._detector,
+            face_recognition=self._face_recognition,
             occupancy=occupancy,
             occupancy_reason=occupancy_reason,
             people=tuple(
@@ -198,6 +233,7 @@ class EdgeCore:
                     status=t.status,
                     predicted=t.predicted,
                     last_measured_age_ms=(now.ns - t.last_measured_mono_ns) // NS_PER_MS,
+                    **self._identity_fields(t, now),
                 )
                 for t in tracks
             ),
@@ -206,6 +242,17 @@ class EdgeCore:
             scene_report=view.report,
             scene_evidence_id=view.evidence.evidence_id if view.evidence is not None else None,
         )
+
+    def _identity_fields(self, track: TrackObservation, now: MonoInstant) -> dict[str, object]:
+        if self._face_recognition is not Capability.AVAILABLE:
+            reason = f"face recognition {self._face_recognition.value}"
+            return {"identity": IdentityState.UNRESOLVED, "identity_id": None, "identity_reason": reason}
+        resolved = self._identities.identity(track.key, now)
+        return {
+            "identity": resolved.state,
+            "identity_id": resolved.identity_id,
+            "identity_reason": resolved.reason,
+        }
 
 
 def _confirmed(tracks: tuple[TrackObservation, ...]) -> int:

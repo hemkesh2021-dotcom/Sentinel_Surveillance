@@ -51,13 +51,20 @@ class TimelineBuilder:
             fields["text"] = json.dumps(report)
         return self.event(at_ms, "result", job=job, **fields)
 
-    def frames_until(self, end_ms: int, *, persons: int = 1, **fields: object) -> TimelineBuilder:
-        """Frames on the grid from the next slot (not before the last event) up to, excluding, end_ms."""
+    def frames_until(
+        self, end_ms: int, *, persons: int | list[dict] = 1, **fields: object
+    ) -> TimelineBuilder:
+        """Frames on the grid from the next slot (not before the last event) up to, excluding, end_ms.
+
+        ``persons`` is a count of side-by-side people or explicit person specs;
+        other fields (for example ``faces``) are passed through to every frame.
+        """
         start = max(self._next_frame_ms, frame_at(self._last_ms))
         count = len(range(start, end_ms, FRAME_MS))
         if count == 0:
             return self
-        self.event(start, "frame", repeat=count, every_ms=FRAME_MS, persons=people(persons), **fields)
+        specs = people(persons) if isinstance(persons, int) else persons
+        self.event(start, "frame", repeat=count, every_ms=FRAME_MS, persons=specs, **fields)
         self._last_ms = start + (count - 1) * FRAME_MS
         self._next_frame_ms = self._last_ms + FRAME_MS
         return self
