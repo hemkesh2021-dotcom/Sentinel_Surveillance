@@ -109,3 +109,67 @@ class V1MainLoop:
         self.scene_requests += 1  # L565 (request_ai_analysis applies its own interval, L252-258)
         self.dashboard_persons = persons_in_latest_frame  # L649-656
         self.dashboard_updates += 1
+
+
+FACE_MATCH_THRESH = 0.40  # L39
+FACE_MAX_RETRIES = 15  # L76
+
+
+def _unit(v: tuple[float, ...]) -> list[float]:
+    norm = sum(x * x for x in v) ** 0.5
+    return [x / norm for x in v]
+
+
+def v1_identify(faces_in_image: list[tuple[float, ...]], face_db: dict[str, tuple[float, ...]]):
+    """``identify_face`` L285-307 on synthetic embeddings: (name, score, face_found).
+
+    Only the first face DeepFace returns is used (``result[0]``). With an empty
+    database every face becomes "Stranger". Face-size checks are left out.
+    """
+    if not faces_in_image:
+        return "Unknown", 0.0, False
+    emb = _unit(faces_in_image[0])
+    best_name, best_score = "Stranger", 0.0
+    for name, db_emb in face_db.items():
+        score = sum(a * b for a, b in zip(emb, _unit(db_emb)))
+        if score > best_score:
+            best_score, best_name = score, name
+    if best_score < FACE_MATCH_THRESH:
+        return "Stranger", best_score, True
+    return best_name, best_score, True
+
+
+class V1FaceWorker:
+    """``face_recognition_worker`` L335-382 plus the label sync of L520-527 and L570-576.
+
+    Each unverified track tries its padded crop first, then falls back to the
+    full-frame result, which is shared by every track whose crop failed (L346,
+    L364-366). After FACE_MAX_RETRIES misses a track becomes "Stranger" (L379-380).
+    A track counts as a stranger until verified (TrackState L414) and whenever its
+    label is "Stranger" or "Unknown" (L524, L575). Session re-ID is left out.
+    """
+
+    def __init__(self, face_db: dict[str, tuple[float, ...]]) -> None:
+        self.face_db = face_db
+        self.verified: dict[int, str] = {}
+        self.retries: dict[int, int] = {}
+
+    def run(self, crops: dict[int, list[tuple[float, ...]]], full_frame: list[tuple[float, ...]]) -> None:
+        full_name, full_score, full_found = v1_identify(full_frame, self.face_db)
+        for tid, crop_faces in crops.items():
+            if tid in self.verified:
+                continue
+            name, score, found = v1_identify(crop_faces, self.face_db)
+            if not found and full_found:
+                name, score, found = full_name, full_score, True
+            if found:
+                self.verified[tid] = name
+                self.retries.pop(tid, None)
+            else:
+                self.retries[tid] = self.retries.get(tid, 0) + 1
+                if self.retries[tid] >= FACE_MAX_RETRIES:
+                    self.verified[tid] = "Stranger"
+                    self.retries.pop(tid, None)
+
+    def is_stranger(self, tid: int) -> bool:
+        return self.verified.get(tid, "Stranger") in ("Stranger", "Unknown")

@@ -23,3 +23,13 @@ hazard:
   # Fire/smoke from scene reports alone is a candidate (warning), never a critical alarm.
   confirmations: 2       # consecutive positive reports, same stream epoch
   max_gap_s: 12.0        # at most this long between their source frames
+
+identity:
+  # Starting values only; calibrate on separate identities before relying on them.
+  match_threshold: 0.5   # cosine similarity (not a probability) needed to match
+  margin: 0.05           # over the next-best enrolled identity
+  min_quality: 0.6       # faces below this quality do not vote
+  confirmations: 2       # consistent votes needed for known (or unknown)
+  vote_ttl_s: 30.0       # face votes older than this no longer count
+  head_fraction: 0.4     # a face centre must lie in this top part of a person box
+  min_face_inside: 0.6   # and this much of the face box inside the person box

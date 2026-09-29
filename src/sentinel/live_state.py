@@ -21,6 +21,7 @@ from .contracts import (
     TrackStatus,
     UtcDatetime,
 )
+from .identity.state import IdentityState
 from .media.health import VideoState
 from .scene.report import SceneReport
 
@@ -50,6 +51,9 @@ class PersonState(Contract):
     status: TrackStatus
     predicted: bool
     last_measured_age_ms: NonNegativeInt
+    identity: IdentityState  # context only: never an access decision by itself
+    identity_id: Identifier | None  # set only when KNOWN
+    identity_reason: str
 
 
 class LiveState(Contract):
@@ -61,6 +65,7 @@ class LiveState(Contract):
     video: VideoState
     last_frame_age_ms: NonNegativeInt | None
     detector: Capability
+    face_recognition: Capability
     occupancy: Occupancy
     occupancy_reason: str
     people: tuple[PersonState, ...]
