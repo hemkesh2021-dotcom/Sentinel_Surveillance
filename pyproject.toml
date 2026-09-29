@@ -27,8 +27,9 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 # The v1 dashboard tests in tests/test_dashboard.py need Flask and keep running
-# under unittest in the existing "Dashboard checks" workflow.
-testpaths = ["tests/unit"]
+# under unittest in the existing "Dashboard checks" workflow. tests/replay holds
+# synthetic-timeline regressions (no footage); they are portable like tests/unit.
+testpaths = ["tests/unit", "tests/replay"]
 addopts = ["--import-mode=importlib", "-ra", "--strict-markers", "--strict-config"]
 xfail_strict = true
 filterwarnings = ["error"]
