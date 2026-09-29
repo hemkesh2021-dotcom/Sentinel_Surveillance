@@ -29,6 +29,9 @@ def test_shipped_default_config_is_valid_and_uses_the_guide_targets() -> None:
     assert config.freshness.stale_after_ns == 2 * NS_PER_SECOND
     assert config.freshness.offline_after_ns == 10 * NS_PER_SECOND
     assert config.freshness.track_expiry_ns == 1 * NS_PER_SECOND
+    assert config.scene.interval_ns == 4 * NS_PER_SECOND
+    assert config.scene.job_timeout_ns == 8 * NS_PER_SECOND
+    assert config.scene.evidence_ttl_ns == 10 * NS_PER_SECOND
 
 
 def test_every_problem_is_reported_with_its_location(tmp_path: Path) -> None:
@@ -60,6 +63,17 @@ def test_offline_threshold_must_exceed_stale_threshold(tmp_path: Path) -> None:
         "config_version: 1\ncamera: {id: cam-1}\nfreshness: {stale_after_s: 5, offline_after_s: 2}\n",
     )
     assert problems == ["freshness.offline_after_s: must be greater than stale_after_s (2.0 <= 5.0)"]
+
+
+def test_scene_evidence_must_outlive_the_job_deadline(tmp_path: Path) -> None:
+    problems = problems_for(
+        tmp_path,
+        "config_version: 1\ncamera: {id: cam-1}\nscene: {job_timeout_s: 12, evidence_ttl_s: 10}\n",
+    )
+    assert problems == [
+        "scene.evidence_ttl_s: must be at least job_timeout_s (10.0 < 12.0); "
+        "otherwise results that meet their deadline are already expired"
+    ]
 
 
 def test_duplicate_keys_are_rejected_instead_of_silently_overriding(tmp_path: Path) -> None:

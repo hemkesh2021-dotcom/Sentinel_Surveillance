@@ -12,3 +12,9 @@ freshness:
   stale_after_s: 2.0     # video is stale after this long without a fresh frame
   offline_after_s: 10.0  # camera is offline after this long without a fresh frame
   track_expiry_s: 1.0    # a track expires this long after its last real detection
+
+scene:
+  # Scene lane (VLM) timing: proposed starting values, to be measured on the device.
+  interval_s: 4.0        # between periodic scene checks, with or without people
+  job_timeout_s: 8.0     # a scene job must finish within this long of its frame's arrival
+  evidence_ttl_s: 10.0   # a report stays current this long after its frame (>= job_timeout_s)

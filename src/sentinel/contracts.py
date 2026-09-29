@@ -56,7 +56,7 @@ UnitInterval = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 _PIXEL_TOLERANCE = 1.0
 
 
-class _Contract(BaseModel):
+class Contract(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
 
@@ -90,7 +90,7 @@ class Applicability(str, Enum):
     FUTURE = "future"  # newer than the reference point: clock or replay misuse
 
 
-class StreamIdentity(_Contract):
+class StreamIdentity(Contract):
     """One continuous connection to one camera, within one ingest run and boot."""
 
     camera_id: Identifier
@@ -99,7 +99,7 @@ class StreamIdentity(_Contract):
     stream_epoch: NonNegativeInt
 
 
-class FrameKey(_Contract):
+class FrameKey(Contract):
     """Unique identity of one ingested frame."""
 
     camera_id: Identifier
@@ -118,7 +118,7 @@ class FrameKey(_Contract):
         )
 
 
-class ResizeTransform(_Contract):
+class ResizeTransform(Contract):
     """Maps native-image pixels into processed-image pixels: processed = native * scale + pad.
 
     Record the transform that preprocessing actually applied, including any rounding.
@@ -157,7 +157,7 @@ class ResizeTransform(_Contract):
         return (x - self.pad_x) / self.scale_x, (y - self.pad_y) / self.scale_y
 
 
-class FrameRef(_Contract):
+class FrameRef(Contract):
     """One ingested frame: identity, timing and geometry.
 
     Fields follow guide chapter 6 plus run_id. The optional buffer reference is
@@ -251,7 +251,7 @@ def _assess(
     return Applicability.CURRENT
 
 
-class NormalizedBox(_Contract):
+class NormalizedBox(Contract):
     """Axis-aligned box in native-image coordinates, normalized to [0, 1]."""
 
     x1: UnitInterval
@@ -271,7 +271,7 @@ class TrackStatus(str, Enum):
     CONFIRMED = "confirmed"
 
 
-class TrackKey(_Contract):
+class TrackKey(Contract):
     """A tracker ID is only unique within one stream epoch."""
 
     camera_id: Identifier
@@ -281,7 +281,7 @@ class TrackKey(_Contract):
     track_id: NonNegativeInt
 
 
-class TrackObservation(_Contract):
+class TrackObservation(Contract):
     """A tracked person on one frame: a new detection, or a labelled prediction."""
 
     frame: FrameKey
@@ -394,7 +394,7 @@ _CONFIDENCE_RANGES = {
 }
 
 
-class Evidence(_Contract):
+class Evidence(Contract):
     """One versioned piece of evidence about a source frame (and optionally a track)."""
 
     contract_version: Literal[1] = 1

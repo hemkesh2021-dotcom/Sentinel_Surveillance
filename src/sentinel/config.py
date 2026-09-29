@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import difflib
 import os
-import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -26,6 +25,7 @@ from pydantic import (
 
 from .contracts import Identifier
 from .media.clock import NS_PER_SECOND
+from .redaction import redact_line
 
 CONFIG_VERSION = 1
 
@@ -68,10 +68,42 @@ class FreshnessConfig(_Section):
         return round(self.track_expiry_s * NS_PER_SECOND)
 
 
+class SceneConfig(_Section):
+    """Scene lane (VLM) timing. Proposed starting values; measure latency on the device (V2-26)."""
+
+    interval_s: Seconds = 4.0  # between periodic scene checks, with or without people (v1: 4 s)
+    job_timeout_s: Seconds = 8.0  # from the source frame's ingest to the job deadline
+    evidence_ttl_s: Seconds = 10.0  # how long an on-time report stays current
+
+    @field_validator("evidence_ttl_s")
+    @classmethod
+    def _ttl_covers_timeout(cls, value: float, info: ValidationInfo) -> float:
+        timeout = info.data.get("job_timeout_s")
+        if timeout is not None and value < timeout:
+            raise ValueError(
+                f"must be at least job_timeout_s ({value} < {timeout}); "
+                "otherwise results that meet their deadline are already expired"
+            )
+        return value
+
+    @property
+    def interval_ns(self) -> int:
+        return round(self.interval_s * NS_PER_SECOND)
+
+    @property
+    def job_timeout_ns(self) -> int:
+        return round(self.job_timeout_s * NS_PER_SECOND)
+
+    @property
+    def evidence_ttl_ns(self) -> int:
+        return round(self.evidence_ttl_s * NS_PER_SECOND)
+
+
 class SentinelConfig(_Section):
     config_version: Literal[1]
     camera: CameraConfig
     freshness: FreshnessConfig = Field(default_factory=FreshnessConfig)
+    scene: SceneConfig = Field(default_factory=SceneConfig)
 
 
 class ConfigError(Exception):
@@ -173,10 +205,6 @@ def _suggestion(loc: tuple[Any, ...]) -> str:
     return f" (did you mean {matches[0]!r}?)" if matches else ""
 
 
-_URL_USERINFO = re.compile(r"(?<=://)[^/@\s]+@")
-
-
 def _show(value: Any) -> str:
     """Short repr of an offending value with any URL credentials removed."""
-    text = _URL_USERINFO.sub("<redacted>@", repr(value))
-    return text if len(text) <= 60 else text[:57] + "..."
+    return redact_line(repr(value), limit=60)
