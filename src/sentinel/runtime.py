@@ -53,7 +53,7 @@ class EdgeCore:
         self,
         config: SentinelConfig,
         clock: Clock,
-        analyzer: SceneAnalyzer,
+        analyzer: SceneAnalyzer | None,
         *,
         detector: Capability = Capability.AVAILABLE,
         face_recognition: Capability = Capability.DISABLED,
@@ -64,8 +64,13 @@ class EdgeCore:
         self._clock = clock
         self._freshness = FreshnessMonitor(config.freshness, clock)
         self._tracks = TrackTable(config.freshness.track_expiry_ns)
-        self._lane = SceneLane(
-            analyzer, clock, SceneLaneSettings.from_config(config.scene), id_prefix=scene_id_prefix
+        # No analyzer: scene analysis is disabled and core monitoring runs without it.
+        self._lane = (
+            None
+            if analyzer is None
+            else SceneLane(
+                analyzer, clock, SceneLaneSettings.from_config(config.scene), id_prefix=scene_id_prefix
+            )
         )
         self._scene = CurrentScene()
         self._hazard = SceneHazardRule(
@@ -89,7 +94,7 @@ class EdgeCore:
         self._sequence = 0
 
     @property
-    def lane(self) -> SceneLane:
+    def lane(self) -> SceneLane | None:
         return self._lane
 
     def diagnostics(self) -> dict[str, int]:
@@ -97,7 +102,7 @@ class EdgeCore:
         return {
             "tracks": self._tracks.size,
             "identity_tracks": self._identities.tracked,
-            "scene_jobs_in_flight": int(self._lane.in_flight is not None),
+            "scene_jobs_in_flight": int(self._lane is not None and self._lane.in_flight is not None),
         }
 
     def set_detector(self, capability: Capability) -> None:
@@ -124,8 +129,9 @@ class EdgeCore:
                 self._last_detected = frame
             if faces is not None and self._face_recognition is Capability.AVAILABLE:
                 self._identities.observe(persons, faces, associate(persons, faces, self._geometry))
-            new += self._lane.on_frame(frame, freshness.live)
-        else:
+            if self._lane is not None:
+                new += self._lane.on_frame(frame, freshness.live)
+        elif self._lane is not None:
             new += self._lane.poll(freshness.live)
         return self._finish(freshness, new)
 
@@ -133,23 +139,28 @@ class EdgeCore:
         self, job_id: str, outcome: WorkerOutcome, connected: StreamIdentity | None
     ) -> CoreOutput:
         freshness = self._freshness.assess(connected)
-        completed = self._lane.complete(job_id, outcome)
-        new = [completed] if completed is not None else []
-        new += self._lane.poll(freshness.live)
+        new: list[Evidence] = []
+        if self._lane is not None:
+            completed = self._lane.complete(job_id, outcome)
+            new = [completed] if completed is not None else []
+            new += self._lane.poll(freshness.live)
         return self._finish(freshness, new)
 
     def request_enrichment(
         self, frame: FrameRef, incident_id: str, connected: StreamIdentity | None
     ) -> CoreOutput:
         freshness = self._freshness.assess(connected)
-        new = self._lane.request_enrichment(frame, incident_id)
-        new += self._lane.poll(freshness.live)
+        new: list[Evidence] = []
+        if self._lane is not None:
+            new = self._lane.request_enrichment(frame, incident_id)
+            new += self._lane.poll(freshness.live)
         return self._finish(freshness, new)
 
     def tick(self, connected: StreamIdentity | None) -> CoreOutput:
         """Call regularly (e.g. every 250 ms) so staleness and deadlines show without frames."""
         freshness = self._freshness.assess(connected)
-        return self._finish(freshness, self._lane.poll(freshness.live))
+        new = self._lane.poll(freshness.live) if self._lane is not None else []
+        return self._finish(freshness, new)
 
     def _finish(self, freshness: VideoFreshness, new: list[Evidence]) -> CoreOutput:
         now = self._clock.mono()
@@ -200,7 +211,9 @@ class EdgeCore:
         now: MonoInstant,
     ) -> LiveState:
         self._sequence += 1
-        if view.report is not None:
+        if self._lane is None:
+            scene, scene_reason = SceneStatus.NO_CURRENT_RESULT, "scene analysis disabled"
+        elif view.report is not None:
             scene, scene_reason = SceneStatus.REPORTED, "current scene report"
         elif view.evidence is not None:
             scene = SceneStatus.UNKNOWN
@@ -223,6 +236,7 @@ class EdgeCore:
             last_frame_age_ms=None if age is None else age // NS_PER_MS,
             detector=self._detector,
             face_recognition=self._face_recognition,
+            scene_analysis=Capability.DISABLED if self._lane is None else Capability.AVAILABLE,
             occupancy=occupancy,
             occupancy_reason=occupancy_reason,
             people=tuple(

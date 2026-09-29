@@ -66,6 +66,7 @@ class LiveState(Contract):
     last_frame_age_ms: NonNegativeInt | None
     detector: Capability
     face_recognition: Capability
+    scene_analysis: Capability
     occupancy: Occupancy
     occupancy_reason: str
     people: tuple[PersonState, ...]

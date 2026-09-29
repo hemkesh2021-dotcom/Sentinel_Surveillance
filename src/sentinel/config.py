@@ -11,7 +11,7 @@ import difflib
 import os
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args, get_origin
 
 import yaml
 from pydantic import (
@@ -23,6 +23,7 @@ from pydantic import (
     field_validator,
 )
 
+from .adapters import AdapterManifest, check_unique_ids
 from .contracts import Identifier
 from .media.clock import NS_PER_SECOND
 from .redaction import redact_line
@@ -133,6 +134,14 @@ class SentinelConfig(_Section):
     scene: SceneConfig = Field(default_factory=SceneConfig)
     hazard: HazardConfig = Field(default_factory=HazardConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
+    # Optional adapters; core monitoring runs with none enabled (guide ch. 27).
+    adapters: list[AdapterManifest] = Field(default_factory=list, max_length=32)
+
+    @field_validator("adapters")
+    @classmethod
+    def _unique_adapter_ids(cls, value: list[AdapterManifest]) -> list[AdapterManifest]:
+        check_unique_ids(value)
+        return value
 
 
 class ConfigError(Exception):
@@ -225,8 +234,12 @@ def _describe(error: Mapping[str, Any]) -> str:
 def _suggestion(loc: tuple[Any, ...]) -> str:
     model: type[BaseModel] = SentinelConfig
     for part in loc[:-1]:
-        field = model.model_fields.get(part) if isinstance(part, str) else None
+        if isinstance(part, int):  # an item of a list of sections, e.g. adapters[0]
+            continue
+        field = model.model_fields.get(part)
         annotation = field.annotation if field is not None else None
+        if get_origin(annotation) is list:
+            (annotation,) = get_args(annotation)
         if not (isinstance(annotation, type) and issubclass(annotation, BaseModel)):
             return ""
         model = annotation
