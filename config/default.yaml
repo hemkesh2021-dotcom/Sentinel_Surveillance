@@ -1,0 +1,14 @@
+# Sentinel v2 configuration (portable foundation slice, V2-02).
+# Check it with:  sentinel config validate config/default.yaml
+# Durations are in seconds. Never put credentials, tokens or face data here.
+config_version: 1
+
+camera:
+  # Stable identifier stored with every observation; not a URL or address.
+  id: cam-1
+
+freshness:
+  # Guide chapter 6 starting targets; verify them under the actual Wi-Fi conditions.
+  stale_after_s: 2.0     # video is stale after this long without a fresh frame
+  offline_after_s: 10.0  # camera is offline after this long without a fresh frame
+  track_expiry_s: 1.0    # a track expires this long after its last real detection
