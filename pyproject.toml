@@ -30,6 +30,8 @@ where = ["src"]
 # under unittest in the existing "Dashboard checks" workflow. tests/replay holds
 # synthetic-timeline regressions (no footage); they are portable like tests/unit.
 testpaths = ["tests/unit", "tests/replay"]
+# Test-only helpers such as the B0 v1 snapshot (decision D12) import by module name.
+pythonpath = ["tests/replay"]
 addopts = ["--import-mode=importlib", "-ra", "--strict-markers", "--strict-config"]
 xfail_strict = true
 filterwarnings = ["error"]
