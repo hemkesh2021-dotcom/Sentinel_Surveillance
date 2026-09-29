@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentinel-surveillance"
+version = "2.0.0.dev0"
+description = "Sentinel v2 edge monitoring runtime (portable foundation; v1 prototype remains in the repository root)"
+requires-python = ">=3.10"
+# Portable dependencies only. Jetson-only libraries (TensorRT, CUDA, GStreamer,
+# JetPack OpenCV) belong to a separate, device-verified dependency profile.
+dependencies = [
+    "pydantic==2.13.5",
+    "PyYAML==6.0.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+# The v1 dashboard tests in tests/test_dashboard.py need Flask and keep running
+# under unittest in the existing "Dashboard checks" workflow.
+testpaths = ["tests/unit"]
+addopts = ["--import-mode=importlib", "-ra", "--strict-markers", "--strict-config"]
+xfail_strict = true
+filterwarnings = ["error"]
