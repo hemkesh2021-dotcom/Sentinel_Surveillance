@@ -99,11 +99,23 @@ class SceneConfig(_Section):
         return round(self.evidence_ttl_s * NS_PER_SECOND)
 
 
+class HazardConfig(_Section):
+    """Fire/smoke candidates from scene reports; VLM-only candidates are capped at warning."""
+
+    confirmations: Annotated[int, Field(ge=2, le=10)] = 2
+    max_gap_s: Seconds = 12.0  # between the source frames of consecutive positive reports
+
+    @property
+    def max_gap_ns(self) -> int:
+        return round(self.max_gap_s * NS_PER_SECOND)
+
+
 class SentinelConfig(_Section):
     config_version: Literal[1]
     camera: CameraConfig
     freshness: FreshnessConfig = Field(default_factory=FreshnessConfig)
     scene: SceneConfig = Field(default_factory=SceneConfig)
+    hazard: HazardConfig = Field(default_factory=HazardConfig)
 
 
 class ConfigError(Exception):
