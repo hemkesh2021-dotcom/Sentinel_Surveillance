@@ -19,6 +19,9 @@ dev = [
     "pytest==9.1.1",
 ]
 
+[project.scripts]
+sentinel = "sentinel.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
