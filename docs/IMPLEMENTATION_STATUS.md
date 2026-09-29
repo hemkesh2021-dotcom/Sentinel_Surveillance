@@ -1,6 +1,6 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-09-29, after the V2-01 records and ingest fix of session 2 (see the slice log). Requirements come from the v2 beta implementation guide (V2-01…V2-56 backlog), and corrections and regression cases from the 23 September audit review. Both documents are local-only (see D13).
+Last updated 2026-09-29, end of session 2 (V2-01 records, V2-03 regressions R1–R3 and the portable `EdgeCore`). Requirements come from the v2 beta implementation guide (V2-01…V2-56 backlog), and corrections and regression cases from the 23 September audit review. Both documents are local-only (see D13).
 
 ## Position
 
@@ -8,23 +8,129 @@ Last updated 2026-09-29, after the V2-01 records and ingest fix of session 2 (se
 |---|---|
 | Branch | `v2-beta`, created from `master`; **not pushed** |
 | Base commit | `2b2d639621e8c043cc58a126f47b1b8ab6c22135`, the commit the audit verified, confirmed as HEAD before starting |
-| Slice commits | `ec6698d` CLAUDE.md · `b52920f` package skeleton and portable tests · `e9f959d` clock · `bc42248` frame identity · `3b47f5f` evidence/track applicability · `ee50275` config and CLI · `6a9e71d` CI workflow · `6578ded` this record · session 2: `4587021` PTS tolerance at ingest · then the commit that adds the V2-01 records |
+| Session 1 commits | `ec6698d` CLAUDE.md · `b52920f` package skeleton and portable tests · `e9f959d` clock · `bc42248` frame identity · `3b47f5f` evidence/track applicability · `ee50275` config and CLI · `6a9e71d` CI workflow · `6578ded` status record |
+| Session 2 commits | `4587021` PTS tolerance at ingest · `812b42c` V2-01 records · `e81db81` replay timelines · `86889f8` scene lane (R3) · `432dc69` live state and freshness (R2) · `66937ef` face association and identity (R1) · then the commit that updates this record |
 | Working tree | Clean apart from ignored environments/build output and local-only files excluded through `.git/info/exclude` |
 | Local-only files | The v2 guide, the audit review and `docs/LOCAL_NOTES.md` (device-specific notes). A fresh clone does not contain them, although CLAUDE.md names the first two. |
-| Selected package | C1: V2-01 records (portable part), then V2-03 replay regressions. V2-02 portable portion and V2-04 setup are done (session 1). |
+| Selected package | C1 is finished except V2-01 (hardware checks PENDING), V2-04's off-device checks and **V2-49** (next). |
 | Other branches | `origin/Yogeshvar425-patch-1` (teammate) is **not merged**: a single commit `6755796` that adds @Yogeshvar425 to `.github/CODEOWNERS` (merge base `c66ebde`). `origin/codex/github-audit-fixes-2026-09-19` is already in `master` via PR #4. |
-| Effort | No team availability recorded yet (guide ch. 26 kickoff item); re-estimate at the end of C1 |
+| Effort | No team availability recorded yet (guide ch. 26 kickoff item). The C1 re-estimate is still open: V2-01's B0 run has not happened, so no optimization effort can be re-estimated. |
+| Waiting on the maintainer | **U12** (perception stream profile and FPS gate), **U13** (CUDA driver library), **U14** (runtime environment for hardware adapters), and the PENDING hardware commands |
 
-## C1 map: existing code and status
+## Next concrete task
 
-| Package (guide ch. 20) | Existing code | Status |
+1. **V2-49** (C1): versioned extension/adapter manifest with the ch. 27 fields. Unknown major versions and duplicate IDs fail config validation, and disabled adapters import no ML framework (extend `test_portable_imports`). Wire the scene analyzer, detector and face adapters through it as `disabled` by default.
+2. Then the portable part of the Oct 20 path (plan below): **V2-13** restricted-zone rule (normalized polygon, bottom-centre anchor, IANA schedule across midnight, persistence), then **V2-14** SQLite incident + evidence + outbox transaction with runtime-ID deduplication, then **V2-15** leased outbox with a stdlib Telegram adapter tested against a mock (HTTP error, `ok=false`, 429, timeout, crash after send).
+3. Hardware adapters wait for U12/U14 and the PENDING checks.
+
+## Oct 20 demo milestone: plan and deviations from the guide order
+
+Target (maintainer, 2026-09-29): a demoable end-to-end path on this Jetson by 2026-10-20: camera → detection → tracking → identity → scene/VLM → alert/outbox → dashboard. That is three weeks. In the guide's order it spans C2–C7 (about 12 cycles' worth of dependencies). It is feasible only as a **demo profile**: the v2 core logic (contracts, freshness, identity, scene lane, rules, durable incidents/outbox) plus interim adapters around the existing models. It is not the optimized B2 profile and establishes no gate.
+
+| Week | Work | Status |
 |---|---|---|
-| **V2-01** Hardware and v1 timing/memory baseline. *Accept:* sanitized inventory; B0/B1 workload and trace contract; provisional CPU budget; re-estimated optimization effort | `surveillance4_1.py` reports a loop-counter FPS (L497–498) that counts the repeated frames `FrameReader.get()` returns, so it is not a throughput baseline. It has no stage timing, CPU or memory telemetry. `start_sentinel.sh` defines the B0 process set (llama-server `--n-gpu-layers 999 --ctx-size 2048 --parallel 1`, engine, dashboard) and stops the display manager. | **In progress.** Camera substream facts measured by the maintainer and the `~/onvif_env` diagnostics are recorded below ("V2-01 inventory so far"). Device checks are PENDING with exact commands. |
-| **V2-02** Config, frame/evidence contracts, fake clock. *Accept:* invalid config fails clearly; epoch/TTL tests pass | Config is module constants (engine L29–51, dashboard L28–31) with secrets from `.env`; the only check is an exit when secrets are missing. `FrameReader` (L392–407) keeps a single frame with no sequence, epoch or age, and keeps returning it after a stall. `last_ai_result` (L196, L235) has no source frame or expiry. Intervals and cooldowns use wall-clock `time.time()`. Face results are keyed by bare tracker ID (`verified_faces[tid]`). The dashboard shows `/tmp/surv_state.json` with no age check (L139–145). | **Portable portion implemented and committed.** Its acceptance tests pass on Python 3.10.14 and 3.12.3. Not yet used by any runtime path; GitHub CI has not run. |
-| **V2-03** Replay fixtures and first identity/empty-scene fixes. *Accept:* multi-person and zero-person regressions recorded | Defects to regress: the full-frame face fallback shares one face across tracks (L335–382); the empty-track branch skips AI and dashboard updates (L505–513); exhausted retries become "Stranger" and `is_stranger = name in ("Stranger", "Unknown")` (L379–382, L524, L575); `last_ai_result` consumers use unvalidated state (L592–656). No replay harness exists. | **Pending.** Outline below; approach for the v1 side is fixed by D12. |
-| **V2-04** Development setup and CI skeleton. *Accept:* clean laptop runs non-GPU checks | `.github/workflows/ci.yml` ("Dashboard checks") runs the four Flask dashboard tests. No packaging. | **In progress.** Setup and workflow are committed and were verified on the Jetson in isolated venvs and a clean archive of HEAD. **Not yet done:** an actual clean-laptop (x86-64/macOS) run and a GitHub Actions run. |
+| 1 (to Oct 6) | V2-49; V2-13 zone rule; V2-14 SQLite incidents/outbox; V2-15 leased outbox + Telegram (mocked). All portable. | V2-49 next |
+| 2 (to Oct 13) | Device adapters, after U12/U14: capture (substream, video only, FrameStamper; `gst-launch` pipe or CPU decode); detector + ByteTrack via the existing `yolov8n.engine` as the *legacy parity adapter*; interim face adapter (existing DeepFace/Facenet512 on CPU) feeding v2 association; llama-server scene adapter; `sentinel run` loop around `EdgeCore` | Blocked on decisions and checks |
+| 3 (to Oct 20) | Loopback-only, read-only status page (stdlib HTTP server) showing LiveState, incidents and delivery outcomes; end-to-end rehearsal with v1 stopped; demo script including camera loss and recovery | — |
 
-## What this slice added
+**Deviations from the guide's order (flagged; each needs the maintainer's acceptance):**
+
+1. **Face (V2-25, C7) and VLM (V2-26, C7) come before C4–C6, via interim adapters** around the models v1 already uses: DeepFace/Facenet512 on CPU and llama-server with LFM2-VL-1.6B. Reason: the milestone requires identity and scene. The v2 association, identity and scene-lane logic is final; the adapters are labelled demo-only, uncalibrated and unbenchmarked. Enrollment will be re-created as validated non-executable data from consented photos, never by loading `face_db.pkl`.
+2. **Portable C4 packages (V2-13/14/15) before the C2/C3 hardware packages.** Reason: C2/C3 are blocked on the PENDING hardware checks and U12/U14, while C4 is portable and on the milestone path.
+3. **No go2rtc relay for the demo (V2-05 deferred).** The v2 runtime opens the substream itself as the only ingest, so v1 must be stopped during demo runs to avoid a second upstream session. Installing go2rtc is a new binary dependency that needs a decision.
+4. **Decode may be CPU for the demo** (`~/onvif_env`'s OpenCV has only its bundled FFmpeg). The hardware path (`nvv4l2decoder` in a `gst-launch-1.0` subprocess, U14 option a) is used only if PENDING check 7 passes. CPU decode of a 640×480 at 15 fps stream is expected to be cheap, but this has not been measured.
+5. **Dashboard: a loopback-only, read-only status page instead of V2-17/V2-18** (FastAPI, auth, roles, PWA). Access is over an SSH port forward. This avoids new dependencies and does not expose an unauthenticated service. FastAPI is not installed anywhere; adding it is a dependency decision.
+6. **Runtime environment for the demo:** `~/onvif_env` read-only, run as `LD_PRELOAD=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1 PYTHONPATH=src ~/onvif_env/bin/python`. The portable package passes its suite with that environment's pydantic 2.12.5 (verified below). Nothing will be installed into it; if an adapter needs anything missing, a separate environment will be proposed first.
+
+## Package status
+
+| Package (guide ch. 20) | Status |
+|---|---|
+| **V2-01** Hardware and v1 timing/memory baseline. *Accept:* sanitized inventory; B0/B1 workload and trace contract; provisional CPU budget; re-estimated optimization effort | **In progress.** Camera substream facts (maintainer-measured) and the `~/onvif_env` diagnostics are recorded in the V2-01 inventory. The device checks are PENDING with exact commands. There is no B0 run, trace contract, CPU budget or re-estimate yet. |
+| **V2-02** Config, frame/evidence contracts, fake clock. *Accept:* invalid config fails clearly; epoch/TTL tests pass | **Done (portable).** Session 2 extended the config with `scene`, `hazard` and `identity` sections. |
+| **V2-03** Replay fixtures and first identity/empty-scene fixes. *Accept:* multi-person and zero-person regressions recorded | **Done (synthetic replays).** R1, R2 and R3 are recorded, each next to the B0 v1 snapshot. Real-clip replay needs V2-07 consent/split manifests and a decode adapter. |
+| **V2-04** Development setup and CI skeleton. *Accept:* clean laptop runs non-GPU checks | **In progress.** No clean-laptop (x86-64/macOS) run and no GitHub Actions run yet (nothing pushed). |
+| **V2-49** Versioned extension manifest and evidence validation (C1) | **Next.** |
+
+## Session 2 slice log (2026-09-29)
+
+### What was added
+
+| Path | Purpose |
+|---|---|
+| `src/sentinel/media/frames.py` | Non-increasing or unset source PTS stamped `source_time_quality=none` (D21) |
+| `src/sentinel/replay.py` | Timeline format, loader with line-numbered errors, and `ReplayDriver` (FakeClock + FrameStamper) (D20) |
+| `src/sentinel/redaction.py` | Shared redaction of URL userinfo, bot tokens and `token=`/`password=` style values, and bounded single-line messages. The config error messages now use it. |
+| `src/sentinel/jobs.py` | ch. 27 `AnalysisJob` (source FrameRef, purpose, incident, deadline from ingest) and `WorkerOutcome` (claimed job ID, bounded untrusted text, redacted detail) |
+| `src/sentinel/scene/report.py` | Strict `SceneReport` schema for VLM output and `parse_scene_report()`, whose errors never echo model text |
+| `src/sentinel/scene/lane.py` | `SceneLane` scheduler (D15, D16) behind a `SceneAnalyzer` adapter protocol (`submit`/`cancel`/`revision`) |
+| `src/sentinel/scene/state.py` | `CurrentScene` (the only path to current scene state) and `route_evidence()` (annotation only to the evidence's own incident) |
+| `src/sentinel/media/health.py` | `FreshnessMonitor`: starting / fresh / stale / offline, with `live` only when fresh (D14) |
+| `src/sentinel/tracking/tracks.py` | `TrackTable`: current tracks only, 1 s expiry after the last detection, duplicate/out-of-order/not-live frames ignored, 64-track bound |
+| `src/sentinel/rules/scene_hazard.py` | `SceneHazardRule` and the `HazardCandidate` contract (D17) |
+| `src/sentinel/identity/` | `association.py` (one-to-one ownership), `matching.py` (validated enrollment, cosine, runner-up), `state.py` (derived identity states) (D19) |
+| `src/sentinel/live_state.py` | `LiveState` published on every step: video state and age, detector and face capability, occupancy with reason, people with identity, scene status and report |
+| `src/sentinel/runtime.py` | `EdgeCore`: portable composition of all of the above; `on_frame`, `tick`, `on_scene_outcome`, `request_enrichment`, `diagnostics()` |
+| `config/default.yaml` | New `scene`, `hazard` and `identity` sections, with values labelled as proposed or placeholders |
+| `tests/replay/` | `test_timeline.py`, `test_r3_stale_scene_results.py` (11), `test_r2_zero_person_scenes.py` (5), `test_r1_face_identity.py` (9); harnesses, builder, fixture and the B0 v1 snapshot |
+| `tests/unit/` | New `test_jobs.py`, `test_scene_report.py`, `test_health.py`, `test_scene_hazard.py`, `test_identity.py`; config tests extended |
+
+### Regressions recorded (V2-03 acceptance)
+
+| Regression | Guide/audit source | v2 result | B0 v1 snapshot on the same input |
+|---|---|---|---|
+| **R3** late scene answer for incident A (after deadline and TTL), with B opened meanwhile | Audit 3; ch. 2 row 4; ch. 21 | Timeout evidence at the deadline; the late fire report is EXPIRED, annotates only A and never becomes current | Fire alert and "high" threat from the stale answer |
+| R3 answer after the deadline but within TTL | D15 | Late: expired, annotates only its incident | Alerts |
+| R3 answer after a reconnect | Audit 3 | SUPERSEDED_EPOCH, not current | Alerts |
+| R3 malformed JSON; the string `"true"` for a boolean | ch. 13, 21 | `error` evidence replaces the previous verdict | Malformed → "none" verdict; `"true"` → fire alert |
+| R3 wrong job ID; worker timeout/error; submit failure | ch. 21, 27 | `error`/`timeout` evidence; credentials redacted; slot freed | Keeps the earlier verdict (fire) |
+| R3 enrichment replaced/skipped; older-frame enrichment; outage | ch. 12, 27 | `scene.job_skipped` evidence for its own incident; an older frame never overwrites newer state; an outage clears the scene and it never revives | — |
+| **R2** three minutes with nobody present | ch. 2 row 1; ch. 21 | EMPTY with fresh video on every step; the departed track goes 1 s after its last detection; a scene check about every 4 s throughout | Dashboard keeps showing 1 person; no scene checks while empty |
+| R2 stall → stale at 2 s → offline at 10 s → reconnect, with a frozen reader | ch. 2 row 3; ch. 22 | Exact thresholds; occupancy UNKNOWN from 1 s without detector frames; frozen frames never reprocessed; pre-stall scene evidence never current again | Keeps "seeing" the person through stall and outage |
+| R2 detector unavailable | ch. 6 | Occupancy UNKNOWN "person detector unavailable"; scene checks continue | — |
+| R2 smoke with nobody present; positive → stall → positive; reconnect | Audit 4; ch. 1, 9 | One WARNING candidate per episode with `people_count=0` and no primary signal; no confirmation across a stall, gap or epoch | — |
+| **R1** one face inside two overlapping people | Audit 1; ch. 21 | Both UNRESOLVED ("face ownership ambiguous") | Both named Alice |
+| R1 known + faceless person, only one face visible | ch. 2 row 2; ch. 21 | Alice KNOWN after 2 matches; other UNRESOLVED ("no face visible") | Both named Alice (full-frame fallback) |
+| R1 separation; reconnect; vote expiry; near-twin match | ch. 11 | Face attaches to exactly one person; a new epoch starts UNRESOLVED; KNOWN lapses after 30 s without faces; ambiguous match gives no vote | — |
+| R1 empty enrollment; back-facing person | Audit 2 | UNRESOLVED, never a stranger | Every face and every faceless track become "Stranger" |
+| R1 unknown / contradiction | ch. 11 | Low quality: no vote; consistent non-matches: UNKNOWN; contradiction: UNCERTAIN, re-derived by new consistent evidence | — |
+
+### Session 2 verification: exact commands and results
+
+All ran on 2026-09-29 on the Jetson from `~/sentinel-surveillance`. Nothing was installed into or written to `~/onvif_env`.
+
+```bash
+.venv/bin/python -m pytest                                  # 114 passed in 2.20s (Python 3.10.14, pydantic 2.13.5)
+.venv/bin/sentinel config validate config/default.yaml      # valid, exit 0
+```
+
+**Every session 2 commit passes its own tests** (the loop from session 1, over `6578ded..HEAD`): `4587021` 48 · `812b42c` 48 · `e81db81` 60 · `86889f8` 87 · `432dc69` 100 · `66937ef` 114 passed.
+
+**Clean archive of HEAD on Python 3.12.3** (fresh venv, as in session 1): 114 passed; `sentinel config validate` valid. **v1 "Dashboard checks"** in the same archive (Flask 3.0.3, requests 2.32.3, python-dotenv 1.0.1): `Ran 4 tests ... OK`.
+
+**`~/onvif_env` compatibility.** That environment has pydantic 2.12.5 and no pytest, and must not be changed. So:
+
+```bash
+# scratch venv matching its interpreter and pydantic version
+/usr/local/bin/python3.10 -m venv "$SCRATCH/venv-pyd2125"
+"$SCRATCH/venv-pyd2125/bin/python" -m pip install pydantic==2.12.5 PyYAML==6.0.3 pytest==9.1.1
+PYTHONPATH=src "$SCRATCH/venv-pyd2125/bin/python" -m pytest -p no:cacheprovider   # 114 passed
+# smoke run inside ~/onvif_env itself: imports all 24 sentinel modules, loads the
+# default config, drives EdgeCore with FakeClock through one frame and a 2 s stall
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src ~/onvif_env/bin/python <script>           # "fresh empty" then "stale"
+```
+
+**Mutation sweeps (one-off; scripts not committed).** Each rule was broken in turn in a scratch copy of `src/` on `PYTHONPATH`. The suite failed every time, each through the test aimed at that rule:
+
+- **R3, 15/15:** late result keeps full TTL; non-current evidence becomes scene state; held evidence never dropped; no timeout at the deadline; claimed job ID trusted; skipped jobs become scene state; older frame overwrites newer state; late evidence annotates nothing; failure keeps previous verdict; periodic checks need people; waiting enrichment never skipped; replaced enrichment silently dropped; submit exception uncaught; report accepts extra fields; worker detail unredacted.
+- **R2, 15/15:** stale stream still live; stale boundary off by one; offline never reached; reconnect without a frame counted fresh; duplicate frames reprocessed; tracks never expire; empty scene not published; detector recency ignored; detector status ignored; scene lane only with people; hazard not reset on a missing view; hazard ignores epoch change; hazard critical; hazard emits every report; hazard not reset by failure.
+- **R1, 11/11:** first candidate wins; person-side uniqueness only; head region ignored; inside fraction ignored; empty-enrollment reason; single vote establishes KNOWN; low-quality faces vote; contradiction ignored; votes never expire; identity bookkeeping kept after tracks end; runner-up margin ignored.
+
+Four first-round misses were test gaps and were fixed before committing: the gap-and-reconnect hazard test confirmed before the stall; the inside-fraction face had its centre outside the box; there were no near-twin or faceless empty-enrollment cases; and identity bookkeeping was not observable (now `EdgeCore.diagnostics()`). One further miss is deliberate: redaction happens both in `WorkerOutcome` and in the lane, so removing one layer is not observable end to end. `test_jobs.py` now checks the first layer directly.
+
+## Earlier slice log
+
+### Session 1 (C1 foundation): what was added
 
 | Path | Purpose |
 |---|---|
@@ -59,9 +165,9 @@ Semantics now enforced (guide ch. 6, audit finding 3, D3):
 | Wall-clock changes | `test_clock.py` (UTC steps leave monotonic time alone); `test_evidence_applicability.py` (steps neither extend nor shorten validity); `test_frame_identity.py` (backwards step during restart) |
 | Portable without Jetson/camera | `test_portable_imports.py` imports every module file of the package with cv2, gi, tensorrt, pycuda, cuda, torch, tensorflow, ultralytics, deepface, onnxruntime and jtop *blocked*. It fails if any module is skipped. |
 
-## Verification: exact commands and results
+### Session 1: verification commands and results
 
-All commands ran on 2026-09-29 on the Jetson (aarch64), from `~/sentinel-surveillance` unless noted. `~/onvif_env` was not used or modified.
+All commands ran on 2026-09-29 on the Jetson (aarch64), from `~/sentinel-surveillance` unless noted. `~/onvif_env` was not used or modified in session 1.
 
 **Setup (V2-04).** `.venv/` was already git-ignored.
 
@@ -140,13 +246,15 @@ unittest discovery ignores `tests/unit/` because it has no `__init__.py`. This a
 
 **Mutation sweep (one-off; the script was not committed).** Each rule below was broken in turn in a scratch copy of `src/`, with that copy on `PYTHONPATH`. The suite failed every time, **16/16**, each through the test aimed at that rule: TTL boundary made inclusive; superseded epochs ignored; boot mismatch ignored; run ID ignored; one run ID shared by all stampers; epoch not incremented on connect; future evidence accepted; predictions refresh track age; failures may carry verdicts; `frame_seq` not advanced; duplicates treated as new; non-UTC offsets accepted; UTC steps move monotonic time; duplicate YAML keys allowed; credentials echoed; offline ≤ stale allowed.
 
-## Not run or not established
+## Not run or not established (both sessions)
 
 - Neither GitHub workflow has run, because nothing was pushed.
 - There was no run on a clean laptop (x86-64 or macOS); all checks ran on this Jetson's aarch64 userspace.
 - No lint or type check is configured yet (guide ch. 21 lists both); deferred to keep the slice small.
 - There were no camera, decoder, GPU, TensorRT, memory, throughput or latency measurements. This slice establishes no hardware, Gate B or beta-readiness result.
-- The contracts are not yet used by the v1 engine or any runtime path. The other ch. 18 CLI commands were intentionally not scaffolded.
+- No v2 code runs on the camera or GPU yet. `EdgeCore` is exercised only by synthetic replays and one FakeClock smoke run in `~/onvif_env` (CPU, no camera). The other ch. 18 CLI commands, including `sentinel replay`, were intentionally not added yet.
+- The replay regressions use synthetic timelines, not the maintainer's clips. They record the behaviour of the v2 components and of a documented reference model of v1 (D12), not of the running v1 process.
+- The mutation sweeps are one-off checks whose scripts are not committed.
 
 ## Decisions
 
@@ -168,16 +276,26 @@ unittest discovery ignores `tests/unit/` because it has no `__init__.py`. This a
 - **D11.** FrameRef's optional buffer reference is deferred to V2-05/V2-09; adding it is backward compatible.
 - **D12. B0 reference model** (maintainer decision; resolves U9). Replay regressions show v1's failing behaviour with a small documented reference model in tests. It extracts only the relevant v1 logic, cites `surveillance4_1.py` at `2b2d639` with line ranges, and is labelled a v1 behaviour snapshot, not production code.
 - **D13. Planning documents** (maintainer decision). CLAUDE.md is committed; the v2 guide and audit review stay local-only through `.git/info/exclude`.
+D14–D21 are implementation decisions made in session 2 within the guide's rules; the maintainer has not reviewed them yet.
+
+- **D14. Liveness (resolves U1).** Only a FRESH stream is live for decisions: `FreshnessMonitor.assess()` returns the connected stream as `live` only while its newest frame is younger than `stale_after_s`. Stale, offline, disconnected, or reconnected with no frame yet all give `live=None`, so current scene, track and hazard state are withdrawn during a stall. Held scene evidence that is found non-current is dropped and never revives, even if the same epoch resumes within its TTL.
+- **D15. Late and skipped scene jobs.** A job's deadline is `source ingest + job_timeout_s`, which includes queue wait and source age. An outcome after the deadline is *late*. Its evidence is valid only up to the deadline, so it is already expired and can only annotate its own incident. A job that never ran (deadline passed while waiting, or replaced by a newer enrichment request) gives `unavailable` evidence of kind `scene.job_skipped`, which is never scene state. Evidence IDs are `<job>.<status>[.late]`.
+- **D16. Scene lane defaults (proposed, to measure in V2-26):** periodic interval 4 s (v1's value, measured start-to-start), job timeout 8 s, report TTL 10 s. Config rejects a TTL below the timeout. One job in flight, one replaceable enrichment request, 8 timed-out jobs remembered for late results.
+- **D17. Fire/smoke from the VLM alone** is a `scene.fire_smoke_candidate` capped at `warning` (`primary_signal=false`). It needs 2 distinct consecutive positive reports from one epoch within 12 s, fires once per episode, and resets on any negative, failed or missing report, stall, gap or epoch change. A critical fire alert needs a separately evaluated primary fire signal, which does not exist.
+- **D18. Occupancy.** EMPTY only when video is fresh, the detector is available and it processed a frame within `track_expiry_s`. Otherwise UNKNOWN with a reason ("no fresh video (stale)", "person detector unavailable", "detector has not processed a recent frame"). This closes the window in which expired tracks on a stalled but not yet stale stream would read as an empty room.
+- **D19. Identity.** Association accepts a face–person pair only when each is the other's sole candidate: face centre in the top 40 % of the person box, at least 60 % of the face inside it. Identity is derived on every read from the track's own votes (last 5, TTL 30 s): KNOWN or UNKNOWN after 2 consistent votes, UNCERTAIN on contradiction, else UNRESOLVED. Cosine threshold 0.5 and margin 0.05 are **placeholders until V2-25 calibration**. There is no "stranger" state. An empty enrollment is UNRESOLVED ("no identities enrolled"). Identity is context only; no rule reads it yet.
+- **D20. Replay format.** JSON-lines timelines (`src/sentinel/replay.py`) with a header, `connect`/`disconnect`, `frame` runs (people, synthetic faces and embeddings, optional PTS), `tick`, `result` and `incident` events. Fixtures live in `tests/replay/fixtures/`; long variants are built inline with `tests/replay/timeline_builder.py` on a 66 ms grid. The B0 v1 snapshot (D12) is `tests/replay/b0_v1_snapshot.py`, imported through pytest's `pythonpath`. `tests/replay/` has no `__init__.py`, so the v1 unittest job ignores it.
+- **D21. Source PTS.** A PTS that does not increase over the previous frame's in the epoch is kept but stamped `source_time_quality=none` (see V2-01 inventory).
 
 ## Unresolved decisions and semantics
 
-- **U1. Liveness.** Which health state withdraws the live stream? Proposal: `STALE` (no fresh frame for 2 s) already passes `live_stream=None`, so a stalled but connected stream stops current evidence. This matches the guide's "expire confirmation across gaps". Settle it in the zero-person/health slice.
+- **U1.** Resolved by D14.
 - **U2. Multi-frame evidence.** `Evidence` has one source frame. VLM results citing several frames (ch. 13) need a rule for which frame's time governs age. Proposal: the oldest input frame.
 - **U3. Capture time.** All ages are ingest-based. `SourceTimeQuality.CAPTURE_SYNCED` exists but nothing produces it; mapping to capture time is a Gate B / V2-06 decision.
-- **U4. Per-rule TTLs.** Evidence TTLs are not configured yet; producers pass `ttl_ns`. Define them with V2-13/V2-16 (rules) and V2-26 (VLM).
+- **U4. Per-rule TTLs.** Scene reports now use `scene.evidence_ttl_s` (D16). Rule evidence TTLs remain for V2-13/V2-16.
 - **U5. PTZ pose.** The pose or view generation (ch. 16 and 27) is not in `FrameRef`/`StreamIdentity`. Decide in C9 whether a pose change supersedes evidence the way an epoch change does.
 - **U6. Versioning.** Only `Evidence` carries `contract_version: 1`. Decide before the runtime↔core handoff (V2-11) whether every serialized contract carries a version, or whether the V2-49 adapter manifest version suffices.
-- **U7. Evidence size.** Evidence `value` has no size bound yet; set one with the VLM adapter.
+- **U7. Evidence size.** Partly settled: scene reports are bounded (≤ 4,096 characters of input; ≤ 5 observations of ≤ 80 characters; summary ≤ 160 characters), and worker output over 8,192 characters is an error. There is still no general bound on `Evidence.value`.
 - **U8. Confidence kinds.** `none`, `detector_score`, `similarity` and `calibrated_probability` are a proposal.
 - **U9.** Resolved by D12.
 - **U10. Memory units.** Decimal whole-device memory targets (5.0 / 5.4 GB) still need the kickoff confirmation asked for in guide ch. 26.
@@ -185,6 +303,8 @@ unittest discovery ignores `tests/unit/` because it has no `__init__.py`. This a
 - **U12. Perception stream profile and frame-rate gate.** The 20–25 fps stretch target exceeds the measured 15 fps substream, and the ≥15 fps gate names a 1080p input. Options A–D and a recommendation are under "Conflict" in the V2-01 inventory. **Maintainer decision needed** before V2-05 fixes the ingest profile.
 - **U13. Shadowing CUDA driver library.** `libnvidia-compute-535` hides L4T's `libcuda.so.1`. Keep the `LD_PRELOAD` workaround, or remove the package or fix the loader order (a system change with v1 at stake)? Maintainer decision; nothing was changed.
 - **U14. Runtime environment for hardware adapters.** No existing interpreter has both GStreamer bindings and TensorRT. Options (a)–(c) are in the V2-01 inventory; decide when V2-05 starts.
+- **U15. Identity calibration.** D19's thresholds are placeholders. Calibrate with consented, session-separated identities (V2-07/V2-25) before any identity is shown as more than context.
+- **U16. Face stage cadence.** `EdgeCore.on_frame(..., faces=None)` means the face stage did not run on that frame. Which frames get face analysis, and whether it runs asynchronously in a worker, is V2-25/V2-29 work. The interim demo adapter will run it on sampled frames.
 
 ## V2-01 inventory so far
 
@@ -350,28 +470,3 @@ timeout -s INT 30 gst-launch-1.0 -e rtspsrc location="$SENTINEL_RTSP_URL" protoc
 
 Still open from the guide's V2-01 acceptance, after the commands above: the JetPack release that corresponds to L4T 36.4.7 (NVIDIA release notes); PTZ capability response (C9, may stay deferred); B0 run with unique-frame throughput, stage timings, per-process/thread CPU, `MemTotal − MemAvailable`, tegrastats, PSS, clocks, temperature, headless versus desktop (needs the V2-11 trace contract first); B0/B1 workload manifest, provisional CPU budget and re-estimated effort; a known-good backup and restore point before any runtime change.
 
-## Remaining V2-03 regressions: outline of the next replay fixtures
-
-Proposed fixture format: a synthetic JSON-lines timeline with no images or footage, e.g. `{"t_ms": 0, "event": "connect"}`, `{"t_ms": 66, "event": "frame", "persons": [...], "faces": [...]}`, `{"event": "disconnect"}` and `{"event": "ai_complete", ...}`. A loader under `tests/replay/` drives `FakeClock` and `FrameStamper`, and tests assert the resulting observations and state. The v1 side of each regression uses the B0 behaviour snapshot from D12. Consented real clips come with V2-07.
-
-**R1. One face, two overlapping tracks** (audit finding 1; guide ch. 2 row 2 and ch. 21)
-- *Setup:* tracks A and B overlap so that one detected face lies in both head regions, and enrollment contains the matching identity. Variants: exact ambiguity; a known and an unknown person with only the known face visible; the pair later separates; a reconnect mid-sequence; an empty enrollment database.
-- *Expect:* each face goes to at most one track and each track gets at most one face. Ambiguity leaves both tracks `unresolved`: never `known`, never a face-confirmed stranger. After separation the face attaches to exactly one track. Post-reconnect tracks inherit nothing, because results are keyed by `TrackKey`. An empty database yields no error and no stranger label.
-- *Needs:* a `FaceObservation` contract (box, landmarks, quality, `FrameKey`), a global association function, and identity states `unresolved`/`unknown`/`known`/`uncertain`.
-- *B0 snapshot:* the full-frame fallback in `face_recognition_worker` (L335–382) labels both tracks.
-
-**R2. Zero-person scenes** (guide ch. 2 row 1 and ch. 21)
-- *Setup:* minutes of fresh frames with no detections; a person who leaves; a stub fire/smoke scene candidate with nobody present; then a stall (frames stop) and an outage.
-- *Expect:* the published state is empty with a fresh frame age. The departed track expires 1 s after its last detection. The scene lane keeps its interval with zero tracks. The stub candidate yields a zero-person candidate incident, and being VLM-only it is not a critical fire alert. A stall shows stale at 2 s and offline at 10 s, distinct from "empty" and from "detector unavailable".
-- *Needs:* freshness classification using `freshness.*` (settles U1), scene-state publication, and a scene-lane scheduler stub.
-- *B0 snapshot:* the empty-track branch (L505–513) skips AI analysis and dashboard updates.
-
-**R3. Delayed stale AI results** (audit finding 3; guide ch. 2 row 4 and ch. 21)
-- *Setup:* a VLM stub with scripted latency, whose job for frame F (incident A) completes after its TTL. Variants: a reconnect before completion; a new incident B opened meanwhile; malformed JSON; a wrong job or event ID; a timeout.
-- *Expect:* the late result is `EXPIRED` or `SUPERSEDED_EPOCH`, so current state does not change and no alert fires. It annotates only A, and B is unchanged. A malformed or mismatched result becomes `error` evidence and a timeout becomes `timeout` evidence; the previous verdict is never reused. Status and dashboard consumers pass through the same applicability gate.
-- *Needs:* the ch. 27 job/result contract (job ID, source `FrameRef`, incident ID, epoch, monotonic deadline), a FakeClock-driven stub VLM adapter, and a scene-state holder that accepts only `CURRENT` evidence.
-- *B0 snapshot:* the worker and the global `last_ai_result` (L196–259) are read directly by the overlay, intruder and status paths (L592–656).
-
-## Next concrete task
-
-Add the replay loader under `tests/replay/` with the first B0 behaviour snapshot (D12), then implement **R3**. Its core contracts exist, so it needs only the job/result contract and a stub VLM adapter. Follow with R2, which adds freshness classification and settles U1, then R1, which adds face association. Mark V2-03 done only when all three regressions are recorded.
