@@ -65,11 +65,37 @@ without desktop/dev tools, v1, model servers or competing media/GPU work. Both
 Ollama **service state and process presence** are reported; inactive is not
 disabled, and a service can be absent while a manually started worker exists.
 Unclassified Python processes prevent execution because v1/ML work cannot be
-ruled out without reading argv. Comm-only classification cannot prove there are
-no other GPU users. Missing process/service inspection, assets, revision or
+ruled out. The sole narrow exception is the root-owned MainPID of the installed
+`nvidia-pva-allowd.service`, with exact cgroup membership, active/running systemd
+metadata, no unit drop-ins, the expected launch path and package ownership plus
+matching installed checksums for its launcher/unit. Identity checks fail closed;
+other Python processes, including additional processes in that cgroup, still
+refuse execution. Fixed known-service labels/PIDs are reported separately; its
+memory stays in whole-device pressure without subtraction. This exception is
+**not proof of GPU/PVA idleness**. Read-only identity subprocesses each have a
+3 s deadline. Systemd launch metadata is captured only to check the executable
+path; arguments are never displayed/saved. Missing process/service inspection, assets, revision or
 kernel access, root execution, or an occupied port causes refusal. Existing
 services/processes are never stopped, disabled or killed by this workflow.
 Resolve conditions with the maintainer rather than adding automatic shutdowns.
+
+### Headless preparation checklist (operator only)
+
+1. Save desktop work and use a plain SSH session that survives desktop logout.
+   Close your own dev-tool sessions after this Codex turn; keep the host awake.
+2. Record `timeout --kill-after=1s 3s systemctl is-active display-manager.service`.
+   Only if it was active and you choose to interrupt the desktop, authenticate
+   with `timeout --kill-after=2s 30s sudo -v`, then run
+   `timeout --kill-after=2s 30s sudo -n systemctl stop display-manager.service`.
+   Do not disable it. On timeout/unknown state, stop preparation and inspect,
+   since timing out the systemctl client does not cancel an outstanding job.
+3. Leave the NVIDIA PVA service running. Do not automatically stop Ollama, v1,
+   other services or unrelated processes; resolve remaining refusals explicitly.
+   Do not drop caches. Run the default inspection command and return its JSON.
+4. Restore the desktop **only if it was active before your explicit stop**:
+   `timeout --kill-after=2s 30s sudo -n systemctl start display-manager.service`.
+   Reauthenticate with the bounded `sudo -v` command if necessary; never change
+   enablement. Check its state again. No workload follows inspection automatically.
 
 The admission snapshot requires **MemTotal - MemAvailable <2,000,000,000 B**,
 **MemFree >=3,500,000,000 B**, **MemAvailable >=4,000,000,000 B**, and valid swap

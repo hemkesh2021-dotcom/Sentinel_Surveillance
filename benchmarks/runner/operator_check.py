@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -26,6 +27,11 @@ OUTPUT_LIMIT = 1_048_576
 MEMORY_KEYS = (*profile.MEMINFO_KEYS, "pswpin", "pswpout")
 REQUIRED = ("MemTotal", "MemAvailable", "MemFree", "pswpin", "pswpout")
 SERVICES = ("ollama.service", "display-manager.service")
+PVA_UNIT = "nvidia-pva-allowd.service"
+PVA_CGROUP = "/system.slice/" + PVA_UNIT
+PVA_FRAGMENT = "/etc/systemd/system/" + PVA_UNIT
+PVA_DAEMON = "/opt/nvidia/pva-allow-2/bin/nvidiaPvaAllowd.py"
+PVA_CHECKSUMS = "/var/lib/dpkg/info/pva-allow-2.md5sums"
 OUTPUT_ROOT = Path("/tmp")
 SERVICE_VALUES = {
     "active", "inactive", "failed", "activating", "deactivating", "reloading",
@@ -154,6 +160,9 @@ class SystemBackend:
         categories = {key: {"count": 0, "pids": []} for key in
                       ("model_servers", "desktop", "dev_tools", "python_unclassified", "media_or_gpu_tools")}
         unavailable = False
+        known_system_services = {}
+        pva_pid = None
+        pva_checked = False
         try:
             entries = Path("/proc").iterdir()
             for path in entries:
@@ -174,6 +183,16 @@ class SystemBackend:
                 elif comm in ("claude", "codex", "node", "code", "code-insiders"):
                     category = "dev_tools"
                 elif comm.startswith("python"):
+                    if pva_cgroup_member(path):
+                        if not pva_checked:
+                            pva_pid = verified_pva_main_pid(ProcessRunner(self))
+                            pva_checked = True
+                        if int(path.name) == pva_pid:
+                            known_system_services[PVA_UNIT] = {
+                                "count": 1, "pids": [pva_pid],
+                                "identity_basis": "systemd MainPID, root cgroup, package-owned checksummed launcher/unit",
+                            }
+                            continue
                     category = "python_unclassified"
                 elif comm in ("ffmpeg", "gst-launch-1.0", "trtexec"):
                     category = "media_or_gpu_tools"
@@ -191,6 +210,7 @@ class SystemBackend:
             "root": os.geteuid() == 0, "port_18081_in_use": profile.port_in_use(18081),
             "cached_assets_available": all(path.is_file() for path in assets),
             "process_inspection_unavailable": unavailable, "workloads": categories,
+            "known_system_services": known_system_services,
         }
 
 
@@ -272,6 +292,61 @@ class ProcessRunner:
         return ChildResult(status if clear else "cleanup_failed", returncode, bytes(output), clear)
 
 
+def pva_cgroup_member(path: Path) -> bool:
+    try:
+        return path.stat().st_uid == 0 and (path / "cgroup").read_text().strip() == "0::" + PVA_CGROUP
+    except OSError:
+        return False
+
+
+def verified_pva_main_pid(runner: ProcessRunner) -> int | None:
+    fields = ("Id", "LoadState", "ActiveState", "SubState", "MainPID", "ControlGroup",
+              "FragmentPath", "DropInPaths", "User", "ExecStart")
+    result = runner.run([
+        "/usr/bin/systemctl", "show", PVA_UNIT, "--no-pager",
+        *("--property=" + field for field in fields),
+    ], 3.0)
+    if result.status != "completed":
+        return None
+    values = dict(line.partition("=")[::2] for line in result.output.decode(errors="replace").splitlines() if "=" in line)
+    expected = {"Id": PVA_UNIT, "LoadState": "loaded", "ActiveState": "active", "SubState": "running",
+                "ControlGroup": PVA_CGROUP, "FragmentPath": PVA_FRAGMENT, "DropInPaths": ""}
+    if (any(values.get(key) != value for key, value in expected.items())
+            or values.get("User") not in ("", "root")
+            or re.findall(r"\{ path=([^ ;]+) ;", values.get("ExecStart", "")) != [PVA_DAEMON]):
+        return None
+    pid = values.get("MainPID", "")
+    if not re.fullmatch(r"[1-9][0-9]{0,9}", pid):
+        return None
+    installed = runner.run([
+        "/usr/bin/dpkg-query", "--show", "--showformat=${Status}\n", "pva-allow-2",
+    ], 3.0)
+    owned = runner.run(["/usr/bin/dpkg-query", "--search", PVA_FRAGMENT, PVA_DAEMON], 3.0)
+    if (installed.status != "completed" or installed.output.strip() != b"install ok installed"
+            or owned.status != "completed" or set(owned.output.decode(errors="replace").splitlines()) != {
+                "pva-allow-2: " + PVA_FRAGMENT, "pva-allow-2: " + PVA_DAEMON,
+            }):
+        return None
+    try:
+        contents = {}
+        for filename in (PVA_FRAGMENT, PVA_DAEMON, PVA_CHECKSUMS):
+            path = Path(filename)
+            info = path.stat()
+            if info.st_uid != 0 or info.st_mode & 0o022 or not stat.S_ISREG(info.st_mode) or info.st_size > OUTPUT_LIMIT:
+                return None
+            with path.open("rb") as handle:
+                contents[filename] = handle.read(OUTPUT_LIMIT + 1)
+            if len(contents[filename]) > OUTPUT_LIMIT:
+                return None
+        checksums = dict(line.split(None, 1)[::-1] for line in contents[PVA_CHECKSUMS].decode().splitlines())
+        if any(checksums.get(filename.lstrip("/")) != hashlib.md5(contents[filename]).hexdigest()
+               for filename in (PVA_FRAGMENT, PVA_DAEMON)):
+            return None
+    except (OSError, ValueError):
+        return None
+    return int(pid)
+
+
 def service_states(result: ChildResult) -> dict:
     states = {unit: {"ActiveState": "unknown", "UnitFileState": "unknown", "LoadState": "unknown"}
               for unit in SERVICES}
@@ -345,7 +420,7 @@ def inspection(backend, runner: ProcessRunner) -> dict:
         refusals.append("inspection_cleanup_failed")
     return {"memory": sample, **context, "services": services, "repository_commit": commit,
             "kernel": kernel, "workload_refusals": refusals,
-            "limitations": "comm-only workload classification; no argv/environment; not proof of no GPU users"}
+            "limitations": "comm-based classification with verified PVA exception; no process argv/environment displayed; not proof of no GPU users"}
 
 
 def check9_prerequisite(path: Path | None, current: dict) -> str | None:

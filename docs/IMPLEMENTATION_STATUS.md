@@ -1,12 +1,12 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-03, session 8 (Codex): one default-read-only operator entry point and separate opt-in guarded Check 9/U21 diagnostics are portable-tested; 357 portable tests pass. U20's portable increment remains complete, but real-model quality, demo-exception evidence and hardware acceptance remain PENDING. The maintainer supplied a filename listing, not proof of file equivalence; no rename is authorized or performed. Ollama stopped/disabled, full empty-room-clip review and review-image deletion are not confirmed; preserve review images. Check 9/U18, U19 unload, both U21 runs, service decisions and remaining consent/figure labels stay PENDING. No hardware inspection/workload, installation, rebuild or service change ran in this session. Earlier records and the guide/audit remain the evidence sources; those two root documents are local-only (D13).
+Last updated 2026-10-03, session 9 (Codex): narrowly recognize the verified installed NVIDIA PVA allowlist service rather than refusing its Python MainPID; 381 portable tests pass. Read-only service/package identity was inspected, not hardware validated. All memory thresholds, other admission checks and whole-device accounting remain unchanged; known-service classification does not prove GPU idleness. U20 portable work remains complete; real-model quality/demo-exception evidence, Check 9/U18, U19 unload and both U21 runs remain PENDING. File equivalence, consent/figure labels, current Ollama stopped/disabled state, full empty-room review and image deletion remain unconfirmed. No service change, hardware workload, installation, rebuild, media access or rename occurred; preserve review images. Earlier records and local-only guide/audit remain the evidence sources.
 
 ## Position
 
 | | |
 |---|---|
-| Branch | `v2-beta`, created from `master`. At session 8 start, HEAD was `79093b7120455d361cd5d70a71f8002d137f35e3`, five commits ahead of the local `origin/v2-beta` reference, `d85eb1e2d1c9b7fedc2cad5f67f7eb367b415640` (includes sessions 3/4). No fetch or remote query ran; this is local repository evidence, not a freshly verified remote state. |
+| Branch | `v2-beta`, created from `master`. At session 9 start, HEAD was `00f940f8cf05095ff7b8667a405f3a2fcb00ceb0`, six commits ahead of the local `origin/v2-beta` reference, `d85eb1e2d1c9b7fedc2cad5f67f7eb367b415640` (includes sessions 3/4). No fetch or remote query ran; this is local repository evidence, not a freshly verified remote state. |
 | CI | Maintainer report, 2026-09-29: GitHub Actions passed at `32985c2`: "v2 portable checks" (run #2) and "Dashboard checks" (run #5). Earlier runs at `6578ded` also passed. |
 | Base commit | `2b2d639621e8c043cc58a126f47b1b8ab6c22135`, the commit the audit verified, confirmed as HEAD before starting |
 | Session 1 commits | `ec6698d` CLAUDE.md · `b52920f` package skeleton and portable tests · `e9f959d` clock · `bc42248` frame identity · `3b47f5f` evidence/track applicability · `ee50275` config and CLI · `6a9e71d` CI workflow · `6578ded` status record |
@@ -16,10 +16,11 @@ Last updated 2026-10-03, session 8 (Codex): one default-read-only operator entry
 | Session 5 (2026-10-03) | `c865f14` check 8 and 1 Hz cadence · `45d9ba3` V2-28 enrichment · `b872c27` verification record. See the session 5 log. |
 | Session 6 (Codex, 2026-10-03) | `805d837`: portable U19/U21 instrumentation, behavioral tests and status update, recorded before committing. See the session 6 log. |
 | Session 7 (Codex, 2026-10-03) | `79093b7`: portable U20 requests/completions and synthetic regressions, counter/build investigation, guarded U21 proposal and pre-commit status update. See the session 7 log. |
-| Session 8 (Codex, 2026-10-03) | This commit: portable operator orchestration, bounded allocation smoke, sanitized profiler diagnostics, synthetic tests, reconciled evidence and pre-commit status update. See the session 8 log. |
-| Working tree | Clean at session 8 start (`79093b7`): no staged, unstaged or non-ignored untracked files. Only eight task files change: three runner scripts, three test files, the operator procedure and this record. Existing work is preserved. |
-| Local-only files | `AGENTS.md`, the v2 guide, the audit review and `docs/LOCAL_NOTES.md` (device-specific notes), excluded through `.git/info/exclude`; none included in session 6–8 increments. A fresh clone does not contain them, although CLAUDE.md names the guide and audit. |
-| Selected package | Portable operator-workflow increment complete (session 8). U20 (session 7) and U19/U21 instrumentation (session 6) remain portable-complete only; live adapters/D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. No following implementation package started. |
+| Session 8 (Codex, 2026-10-03) | `00f940f`: portable operator orchestration, bounded allocation smoke, sanitized profiler diagnostics, synthetic tests, reconciled evidence and pre-commit status update. See the session 8 log. |
+| Session 9 (Codex, 2026-10-03) | This commit: verified PVA service classifier correction, synthetic regressions, operator checklist and pre-commit status record. No subsequent package. |
+| Working tree | Clean at session 9 start (`00f940f`): no staged, unstaged or non-ignored untracked files. Four task files change: operator classifier, its tests, operator procedure and this record. Existing work is preserved. |
+| Local-only files | `AGENTS.md`, the v2 guide, the audit review and `docs/LOCAL_NOTES.md` (device-specific notes), excluded through `.git/info/exclude`; none included in session 6–9 increments. A fresh clone does not contain them, although CLAUDE.md names the guide and audit. |
+| Selected package | Narrow portable PVA classifier correction complete (session 9), reusing session 8's bounded subprocess runner. U20 and U19/U21 instrumentation remain portable-complete only; live adapters/D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. No following implementation package started. |
 | Other branches | `origin/Yogeshvar425-patch-1` (teammate) is **not merged**: a single commit `6755796` that adds @Yogeshvar425 to `.github/CODEOWNERS` (merge base `c66ebde`). `origin/codex/github-audit-fixes-2026-09-19` is already in `master` via PR #4. |
 | Effort | Per-package estimates are in the package table (given to the maintainer on 2026-09-29). The re-estimate of optimization effort still waits for V2-01's B0 run. |
 | v1 on this device | Historically **not running** (maintainer, 2026-09-29); current state must be inspected, not inferred. This workflow never terminates existing v1 processes. |
@@ -145,6 +146,33 @@ Notes on partial and in-progress rows:
   - V2-25: the association and identity core is done; the adapter, alignment, vectorized matching and report are not.
   - V2-28: demo form done (session 5): the scene lane routes late evidence (session 2) and `IncidentService.annotate()` stores it on its own incident only (D35). Not done: wiring into `sentinel run` (D-1), display on the status page (D-2), and revalidation with the real scene adapter (V2-26) and after V2-11.
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 9 log (Codex, 2026-10-03)
+
+**Scope/preservation.** Authorized only the NVIDIA PVA service identity/classifier correction and a headless preparation checklist. Initial `git status --short --branch`, `git diff --stat` and cached diff were clean on `v2-beta` at `00f940f8cf05095ff7b8667a405f3a2fcb00ceb0`, ahead six of the local origin reference; no remote verification/fetch/push. No hardware validation, model/server/stream/GPU launch, installation, rebuild, service stop/disable, cache change, private media/face/secret access or rename occurred. NVIDIA PVA is left running. Only four permitted task files change; local-only and protected v1 files are untouched. No next package is started.
+
+**Identity evidence, not hardware acceptance.** USER-SUPPLIED DIAGNOSTIC: PID 813's cgroup was `0::/system.slice/nvidia-pva-allowd.service`. Codex then inspected only read-only systemd/cgroup/package metadata with explicit 3–5 s timeouts (1 s kill grace):
+- `systemctl show` identity fields report MainPID 813, that exact ControlGroup, root service user (empty User), loaded/active/running, no drop-ins, fragment `/etc/systemd/system/nvidia-pva-allowd.service`, description "service for managing PVA allowlists" and enabled state. `/proc/813` is root-owned and its cgroup matches. No Ollama/display-manager state was checked or inferred here.
+- `dpkg-query` confirms installed `pva-allow-2` version **2.0.5**, architecture `all`, NVIDIA PVA SDK support maintainer; it owns both that unit and `/opt/nvidia/pva-allow-2/bin/nvidiaPvaAllowd.py`. Systemd's effective `ExecStart.path` is that daemon. Only the allowlisted executable path was extracted from captured launch metadata; arguments/environment and raw journals were never displayed or saved.
+- Unit MD5 `2ba17cb53ea09d37ac5981ac28eda31e` and daemon MD5 `e5d5a04e8c40df662e8687df03c4f1ab` match the installed package's checksum records. This verifies installed package-file identity, not a cryptographic vendor attestation or proof of GPU/PVA inactivity.
+- Limitations: sandboxed bus access was denied; allowed read-only metadata checks were repeated outside the sandbox. A proposed raw unit dump was rejected by auto-review because it could expose arguments/settings; it did not execute, and the safer selected-field extraction replaced it. Direct `/proc/813/exe` lookup is permission-denied for this root process; noninteractive `sudo -n readlink` reported that a password is required. **No live kernel executable symlink identity is claimed.** Classification uses authoritative systemd MainPID/cgroup plus the checked packaged launcher/unit, without requiring runtime sudo or reading process argv/environment. The system Python symlink resolves to `/usr/bin/python3.12`, owned by `python3.12-minimal`; that is installed interpreter metadata, not proof of PID 813's kernel image.
+
+**Correction and tests.** No existing narrower service allowlist mechanism was found. `benchmarks/runner/operator_check.py` now checks only a root-owned Python process in the exact PVA cgroup against fresh active/running systemd MainPID, expected unit/launch paths, no drop-ins, installed package ownership and matching checksums of root-owned non-group/world-writable files. Identity subprocesses reuse `ProcessRunner` with 3 s deadlines/owned cleanup; output and file reads stay bounded. Errors, missing metadata, changed launcher/unit, unknown Python, different PID, different cgroup and non-root candidates fail closed. No PID is hard-coded, no generic Python whitelist is introduced. `known_system_services` reports only fixed labels/PIDs separately from interfering workloads. **PVA memory is not subtracted from MemTotal - MemAvailable**, and all existing admission checks/thresholds/guard settings are unchanged. Recognition is not proof of GPU idleness. `tests/unit/test_operator_check.py` adds 24 synthetic cases (80 total), including unrelated Python refusal/no workload launch, wrong MainPID, wrong metadata/package/checksum, timeouts, root/cgroup checks, unchanged device pressure and no argument leakage. `docs/U21_SHORT_VALIDATION.md` explains the exception and one explicitly operator-only reversible desktop checklist; no shutdown/restoration command ran.
+
+**Portable verification (repo `.venv`, Python 3.10.14/pytest 9.1.1; status before commit):**
+
+```bash
+.venv/bin/python -m pytest tests/unit/test_operator_check.py tests/unit/test_demo_measurements.py tests/unit/test_bounded_gpu_probe.py
+# final: 123 passed in 1.00s, exit 0 (earlier focused pass: 123 in 1.08s)
+.venv/bin/python -m pytest
+# 381 passed in 7.69s, exit 0
+.venv/bin/sentinel config validate config/default.yaml
+# valid Sentinel configuration (version 1, camera cam-1); core monitoring only, exit 0
+git diff --check
+# no output, exit 0
+```
+
+These are portable synthetic/configuration results, not fresh CI or hardware acceptance. Next operator action remains the default read-only inspection and returning its complete sanitized JSON; preparation/restoration commands are in the procedure. Check 9/U18, U19 unload, U20 real-model/demo exception, both U21 validations and outstanding maintainer decisions remain **PENDING**. No service shutdown, broader exception, threshold relaxation or following implementation is approved.
 
 ## Session 8 log (Codex, 2026-10-03)
 
