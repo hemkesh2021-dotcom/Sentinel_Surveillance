@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import io
 import json
 import signal
@@ -429,3 +430,141 @@ def test_swap_change_between_probes_prevents_the_dependent_process(operator, tmp
     assert result["check9"]["status"] in ("refused", "inconclusive")
     assert "managed" not in result["check9"]
     assert len(hardware_children(backend)) == 1
+
+
+@pytest.fixture
+def pva_identity(operator, tmp_path, monkeypatch):
+    fragment = tmp_path / "unit"
+    daemon = tmp_path / "daemon"
+    checksums = tmp_path / "md5sums"
+    fragment.write_bytes(b"synthetic packaged unit")
+    daemon.write_bytes(b"synthetic packaged launcher")
+    checksums.write_text("\n".join(
+        hashlib.md5(path.read_bytes()).hexdigest() + "  " + str(path).lstrip("/") for path in (fragment, daemon)
+    ))
+    for name, path in (("PVA_FRAGMENT", fragment), ("PVA_DAEMON", daemon), ("PVA_CHECKSUMS", checksums)):
+        monkeypatch.setattr(operator, name, str(path))
+    original_stat = Path.stat
+
+    def root_stat(path, **kwargs):
+        info = original_stat(path, **kwargs)
+        if path in (fragment, daemon, checksums):
+            return SimpleNamespace(st_uid=0, st_mode=0o100644, st_size=info.st_size)
+        return info
+
+    monkeypatch.setattr(Path, "stat", root_stat)
+    metadata = {
+        "Id": operator.PVA_UNIT, "LoadState": "loaded", "ActiveState": "active", "SubState": "running",
+        "MainPID": "4214", "ControlGroup": operator.PVA_CGROUP, "FragmentPath": str(fragment),
+        "DropInPaths": "", "User": "", "ExecStart": "{ path=" + str(daemon) + " ; argv[]=private synthetic argument ; }",
+    }
+    calls = []
+    failures = {}
+
+    def run(argv, timeout):
+        calls.append((argv, timeout))
+        if "systemctl" in argv[0]:
+            name = "service"
+            output = "\n".join(key + "=" + value for key, value in metadata.items()).encode()
+        elif "--show" in argv:
+            name, output = "installed", b"install ok installed\n"
+        else:
+            name, output = "owned", ("pva-allow-2: " + str(fragment) + "\npva-allow-2: " + str(daemon) + "\n").encode()
+        return operator.ChildResult(failures.get(name, "completed"), 0, output, True)
+
+    return SimpleNamespace(runner=SimpleNamespace(run=run), metadata=metadata, calls=calls,
+                           failures=failures, daemon=daemon, checksums=checksums)
+
+
+def test_pva_identity_requires_installed_package_launch_metadata_and_checksums(operator, pva_identity):
+    assert operator.verified_pva_main_pid(pva_identity.runner) == 4214
+    assert len(pva_identity.calls) == 3 and all(timeout == 3 for _, timeout in pva_identity.calls)
+    assert all(argv[0] in ("/usr/bin/systemctl", "/usr/bin/dpkg-query") for argv, _ in pva_identity.calls)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("Id", "other.service"), ("LoadState", "not-found"), ("ActiveState", "inactive"),
+    ("SubState", "dead"), ("MainPID", "0"), ("ControlGroup", "/user.slice/nvidia-pva-allowd.service"),
+    ("FragmentPath", "/tmp/untrusted.service"), ("DropInPaths", "/etc/override.conf"),
+    ("User", "maintainer"), ("ExecStart", "{ path=/tmp/other.py ; argv[]=hidden ; }"),
+])
+def test_unverified_pva_metadata_is_not_exempt(operator, pva_identity, field, value):
+    pva_identity.metadata[field] = value
+    assert operator.verified_pva_main_pid(pva_identity.runner) is None
+
+
+@pytest.mark.parametrize("failure", ["service", "installed", "owned", "changed_launcher", "bad_checksum_record"])
+def test_pva_identity_failures_keep_python_unclassified(operator, pva_identity, failure):
+    if failure == "changed_launcher":
+        pva_identity.daemon.write_bytes(b"changed launcher")
+    elif failure == "bad_checksum_record":
+        pva_identity.checksums.write_text("malformed")
+    else:
+        pva_identity.failures[failure] = "timeout"
+    assert operator.verified_pva_main_pid(pva_identity.runner) is None
+
+
+class FakeProc:
+    def __init__(self, pid, cgroup, uid=0):
+        self.name = str(pid)
+        self.cgroup = cgroup
+        self.uid = uid
+
+    def stat(self):
+        return SimpleNamespace(st_uid=self.uid)
+
+    def __truediv__(self, name):
+        assert name in ("comm", "cgroup")
+        return SimpleNamespace(read_text=lambda: "python3\n" if name == "comm" else self.cgroup)
+
+
+@pytest.mark.parametrize("cgroup,uid,expected", [
+    ("0::/system.slice/nvidia-pva-allowd.service\n", 0, True),
+    ("0::/system.slice/nvidia-pva-allowd.service\n", 1000, False),
+    ("0::/system.slice/nvidia-pva-allowd.service/child\n", 0, False),
+    ("0::/system.slice/other.service\n", 0, False),
+])
+def test_only_exact_root_pva_cgroup_is_a_candidate(operator, cgroup, uid, expected):
+    assert operator.pva_cgroup_member(FakeProc(4214, cgroup, uid)) is expected
+
+
+@pytest.mark.parametrize("verified_pid,unknown_present", [(4214, False), (4214, True), (None, False), (9999, False)])
+def test_context_exempts_only_verified_pva_main_pid_and_preserves_memory_and_other_refusals(
+    operator, monkeypatch, tmp_path, verified_pid, unknown_present,
+):
+    entries = [FakeProc(4214, "0::" + operator.PVA_CGROUP + "\n")]
+    if unknown_present:
+        entries.append(FakeProc(4215, "0::/system.slice/unrelated.service\n"))
+    asset = tmp_path / "asset"
+    asset.write_text("synthetic asset")
+    real_path = Path
+
+    def fake_path(value):
+        if str(value) == "/proc":
+            return SimpleNamespace(iterdir=lambda: iter(entries))
+        if str(value) == "/proc/sys/kernel/random/boot_id":
+            return SimpleNamespace(read_text=lambda: BOOT)
+        if str(value) == operator.profile.L4T_LIBCUDA:
+            return asset
+        return real_path(value)
+
+    monkeypatch.setattr(operator, "Path", fake_path)
+    monkeypatch.setattr(operator.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(operator, "verified_pva_main_pid", lambda runner: verified_pid)
+    monkeypatch.setattr(operator.profile, "parse_args", lambda argv: SimpleNamespace(python=asset, llama=asset))
+    monkeypatch.setattr(operator.profile, "model_files", lambda args: {})
+    monkeypatch.setattr(operator.profile, "port_in_use", lambda port: False)
+    context = operator.SystemBackend().context()
+    expected_unknown = int(verified_pid != 4214) + int(unknown_present)
+    assert context["workloads"]["python_unclassified"]["count"] == expected_unknown
+    assert bool(context["known_system_services"]) is (verified_pid == 4214)
+    if verified_pid == 4214:
+        assert context["known_system_services"][operator.PVA_UNIT]["pids"] == [4214]
+    backend = FakeBackend()
+    backend.context_overrides = context
+    result = operator.execute("check9", backend, tmp_path)
+    assert result["inspection"]["memory"]["pressure_bytes"] == 1_000_000_000
+    assert ("python_unclassified" in result["inspection"]["workload_refusals"]) is bool(expected_unknown)
+    if expected_unknown:
+        assert hardware_children(backend) == []
+    assert "private synthetic argument" not in json.dumps(result)
