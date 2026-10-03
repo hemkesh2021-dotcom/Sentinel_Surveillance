@@ -1,6 +1,6 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-03, session 5: check 8 (U17 demo profile) recorded as the maintainer's measurement and admitted as provisional with its exceedance (D33); the demo face cadence set to 1 Hz (D34); Claude's follow-up diagnostics of the detector, face and scene results; open issues U19–U21. Session 4: session 3's record completed (V2-01 device checks run by Claude on 2026-09-29, the maintainer's decisions D26–D29, the U17 demo-profile script whose run is PENDING as check 8), answers on check 3b and GPU memory (U18, check 9 PENDING), and V2-13, V2-14 and V2-15 in demo form (D30–D32). Requirements come from the v2 beta implementation guide (V2-01…V2-56 backlog), and corrections and regression cases from the 23 September audit review. Both documents are local-only (see D13).
+Last updated 2026-10-03, session 5: check 8 (U17 demo profile) recorded as the maintainer's measurement and admitted as provisional with its exceedance (D33); the demo face cadence set to 1 Hz (D34); Claude's follow-up diagnostics of the detector, face and scene results; open issues U19–U21; V2-28 in demo form (D35). Session 4: session 3's record completed (V2-01 device checks run by Claude on 2026-09-29, the maintainer's decisions D26–D29, the U17 demo-profile script whose run is PENDING as check 8), answers on check 3b and GPU memory (U18, check 9 PENDING), and V2-13, V2-14 and V2-15 in demo form (D30–D32). Requirements come from the v2 beta implementation guide (V2-01…V2-56 backlog), and corrections and regression cases from the 23 September audit review. Both documents are local-only (see D13).
 
 ## Position
 
@@ -16,7 +16,7 @@ Last updated 2026-10-03, session 5: check 8 (U17 demo profile) recorded as the m
 | Session 5 (2026-10-03) | See the session 5 log |
 | Working tree | Clean after the session 4 commits, apart from ignored environments/build output and local-only files excluded through `.git/info/exclude` |
 | Local-only files | The v2 guide, the audit review and `docs/LOCAL_NOTES.md` (device-specific notes). A fresh clone does not contain them, although CLAUDE.md names the first two. |
-| Selected package | V2-28 incident side (session 5). Then the week-2 device adapters and D-1. V2-01's checks 1 (`nvpmodel` only), 3, 5 and 6 were run by Claude in session 3; check 8 was run by the maintainer on 2026-10-03 (D33); check 9 (U18) is PENDING. |
+| Selected package | V2-28 demo form done (session 5). Next: the week-2 device adapters and D-1, after check 9 and the U20/U21 decisions. V2-01's checks 1 (`nvpmodel` only), 3, 5 and 6 were run by Claude in session 3; check 8 was run by the maintainer on 2026-10-03 (D33); check 9 (U18) is PENDING. |
 | Other branches | `origin/Yogeshvar425-patch-1` (teammate) is **not merged**: a single commit `6755796` that adds @Yogeshvar425 to `.github/CODEOWNERS` (merge base `c66ebde`). `origin/codex/github-audit-fixes-2026-09-19` is already in `master` via PR #4. |
 | Effort | Per-package estimates are in the package table (given to the maintainer on 2026-09-29). The re-estimate of optimization effort still waits for V2-01's B0 run. |
 | v1 on this device | **Not running** (maintainer, 2026-09-29). Checks must not assume v1 processes exist. |
@@ -24,10 +24,11 @@ Last updated 2026-10-03, session 5: check 8 (U17 demo profile) recorded as the m
 
 ## Next concrete task
 
-1. **V2-28, demo form (incident side):** late scene evidence and enrichment annotate only their own incident in the store (append evidence via `IncidentService`, never a new incident or a status change). Small; the scene side is done.
+1. **Maintainer decisions and check 9:** U20 (constrained scene output, and whether to keep llama.cpp b8932), U21 (re-run check 8 with attribution), confirm the replay clip's content; run check 9 (U18).
 2. **Week 2 device adapters:** record check 8's provisional demo profiles (D33) in the adapter registry's known profiles; settle U18 once check 9 is back. Then capture through `~/onvif_env`'s OpenCV/FFmpeg (D24); the legacy engine plus ByteTrack; interim face adapter at 1 Hz (D34) and llama-server adapter (constrained output if U20 is accepted); and `sentinel run` (D-1) with the D27 GPU guard and the U18 memory precheck. `sentinel run` hands every zone observation and hazard candidate to `IncidentService.record()` and acknowledges it only after that returns (D31). It runs `OutboxWorker` in its own thread with `TelegramNotifier.from_environment(timeout_s=notifications.request_timeout_s)` only if `telegram` is listed (D32).
 3. **V2-15 device check (maintainer):** one real Telegram send from the device with the maintainer's bot, after D-1 wiring.
-4. **V2-13, rest (after the demo):** directed line crossing and a decision on hysteresis (D30).
+4. **U19/U21 instrumentation** (portable part, can start now): add `Shmem`, `Unevictable`, `Mlocked`, `SUnreclaim`, `KReclaimable` and `CmaFree` to `demo_profile.py`'s sampler and torch allocator statistics to `demo_workload.py`, so the check 8 re-run can attribute the ramp and the unload residue.
+5. **V2-13, rest (after the demo):** directed line crossing and a decision on hysteresis (D30).
 
 ## Oct 20 demo milestone: plan and deviations from the guide order
 
@@ -87,7 +88,7 @@ Estimates as given to the maintainer on 2026-09-29. V2-49 has since been done.
 | V2-25 | Face association/alignment/runtime adapter | partial | Jetson | yes: **demo form, full acceptance pending** | 2 | 4 | 20, 24 |
 | V2-26 | Small VLM vs existing model comparison | not started | Jetson | yes: **demo form, full acceptance pending** | 2 | 5 | 09, 24 |
 | V2-27 | Enrollment/revoke screens | not started | Portable + device check | no | 1 | 0.5 | 20, 25 |
-| V2-28 | Evidence enrichment isolation | partial | Portable | yes: **demo form, full acceptance pending** | 0.5 | 0 | 14, 26 |
+| V2-28 | Evidence enrichment isolation | partial: demo form done (scene and store sides) | Portable | yes: **demo form, full acceptance pending** | 0.5 | 0 | 14, 26 |
 | V2-29 | Admission/degradation controller | not started | Jetson | no | 2.5 | 3 | 09, 25, 26 |
 | V2-30 | H3 pressure experiment and analysis | not started | Jetson | no | 1.5 | 5 | 29 |
 | V2-31 | Recovery actions, diagnostic redaction | not started | Portable + device check | no | 1 | 1 | 19, 29 |
@@ -139,7 +140,7 @@ Notes on partial and in-progress rows:
   - V2-16: only the scene-hazard correlation.
   - V2-20: validated in-memory enrollment only.
   - V2-25: the association and identity core is done; the adapter, alignment, vectorized matching and report are not.
-  - V2-28: the scene side is done; the incident side waits for V2-14.
+  - V2-28: demo form done (session 5): the scene lane routes late evidence (session 2) and `IncidentService.annotate()` stores it on its own incident only (D35). Not done: wiring into `sentinel run` (D-1), display on the status page (D-2), and revalidation with the real scene adapter (V2-26) and after V2-11.
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
 
 ## Session 5 log (2026-10-03)
@@ -188,6 +189,32 @@ Run with VS Code and Claude Code open, on the same boot. Model output, frames an
    - Over the same period, workload RSS (2.00 → 1.79 GB) and llama-server PSS (about 1.66–1.69 GB) stayed flat.
    - When the workload exited, used memory fell by about 3.2 GB (5.25 → 2.02 GB), far more than its cold loads (+1.24 GB). The growth was therefore most likely GPU-side memory of the workload process: on Jetson, CUDA allocations by torch, TensorRT and Ultralytics do not appear in RSS. This is not attributed yet.
    - **The steady median and p95 describe a ramp, not a plateau**, and the 5.35 GB peak may be where free memory ran out rather than what the workload needs (U21).
+
+### V2-28 demo form (incident side): what was added (`45d9ba3`)
+
+| Path | Purpose |
+|---|---|
+| `src/sentinel/storage/database.py` | Migration 2: `incident_annotations` (evidence ID unique, incident, kind, status, producer and revision, applicability on arrival, source time, recorded time, payload ≤ 8,192 characters). Version 1 databases upgrade in place. |
+| `src/sentinel/incidents/service.py` | `IncidentService.annotate(evidence, applicability)` and `annotations(incident_id)` (D35) |
+| `tests/unit/test_incidents.py` (+6) | Late fire report on A: A's status, severity, title and times unchanged, no new incident, no outbox row, B untouched, and an operator holding A's old revision must reload; a repeat after a restart is a duplicate; evidence naming no incident is not stored; unknown incident, another camera and oversized payload refused; resolved incident stays resolved under a timeout and a late result; v1 → v2 upgrade keeps incidents |
+| `tests/replay/test_v2_28_enrichment.py` (1) | R3's late-fire timeline into a real store, with `inc-A` and `inc-B` opened by zone signals at their timeline times: periodic reports are not stored, A gets `job-2.timeout` (current) and `job-2.observed.late` (expired), B gets nothing, nothing escalates or notifies, and replaying everything after a restart changes nothing. B0 v1 sends a fire alert at 11.5 s on the same answers. |
+
+**V2-28 mutation sweep (one-off; script not committed): 12/12** in the first round. Mutations: annotate the newest unresolved incident instead of its own; no deduplication; an observed fire escalates severity; a late result reopens a resolved incident; annotation notifies; no camera check; no revision bump; periodic evidence attached to the newest incident; applicability not stored; nothing written; unknown incident raises; no size bound. The last one may have been caught by the table's `CHECK` rather than the outcome check; the bound holds either way.
+
+### Session 5 verification: exact commands and results
+
+All ran on 2026-10-03 on the Jetson from `~/sentinel-surveillance`. Nothing was installed into or written to `~/onvif_env` (`find -newer` on a marker: 0 files).
+
+```bash
+.venv/bin/python -m pytest                                  # 207 passed in 6.5s (Python 3.10.14, pydantic 2.13.5)
+.venv/bin/sentinel config validate config/default.yaml      # valid, exit 0
+/usr/bin/python3 -m py_compile benchmarks/runner/*.py       # ok; demo_profile.py --help shows --face-hz
+```
+
+- Each session 5 commit passes on its own (archive loop): `c865f14` 200 · `45d9ba3` 207 passed.
+- Clean archive of `45d9ba3` on Python 3.12.3 (fresh venv): 207 passed.
+- Inside `~/onvif_env` (`PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src`, database in the session scratchpad; pydantic 2.12.5, SQLite 3.45.1): a zone signal recorded, then a timeout annotation: `annotated`, then `duplicate`, status `open`.
+- The detector, face and VLM diagnostics above, with their limits.
 
 ## Session 4 slice log (2026-10-03)
 
@@ -557,6 +584,7 @@ D14–D21 are implementation decisions made in session 2 within the guide's rule
   4. **Face without TensorFlow (V2-25, later):** +0.45 GB. ONNX Runtime is already in `~/onvif_env`; this needs a converted model and a parity check.
 - **D34. Demo face cadence 1 Hz** (maintainer decision, 2026-10-03). Check 8 measured the CPU face stage at p50 896 ms and p95 922 ms per run. At 2 Hz configured it reached 1.12 Hz, meaning it ran back to back and the configured rate was never met. 1 Hz is achievable with about 78 ms margin at p95; with two consistent votes (D19), an identity can settle about 2 s after a face is visible. The face thread is still busy about 90 % of the time at 1 Hz, so its CPU share drops only a little from check 8's. `demo_profile.py` and `demo_workload.py` now default to 1 Hz, and the D-1 face adapter uses 1 Hz.
 
+- **D35. Enrichment annotations (V2-28 demo form; session 5 implementation decision, not yet reviewed).** Worker evidence that names an incident (a scene report, timeout, error or skipped job from an enrichment request) is appended to that incident's annotations in one transaction, whatever its age and the incident's status, including resolved or dismissed incidents. The incident's status, severity, title, observation times and outbox never change; only `revision` and `updated_utc` move, as for an ENDED note, so a screen showing the incident without the new evidence gets a revision conflict and reloads. The evidence ID is the deduplication key: lane job IDs carry a random per-lane prefix, so they do not repeat across restarts. Evidence that names no incident (periodic checks) is never attached to an incident by time or proximity. Unknown incidents, evidence about another camera's frames and payloads over 8,192 characters are refused and nothing is stored. Applicability on arrival (current, expired, superseded epoch, ...) is stored for display only. `sentinel run` (D-1) passes every `CoreOutput.evidence` item with `routing.annotates` to `annotate(evidence, routing.applicability)`, and requests enrichment with the incident ID that `record()` returned.
 ## Unresolved decisions and semantics
 
 - **U1.** Resolved by D14.
@@ -582,7 +610,7 @@ D14–D21 are implementation decisions made in session 2 within the guide's rule
   - Proposal: the scene adapter sends the SceneReport JSON Schema, generated from the model class so the two cannot drift, as llama-server's `response_format`. `parse_scene_report` stays the unchanged authority: the grammar helps generation and is never trusted.
   - Ask for brevity in the prompt so that the grammar does not cut summaries mid-word: "summary: one short sentence" and "up to 3 short observations". The schema itself is unchanged (at most 5 observations of at most 80 characters).
   - Treat `finish_reason: length` as its own error ("truncated"). Keep `max_tokens` 200 (at most 183 were used with the schema).
-  - The schema feature is tied to llama.cpp build b8932; record the build in the adapter manifest.
+  - **Build (audit, "Other claims: Grammar").** The audit asks for a tested descendant of llama.cpp PR #24377 (merged 2026-06-10). That PR fixes the LFM2/LFM2.5 chat handlers silently ignoring `json_schema`. The device's build b8932 (`98dc1418e`, 2026-04-25) predates it. Both reproduction runs logged `Chat format: peg-native` on all 48 requests, not the LFM2 handler (this model's template lacks the tool-list markers that `is_lfm2_template()` detects), and the outputs show enforcement: no fences, and summaries cut at exactly 160 characters. So on b8932 with this model file and template, the schema is applied. Options: keep b8932 for the demo on this evidence, or rebuild llama.cpp at a tested descendant of the fix (a runtime dependency change: maintainer decision; it repeats checks 3b and 8 for the scene component). Either way, record the build and chat format in the adapter manifest. If a later build or template ignores the schema, strict parsing turns that into a visible invalid-report rate, never accepted output.
   - Not tested yet: the shorter prompt wording. Rejected alternative: loosening the limits or repairing output (ch. 13 forbids repair).
 - **U21. Memory ramp in check 8's steady phase.** About +0.12 GB per minute until MemFree ran out; most likely GPU memory in the workload process (session 5 log). Before D-1 relies on the profile, re-run check 8 for at least 30 minutes of steady phase, with attribution (torch `memory_reserved`/`memory_allocated` from the workload; the extra meminfo fields of U19), the D34 cadence and, if U20 is accepted, the schema. Needs script changes first. Not started.
 
