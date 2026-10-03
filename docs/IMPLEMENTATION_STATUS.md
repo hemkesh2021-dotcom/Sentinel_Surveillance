@@ -1,6 +1,6 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-03, end of session 4: session 3's record completed (V2-01 device checks run by Claude on 2026-09-29, the maintainer's decisions D26–D29, the U17 demo-profile script whose run is PENDING as check 8), answers on check 3b and GPU memory (U18, check 9 PENDING), and V2-13, V2-14 and V2-15 in demo form (D30–D32). Requirements come from the v2 beta implementation guide (V2-01…V2-56 backlog), and corrections and regression cases from the 23 September audit review. Both documents are local-only (see D13).
+Last updated 2026-10-03, session 5: check 8 (U17 demo profile) recorded as the maintainer's measurement and admitted as provisional with its exceedance (D33); the demo face cadence set to 1 Hz (D34); Claude's follow-up diagnostics of the detector, face and scene results; open issues U19–U21. Session 4: session 3's record completed (V2-01 device checks run by Claude on 2026-09-29, the maintainer's decisions D26–D29, the U17 demo-profile script whose run is PENDING as check 8), answers on check 3b and GPU memory (U18, check 9 PENDING), and V2-13, V2-14 and V2-15 in demo form (D30–D32). Requirements come from the v2 beta implementation guide (V2-01…V2-56 backlog), and corrections and regression cases from the 23 September audit review. Both documents are local-only (see D13).
 
 ## Position
 
@@ -13,18 +13,19 @@ Last updated 2026-10-03, end of session 4: session 3's record completed (V2-01 d
 | Session 2 commits | `4587021` PTS tolerance at ingest · `812b42c` V2-01 records · `e81db81` replay timelines · `86889f8` scene lane (R3) · `432dc69` live state and freshness (R2) · `66937ef` face association and identity (R1) · `48d6188` status record · `9593b64` adapter manifests (V2-49) · `32985c2` maintainer decisions D22–D24 |
 | Session 3 work (2026-09-29) | Interrupted by a usage limit before anything was committed; committed in session 4 as the first commit below |
 | Session 4 commits (2026-10-03) | See the session 4 slice log |
+| Session 5 (2026-10-03) | See the session 5 log |
 | Working tree | Clean after the session 4 commits, apart from ignored environments/build output and local-only files excluded through `.git/info/exclude` |
 | Local-only files | The v2 guide, the audit review and `docs/LOCAL_NOTES.md` (device-specific notes). A fresh clone does not contain them, although CLAUDE.md names the first two. |
-| Selected package | Week 1 portable packages done in demo form (V2-13, V2-14, V2-15). Next: V2-28 incident side, then the week-2 device adapters and D-1 once checks 8 and 9 are back. V2-01's checks 1 (`nvpmodel` only), 3, 5 and 6 were run by Claude in session 3; check 8 (U17 profile) and check 9 (U18) are PENDING. |
+| Selected package | V2-28 incident side (session 5). Then the week-2 device adapters and D-1. V2-01's checks 1 (`nvpmodel` only), 3, 5 and 6 were run by Claude in session 3; check 8 was run by the maintainer on 2026-10-03 (D33); check 9 (U18) is PENDING. |
 | Other branches | `origin/Yogeshvar425-patch-1` (teammate) is **not merged**: a single commit `6755796` that adds @Yogeshvar425 to `.github/CODEOWNERS` (merge base `c66ebde`). `origin/codex/github-audit-fixes-2026-09-19` is already in `master` via PR #4. |
 | Effort | Per-package estimates are in the package table (given to the maintainer on 2026-09-29). The re-estimate of optimization effort still waits for V2-01's B0 run. |
 | v1 on this device | **Not running** (maintainer, 2026-09-29). Checks must not assume v1 processes exist. |
-| Waiting on the maintainer | **Check 8** (U17 demo resource profile, about 15 minutes, headless with VS Code and Claude Code closed; needed before D-1 admits the demo adapters). **Check 9** (U18: GPU allocations beyond MemFree, with and without unified memory; about 5 minutes; needed before D-1 fixes its memory precheck). Then the rest of check 2 (keyframe spacing, bitrate, camera encoder options) and the V2-04 clean-laptop (macOS) run. |
+| Waiting on the maintainer | **Check 9** (U18: GPU allocations beyond MemFree, with and without unified memory; about 5 minutes; needed before D-1 fixes its memory precheck). Decisions on **U20** (constrained scene output) and **U21** (re-run check 8 with attribution), and confirmation of the replay clip's content (session 5 log). Then the rest of check 2 and the V2-04 clean-laptop (macOS) run. |
 
 ## Next concrete task
 
 1. **V2-28, demo form (incident side):** late scene evidence and enrichment annotate only their own incident in the store (append evidence via `IncidentService`, never a new incident or a status change). Small; the scene side is done.
-2. **Week 2 device adapters**, once checks 8 and 9 are back: record the provisional demo profiles (D28) in the adapter registry's known profiles and settle U18. Then capture through `~/onvif_env`'s OpenCV/FFmpeg (D24); the legacy engine plus ByteTrack; interim face and llama-server adapters; and `sentinel run` (D-1) with the D27 GPU guard and the U18 memory precheck. `sentinel run` hands every zone observation and hazard candidate to `IncidentService.record()` and acknowledges it only after that returns (D31). It runs `OutboxWorker` in its own thread with `TelegramNotifier.from_environment(timeout_s=notifications.request_timeout_s)` only if `telegram` is listed (D32).
+2. **Week 2 device adapters:** record check 8's provisional demo profiles (D33) in the adapter registry's known profiles; settle U18 once check 9 is back. Then capture through `~/onvif_env`'s OpenCV/FFmpeg (D24); the legacy engine plus ByteTrack; interim face adapter at 1 Hz (D34) and llama-server adapter (constrained output if U20 is accepted); and `sentinel run` (D-1) with the D27 GPU guard and the U18 memory precheck. `sentinel run` hands every zone observation and hazard candidate to `IncidentService.record()` and acknowledges it only after that returns (D31). It runs `OutboxWorker` in its own thread with `TelegramNotifier.from_environment(timeout_s=notifications.request_timeout_s)` only if `telegram` is listed (D32).
 3. **V2-15 device check (maintainer):** one real Telegram send from the device with the maintainer's bot, after D-1 wiring.
 4. **V2-13, rest (after the demo):** directed line crossing and a decision on hysteresis (D30).
 
@@ -35,7 +36,7 @@ Target (maintainer, 2026-09-29): a demoable end-to-end path on this Jetson by 20
 | Week | Work | Status |
 |---|---|---|
 | 1 (to Oct 6) | V2-49; V2-13 zone rule; V2-14 SQLite incidents/outbox; V2-15 leased outbox + Telegram (mocked). All portable. | V2-49 done. Demo form done: V2-13 (restricted + dwell; crossing deferred), V2-14, V2-15 (mocked); these count as partial (D23). |
-| 2 (to Oct 13) | Device adapters (D24): capture from the substream (profile A, D22) with `~/onvif_env`'s OpenCV/FFmpeg software decode, video only, stamped by FrameStamper; detector + ByteTrack via the existing `yolov8n.engine` as the *legacy parity adapter*; interim face adapter (existing DeepFace/Facenet512 on CPU) feeding v2 association; llama-server scene adapter; `sentinel run` loop around `EdgeCore` | Checks 3 and 5 done; U13 settled (D27); U17 settled (D28), its profile run (check 8) PENDING; U18 open |
+| 2 (to Oct 13) | Device adapters (D24): capture from the substream (profile A, D22) with `~/onvif_env`'s OpenCV/FFmpeg software decode, video only, stamped by FrameStamper; detector + ByteTrack via the existing `yolov8n.engine` as the *legacy parity adapter*; interim face adapter (existing DeepFace/Facenet512 on CPU) feeding v2 association; llama-server scene adapter; `sentinel run` loop around `EdgeCore` | Checks 3 and 5 done; U13 settled (D27); U17 settled (D28, D33: check 8 run 2026-10-03); U18 open (check 9); U20, U21 need decisions |
 | 3 (to Oct 20) | Loopback-only, read-only status page (stdlib HTTP server) showing LiveState, incidents and delivery outcomes; end-to-end rehearsal; demo script including camera loss and recovery | — |
 
 **Deviations from the guide's order.** Accepted by the maintainer (D23) **on condition that every affected package is marked "demo form, full acceptance pending" in this file and is not counted done.** The package table applies that marking.
@@ -59,7 +60,7 @@ Estimates as given to the maintainer on 2026-09-29. V2-49 has since been done.
 
 | Package | Title | Status | Portable or Jetson | Oct 20 path | Claude h | Maintainer Jetson h | Depends on |
 |---|---|---|---|---|---|---|---|
-| V2-01 | Hardware and v1 timing/memory baseline | in progress | Jetson | yes (checks 3, 5 done; 8, 9 pending) | 1.5 | 3 | — |
+| V2-01 | Hardware and v1 timing/memory baseline | in progress | Jetson | yes (checks 3, 5, 8 done; 9 pending) | 1.5 | 3 | — |
 | V2-02 | Config, frame/evidence contracts, fake clock | done | Portable | yes | 0 | 0 | — |
 | V2-03 | Replay fixtures, first identity/empty-scene fixes | done | Portable | yes | 0 | 0 | — |
 | V2-04 | Dev setup and CI skeleton | in progress | Portable | no | 0.5 | 0 | — |
@@ -128,7 +129,7 @@ Estimates as given to the maintainer on 2026-09-29. V2-49 has since been done.
 Notes on partial and in-progress rows:
 
 - **In progress:**
-  - V2-01: records and checks 1 (`nvpmodel`), 3, 5 and 6 are done (session 3). Checks 2 (rest), 8 and 9, the B0 run, trace contract, CPU budget and re-estimate are pending.
+  - V2-01: records and checks 1 (`nvpmodel`), 3, 5 and 6 are done (session 3); check 8 and the headless idle baseline (0.970 GB) by the maintainer on 2026-10-03. Checks 2 (rest) and 9, the B0 run, trace contract, CPU budget and re-estimate are pending.
   - V2-04: GitHub Actions passed at `32985c2` (maintainer report). The clean-laptop (macOS) run is not done.
 - **Done:** V2-03 with synthetic replays only; real-clip replay needs V2-07. V2-49's registry is empty until real adapters land, and its unknown-profile rule makes every model adapter unavailable until check 8's provisional profiles are recorded (D28).
 - **Partial:**
@@ -139,7 +140,54 @@ Notes on partial and in-progress rows:
   - V2-20: validated in-memory enrollment only.
   - V2-25: the association and identity core is done; the adapter, alignment, vectorized matching and report are not.
   - V2-28: the scene side is done; the incident side waits for V2-14.
-  - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done.
+  - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 5 log (2026-10-03)
+
+### Check 8: demo resource profile (maintainer's measurement)
+
+Run `demo-profile-20261003T085010Z`, run by the maintainer on 2026-10-03 from 08:50 to 09:04 UTC. Headless (display manager inactive, no desktop processes, no dev tools), after `drop_caches`, with MemFree at 6.83 GB at the baseline. Repository at `d85eb1e` with no tracked changes; GPU guard (D27) passed: 17/17 layers and the vision encoder on CUDA0, only L4T's libcuda mapped, `cuInit` 0 in the workload. Input: the replay clip now named `room_static_60s_2026-09-29.mp4` (formerly `one_person_2026-09-29_1606.mp4`; Claude re-checked that its SHA-256 is unchanged), looped 11 times. Output stays in `~/sentinel-runs/<run id>/`. One cold load and one combined run: a provisional-demo profile (D28, D33), not a benchmark or gate result. Memory is whole-device `MemTotal − MemAvailable` in decimal bytes.
+
+| Item | Result |
+|---|---|
+| Baseline | 0.906 GB (median of 30 s) |
+| Cold loads, one after another | scene (llama-server) 4.1 s, +1.728 GB settled · detector 12.72 s, +0.791 GB · face 15.75 s, +0.453 GB |
+| Run peak (includes cold loads) | **5.350 GB**: 50 MB under the 5.4 GB ceiling |
+| Steady phase (600 s) | median **5.036 GB**, p95 **5.347 GB**: above the 5.0 GB target (but see "memory ramp" below) |
+| Swap | at most 0.79 MB used; 0 pages swapped in and 168 out during the steady phase |
+| Per process (not additive) | llama-server peak RSS 3.296 GB, PSS 1.686 GB · workload peak RSS 2.007 GB, PSS 1.837 GB |
+| Detector | 9,000 of 9,000 source frames at 15.0 fps; latency p50 45.4 ms, p95 56.4, max 76.3; a person on 9,000 frames, at most 3 |
+| Face | 671 runs, **1.12 Hz achieved against 2.0 Hz configured**; p50 896 ms, p95 922 ms; faces in 82 runs; no errors |
+| Scene | 150 completed; p50 3.63 s, p95 4.32 s, max 4.47 s; none over the 8 s D16 timeout; **5 valid, 145 invalid** reports; mean 305 prompt and 163.6 completion tokens |
+| tegrastats, steady | CPU mean 27.2 % over all cores (busiest 30.6 %); GR3D mean 82.1 %, max 99 %; maximum temperature 72.8 °C (tj, GPU); mean VDD_IN 17.65 W, VDD_CPU_GPU_CV 7.74 W; RAM max 5.187 GB (tegrastats accounting) |
+| Unload | after the workload exits: 0.612 GB below the level before it started · after llama-server stops: **+0.983 GB above the baseline** (U19) |
+
+**Idle baseline (maintainer's measurement).** The earlier run `demo-profile-20261003T084514Z` (08:45 UTC, same boot, headless, no `drop_caches`) completed its 30 s baseline phase and then refused to start the GPU loads, as designed: MemFree was 2.72 GB, below the 3.0 GB precheck (U18), with MemAvailable 6.99 GB and Cached 4.06 GB. Its baseline, **0.970 GB headless idle**, is the idle baseline. Its manifest lists the largest resident processes.
+
+**Run input.** The maintainer's note says the clip shows only the room with no person, and it was renamed for that reason. Claude's check below finds people in every frame. The maintainer is asked to confirm. Either way the clip is unlabelled, so the detection and face counts are not ground truth. The memory and latency numbers stand.
+
+### Claude's follow-up diagnostics (session 5; observations, not measurements)
+
+Run with VS Code and Claude Code open, on the same boot. Model output, frames and annotations were written only under the run directory (modes 0700/0600), never into the repository. llama-server ran twice, bound to 127.0.0.1, and was stopped each time (no process left, port free). Memory and latency from these runs are not recorded as measurements.
+
+1. **Detector and face on the clip** (`annotated/`). Same engine and v1's `track()` arguments on all 901 frames; DeepFace/YuNet on every 10th frame.
+   - A person was detected on 901 of 901 frames (one box on 626, two on 271, three on 4), with confidences from 0.408 to 0.951 (median 0.83). It was the same 901/901 without the tracker.
+   - Faces (confidence > 0) appeared on 12 of 91 sampled frames (13 %), consistent with the run's 82 of 671 runs (12 %).
+   - Claude viewed three annotated frames, a 16-frame contact sheet and an enlarged crop. A person is in the foreground for most of the clip, and a second, small, distant person in another room is visible in the far doorway for the rest. The camera view changes once.
+   - One false positive was found: a chair back at 0.47 (frame 534), next to two real people.
+   - **Conclusion:** the 9,000/9,000 frames reflect mostly true detections, and the clip is not an empty room. If the maintainer agrees, the name `room_static_60s` is misleading.
+2. **Scene reports** (`vlm_repro/`). The run stored no model text (by design: `demo_workload.py` records counts only). Claude reproduced the requests with the same model files, flags, preload, image shape, prompt and temperature on 24 clip frames (every 38th): **1 of 24 valid** (the run had 5 of 150).
+   - All 24 were well-formed JSON objects with the right types; 7 were inside a ```` ```json ```` fence, which the parser accepts. The cause is **not** syntax strictness or the types in the schema.
+   - 16 of 24 had a `summary` of 168–364 characters (limit 160).
+   - 7 of 24 stopped at `max_tokens` 200 (`finish_reason: length`) before reaching `summary`, after five long observations of up to 95 characters (limit 80). In the run, 14 of 179 requests reached 200 tokens.
+   - **Cause: the prompt asks for character limits that the 1.6B model does not follow**, and the schema's bounds are only checked after generation. The schema's limits are reasonable.
+   - **Proposed fix, tested:** the same prompt plus the SceneReport JSON Schema as llama-server's `response_format`. llama.cpp compiles it to a grammar; build b8932 supports `maxLength`, `maxItems`, integer bounds, enums and `additionalProperties: false`. Result: **24 of 24 valid**; 121–183 completion tokens; p50 2.9 s, max 3.7 s. Side effect: 22 of 24 summaries stop at exactly 160 characters, mid-word, because the grammar cuts them off rather than the model writing less. See U20.
+   - **Person counts.** What the run's 5 valid reports said is unknown, because the run did not record report content. In the reproduction, the one valid unconstrained report said 1. With the schema, reports said 1 on 17 frames, 2 on 3 and 0 on 4. All four zero frames (418, 798, 836, 874) contain a person cut off at the frame edge and/or the small distant person. These are VLM misses, not empty frames. Occupancy never comes from the VLM (D18).
+3. **Memory ramp (from the run's `memory.csv`).**
+   - Used memory rose by about 0.12 GB per minute, from 4.24 GB at the start of warm-up to 5.30 GB in minute 9 of the 12-minute window. It flattened at 5.32–5.35 GB only when MemFree reached its floor (0.175 GB) and pages began to be swapped out.
+   - Over the same period, workload RSS (2.00 → 1.79 GB) and llama-server PSS (about 1.66–1.69 GB) stayed flat.
+   - When the workload exited, used memory fell by about 3.2 GB (5.25 → 2.02 GB), far more than its cold loads (+1.24 GB). The growth was therefore most likely GPU-side memory of the workload process: on Jetson, CUDA allocations by torch, TensorRT and Ultralytics do not appear in RSS. This is not attributed yet.
+   - **The steady median and p95 describe a ramp, not a plateau**, and the 5.35 GB peak may be where free memory ran out rather than what the workload needs (U21).
 
 ## Session 4 slice log (2026-10-03)
 
@@ -229,7 +277,7 @@ Session 3 hit a usage limit before it committed or finished this record. Its res
 ### Session 3 verification (Claude, on this device, with a desktop running)
 
 - Device checks 1, 3a, 3b, 5 and 6: results in the V2-01 inventory.
-- `demo_profile.py` smoke runs, all with `--allow-desktop --allow-dev-tools` and shortened phases, so **none is a profile**. A full orchestration run with a stand-in llama-server exited cleanly and produced its summary. A 20 s workload run on the one-person clip held 15 fps on the detector (p95 58 ms); face analysis took about 1 s per run on the CPU, so it reached about 1 Hz rather than the 2 Hz target. The real llama-server could not load alongside it, because MemFree stayed below what it needs (U18). These smoke runs caught and fixed three script bugs.
+- `demo_profile.py` smoke runs, all with `--allow-desktop --allow-dev-tools` and shortened phases, so **none is a profile**. A full orchestration run with a stand-in llama-server exited cleanly and produced its summary. A 20 s workload run on the replay clip (then named `one_person`) held 15 fps on the detector (p95 58 ms); face analysis took about 1 s per run on the CPU, so it reached about 1 Hz rather than the 2 Hz target. The real llama-server could not load alongside it, because MemFree stayed below what it needs (U18). These smoke runs caught and fixed three script bugs.
 - No demo run and no profile measurement exist yet.
 
 ## Session 2 slice log (2026-09-29)
@@ -431,7 +479,7 @@ unittest discovery ignores `tests/unit/` because it has no `__init__.py`. This a
 
 **Mutation sweep (one-off; the script was not committed).** Each rule below was broken in turn in a scratch copy of `src/`, with that copy on `PYTHONPATH`. The suite failed every time, **16/16**, each through the test aimed at that rule: TTL boundary made inclusive; superseded epochs ignored; boot mismatch ignored; run ID ignored; one run ID shared by all stampers; epoch not incremented on connect; future evidence accepted; predictions refresh track age; failures may carry verdicts; `frame_seq` not advanced; duplicates treated as new; non-UTC offsets accepted; UTC steps move monotonic time; duplicate YAML keys allowed; credentials echoed; offline ≤ stale allowed.
 
-## Not run or not established (sessions 1–4)
+## Not run or not established (sessions 1–5)
 
 - GitHub Actions ran only on the pushed commits up to `32985c2` (maintainer report: both workflows passed). Session 3 and 4 commits are unpushed and have not run in CI.
 - There was no run on a clean laptop (x86-64 or macOS); all checks ran on this Jetson's aarch64 userspace.
@@ -440,7 +488,7 @@ unittest discovery ignores `tests/unit/` because it has no `__init__.py`. This a
 - No v2 code runs on the camera or GPU yet. `EdgeCore`, the incident store and the outbox are exercised only by synthetic replays, mocks and FakeClock smoke runs in `~/onvif_env` (CPU, no camera, no network). No real Telegram message has been sent by v2. The other ch. 18 CLI commands, including `sentinel replay`, were intentionally not added yet.
 - The replay regressions use synthetic timelines, not the maintainer's clips. They record the behaviour of the v2 components and of a documented reference model of v1 (D12), not of the running v1 process.
 - The mutation sweeps are one-off checks whose scripts are not committed.
-- Checks 3a/3b were run by Claude in session 3 (inventory below). Checks 8 and 9 are only syntax-checked (`py_compile`, `--help`); they have not been run. Check 8's script was smoke-tested by Claude with a desktop running and a stand-in or partial workload, which is not a profile.
+- Checks 3a/3b were run by Claude in session 3 (inventory below). Check 8 was run by the maintainer (session 5 log): one run on an unlabelled clip, a provisional profile and not a benchmark; its steady phase was still ramping (U21). Check 9 is only syntax-checked. Claude's session 5 diagnostics (detector, face and VLM reproductions) are observations with dev tools running, not measurements.
 
 ## Decisions
 
@@ -502,6 +550,12 @@ D14–D21 are implementation decisions made in session 2 within the guide's rule
   - Lease and retry times are UTC, because they must survive a restart. A wall-clock step can only cause an early or late retry.
   - **Credentials:** `SENTINEL_TELEGRAM_BOT_TOKEN` and `SENTINEL_TELEGRAM_CHAT_ID` come from the runtime's environment, never the config file. Without them the channel is unavailable and its rows wait. Errors are built from status codes, Telegram's redacted `description` and exception class names, never from URLs or raw exception text, and are redacted again before storage. Messages are plain text: no images, footage or identity data.
 
+- **D33. Check 8 admitted as the provisional demo profile (settles U17)** (maintainer decision, 2026-10-03). Run `demo-profile-20261003T085010Z` is the `provisional-demo` profile (D28) for the scene, detector and face demo adapters, **with its exceedance recorded; it is not a gate.** Recorded exceedance: steady median 5.036 GB and p95 5.347 GB are above the 5.0 GB target (by 36 MB and 347 MB). The run peak, 5.350 GB, is 50 MB under the 5.4 GB ceiling. Claude's note (U21): the steady phase was still ramping, so the margin to the ceiling is not established. The cheapest reductions, by expected effect for the cost (none measured):
+  1. **Attribute and stop the steady ramp (U21):** up to about 1.1 GB between the settled loads (3.88 GB) and the end of the steady phase. It needs one instrumented check 8 re-run (torch allocator statistics in the workload, plus more `/proc/meminfo` fields). If torch's caching allocator is the cause, a cap such as `torch.cuda.set_per_process_memory_fraction` needs no new dependency.
+  2. **llama-server context and batch (flags only):** `--ctx-size` 2048 → 1024 (a request uses at most 505 tokens: 305 prompt + 200 completion) and `--batch-size`/`--ubatch-size` 512 → 256. These shrink the 24 MiB KV and 136 MiB compute buffers. Estimate: tens of MB, at most about 0.1 GB. The full-offload check and latency must be repeated.
+  3. **Detector without torch (V2-09):** the detector's +0.79 GB cold load is mostly torch's CUDA context and Ultralytics, for a 14.5 MB engine that needs 18.9 MB of device memory. A TensorRT-only adapter could remove much of it (unmeasured). Cost: V2-09 (2.5 h Claude, 3 h maintainer) plus a CUDA memory API without torch: `ctypes` to `libcudart`, or a new dependency (a decision).
+  4. **Face without TensorFlow (V2-25, later):** +0.45 GB. ONNX Runtime is already in `~/onvif_env`; this needs a converted model and a parity check.
+- **D34. Demo face cadence 1 Hz** (maintainer decision, 2026-10-03). Check 8 measured the CPU face stage at p50 896 ms and p95 922 ms per run. At 2 Hz configured it reached 1.12 Hz, meaning it ran back to back and the configured rate was never met. 1 Hz is achievable with about 78 ms margin at p95; with two consistent votes (D19), an identity can settle about 2 s after a face is visible. The face thread is still busy about 90 % of the time at 1 Hz, so its CPU share drops only a little from check 8's. `demo_profile.py` and `demo_workload.py` now default to 1 Hz, and the D-1 face adapter uses 1 Hz.
 
 ## Unresolved decisions and semantics
 
@@ -521,8 +575,16 @@ D14–D21 are implementation decisions made in session 2 within the guide's rule
 - **U14.** Resolved for the demo by D24; revisit after Oct 20. Original question: **Runtime environment for hardware adapters.** No existing interpreter has both GStreamer bindings and TensorRT. Options (a)–(c) are in the V2-01 inventory; decide when V2-05 starts.
 - **U15. Identity calibration.** D19's thresholds are placeholders. Calibrate with consented, session-separated identities (V2-07/V2-25) before any identity is shown as more than context.
 - **U16. Face stage cadence.** `EdgeCore.on_frame(..., faces=None)` means the face stage did not run on that frame. Which frames get face analysis, and whether it runs asynchronously in a worker, is V2-25/V2-29 work. The interim demo adapter will run it on sampled frames.
-- **U17.** Resolved by D28; its run (check 8) is PENDING. Original question: **Admitting demo adapters without measured resource profiles.** V2-49 makes every model adapter unavailable until its resource profile is known, and no profile has been measured. Decide in D-1 how the demo admits the interim face and scene adapters. Options: record a provisional, clearly labelled "demo-unmeasured" profile from a first measured cold load, or run them outside the manifest path for the demo only.
+- **U17.** Resolved by D28 and D33 (check 8 run by the maintainer on 2026-10-03, admitted with its exceedance recorded). Original question: **Admitting demo adapters without measured resource profiles.** V2-49 makes every model adapter unavailable until its resource profile is known, and no profile has been measured. Decide in D-1 how the demo admits the interim face and scene adapters. Options: record a provisional, clearly labelled "demo-unmeasured" profile from a first measured cold load, or run them outside the manifest path for the demo only.
 - **U18. Free memory at GPU load** (new, session 3). On this device, GPU allocations failed whenever they exceeded **MemFree**, although MemAvailable was over 4 GB (inventory below). llama.cpp's own fit check uses MemAvailable, so it does not catch this. How does `sentinel run` (D-1) make GPU loads reliable? Options: (a) evict the model files' page cache with `posix_fadvise(DONTNEED)` (no root) and refuse to load below a MemFree threshold, as `demo_profile.py` does (3.0 GB default); (b) drop caches system-wide before loading (root; a system action); (c) load GPU components first, right after boot. Also open: whether allocations made after start-up (llama.cpp compute buffers, larger images) can fail the same way once the page cache refills. **Check 9** settles whether this depends on unified memory (`cudaMallocManaged`) or also affects `cudaMalloc`; decide after it.
+- **U19. Memory left after unload (V2-54, open issue).** After check 8's workload exited and llama-server stopped, used memory was 1.889 GB: **+0.983 GB above the 0.906 GB baseline**, while Cached stayed +2.2 GB above it (0.41 → 2.61 GB). The workload's exit took used memory to 0.612 GB *below* its level with llama-server alone (2.633 → 2.021 GB). Stopping llama-server then freed only 0.13 GB, although its load had added 1.73 GB. Candidate explanations, none tested: page cache that `MemAvailable` does not credit, shared memory, NvMap/CMA pages kept by the driver, or unreclaimable slab. The sampler records none of `Shmem`, `Unevictable`, `Mlocked`, `SUnreclaim`, `KReclaimable` or `CmaFree`. V2-54's unload acceptance cannot pass until this is explained. Next: add those fields to the sampler; after the run, sample again after 60 s, drop the page cache only (`echo 1`), and sample once more; run a second load/unload cycle to see whether the residue accumulates.
+- **U20. Constrained scene output (proposal; maintainer decision needed).** Evidence is in the session 5 log (1/24 valid unconstrained, 24/24 with the schema).
+  - Proposal: the scene adapter sends the SceneReport JSON Schema, generated from the model class so the two cannot drift, as llama-server's `response_format`. `parse_scene_report` stays the unchanged authority: the grammar helps generation and is never trusted.
+  - Ask for brevity in the prompt so that the grammar does not cut summaries mid-word: "summary: one short sentence" and "up to 3 short observations". The schema itself is unchanged (at most 5 observations of at most 80 characters).
+  - Treat `finish_reason: length` as its own error ("truncated"). Keep `max_tokens` 200 (at most 183 were used with the schema).
+  - The schema feature is tied to llama.cpp build b8932; record the build in the adapter manifest.
+  - Not tested yet: the shorter prompt wording. Rejected alternative: loosening the limits or repairing output (ch. 13 forbids repair).
+- **U21. Memory ramp in check 8's steady phase.** About +0.12 GB per minute until MemFree ran out; most likely GPU memory in the workload process (session 5 log). Before D-1 relies on the profile, re-run check 8 for at least 30 minutes of steady phase, with attribution (torch `memory_reserved`/`memory_allocated` from the workload; the extra meminfo fields of U19), the D34 cadence and, if U20 is accepted, the schema. Needs script changes first. Not started.
 
 ## V2-01 inventory so far
 
@@ -545,7 +607,7 @@ Consequences already implemented: `4587021` makes `FrameStamper` keep a missing,
 
 Consequences for later packages: the capture adapter (V2-05) selects only the video stream; v1's 640×480 `cv2.resize` is a no-op in size on this profile (still a copy); a 640×480 source gives a 640×640 letterboxed detector input 25 % padding **if** the engine is 640×640, which the pending binding check settles (audit "engine shape").
 
-**Replay clips.** The maintainer's private recordings stay outside the repository; their location, names and SHA-256 hashes are in the local notes. Probed read-only with ffprobe: `one_person` is 60.0 s, 901 frames, H.264 Main 640×480 at 54060/3601 fps with an AAC-LC 16 kHz mono track; `empty_room` is 455.6 s, 6,832 frames, H.264 Main 640×480 at 204960/13667 (≈15.00) fps, video only. Consent and split manifests belong to V2-07; tests that use them will read a directory from `SENTINEL_REPLAY_CLIPS_DIR` and skip when it is unset.
+**Replay clips.** The maintainer's private recordings stay outside the repository; their location, names and SHA-256 hashes are in the local notes. Probed read-only with ffprobe: `room_static_60s` (renamed 2026-10-03 from `one_person`; same SHA-256; it contains people, see the session 5 log) is 60.0 s, 901 frames, H.264 Main 640×480 at 54060/3601 fps with an AAC-LC 16 kHz mono track; `empty_room` is 455.6 s, 6,832 frames, H.264 Main 640×480 at 204960/13667 (≈15.00) fps, video only. Consent and split manifests belong to V2-07; tests that use them will read a directory from `SENTINEL_REPLAY_CLIPS_DIR` and skip when it is unset.
 
 **Live runs** read the camera URL from `SENTINEL_RTSP_URL`, which the maintainer exports; Sentinel code and commands never print or log it.
 
@@ -673,17 +735,18 @@ No v1 code was migrated in this slice.
 
 ## Hardware checks PENDING (for the maintainer to run; none of these results exist yet)
 
-Checks 1 (`nvpmodel` only), 3, 5 and 6 were run by Claude in session 3 (inventory above), and check 4 was merged into 3b. v1 is not running on this device, so no check assumes v1 processes. Nothing below prints the camera URL or any other secret: commands that open the stream redact any `rtsp://…` with `sed` or discard stderr. Paste outputs back; they will be recorded as maintainer measurements. **Demo priority: check 8, then 9.** Then the rest of check 2. Check 7 and the `gst-inspect` lines wait for V2-05 proper.
+Checks 1 (`nvpmodel` only), 3, 5 and 6 were run by Claude in session 3 (inventory above), check 4 was merged into 3b, and check 8 was run by the maintainer on 2026-10-03 (session 5 log). v1 is not running on this device, so no check assumes v1 processes. Nothing below prints the camera URL or any other secret: commands that open the stream redact any `rtsp://…` with `sed` or discard stderr. Paste outputs back; they will be recorded as maintainer measurements. **Demo priority: check 9.** Then the rest of check 2. Check 7 and the `gst-inspect` lines wait for V2-05 proper.
 
 ```bash
-# 8. NEEDED FOR THE DEMO (U17 -> D28). Demo resource profile, about 15 minutes.
+# 8. DONE by the maintainer, 2026-10-03 (D33). Kept for the U21 re-run, which needs the script
+#    changes listed under U21 first. Demo resource profile, about 15 minutes.
 #    Headless (D29): best right after a reboot, from a plain SSH session, with VS Code and
 #    Claude Code closed and the display manager and any remote-desktop session stopped
 #    (the remote-desktop command is in docs/LOCAL_NOTES.md). The script checks all of this
 #    and refuses to start otherwise; it also needs MemFree >= 3.0 GB (U18).
 sudo systemctl stop display-manager
 cd ~/sentinel-surveillance
-/usr/bin/python3 benchmarks/runner/demo_profile.py --clip "$SENTINEL_REPLAY_CLIPS_DIR"/one_person_*.mp4
+/usr/bin/python3 benchmarks/runner/demo_profile.py --clip "$SENTINEL_REPLAY_CLIPS_DIR"/room_static_60s_2026-09-29.mp4
 #    Paste back the summary it prints (also saved as ~/sentinel-runs/<run id>/summary.txt).
 sudo systemctl start display-manager   # afterwards, if you want the desktop back
 
