@@ -275,7 +275,7 @@ def provenance(args: argparse.Namespace, context: dict[str, object], run_id: str
         "l4t": command_output(["head", "-1", "/etc/nv_tegra_release"]).lstrip("# "),
         "power_mode": " ".join(command_output(["nvpmodel", "-q"]).split()),
         **context,
-        "top_memory_holders": top_memory_holders(),
+        "top_memory_holders": None if args.sanitized_logs else top_memory_holders(),
         "meminfo_at_start": read_meminfo(),
         "repository": {"commit": git_commit, "tracked_changes": git_dirty},
         "scripts_sha256": {path.name: sha256_of(path) for path in (Path(__file__).resolve(), WORKLOAD)},
@@ -425,7 +425,30 @@ def start_llama(args: argparse.Namespace, run_dir: Path):
     log = open(run_dir / "llama-server.log", "wb")
     argv = [str(args.llama), "--model", str(args.model), "--mmproj", str(args.mmproj),
             "--host", "127.0.0.1", "--port", str(args.port), *LLAMA_FLAGS]
-    return subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, env=env), log
+    if not getattr(args, "sanitized_logs", False):
+        return subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, env=env), log
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+    proc.log_pump = threading.Thread(target=pump_llama_diagnostics, args=(proc, log), daemon=True)
+    proc.log_pump.start()
+    return proc, log
+
+
+def pump_llama_diagnostics(proc, log) -> None:
+    """Save only fixed GPU-placement markers and numeric buffer sizes."""
+    try:
+        while line := proc.stdout.readline(65_536):
+            text = line.decode(errors="replace")
+            offload = re.search(r"offloaded (\d+)/(\d+) layers to GPU", text)
+            buffer = re.search(r"buffer size =\s*([\d.]+) MiB", text)
+            if offload:
+                log.write(f"offloaded {offload[1]}/{offload[2]} layers to GPU\n".encode())
+            if "CLIP using CUDA0" in text:
+                log.write(b"CLIP using CUDA0\n")
+            if buffer:
+                log.write(f"diagnostic: buffer size = {buffer[1]} MiB\n".encode())
+            log.flush()
+    except (OSError, ValueError):
+        return
 
 
 def wait_ready(port: int, proc: subprocess.Popen, timeout_s: float) -> bool:
@@ -482,23 +505,78 @@ def start_workload(args: argparse.Namespace, run_dir: Path) -> subprocess.Popen:
     return subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env, cwd=run_dir)
 
 
-def pump_workload(proc: subprocess.Popen, run_dir: Path, events: Events, set_phase) -> None:
+def sanitize_diagnostic(value, depth: int = 0):
+    """Bound trusted workload telemetry; never save arbitrary text/unknown fields."""
+    keys = {
+        "name", "event", "t_mono", "phase", "cuinit", "libcuda", "ok", "seconds",
+        "torch", "tensorflow", "tf_visible_gpus", "clock", "units", "device", "peak_scope",
+        "status", "error", "allocated_bytes", "allocated_peak_bytes", "reserved_bytes",
+        "reserved_peak_bytes", "detector", "face", "scene", "source_frames", "processed_frames",
+        "processed_fps", "latency_ms", "frames_with_person", "max_persons", "runs", "achieved_hz",
+        "runs_with_face", "errors", "completed", "over_d16_timeout", "valid_reports",
+        "invalid_reports", "unchecked_reports", "rejected_reports_by_reason", "finish_reasons",
+        "valid_summaries_at_limit", "valid_observations_at_limit", "accuracy",
+        "prompt_tokens_mean", "completion_tokens_mean", "input", "clip_loops",
+        "n", "p50", "p95", "p99", "max", "stop", "length", "other", "missing",
+        "truncated", "invalid_report", "incomplete_completion", "malformed_response", "timeout",
+        "server_error", "unsupported_completion",
+    }
+    strings = {
+        *PHASES_IN_ORDER, "phase", "cuda_driver", "detector_loaded", "face_loaded",
+        "torch_allocator", "workload_stats", "time.monotonic", "bytes", "allocator_lifetime",
+        "observed", "unavailable", "synthetic noise",
+        "not evaluated; structural validity is not scene accuracy",
+    }
+    if depth > 6:
+        return None
+    if isinstance(value, dict):
+        return {key: sanitize_diagnostic(item, depth + 1) for key, item in list(value.items())[:64]
+                if key in keys or re.fullmatch(r"[A-Za-z]{1,40}(?:Error|Exception)|HTTP [1-5]\d\d", key)}
+    if isinstance(value, list):
+        return [sanitize_diagnostic(item, depth + 1) for item in value[:16]]
+    if type(value) is int:
+        return value if value.bit_length() <= 63 else None
+    if type(value) is float:
+        return value if math.isfinite(value) else None
+    if value is None or type(value) is bool:
+        return value
+    if isinstance(value, str):
+        if value in strings or re.fullmatch(r"\d+(?:\.\d+){1,3}(?:[A-Za-z0-9.+-]{0,24})", value):
+            return value
+        if re.fullmatch(r"[A-Za-z]{1,40}(?:Error|Exception)", value):
+            return value
+        if value.startswith(L4T_LIBCUDA_DIR) and re.fullmatch(r"libcuda\.so(?:\.\d+)*", Path(value).name):
+            return value
+    return None
+
+
+def pump_workload(proc: subprocess.Popen, run_dir: Path, events: Events, set_phase, *, sanitized: bool = False) -> None:
     with open(run_dir / "workload.log", "w") as log:
-        for line in proc.stdout:
+        while line := proc.stdout.readline(65_536):
             if line.startswith(EVENT_PREFIX):
                 try:
                     record = json.loads(line[len(EVENT_PREFIX):])
                 except json.JSONDecodeError:
-                    log.write(line)
+                    if not sanitized:
+                        log.write(line)
                     continue
+                if sanitized:
+                    if not isinstance(record, dict) or record.get("event") not in {
+                        "phase", "cuda_driver", "detector_loaded", "face_loaded", "torch_allocator", "workload_stats",
+                    }:
+                        continue
+                    record = sanitize_diagnostic(record)
                 name = record.pop("event", "unknown")
                 if name == "phase":
+                    if sanitized and record.get("name") not in PHASES_IN_ORDER:
+                        continue
                     set_phase(str(record.get("name")), source="workload")
                 else:
                     events.add("workload", name, **record)
             else:
-                log.write(line)
-                log.flush()
+                if not sanitized:
+                    log.write(line)
+                    log.flush()
 
 
 def stop_process(proc: subprocess.Popen | None, name: str, events: Events) -> None:
@@ -590,7 +668,10 @@ def run(args: argparse.Namespace) -> int:
 
         procs["work"] = start_workload(args, run_dir)
         sampler.pids["work"] = procs["work"].pid
-        pump = threading.Thread(target=pump_workload, args=(procs["work"], run_dir, events, set_phase), daemon=True)
+        pump = threading.Thread(
+            target=pump_workload, args=(procs["work"], run_dir, events, set_phase),
+            kwargs={"sanitized": args.sanitized_logs}, daemon=True,
+        )
         pump.start()
         budget = args.load_timeout_s + 2 * args.settle_s + args.warmup_s + args.steady_s + 60
         try:
@@ -618,6 +699,9 @@ def run(args: argparse.Namespace) -> int:
         stop_process(procs["work"], "workload", events)
         stop_process(procs["llama"], "llama-server", events)
         if llama_log is not None:
+            log_pump = getattr(procs["llama"], "log_pump", None)
+            if log_pump is not None:
+                log_pump.join(timeout=1)
             llama_log.close()
         set_phase("end")
         tegrastats.stop()
@@ -966,6 +1050,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                              "fully at 3.08 GB free and failed at 1.70 GB)")
     parser.add_argument("--no-evict", dest="evict", action="store_false",
                         help="keep the model files' page cache (default: evict it so the loads are cold)")
+    parser.add_argument("--sanitized-logs", action="store_true",
+                        help="discard raw server/workload output; retain fixed numeric/placement diagnostics only")
     parser.add_argument("--allow-desktop", action="store_true", help="measure with a desktop session running")
     parser.add_argument("--allow-dev-tools", action="store_true", help="measure with VS Code or Claude Code running")
     parser.add_argument("--python", type=Path, default=HOME / "onvif_env/bin/python")
