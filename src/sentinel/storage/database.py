@@ -102,6 +102,7 @@ MIGRATIONS: tuple[str, ...] = (
         last_error TEXT,
         ambiguous INTEGER NOT NULL DEFAULT 0,
         provider_message_id TEXT,
+        budget_start_utc TEXT NOT NULL,
         created_utc TEXT NOT NULL,
         updated_utc TEXT NOT NULL,
         UNIQUE (incident_id, channel, policy_revision, message_kind)

@@ -299,9 +299,9 @@ class IncidentService:
         for channel in self._policy.channels:
             cursor = c.execute(
                 """INSERT OR IGNORE INTO outbox (incident_id, channel, policy_revision, message_kind, priority,
-                       status, next_attempt_utc, created_utc, updated_utc)
-                   VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)""",
-                (incident_id, channel, self._policy.revision, message_kind, PRIORITY[severity], stamp, stamp, stamp),
+                       status, next_attempt_utc, budget_start_utc, created_utc, updated_utc)
+                   VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
+                (incident_id, channel, self._policy.revision, message_kind, PRIORITY[severity], stamp, stamp, stamp, stamp),
             )
             if cursor.rowcount == 1:
                 ids.append(cursor.lastrowid)

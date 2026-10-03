@@ -61,6 +61,14 @@ notifications:
   # Its bot token is never stored in this file.
   channels: []
   min_severity: warning  # info, warning or critical
+  # Delivery is at least once (proposed starting values; they do not change the policy revision).
+  lease_s: 60.0             # a worker holding a message longer is presumed dead; it is retried
+  request_timeout_s: 10.0   # per request; at most half of lease_s
+  max_attempts: 8           # then the message is dead-lettered for an operator retry
+  max_age_s: 21600.0        # undelivered messages older than this are dead-lettered too
+  backoff_base_s: 5.0       # exponential backoff with jitter, never sooner than retry_after
+  backoff_max_s: 600.0
+  starvation_s: 300.0       # messages due this long are sent before newer urgent ones
 
 # Optional adapters (guide ch. 27): scene analysis, extra detectors, face
 # recognition, notifiers. Core monitoring runs with none enabled. Each entry is
