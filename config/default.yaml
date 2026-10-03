@@ -29,6 +29,13 @@ scene:
   job_timeout_s: 8.0     # a scene job must finish within this long of its frame's arrival
   evidence_ttl_s: 10.0   # a report stays current this long after its frame (>= job_timeout_s)
 
+scene_server:
+  # The demo scene adapter's llama-server (V2-26 demo form). It always listens on
+  # 127.0.0.1 only, and its model flags are fixed in code (the provisional demo
+  # profile's, plus --cache-ram 0: decision D41); this section cannot change either.
+  port: 18081              # 127.0.0.1:<port>; v1's launcher uses 8080
+  request_timeout_s: 20.0  # per blocking HTTP step (>= scene.job_timeout_s); a later reply only annotates history
+
 hazard:
   # Fire/smoke from scene reports alone is a candidate (warning), never a critical alarm.
   confirmations: 2       # consecutive positive reports, same stream epoch

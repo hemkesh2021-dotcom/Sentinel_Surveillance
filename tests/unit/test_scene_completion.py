@@ -7,6 +7,7 @@ import pytest
 from sentinel.scene.completion import (
     SceneCompletionError,
     parse_scene_completion,
+    scene_completion_content,
     scene_completion_finish_reason,
     scene_response_format,
 )
@@ -123,3 +124,14 @@ def test_structural_validity_does_not_establish_image_accuracy() -> None:
     report = parse_scene_completion(completion())
     assert report.persons_visible == 0
     assert report.persons_visible != observed_label
+
+
+def test_the_envelope_check_returns_report_text_unparsed_for_the_lane_to_validate() -> None:
+    # V2-26: the worker checks the envelope; the scene lane parses the report strictly.
+    assert scene_completion_content(completion('{"persons_visible": "two"}')) == '{"persons_visible": "two"}'
+    with pytest.raises(SceneReportError):
+        parse_scene_completion(completion('{"persons_visible": "two"}'))
+    for payload, reason in ((completion(finish_reason="length"), "truncated"), ({"error": {}}, "server_error")):
+        with pytest.raises(SceneCompletionError) as caught:
+            scene_completion_content(payload)
+        assert caught.value.reason == reason

@@ -118,9 +118,18 @@ class AdapterSpec:
     contract_versions: frozenset[int] = SUPPORTED_CONTRACT_VERSIONS
 
 
-# Real adapters join with their packages (detector V2-09, face V2-25, scene
-# V2-26, notifiers V2-15). Keep this table explicit.
+# Real adapters join with their packages (face V2-25, notifiers V2-15 still to
+# come). Keep this table explicit.
 BUILTIN_ADAPTERS: Mapping[str, AdapterSpec] = {
+    # V2-26 demo form: LFM2-VL-1.6B on llama-server, loopback only, prompt cache off (D41, D42).
+    "llama-lfm2-vl-scene": AdapterSpec(
+        adapter_id="llama-lfm2-vl-scene",
+        role=AdapterRole.SCENE_ANALYZER,
+        module="sentinel.scene.llama_server",
+        attribute="LlamaSceneRequest",
+        input_kinds=frozenset({"frame"}),
+        output_kinds=frozenset({"scene.report"}),
+    ),
     # V2-09/V2-10 demo form: v1's engine through Ultralytics track() with ByteTrack.
     "legacy-yolov8n-bytetrack": AdapterSpec(
         adapter_id="legacy-yolov8n-bytetrack",

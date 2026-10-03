@@ -39,6 +39,14 @@ def scene_completion_finish_reason(payload: object) -> str:
 
 
 def parse_scene_completion(payload: object) -> SceneReport:
+    return parse_scene_report(scene_completion_content(payload))
+
+
+def scene_completion_content(payload: object) -> str:
+    """The report text of a complete, non-streaming completion; SceneCompletionError otherwise.
+
+    The text itself is not parsed here: parse_scene_report() does that, wherever it runs.
+    """
     if not isinstance(payload, Mapping):
         raise SceneCompletionError("malformed_response")
     if "error" in payload:
@@ -59,4 +67,4 @@ def parse_scene_completion(payload: object) -> SceneReport:
     content = message.get("content")
     if not isinstance(content, str):
         raise SceneCompletionError("malformed_response")
-    return parse_scene_report(content)
+    return content

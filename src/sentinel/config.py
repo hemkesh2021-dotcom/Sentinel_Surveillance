@@ -23,6 +23,7 @@ from pydantic import (
     ValidationError,
     ValidationInfo,
     field_validator,
+    model_validator,
 )
 
 from .adapters import AdapterManifest, check_unique_ids
@@ -126,6 +127,19 @@ class SceneConfig(_Section):
     @property
     def evidence_ttl_ns(self) -> int:
         return round(self.evidence_ttl_s * NS_PER_SECOND)
+
+
+class SceneServerConfig(_Section):
+    """The llama-server behind the demo scene adapter (V2-26 demo form; D41, D42).
+
+    It always listens on 127.0.0.1, and its model flags are fixed in code (the
+    provisional demo profile's plus ``--cache-ram 0``); nothing here changes either.
+    """
+
+    port: Annotated[int, Field(ge=1024, le=65535)] = 18081
+    # Bounds each blocking HTTP step of one request. At least scene.job_timeout_s, so the
+    # job deadline decides what is on time; a reply after it only annotates history.
+    request_timeout_s: Annotated[float, Field(gt=0, le=120, allow_inf_nan=False)] = 20.0
 
 
 class HazardConfig(_Section):
@@ -295,6 +309,7 @@ class SentinelConfig(_Section):
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
     freshness: FreshnessConfig = Field(default_factory=FreshnessConfig)
     scene: SceneConfig = Field(default_factory=SceneConfig)
+    scene_server: SceneServerConfig = Field(default_factory=SceneServerConfig)
     hazard: HazardConfig = Field(default_factory=HazardConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     zones: list[ZoneConfig] = Field(default_factory=list, max_length=16)
@@ -318,6 +333,15 @@ class SentinelConfig(_Section):
                 raise ValueError(f"duplicate zone_id {zone.zone_id!r}")
             seen.add(zone.zone_id)
         return value
+
+    @model_validator(mode="after")
+    def _request_outlasts_job(self) -> SentinelConfig:
+        timeout, job = self.scene_server.request_timeout_s, self.scene.job_timeout_s
+        if timeout < job:
+            raise ValueError(
+                f"scene_server.request_timeout_s must be at least scene.job_timeout_s ({timeout} < {job})"
+            )
+        return self
 
 
 class ConfigError(Exception):

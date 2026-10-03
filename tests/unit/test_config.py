@@ -96,6 +96,27 @@ def test_scene_evidence_must_outlive_the_job_deadline(tmp_path: Path) -> None:
     ]
 
 
+def test_scene_server_defaults_bounds_and_no_host_setting(tmp_path: Path) -> None:
+    server = load_config(DEFAULT_CONFIG).scene_server
+    assert (server.port, server.request_timeout_s) == (18081, 20.0)
+    assert load_config(write_config(tmp_path, "config_version: 1\ncamera: {id: cam-1}\n")).scene_server == server
+
+    problems = problems_for(
+        tmp_path,
+        "config_version: 1\ncamera: {id: cam-1}\n"
+        "scene_server: {port: 80, host: 0.0.0.0, cache_ram_mib: 8192}\n",
+    )
+    assert sorted(problems) == [
+        "scene_server.cache_ram_mib: unknown setting",  # D41 is fixed in code
+        "scene_server.host: unknown setting",  # loopback only (D42)
+        "scene_server.port: Input should be greater than or equal to 1024 (got 80)",
+    ]
+    problems = problems_for(
+        tmp_path, "config_version: 1\ncamera: {id: cam-1}\nscene_server: {request_timeout_s: 5}\n"
+    )
+    assert problems == ["<top level>: scene_server.request_timeout_s must be at least scene.job_timeout_s (5.0 < 8.0)"]
+
+
 def test_duplicate_keys_are_rejected_instead_of_silently_overriding(tmp_path: Path) -> None:
     problems = problems_for(
         tmp_path,
