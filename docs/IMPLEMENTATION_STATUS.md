@@ -23,10 +23,10 @@ Last updated 2026-10-03, session 4: session 3's record completed (V2-01 device c
 
 ## Next concrete task
 
-1. **V2-15, demo form:** leased outbox worker and a stdlib (`urllib`) Telegram adapter tested against a mock: HTTP error, `ok=false`, 429 with `retry_after`, timeout, and a crash after sending. Retries, dead letter, and redacted errors; no real token in tests.
-2. **V2-28, demo form (incident side):** late and enrichment evidence annotates only its own incident in the store.
-3. When check 8's results arrive, record the provisional demo profiles (D28) and add them to the adapter registry's known profiles. When check 9's arrive, settle U18 with the maintainer. Then do the week-2 device adapters under D24 and D27: capture through `~/onvif_env`'s OpenCV/FFmpeg; legacy engine plus ByteTrack; interim face and llama-server adapters; and `sentinel run` (D-1), with the D27 GPU guard and the U18 memory precheck. `sentinel run` hands every zone observation and hazard candidate to `IncidentService.record()` and acknowledges it only after that returns (D31).
-4. **V2-13, rest (after Week 1):** directed line crossing, and a decision on hysteresis. The restricted-zone and dwell rules are done in demo form (D30).
+1. **V2-28, demo form (incident side):** late scene evidence and enrichment annotate only their own incident in the store (append evidence via `IncidentService`, never a new incident or a status change). Small; the scene side is done.
+2. **Week 2 device adapters**, once checks 8 and 9 are back: record the provisional demo profiles (D28) in the adapter registry's known profiles and settle U18. Then capture through `~/onvif_env`'s OpenCV/FFmpeg (D24); the legacy engine plus ByteTrack; interim face and llama-server adapters; and `sentinel run` (D-1) with the D27 GPU guard and the U18 memory precheck. `sentinel run` hands every zone observation and hazard candidate to `IncidentService.record()` and acknowledges it only after that returns (D31). It runs `OutboxWorker` in its own thread with `TelegramNotifier.from_environment(timeout_s=notifications.request_timeout_s)` only if `telegram` is listed (D32).
+3. **V2-15 device check (maintainer):** one real Telegram send from the device with the maintainer's bot, after D-1 wiring.
+4. **V2-13, rest (after the demo):** directed line crossing and a decision on hysteresis (D30).
 
 ## Oct 20 demo milestone: plan and deviations from the guide order
 
@@ -34,7 +34,7 @@ Target (maintainer, 2026-09-29): a demoable end-to-end path on this Jetson by 20
 
 | Week | Work | Status |
 |---|---|---|
-| 1 (to Oct 6) | V2-49; V2-13 zone rule; V2-14 SQLite incidents/outbox; V2-15 leased outbox + Telegram (mocked). All portable. | V2-49 done; V2-13 demo form done (restricted + dwell; crossing deferred); V2-14 demo form done; V2-15 next |
+| 1 (to Oct 6) | V2-49; V2-13 zone rule; V2-14 SQLite incidents/outbox; V2-15 leased outbox + Telegram (mocked). All portable. | V2-49 done. Demo form done: V2-13 (restricted + dwell; crossing deferred), V2-14, V2-15 (mocked); these count as partial (D23). |
 | 2 (to Oct 13) | Device adapters (D24): capture from the substream (profile A, D22) with `~/onvif_env`'s OpenCV/FFmpeg software decode, video only, stamped by FrameStamper; detector + ByteTrack via the existing `yolov8n.engine` as the *legacy parity adapter*; interim face adapter (existing DeepFace/Facenet512 on CPU) feeding v2 association; llama-server scene adapter; `sentinel run` loop around `EdgeCore` | Checks 3 and 5 done; U13 settled (D27); U17 settled (D28), its profile run (check 8) PENDING; U18 open |
 | 3 (to Oct 20) | Loopback-only, read-only status page (stdlib HTTP server) showing LiveState, incidents and delivery outcomes; end-to-end rehearsal; demo script including camera loss and recovery | — |
 
@@ -73,7 +73,7 @@ Estimates as given to the maintainer on 2026-09-29. V2-49 has since been done.
 | V2-12 | Overlay rendering vs timed fixtures | not started | Portable + device check | no | 1 | 1 | 06, 10 |
 | V2-13 | Zone, crossing and dwell rules | partial: demo form (restricted + dwell) done, directed crossing not started | Portable | yes: **demo form, full acceptance pending** | 1 | 0 | 10, 11 |
 | V2-14 | Incident transaction, SQLite migrations | partial: demo form done | Portable | yes: **demo form, full acceptance pending** | 1 | 0 | 02, 11 |
-| V2-15 | Leased outbox and Telegram adapter | not started | Portable + device check | yes: **demo form, full acceptance pending** | 1 | 0.5 | 14 |
+| V2-15 | Leased outbox and Telegram adapter | partial: demo form done (mocked); device check pending | Portable + device check | yes: **demo form, full acceptance pending** | 1 | 0.5 | 14 |
 | V2-16 | Rule evidence/correlation regression suite | partial | Portable | no | 0.5 | 0 | 13, 14 |
 | V2-17 | Sessions, roles, API, media authorization | not started | Portable + device check | no (D-2 stands in for the demo; not a substitute) | 1.5 | 0.5 | 14, 15 |
 | V2-18 | Live and Incidents web screens | not started | Portable + device check | no (D-2 stands in for the demo; not a substitute) | 2 | 1 | 12, 17 |
@@ -134,6 +134,7 @@ Notes on partial and in-progress rows:
 - **Partial:**
   - V2-13: restricted-zone and dwell rules in demo form (session 4). Directed line crossing and hysteresis are not done; revalidation after V2-10/V2-11 and calibration of persistence and gap values on labelled replays (V2-07) are pending.
   - V2-14: demo form done (session 4): schema v1 and migrations, the one-transaction record path, correlation, lifecycle and outbox rows. Not done: the guide's other tables (cameras, zones, policies, users, sessions, identities, audit events, clip manifests), WAL checkpoint monitoring, quotas, and revalidation after V2-11.
+  - V2-15: demo form done against mocks (session 4). Not done: a real Telegram send from the device (the "device check", which needs the maintainer's bot and chat), the authenticated retry action in an API (only `retry_dead()` exists), outbox quotas, wiring into `sentinel run` (D-1), and revalidation after V2-11.
   - V2-16: only the scene-hazard correlation.
   - V2-20: validated in-memory enrollment only.
   - V2-25: the association and identity core is done; the adapter, alignment, vectorized matching and report are not.
@@ -148,7 +149,21 @@ Commits on `v2-beta` after `32985c2`, all local until the maintainer pushes them
 |---|---|
 | `9ec10cf` | Session 3's record completed (this file) and the U17/U18 benchmark scripts. Also, outside the repository: the excluded local notes gained the remote-desktop observation, and the maintainer's Claude Code auto-mode settings now state that the repository is public (maintainer request). |
 | `b8102b9` | V2-13 demo form: restricted-zone and dwell rules (D30) |
-| (this commit) | V2-14 demo form: SQLite incidents, observations, evidence, transitions and outbox (D31) |
+| `a30445c` | V2-14 demo form: SQLite incidents, observations, evidence, transitions and outbox (D31) |
+| (this commit) | V2-15 demo form: leased outbox worker and Telegram adapter, mocked (D32) |
+
+### V2-15 demo form: what was added
+
+| Path | Purpose |
+|---|---|
+| `src/sentinel/alerts/outbox.py` | `OutboxWorker`: `lease()`, `complete()`, `run_once()`, `retry_dead()`; `render()` (plain text with incident ID); `DeliveryResult`, `Notifier` protocol |
+| `src/sentinel/alerts/telegram.py` | `TelegramNotifier` (`urllib`, JSON `sendMessage`, response contract above), `from_environment()` |
+| `src/sentinel/storage/database.py` | `outbox.budget_start_utc`, so an operator retry restores the budget without rewriting `created_utc`. Schema v1 was amended before any database existed outside tests; nothing from it was pushed or deployed. |
+| `src/sentinel/config.py`, `config/default.yaml` | Delivery settings in `notifications` (the policy revision covers only `channels` and `min_severity`); `request_timeout_s` at most half of `lease_s` |
+| `tests/unit/test_outbox.py` (29) | Telegram: success contract, 502, 503 without body, `ok: false` 400, 401, 403, 429 with and without a valid `retry_after`, non-JSON 200, `ok` without ID, timeouts, reset, refused, a URL containing the token; credentials from the environment, hidden in `repr`. Worker: sent with provider ID; message text; backoff with jitter; `retry_after`; ambiguous timeout; dead letter and operator retry; **crash after send** then restart, lease expiry and an ambiguous retry; lost lease; attempt and age bounds; severity order and starvation; independent channels; outage across a restart; a notifier exception; redaction of stored errors |
+| `tests/replay/test_v2_15_delivery.py` (2), `b0_v1_snapshot.py` | Same provider script for v2 and B0 v1 (`V1AlertWorker`, L131-153): an outage across a restart is delivered by v2 and lost by v1; a 401 is dead-lettered by v2 with "needs operator action" and counted as sent by v1 |
+
+**V2-15 mutation sweep (one-off; script not committed): 23/23.** The first round caught 22. The survivor (an operator retry that keeps the exhausted attempt count) was a test gap, fixed before committing. Mutations: `ok: true` not required; HTTP status ignored; `retry_after` ignored; 401 retried forever; timeout not ambiguous; error detail shows the URL; stored errors not redacted; expired leases never retried; live leases stolen; re-lease not ambiguous; a lost lease still writes; no backoff; no jitter; no attempt bound; no age bound; dead rows retried automatically; severity order ignored; starvation ignored; one channel blocks all; notifier exception escapes; operator retry keeps the old budget; message without incident ID; missing `message_id` accepted.
 
 ### V2-14 demo form: what was added
 
@@ -463,6 +478,13 @@ D14–D21 are implementation decisions made in session 2 within the guide's rule
   - **Correlation:** an ENTERED observation joins the latest unresolved incident with the same camera, rule kind and zone if that incident's latest observation is from the same boot and at most `incidents.merge_window_s` (proposed 120 s) earlier on the monotonic clock. Otherwise it opens a new incident, linked to the previous one with that key. Across a reboot it never joins. ENDED is evidence on the incident its episode joined and never changes status.
   - **Severity** is the maximum seen, never a sum. A rise is notified once per level (`escalated-<severity>`). Rule observations open incidents directly (status `open`); the VLM-only hazard opens at most a `warning`, titled unconfirmed.
   - **Notifications are off by default** (`notifications.channels: []`), with `min_severity: warning`. The policy revision is a hash of that section, so a changed policy may notify an incident again.
+- **D32. Delivery (V2-15 demo form; session 4 implementation decision, not yet reviewed).**
+  - Delivery is **at least once**. A worker leases due rows in one transaction, sends outside it, and records the outcome only while it still holds the lease; a late outcome is logged as `late:` and changes nothing. When a lease expires (the worker crashed or stalled), the next lease marks the row **ambiguous** and the abandoned attempt `abandoned`. Messages carry the incident ID and say that a repeat is the same incident.
+  - **Telegram success** is HTTP 200 and `ok: true` with an integer `message_id`. 429 waits at least `retry_after`. 400, 401, 403 and 404 are permanent: the row goes dead with "needs operator action". 5xx and network failures are retried. Timeouts, resets after sending, an unreadable 200 body and `ok: true` without a message ID are retried as ambiguous.
+  - Backoff is `min(backoff_max_s, backoff_base_s · 2^(attempts−1))` with jitter in [½, 1) of that, and never shorter than `retry_after`. Rows go dead after `max_attempts` (8) or `max_age_s` (6 h) from their budget start; an operator retry restores the budget. Rows are ordered by severity, but a row due for longer than `starvation_s` (300 s) goes first. Each channel is independent, and rows for a channel without a configured notifier stay untouched.
+  - Lease and retry times are UTC, because they must survive a restart. A wall-clock step can only cause an early or late retry.
+  - **Credentials:** `SENTINEL_TELEGRAM_BOT_TOKEN` and `SENTINEL_TELEGRAM_CHAT_ID` come from the runtime's environment, never the config file. Without them the channel is unavailable and its rows wait. Errors are built from status codes, Telegram's redacted `description` and exception class names, never from URLs or raw exception text, and are redacted again before storage. Messages are plain text: no images, footage or identity data.
+
 
 ## Unresolved decisions and semantics
 

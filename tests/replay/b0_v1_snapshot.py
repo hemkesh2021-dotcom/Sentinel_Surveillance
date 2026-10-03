@@ -195,3 +195,35 @@ def v1_intruder_alert(any_stranger: bool, scene_threat: str | None, local_hour: 
     """
     threat = str(scene_threat or "none").lower()
     return any_stranger and threat in ("medium", "high") and v1_is_restricted_time(local_hour)
+
+
+class V1AlertWorker:
+    """``alert_queue``/``alert_worker`` (L131-153), reduced to delivery.
+
+    Alerts wait in an in-memory ``Queue`` (L131), so a restart loses whatever is
+    queued. The worker posts each alert once with a 10 s timeout (L141-148) and
+    never looks at the response: any HTTP status, and a JSON ``ok: false``,
+    counts as done (L151). An exception drops the alert after printing it
+    (L150). There is no retry and no record of the outcome.
+    """
+
+    def __init__(self) -> None:
+        self.queue: list[str] = []
+        self.counted_as_sent = 0
+        self.dropped = 0
+
+    def send_alert(self, caption: str) -> None:
+        self.queue.append(caption)  # L165 put_nowait (after the per-type cooldown, L157-159)
+
+    def drain(self, post) -> None:
+        """``post(caption)`` returns an HTTP status or raises, like ``requests.post``."""
+        while self.queue:
+            caption = self.queue.pop(0)
+            try:
+                post(caption)  # the response is discarded
+                self.counted_as_sent += 1
+            except Exception:  # noqa: BLE001 - L150
+                self.dropped += 1
+
+    def restart(self) -> None:
+        self.queue.clear()

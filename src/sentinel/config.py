@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import json
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -233,6 +234,22 @@ class NotificationsConfig(_Section):
 
     channels: list[Literal["telegram"]] = Field(default_factory=list, max_length=4)
     min_severity: Literal["info", "warning", "critical"] = "warning"
+    # Delivery (guide ch. 10). Proposed starting values; they do not change the policy revision.
+    lease_s: Seconds = 60.0  # a worker that holds a row longer is presumed dead; the row is retried
+    request_timeout_s: Seconds = 10.0  # must stay well below lease_s
+    max_attempts: Annotated[int, Field(ge=1, le=50)] = 8
+    max_age_s: Seconds = 6 * 3600.0  # older undelivered rows are dead-lettered
+    backoff_base_s: Seconds = 5.0
+    backoff_max_s: Seconds = 600.0
+    starvation_s: Seconds = 300.0  # rows due this long are served before newer urgent ones
+
+    @field_validator("request_timeout_s")
+    @classmethod
+    def _timeout_inside_lease(cls, value: float, info: ValidationInfo) -> float:
+        lease = info.data.get("lease_s")
+        if lease is not None and value * 2 > lease:
+            raise ValueError(f"must be at most half of lease_s ({value} > {lease} / 2)")
+        return value
 
     @field_validator("channels")
     @classmethod
@@ -244,7 +261,8 @@ class NotificationsConfig(_Section):
     @property
     def revision(self) -> str:
         """Policy revision recorded with each outbox row; a changed policy may notify again."""
-        return hashlib.sha256(self.model_dump_json().encode()).hexdigest()[:12]
+        policy = {"channels": self.channels, "min_severity": self.min_severity}
+        return hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest()[:12]
 
 
 class SentinelConfig(_Section):
