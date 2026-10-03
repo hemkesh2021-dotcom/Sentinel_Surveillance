@@ -28,6 +28,7 @@ from .media.clock import Clock, MonoInstant
 from .media.frames import FrameNovelty
 from .media.health import FreshnessMonitor, VideoFreshness, VideoState
 from .rules.scene_hazard import HazardCandidate, SceneHazardRule
+from .rules.zones import ZoneObservation, ZoneRules
 from .scene.lane import SceneAnalyzer, SceneLane, SceneLaneSettings
 from .scene.state import CurrentScene, Routing, SceneView
 from .tracking.tracks import TrackTable
@@ -46,6 +47,7 @@ class CoreOutput:
     state: LiveState
     evidence: tuple[RoutedEvidence, ...] = ()  # new evidence, with where it may go
     candidates: tuple[HazardCandidate, ...] = ()
+    zones: tuple[ZoneObservation, ...] = ()  # zone rule observations from this step
 
 
 class EdgeCore:
@@ -76,6 +78,7 @@ class EdgeCore:
         self._hazard = SceneHazardRule(
             confirmations=config.hazard.confirmations, max_gap_ns=config.hazard.max_gap_ns
         )
+        self._zones = ZoneRules(config.zones)
         self._detector = detector
         self._face_recognition = face_recognition
         identity = config.identity
@@ -103,6 +106,7 @@ class EdgeCore:
             "tracks": self._tracks.size,
             "identity_tracks": self._identities.tracked,
             "scene_jobs_in_flight": int(self._lane is not None and self._lane.in_flight is not None),
+            "zone_episodes": self._zones.active_episodes,
         }
 
     def set_detector(self, capability: Capability) -> None:
@@ -172,9 +176,14 @@ class EdgeCore:
         occupancy, reason = self._occupancy(freshness, tracks, now)
         people_count = None if occupancy is Occupancy.UNKNOWN else _confirmed(tracks)
         candidate = self._hazard.evaluate(view, people_count=people_count)
+        # Zone rules read tracks only: no identity, no scene verdict (guide ch. 9).
+        zones = self._zones.evaluate(tracks, live, now)
         state = self._publish(freshness, tracks, occupancy, reason, view, now)
         return CoreOutput(
-            state=state, evidence=routed, candidates=(candidate,) if candidate is not None else ()
+            state=state,
+            evidence=routed,
+            candidates=(candidate,) if candidate is not None else (),
+            zones=tuple(zones),
         )
 
     def _occupancy(
