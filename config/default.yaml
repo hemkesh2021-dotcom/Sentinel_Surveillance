@@ -51,6 +51,17 @@ identity:
 #     enabled: true
 zones: []
 
+incidents:
+  # A new observation of the same rule and zone within this long of the incident's
+  # latest one (same boot) joins that unresolved incident instead of opening another.
+  merge_window_s: 120.0
+
+notifications:
+  # External channels are off unless listed here; telegram is the only one so far.
+  # Its bot token is never stored in this file.
+  channels: []
+  min_severity: warning  # info, warning or critical
+
 # Optional adapters (guide ch. 27): scene analysis, extra detectors, face
 # recognition, notifiers. Core monitoring runs with none enabled. Each entry is
 # a versioned manifest naming a built-in adapter; configuration never names code.

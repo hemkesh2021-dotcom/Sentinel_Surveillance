@@ -216,6 +216,37 @@ class ZoneConfig(_Section):
         return hashlib.sha256(self.model_dump_json().encode()).hexdigest()[:12]
 
 
+class IncidentsConfig(_Section):
+    """How rule observations become incidents (guide ch. 9 and 10). Proposed starting value."""
+
+    # A new observation of the same rule and zone within this long of the incident's
+    # latest one, in the same boot, joins that open incident instead of opening another.
+    merge_window_s: Seconds = 120.0
+
+    @property
+    def merge_window_ns(self) -> int:
+        return round(self.merge_window_s * NS_PER_SECOND)
+
+
+class NotificationsConfig(_Section):
+    """External notification channels; all disabled unless listed (guide ch. 10)."""
+
+    channels: list[Literal["telegram"]] = Field(default_factory=list, max_length=4)
+    min_severity: Literal["info", "warning", "critical"] = "warning"
+
+    @field_validator("channels")
+    @classmethod
+    def _unique_channels(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("each channel may be listed once")
+        return value
+
+    @property
+    def revision(self) -> str:
+        """Policy revision recorded with each outbox row; a changed policy may notify again."""
+        return hashlib.sha256(self.model_dump_json().encode()).hexdigest()[:12]
+
+
 class SentinelConfig(_Section):
     config_version: Literal[1]
     camera: CameraConfig
@@ -224,6 +255,8 @@ class SentinelConfig(_Section):
     hazard: HazardConfig = Field(default_factory=HazardConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     zones: list[ZoneConfig] = Field(default_factory=list, max_length=16)
+    incidents: IncidentsConfig = Field(default_factory=IncidentsConfig)
+    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     # Optional adapters; core monitoring runs with none enabled (guide ch. 27).
     adapters: list[AdapterManifest] = Field(default_factory=list, max_length=32)
 
