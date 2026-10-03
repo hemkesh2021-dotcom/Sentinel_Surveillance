@@ -902,6 +902,11 @@ def summarize(run_dir: Path) -> str:
             f"  scene: {scene.get('completed')} completed, latency ms {scene.get('latency_ms')}; over the 8 s D16 timeout {scene.get('over_d16_timeout')}; "
             f"errors {scene.get('errors')}; valid/invalid/unchecked reports {scene.get('valid_reports')}/{scene.get('invalid_reports')}/{scene.get('unchecked_reports')}; "
             f"mean prompt/completion tokens {scene.get('prompt_tokens_mean')}/{scene.get('completion_tokens_mean')}",
+            f"  scene completion finish reasons {scene.get('finish_reasons', 'unavailable')}; "
+            f"rejections {scene.get('rejected_reports_by_reason', 'unavailable')}; "
+            f"valid summaries/observations at character limits "
+            f"{scene.get('valid_summaries_at_limit', 'unavailable')}/{scene.get('valid_observations_at_limit', 'unavailable')}",
+            "  Scene structural validity and exact-limit counts do not establish scene accuracy or semantic completeness.",
         ]
         latency = {"detector": detector.get("latency_ms"), "face": face.get("latency_ms"), "scene": scene.get("latency_ms")}
         for key, values in latency.items():
