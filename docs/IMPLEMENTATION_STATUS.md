@@ -1,22 +1,25 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-09-29, end of session 2: V2-01 records, V2-03 regressions R1–R3, the portable `EdgeCore`, V2-49, and the maintainer's decisions D22–D24. Requirements come from the v2 beta implementation guide (V2-01…V2-56 backlog), and corrections and regression cases from the 23 September audit review. Both documents are local-only (see D13).
+Last updated 2026-10-03, session 4: session 3's record completed (V2-01 device checks run by Claude on 2026-09-29, the maintainer's decisions D26–D29, the U17 demo-profile script whose run is PENDING as check 8), answers on check 3b and GPU memory (U18, check 9 PENDING). Requirements come from the v2 beta implementation guide (V2-01…V2-56 backlog), and corrections and regression cases from the 23 September audit review. Both documents are local-only (see D13).
 
 ## Position
 
 | | |
 |---|---|
-| Branch | `v2-beta`, created from `master`; **not pushed** |
+| Branch | `v2-beta`, created from `master`. **Pushed by the maintainer**; `origin/v2-beta` was at `32985c2` when session 3 started. Session 3 commits are local until the maintainer pushes them. |
+| CI | Maintainer report, 2026-09-29: GitHub Actions passed at `32985c2`: "v2 portable checks" (run #2) and "Dashboard checks" (run #5). Earlier runs at `6578ded` also passed. |
 | Base commit | `2b2d639621e8c043cc58a126f47b1b8ab6c22135`, the commit the audit verified, confirmed as HEAD before starting |
 | Session 1 commits | `ec6698d` CLAUDE.md · `b52920f` package skeleton and portable tests · `e9f959d` clock · `bc42248` frame identity · `3b47f5f` evidence/track applicability · `ee50275` config and CLI · `6a9e71d` CI workflow · `6578ded` status record |
-| Session 2 commits | `4587021` PTS tolerance at ingest · `812b42c` V2-01 records · `e81db81` replay timelines · `86889f8` scene lane (R3) · `432dc69` live state and freshness (R2) · `66937ef` face association and identity (R1) · `48d6188` status record · `9593b64` adapter manifests (V2-49) · then the commit that records the maintainer's decisions |
+| Session 2 commits | `4587021` PTS tolerance at ingest · `812b42c` V2-01 records · `e81db81` replay timelines · `86889f8` scene lane (R3) · `432dc69` live state and freshness (R2) · `66937ef` face association and identity (R1) · `48d6188` status record · `9593b64` adapter manifests (V2-49) · `32985c2` maintainer decisions D22–D24 |
+| Session 3 work (2026-09-29) | Interrupted by a usage limit before anything was committed; committed in session 4 as the first commit below |
+| Session 4 commits (2026-10-03) | See the session 4 slice log |
 | Working tree | Clean apart from ignored environments/build output and local-only files excluded through `.git/info/exclude` |
 | Local-only files | The v2 guide, the audit review and `docs/LOCAL_NOTES.md` (device-specific notes). A fresh clone does not contain them, although CLAUDE.md names the first two. |
-| Selected package | C1 is finished except V2-01 (device checks PENDING) and V2-04's off-device runs. Next: the Oct 20 path, starting with **V2-13 in demo form**. |
+| Selected package | V2-13 in demo form (Oct 20 path). V2-01's checks 1 (`nvpmodel` only), 3, 5 and 6 were run by Claude in session 3; check 8 (U17 profile) and check 9 (U18) are PENDING. |
 | Other branches | `origin/Yogeshvar425-patch-1` (teammate) is **not merged**: a single commit `6755796` that adds @Yogeshvar425 to `.github/CODEOWNERS` (merge base `c66ebde`). `origin/codex/github-audit-fixes-2026-09-19` is already in `master` via PR #4. |
 | Effort | Per-package estimates are in the package table (given to the maintainer on 2026-09-29). The re-estimate of optimization effort still waits for V2-01's B0 run. |
 | v1 on this device | **Not running** (maintainer, 2026-09-29). Checks must not assume v1 processes exist. |
-| Waiting on the maintainer | The PENDING checks; checks **3** and **5** are needed for the demo and decide **U13** |
+| Waiting on the maintainer | **Check 8** (U17 demo resource profile, about 15 minutes, headless with VS Code and Claude Code closed; needed before D-1 admits the demo adapters). **Check 9** (U18: GPU allocations beyond MemFree, with and without unified memory; about 5 minutes; needed before D-1 fixes its memory precheck). Then the rest of check 2 (keyframe spacing, bitrate, camera encoder options) and the V2-04 clean-laptop (macOS) run. |
 
 ## Next concrete task
 
@@ -24,7 +27,7 @@ Last updated 2026-09-29, end of session 2: V2-01 records, V2-03 regressions R1�
 2. **V2-14, demo form:** SQLite schema and migration (WAL, busy timeout, single writer). One transaction deduplicates the runtime observation ID, creates or updates the incident with a revision check, appends evidence and a transition, and inserts outbox rows with `UNIQUE(incident, channel, policy_revision, message_kind)`. Test a repeated source event and a crash after commit.
 3. **V2-15, demo form:** leased outbox worker and a stdlib (`urllib`) Telegram adapter tested against a mock: HTTP error, `ok=false`, 429 with `retry_after`, timeout, and a crash after sending. Retries, dead letter, and redacted errors; no real token in tests.
 4. **V2-28, demo form (incident side):** late and enrichment evidence annotates only its own incident in the store.
-5. When the maintainer's check results arrive, record them in the V2-01 inventory as maintainer measurements and settle U13 with the maintainer. Then do the week-2 device adapters under D24: capture through `~/onvif_env`'s OpenCV/FFmpeg; legacy engine plus ByteTrack; interim face and llama-server adapters, whose admission needs U17; and `sentinel run` (D-1).
+5. When check 8's results arrive, record the provisional demo profiles (D28) and add them to the adapter registry's known profiles. When check 9's arrive, settle U18 with the maintainer. Then do the week-2 device adapters under D24 and D27: capture through `~/onvif_env`'s OpenCV/FFmpeg; legacy engine plus ByteTrack; interim face and llama-server adapters; and `sentinel run` (D-1), with the D27 GPU guard and the U18 memory precheck.
 
 ## Oct 20 demo milestone: plan and deviations from the guide order
 
@@ -33,7 +36,7 @@ Target (maintainer, 2026-09-29): a demoable end-to-end path on this Jetson by 20
 | Week | Work | Status |
 |---|---|---|
 | 1 (to Oct 6) | V2-49; V2-13 zone rule; V2-14 SQLite incidents/outbox; V2-15 leased outbox + Telegram (mocked). All portable. | V2-49 done; V2-13 next |
-| 2 (to Oct 13) | Device adapters (D24): capture from the substream (profile A, D22) with `~/onvif_env`'s OpenCV/FFmpeg software decode, video only, stamped by FrameStamper; detector + ByteTrack via the existing `yolov8n.engine` as the *legacy parity adapter*; interim face adapter (existing DeepFace/Facenet512 on CPU) feeding v2 association; llama-server scene adapter; `sentinel run` loop around `EdgeCore` | Needs checks 3 and 5 (U13) and U17 |
+| 2 (to Oct 13) | Device adapters (D24): capture from the substream (profile A, D22) with `~/onvif_env`'s OpenCV/FFmpeg software decode, video only, stamped by FrameStamper; detector + ByteTrack via the existing `yolov8n.engine` as the *legacy parity adapter*; interim face adapter (existing DeepFace/Facenet512 on CPU) feeding v2 association; llama-server scene adapter; `sentinel run` loop around `EdgeCore` | Checks 3 and 5 done; U13 settled (D27); U17 settled (D28), its profile run (check 8) PENDING; U18 open |
 | 3 (to Oct 20) | Loopback-only, read-only status page (stdlib HTTP server) showing LiveState, incidents and delivery outcomes; end-to-end rehearsal; demo script including camera loss and recovery | — |
 
 **Deviations from the guide's order.** Accepted by the maintainer (D23) **on condition that every affected package is marked "demo form, full acceptance pending" in this file and is not counted done.** The package table applies that marking.
@@ -43,7 +46,8 @@ Target (maintainer, 2026-09-29): a demoable end-to-end path on this Jetson by 20
 3. **No go2rtc relay for the demo (V2-05 deferred).** The v2 runtime opens the substream itself as the only ingest. v1 is not running on the device, so this is the only upstream session. Installing go2rtc is a new binary dependency that needs a decision.
 4. **Software decode for the demo (D24):** `~/onvif_env`'s OpenCV with its bundled FFmpeg. 640×480 at 15 fps is about 4.6 Mpx/s. GStreamer/NVDEC waits for V2-05 proper; revisit after Oct 20. The CPU cost has not been measured.
 5. **Dashboard: a loopback-only, read-only status page instead of V2-17/V2-18** (FastAPI, auth, roles, PWA). Access is over an SSH port forward. This avoids new dependencies and does not expose an unauthenticated service. FastAPI is not installed anywhere; adding it is a dependency decision.
-6. **Runtime environment for the demo (D24):** `~/onvif_env`, unchanged, with `PYTHONPATH=src`. Its CPU-only parts run as they are. GPU parts (detector engine, possibly llama-server) also need the L4T libcuda preload that `~/onvif_env/bin/activate` sets, unless U13 changes the system; that waits for checks 3 and 5. The portable package passes its suite with that environment's pydantic 2.12.5 (verified below). Nothing will be installed into it; if an adapter needs anything missing, a separate environment will be proposed first.
+6. **Runtime environment for the demo (D24):** `~/onvif_env`, unchanged, with `PYTHONPATH=src`. Its CPU-only parts run as they are. GPU parts (detector engine and llama-server) need the L4T libcuda preload that `~/onvif_env/bin/activate` sets; D27 keeps it for the demo, with a guard. The portable package passes its suite with that environment's pydantic 2.12.5 (verified below). Nothing will be installed into it; if an adapter needs anything missing, a separate environment will be proposed first.
+7. **Headless demo host (D29):** the display manager is stopped for the demo, as v1's launcher does, and the U17 profile is measured the same way.
 
 ## Package status
 
@@ -56,7 +60,7 @@ Estimates as given to the maintainer on 2026-09-29. V2-49 has since been done.
 
 | Package | Title | Status | Portable or Jetson | Oct 20 path | Claude h | Maintainer Jetson h | Depends on |
 |---|---|---|---|---|---|---|---|
-| V2-01 | Hardware and v1 timing/memory baseline | in progress | Jetson | yes (checks 3, 5) | 1.5 | 3 | — |
+| V2-01 | Hardware and v1 timing/memory baseline | in progress | Jetson | yes (checks 3, 5 done; 8, 9 pending) | 1.5 | 3 | — |
 | V2-02 | Config, frame/evidence contracts, fake clock | done | Portable | yes | 0 | 0 | — |
 | V2-03 | Replay fixtures, first identity/empty-scene fixes | done | Portable | yes | 0 | 0 | — |
 | V2-04 | Dev setup and CI skeleton | in progress | Portable | no | 0.5 | 0 | — |
@@ -125,15 +129,43 @@ Estimates as given to the maintainer on 2026-09-29. V2-49 has since been done.
 Notes on partial and in-progress rows:
 
 - **In progress:**
-  - V2-01: records are done; the device checks, B0 run, trace contract, CPU budget and re-estimate are pending.
-  - V2-04: no clean-laptop or GitHub Actions run yet (nothing pushed).
-- **Done:** V2-03 with synthetic replays only; real-clip replay needs V2-07. V2-49's registry is empty until real adapters land, and its unknown-profile rule makes every model adapter unavailable until U17 is settled.
+  - V2-01: records and checks 1 (`nvpmodel`), 3, 5 and 6 are done (session 3). Checks 2 (rest), 8 and 9, the B0 run, trace contract, CPU budget and re-estimate are pending.
+  - V2-04: GitHub Actions passed at `32985c2` (maintainer report). The clean-laptop (macOS) run is not done.
+- **Done:** V2-03 with synthetic replays only; real-clip replay needs V2-07. V2-49's registry is empty until real adapters land, and its unknown-profile rule makes every model adapter unavailable until check 8's provisional profiles are recorded (D28).
 - **Partial:**
   - V2-16: only the scene-hazard correlation.
   - V2-20: validated in-memory enrollment only.
   - V2-25: the association and identity core is done; the adapter, alignment, vectorized matching and report are not.
   - V2-28: the scene side is done; the incident side waits for V2-14.
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done.
+
+## Session 4 slice log (2026-10-03)
+
+Commits on `v2-beta` after `32985c2`, all local until the maintainer pushes them:
+
+| Commit | Content |
+|---|---|
+| (this commit) | Session 3's record completed (this file) and the U17/U18 benchmark scripts. Also, outside the repository: the excluded local notes gained the remote-desktop observation, and the maintainer's Claude Code auto-mode settings now state that the repository is public (maintainer request). |
+
+## Session 3 slice log (2026-09-29; committed 2026-10-03)
+
+Session 3 hit a usage limit before it committed or finished this record. Its results come from that session's transcript and were re-checked against the files where possible.
+
+### What was added
+
+| Path | Purpose |
+|---|---|
+| `benchmarks/runner/demo_profile.py` | Check 8 (U17 option a, D28). Runs llama-server with v1's flags (D27 preload and full-offload guard), then `demo_workload.py` in `~/onvif_env`. Loads components one after another with settle periods, then a 120 s warm-up and a 600 s steady phase. Samples `/proc/meminfo`, per-process RSS/HWM/PSS and swap counters every 0.2 s, and tegrastats every 1 s. Writes a provisional `profile.json` and `summary.txt` under `~/sentinel-runs/<run id>/` (outside the repository). Refuses to start with a desktop, VS Code, Claude Code, v1 or another llama-server running, or with MemFree below 3.0 GB. Memory is whole-device `MemTotal − MemAvailable` in decimal bytes; per-process and tegrastats views are never added together. System Python, standard library only. |
+| `benchmarks/runner/demo_workload.py` | The in-process workload: legacy `yolov8n.engine` through Ultralytics `track()` with ByteTrack and v1's arguments at the source rate (latest-frame semantics); DeepFace Facenet512 + YuNet on the CPU at 2 Hz; one scene request at a time to llama-server every 4 s with v1's image shape and the v2 `SceneReport` prompt, validated by `parse_scene_report`. Reports counts and timings only; model output text is never written. |
+| `benchmarks/runner/gpu_alloc_probe.py` (session 4) | Check 9 (U18): fixed-size `cudaMalloc` or `cudaMallocManaged` chunks, each written with `cudaMemset`, until failure or a cap; prints one summary line. Refuses unless L4T's libcuda is mapped and CUDA initialises. |
+
+**Secrets (re-checked in session 4 by reading both scripts in full).** Neither script reads the camera URL, `.env`, tokens or face data. Process command lines are scanned only to detect v1 and are never printed; only command names are recorded. The full environment is passed to child processes, but no environment value is printed or stored. Model output text is not recorded. Errors are recorded as exception class names or HTTP status codes. Run output stays in `~/sentinel-runs/`, outside the repository, with mode 0700.
+
+### Session 3 verification (Claude, on this device, with a desktop running)
+
+- Device checks 1, 3a, 3b, 5 and 6: results in the V2-01 inventory.
+- `demo_profile.py` smoke runs, all with `--allow-desktop --allow-dev-tools` and shortened phases, so **none is a profile**. A full orchestration run with a stand-in llama-server exited cleanly and produced its summary. A 20 s workload run on the one-person clip held 15 fps on the detector (p95 58 ms); face analysis took about 1 s per run on the CPU, so it reached about 1 Hz rather than the 2 Hz target. The real llama-server could not load alongside it, because MemFree stayed below what it needs (U18). These smoke runs caught and fixed three script bugs.
+- No demo run and no profile measurement exist yet.
 
 ## Session 2 slice log (2026-09-29)
 
@@ -334,16 +366,16 @@ unittest discovery ignores `tests/unit/` because it has no `__init__.py`. This a
 
 **Mutation sweep (one-off; the script was not committed).** Each rule below was broken in turn in a scratch copy of `src/`, with that copy on `PYTHONPATH`. The suite failed every time, **16/16**, each through the test aimed at that rule: TTL boundary made inclusive; superseded epochs ignored; boot mismatch ignored; run ID ignored; one run ID shared by all stampers; epoch not incremented on connect; future evidence accepted; predictions refresh track age; failures may carry verdicts; `frame_seq` not advanced; duplicates treated as new; non-UTC offsets accepted; UTC steps move monotonic time; duplicate YAML keys allowed; credentials echoed; offline ≤ stale allowed.
 
-## Not run or not established (both sessions)
+## Not run or not established (sessions 1–4)
 
-- Neither GitHub workflow has run, because nothing was pushed.
+- GitHub Actions ran only on the pushed commits up to `32985c2` (maintainer report: both workflows passed). Session 3 and 4 commits are unpushed and have not run in CI.
 - There was no run on a clean laptop (x86-64 or macOS); all checks ran on this Jetson's aarch64 userspace.
 - No lint or type check is configured yet (guide ch. 21 lists both); deferred to keep the slice small.
 - There were no camera, decoder, GPU, TensorRT, memory, throughput or latency measurements. This slice establishes no hardware, Gate B or beta-readiness result.
 - No v2 code runs on the camera or GPU yet. `EdgeCore` is exercised only by synthetic replays and one FakeClock smoke run in `~/onvif_env` (CPU, no camera). The other ch. 18 CLI commands, including `sentinel replay`, were intentionally not added yet.
 - The replay regressions use synthetic timelines, not the maintainer's clips. They record the behaviour of the v2 components and of a documented reference model of v1 (D12), not of the running v1 process.
 - The mutation sweeps are one-off checks whose scripts are not committed.
-- The rewritten PENDING checks 3a/3b were only syntax-checked (`bash -n`, and `py_compile` for the embedded Python). They have not been run.
+- Checks 3a/3b were run by Claude in session 3 (inventory below). Checks 8 and 9 are only syntax-checked (`py_compile`, `--help`); they have not been run. Check 8's script was smoke-tested by Claude with a desktop running and a stand-in or partial workload, which is not a profile.
 
 ## Decisions
 
@@ -379,6 +411,13 @@ D14–D21 are implementation decisions made in session 2 within the guide's rule
 - **D23. Demo deviations accepted** (maintainer decision, 2026-09-29), on condition that every affected package is marked "demo form, full acceptance pending" in this file and is not counted done. See the package table and its counting rule.
 - **D24. Demo runtime environment and decode** (maintainer decision, 2026-09-29; resolves U14 for the demo). The demo runs in `~/onvif_env` with `PYTHONPATH=src` and decodes with its OpenCV/FFmpeg in software (640×480 at 15 fps is about 4.6 Mpx/s, cheap on CPU). GStreamer/NVDEC waits for V2-05 proper; revisit after Oct 20.
 - **D25. Adapter manifests (V2-49, session 2 implementation decision; not yet reviewed).** Configuration names adapter IDs only; implementations come from a static registry in code. Unknown contract versions and duplicate IDs are configuration errors. Other failures leave only that adapter unavailable, with a reason shown by `sentinel config validate`. Model adapters (scene, detector, face) need a measured resource profile; notifiers do not. No profiles exist yet (U17).
+- **D26. Post-demo stream path** (maintainer decision, 2026-09-29; narrows U12). After Oct 20, perception moves to the main stream (`subtype=0`, H.265 Main 2304×1296 at 20 fps, maintainer measurement) with NVDEC hardware decode, in V2-05 proper. The demo stays on profile A (D22). The restated frame-rate gate and the decision on a second (substream) session remain open.
+- **D27. CUDA driver library (resolves U13)** (maintainer decision, 2026-09-29). Option 1, "preload now, restore later":
+  - No system change before Oct 20. The demo's GPU processes (the Python runtime and llama-server) run with `LD_PRELOAD=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1`.
+  - A guard refuses GPU adapters unless the mapped `libcuda` is L4T's, `cuInit` returns 0 and llama-server logs a full offload (every layer and the vision encoder on CUDA0). There is no silent CPU fallback. `benchmarks/runner/` already applies this guard; `sentinel run` (D-1) must too.
+  - **After Oct 20**, behind a V2-08 restore point (known-good backup first): restore the Jetson `nvidia-cuda-dev` (6.2.1+b38 from the r36.4 repository) and remove or pin Ubuntu's CUDA 12.0 packages (`nvidia-cuda-toolkit`, `libcudart12`, `libnvidia-ml-dev`, `libnvidia-compute-535`), then re-run checks 3a/3b without the preload. Until then, the preload is required, not optional.
+- **D28. Admitting demo adapters (resolves U17)** (maintainer decision, 2026-09-29). Option (a): one measured run of the three demo model components together (check 8) gives provisional profiles labelled `provisional-demo`. They are recorded in this file and the adapter registry's known profiles, admit the adapters for the demo only, and are not a benchmark, Gate B record or beta-gate result.
+- **D29. Headless demo host** (maintainer decision, 2026-09-29). The demo runs with the display manager and any remote-desktop session stopped, as v1's launcher does. Check 8 is measured the same way and refuses to start otherwise (or records `--allow-desktop`).
 
 ## Unresolved decisions and semantics
 
@@ -393,12 +432,13 @@ D14–D21 are implementation decisions made in session 2 within the guide's rule
 - **U9.** Resolved by D12.
 - **U10. Memory units.** Decimal whole-device memory targets (5.0 / 5.4 GB) still need the kickoff confirmation asked for in guide ch. 26.
 - **U11. Live-stream announcement.** Consumers outside the runtime (core, UI) must learn the live `StreamIdentity`, including `run_id`, through the V2-11 handoff. Until then, runtime evidence is not current for them. This is the safe default, but the handoff must carry it.
-- **U12.** Resolved for the demo by D22. The beta profile and the 20–25 fps target remain open until after Oct 20. Original question: **Perception stream profile and frame-rate gate.** The 20–25 fps stretch target exceeds the measured 15 fps substream, and the ≥15 fps gate names a 1080p input. Options A–D and a recommendation are under "Conflict" in the V2-01 inventory. **Maintainer decision needed** before V2-05 fixes the ingest profile.
-- **U13. Shadowing CUDA driver library.** `libnvidia-compute-535` hides L4T's `libcuda.so.1`. Keep the `LD_PRELOAD` workaround, or remove the package or fix the loader order (a system change)? **Undecided until the maintainer runs checks 3 and 5** (maintainer, 2026-09-29). Nothing was changed.
+- **U12.** Resolved for the demo by D22; the post-demo direction is D26 (main stream + NVDEC). The restated gate, the 20–25 fps target and whether the substream stays as a second session remain open until after Oct 20. Original question: **Perception stream profile and frame-rate gate.** The 20–25 fps stretch target exceeds the measured 15 fps substream, and the ≥15 fps gate names a 1080p input. Options A–D and a recommendation are under "Conflict" in the V2-01 inventory. **Maintainer decision needed** before V2-05 fixes the ingest profile.
+- **U13.** Resolved by D27 (preload now; restore the Jetson packages after Oct 20 behind a V2-08 restore point). Original question: **Shadowing CUDA driver library.** `libnvidia-compute-535` hides L4T's `libcuda.so.1`. Keep the `LD_PRELOAD` workaround, or remove the package or fix the loader order (a system change)? Nothing was changed.
 - **U14.** Resolved for the demo by D24; revisit after Oct 20. Original question: **Runtime environment for hardware adapters.** No existing interpreter has both GStreamer bindings and TensorRT. Options (a)–(c) are in the V2-01 inventory; decide when V2-05 starts.
 - **U15. Identity calibration.** D19's thresholds are placeholders. Calibrate with consented, session-separated identities (V2-07/V2-25) before any identity is shown as more than context.
 - **U16. Face stage cadence.** `EdgeCore.on_frame(..., faces=None)` means the face stage did not run on that frame. Which frames get face analysis, and whether it runs asynchronously in a worker, is V2-25/V2-29 work. The interim demo adapter will run it on sampled frames.
-- **U17. Admitting demo adapters without measured resource profiles.** V2-49 makes every model adapter unavailable until its resource profile is known, and no profile has been measured. Decide in D-1 how the demo admits the interim face and scene adapters. Options: record a provisional, clearly labelled "demo-unmeasured" profile from a first measured cold load, or run them outside the manifest path for the demo only.
+- **U17.** Resolved by D28; its run (check 8) is PENDING. Original question: **Admitting demo adapters without measured resource profiles.** V2-49 makes every model adapter unavailable until its resource profile is known, and no profile has been measured. Decide in D-1 how the demo admits the interim face and scene adapters. Options: record a provisional, clearly labelled "demo-unmeasured" profile from a first measured cold load, or run them outside the manifest path for the demo only.
+- **U18. Free memory at GPU load** (new, session 3). On this device, GPU allocations failed whenever they exceeded **MemFree**, although MemAvailable was over 4 GB (inventory below). llama.cpp's own fit check uses MemAvailable, so it does not catch this. How does `sentinel run` (D-1) make GPU loads reliable? Options: (a) evict the model files' page cache with `posix_fadvise(DONTNEED)` (no root) and refuse to load below a MemFree threshold, as `demo_profile.py` does (3.0 GB default); (b) drop caches system-wide before loading (root; a system action); (c) load GPU components first, right after boot. Also open: whether allocations made after start-up (llama.cpp compute buffers, larger images) can fail the same way once the page cache refills. **Check 9** settles whether this depends on unified memory (`cudaMallocManaged`) or also affects `cudaMalloc`; decide after it.
 
 ## V2-01 inventory so far
 
@@ -414,7 +454,7 @@ Nothing below is a performance, GPU-placement or memory measurement. Each row sa
 | Bitrate | About 236 kbit/s with motion, about 38 kbit/s for a static scene |
 | Audio | AAC-LC, 16 kHz mono. **v2 must drop audio** at ingest (video-only depay/decode; audio is neither decoded nor stored). |
 | Timestamps | RTSP timestamps start at 0 (stream-relative). The first packet has unset timestamps and DTS is non-monotonic at stream start, reproduced on 2 of 2 recordings. |
-| Main stream (`subtype=0`) | **PENDING**; command below |
+| Main stream (`subtype=0`) | Measured by the maintainer, 2026-09-29, ffprobe: HEVC (H.265) Main, 2304×1296, 20 fps, AAC-LC audio. Bitrate and keyframe spacing PENDING (check 2). |
 | Keyframe interval | **PENDING** for both profiles; command below |
 
 Consequences already implemented: `4587021` makes `FrameStamper` keep a missing, repeated or backwards PTS for diagnostics but stamp it `source_time_quality=none`. Identity and ages already came only from ingest (receive) time, so nothing trusts such a PTS as stream time. Regression: `test_unset_and_non_increasing_pts_at_stream_start_fall_back_to_receive_time`.
@@ -460,21 +500,67 @@ Run with `PYTHONDONTWRITEBYTECODE=1` so no files were written into the environme
 
 **Why: a desktop-GPU CUDA driver library shadows the Jetson one.** The Ubuntu package `libnvidia-compute-535` (535.309.01-0ubuntu0.24.04.1) installs `/usr/lib/aarch64-linux-gnu/libcuda.so.1`, which the loader finds before L4T's `/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1` (package `nvidia-l4t-cuda`). Measured with `ctypes`: the 535 library reports driver API 12020 and `cuInit` returns 100 (`CUDA_ERROR_NO_DEVICE`), while the L4T library initialises, reports driver API 12060 and counts 1 device. `nvidia-smi` fails with "Driver/library version mismatch" for the same reason. apt history mentions the package on 2026-03-23 (`apt upgrade -y`) and 2026-06-13 (aptdaemon, a desktop updater); which transaction installed it was not determined.
 
-- `~/onvif_env/bin/activate` works around this by exporting `LD_PRELOAD` of the L4T library. **Invoking `~/onvif_env/bin/python` directly, without `activate`, gets no GPU.** `start_sentinel.sh` does that, so v1's GPU use depends on the environment of the shell that ran the launcher. `llama-server` resolves `libcuda.so.1` the same way, so its `--n-gpu-layers 999` offload is unverified. Check 3 below settles both, by starting each component briefly (v1 is not running on this device).
+- `~/onvif_env/bin/activate` works around this by exporting `LD_PRELOAD` of the L4T library. **Invoking `~/onvif_env/bin/python` directly, without `activate`, gets no GPU.** `start_sentinel.sh` does that, so v1's GPU use depends on the environment of the shell that ran the launcher. `llama-server` resolves `libcuda.so.1` the same way. Check 3 (run by Claude in session 3, below) confirmed both: without the preload, the TensorRT process crashes and llama-server silently runs on the CPU.
 - For v2 live GPU runs: `LD_PRELOAD=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1 PYTHONPATH=src ~/onvif_env/bin/python …`.
-- Removing the package or changing the loader order is a system change for the maintainer to decide (U13). Nothing was changed.
+- **How the package arrived (session 3, apt history in the release-upgrade logs):** during the 22.04 → 24.04 release upgrade on **2026-02-20**, apt replaced the Jetson `nvidia-cuda-dev` 6.2.1+b38 with Ubuntu's same-named package 12.0.146 (noble/multiverse). That pulled in `nvidia-cuda-toolkit` 12.0, `libcudart12`, `libnvidia-ml-dev` and `libnvidia-compute-535` as automatic dependencies. `nvidia-cuda-dev` and `nvidia-cuda` are marked manually installed.
+- Handled by D27: preload for the demo; restore the Jetson packages after Oct 20 behind a restore point. Nothing was changed.
 
 **Consequence for V2-05/V2-09 (U14).** No existing interpreter has both halves of the planned media path. `~/onvif_env` (3.10) has TensorRT 10.3 but no GStreamer in OpenCV and no importable `gi`. The system Python 3.12 imports `gi` with GStreamer 1.24.2 (`python3-gi` 3.48.2, `nvidia-l4t-gstreamer` 36.4.7 installed) but has no TensorRT bindings (not checked for a 3.12 wheel). **Decision for the demo (D24): option (c), software decode in `~/onvif_env`; the rest waits for V2-05 proper.** Options as recorded: (a) decode in a `gst-launch-1.0` subprocess (`nvv4l2decoder ! nvvidconv ! BGRx ! fdsink`) that any interpreter reads from a pipe, with no new Python dependencies; (b) a new, separate v2 runtime environment, never `~/onvif_env`; (c) interim CPU decode through `~/onvif_env`'s OpenCV for the Oct 20 demo only, labelled as such. Per the maintainer's rules, any new environment or dependency is proposed first.
+
+### Device checks run by Claude on this device (2026-09-29, session 3)
+
+The maintainer asked for these. They ran with v1 stopped, a desktop and a remote-desktop session running, and VS Code and Claude Code open. llama-server bound 127.0.0.1:18081 only and was stopped after every run; afterwards no llama-server process remained and the port was free. Nothing read or printed a secret. Each is one run: an observation, not a benchmark.
+
+| Check | Result |
+|---|---|
+| 1 `nvpmodel -q` | `NV Power Mode: MAXN_SUPER`, mode 2 (no sudo needed). The `gst-inspect` lines wait for V2-05 proper (D24). |
+| 3a, no preload | Maps `/usr/lib/aarch64-linux-gnu/libcuda.so.535.309.01`; `cuInit` returns 100; TensorRT logs "CUDA initialization failure with error: 100"; the process **segfaults (exit 139)**. |
+| 3a, L4T preload | Maps `/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1.1`; `cuInit` 0; the engine deserializes; exit 0. |
+| 3b, no preload | Ready in 4.1 s and maps the 535 library. Logs "failed to initialize CUDA: no CUDA-capable device is detected" and "no usable GPU found, --gpu-layers option will be ignored": the model runs **entirely on the CPU, silently**. VmHWM 2,088,868 kB. |
+| 3b, L4T preload | When it loads: 17/17 layers and the vision encoder (`CLIP using CUDA0`) on CUDA0; CUDA0 buffers: model 661.25 MiB, KV 24.00 MiB, compute 136.00 MiB, vision compute 30.31 MiB. Ready (HTTP 200 from `/health`) after 14.1 s; VmHWM 1,858,860 kB. It loaded only when MemFree was high enough (GPU memory, below). Session 2's version of this check counted any HTTP reply as ready, even during loading; it now waits for `/health`. |
+| 5 detector engine | Ultralytics 8.4.25 metadata (exported 2026-04-18): task `detect`, imgsz 640×640, batch 1, stride 32; export arguments not half, int8 or dynamic, so the engine is **FP32** and v1's `half=True` has no effect on it. Output `output0` (1, 84, 8400) FP32, linear; NMS runs outside the engine. 1 optimization profile; engine device memory 18,944,000 B; TensorRT 10.3.0. TensorRT warns "Using an engine plan file across different models of devices"; not investigated. |
+| 6 SHA-256 | See below |
+| llama.cpp build | b8932 (`98dc1418e`) |
+
+```text
+08370639f961d2c67148c19562718ef80527c7085e88d2d923176180f1b98637  yolov8n.engine
+ce0d4b122d328d14390ef160785da3a51a527f96844f392a04cb2db96f134e5d  LFM2-VL-1.6B-Q4_0.gguf
+65ec437db88d65fff93f472d00c145e09880769ac67fedff5cd1c0f8d8301d87  mmproj-LFM2-VL-1.6B-Q8_0.gguf
+4c3b66c0a6bf25d5ef876edf118a96deebc15de04d58f4e280cdcfda708b7932  LFM2-VL-1.6B-Q8_0.gguf
+0a82498edc354b50247fee78081c8954ae7f4deee9068f8464a5ee774e82118a  LFM2-VL-1.6B-F16.gguf
+b637bfa6060be2bc7503ec23ba48b407843d08c2ca83f52be206ea8563ccbae2  mmproj-LFM2-VL-1.6B-F16.gguf
+```
+
+**GPU memory (new finding, U18).** With the preload, llama-server's GPU allocations failed with `NvMapMemAllocInternalTagged: ... error 12` and "cudaMalloc failed: out of memory" whenever they exceeded **MemFree**, although MemAvailable was over 4 GB (mostly page cache):
+
+| MemFree before loading | Outcome |
+|---|---|
+| 0.09 GB (MemAvailable 4.52 GB) | Failed at the first CUDA0 buffer (661.25 MiB model) |
+| not recorded (first run of the check script) | Model loaded; failed at the 538.02 MiB vision projector buffer |
+| about 1.70 GB (U17 smoke run) | Failed at the 538.02 MiB vision projector buffer |
+| 3.08 GB, after evicting the model files' page cache with `posix_fadvise(DONTNEED)` | Loaded fully |
+
+llama.cpp's own fit check reported 3.7–4.3 GB free each time, so it did not catch this.
+
+### Check 3b and GPU memory: the maintainer's questions (answered 2026-10-03, session 4)
+
+1. **Was `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1` set in check 3b?** Yes, in every llama-server run of session 3: check 3b without and with the preload, both re-runs and the U17 smoke runs. It mirrors v1's launcher, which sets it. In this build (b8932) the variable makes `ggml_cuda_device_malloc` call `cudaMallocManaged` instead of `cudaMalloc` (`ggml/src/ggml-cuda/ggml-cuda.cu`); the error text says "cudaMalloc failed" either way. On an integrated GPU such as Orin, llama.cpp reports MemAvailable as free device memory whether or not the variable is set, which is why it showed 3.7–4.3 GB free while allocations failed.
+2. **Do allocations beyond MemFree fail with and without it?** **With it: yes**, as far as session 3 shows. Both loads that started with MemFree at or below about 1.7 GB failed, a third failed with MemFree unrecorded, and the load at 3.08 GB MemFree succeeded. **Without it: not tested.** No session 3 run omitted the variable, so whether plain `cudaMalloc` behaves the same is unknown. Check 9 (PENDING) tests both APIs directly with `benchmarks/runner/gpu_alloc_probe.py`, writing every chunk so it is backed, and llama-server without the variable, all with the page cache full and MemFree low. Until check 9 runs, D-1 assumes both fail (U18).
+3. **Could the wrong libcuda have contributed to the original v1 OOM?** No record of that OOM (time, process or message) exists in the repository, the local notes or the session records. The answer below therefore comes from mechanism, not from evidence about the event:
+   - **Not as the direct cause of a GPU allocation failure.** A process that loads the 535 library never creates a CUDA context (`cuInit` 100). TensorRT crashes (exit 139) rather than running out of memory, and llama-server allocates no GPU memory. A CUDA or NvMap out-of-memory error must therefore come from a process that had L4T's library.
+   - **Possibly, indirectly.** If v1 was launched without `activate`, llama-server ran on the CPU. That puts full inference load on the CPU and slows v1's loop, and it changes where the memory is. Its effect on whole-device memory was not measured. VmHWM was 2.09 GB on the CPU against 1.86 GB on the GPU, but these are not comparable, because NvMap GPU buffers need not appear in a process's RSS.
+   - **A more likely mechanism for a GPU-allocation OOM does not involve the libcuda at all:** allocations beyond MemFree fail even when page cache could be reclaimed (U18). MemFree sits far below MemAvailable after a desktop session or after reading the model files, which is the normal state of this device.
+   - Check 9c (PENDING) searches the retained kernel log for OOM kills and NvMap failures, so the original event can be classified as a kernel OOM kill or a GPU allocation failure.
 
 ### Other software facts (read-only, 2026-09-29)
 
 | Item | Observed |
 |---|---|
 | CUDA toolkit | `/usr/local/cuda-12.6` (`version.json`: CUDA SDK 12.6.11; `libcudart.so.12.6.68`) |
-| Release upgrade | `/var/log/dist-upgrade/` shows a release upgrade that started 2026-04-18 12:36 (22.04 → 24.04 by the `.distUpgrade` source backups). This is how the device reached Ubuntu 24.04. |
+| Release upgrade | The 22.04 → 24.04 release upgrade ran on **2026-02-20** (release-upgrader `main.log` and apt history timestamps). Session 1 dated it 2026-04-18, which is only the timestamp of the log directory under `/var/log/dist-upgrade/`; corrected in session 3. This is how the device reached Ubuntu 24.04. |
 | NVIDIA apt sources | `repo.download.nvidia.com/jetson/{common,t234}` at **r36.4**. There is also a generic `cuda-ubuntu2404-arm64` CUDA repository, which is not the Jetson repository. Installing from it could replace L4T CUDA components; treat it as a risk to check before any apt operation. |
 | Media tools | ffmpeg/ffprobe 6.1.1 (Ubuntu), `gstreamer1.0-tools`, `-plugins-good`, `-plugins-bad` and `-libav` 1.24.x installed |
-| Model files | `~/yolov8n.engine` (14,486,949 B, dated 2026-04-18); launcher paths `~/models/lfm2-vl/LFM2-VL-1.6B-Q4_0.gguf` and `mmproj-LFM2-VL-1.6B-Q8_0.gguf`; checksums PENDING |
+| Model files | `~/yolov8n.engine` (14,486,949 B, dated 2026-04-18); launcher paths `~/models/lfm2-vl/LFM2-VL-1.6B-Q4_0.gguf` and `mmproj-LFM2-VL-1.6B-Q8_0.gguf`; SHA-256 in the session 3 checks below |
 
 ### Device snapshot (read-only, session 1)
 
@@ -503,21 +589,59 @@ No v1 code was migrated in this slice.
 
 ## Hardware checks PENDING (for the maintainer to run; none of these results exist yet)
 
-Run from any directory unless stated. v1 is not running on this device, so no check assumes v1 processes. Nothing below prints the camera URL or any other secret: commands that open the stream send errors through `sed` to redact any `rtsp://…`, or discard stderr. Paste outputs back; they will be recorded as maintainer measurements. **Demo priority: checks 3 and 5** (they also decide U13). Then 6, 1 (`nvpmodel` only) and 2. Check 7 and the `gst-inspect` lines wait for V2-05 proper.
+Checks 1 (`nvpmodel` only), 3, 5 and 6 were run by Claude in session 3 (inventory above), and check 4 was merged into 3b. v1 is not running on this device, so no check assumes v1 processes. Nothing below prints the camera URL or any other secret: commands that open the stream redact any `rtsp://…` with `sed` or discard stderr. Paste outputs back; they will be recorded as maintainer measurements. **Demo priority: check 8, then 9.** Then the rest of check 2. Check 7 and the `gst-inspect` lines wait for V2-05 proper.
 
 ```bash
-# 1. Power mode (V2-01). The two gst-inspect lines are for V2-05 proper (deferred by D24).
-nvpmodel -q            # use sudo if it asks
-gst-inspect-1.0 nvv4l2decoder | sed -n '1,25p'
-gst-inspect-1.0 nvvidconv | sed -n '1,25p'
+# 8. NEEDED FOR THE DEMO (U17 -> D28). Demo resource profile, about 15 minutes.
+#    Headless (D29): best right after a reboot, from a plain SSH session, with VS Code and
+#    Claude Code closed and the display manager and any remote-desktop session stopped
+#    (the remote-desktop command is in docs/LOCAL_NOTES.md). The script checks all of this
+#    and refuses to start otherwise; it also needs MemFree >= 3.0 GB (U18).
+sudo systemctl stop display-manager
+cd ~/sentinel-surveillance
+/usr/bin/python3 benchmarks/runner/demo_profile.py --clip "$SENTINEL_REPLAY_CLIPS_DIR"/one_person_*.mp4
+#    Paste back the summary it prints (also saved as ~/sentinel-runs/<run id>/summary.txt).
+sudo systemctl start display-manager   # afterwards, if you want the desktop back
 
-# 2. Main stream (subtype=0): codec, size, rate. Informs the post-demo profile choice (D22).
+# 9. NEEDED FOR D-1 (U18). Do GPU allocations beyond MemFree fail with cudaMalloc, with
+#    cudaMallocManaged, or both? About 5 minutes; any host state; v1 and llama-server stopped.
+#    fill() reads the model files into the page cache, so MemFree is low and MemAvailable high.
+L4T=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1
+fill() { cat ~/models/lfm2-vl/*.gguf >/dev/null; grep -E '^(MemFree|MemAvailable):' /proc/meminfo | tr -s ' ' | paste -sd' '; }
+# 9a. The two allocation APIs directly (128 MiB chunks, each written; stops at the first failure)
+for API in device managed; do
+  fill
+  LD_PRELOAD=$L4T /usr/bin/python3 ~/sentinel-surveillance/benchmarks/runner/gpu_alloc_probe.py --api "$API"
+done
+# 9b. llama-server with v1's flags, without and with GGML_CUDA_ENABLE_UNIFIED_MEMORY
+for UMA in "" 1; do
+  echo "== llama-server, GGML_CUDA_ENABLE_UNIFIED_MEMORY=${UMA:-<unset>}"
+  fill
+  LOG=$(mktemp)
+  env LD_PRELOAD=$L4T ${UMA:+GGML_CUDA_ENABLE_UNIFIED_MEMORY=$UMA} ~/llama.cpp/build/bin/llama-server \
+    --model ~/models/lfm2-vl/LFM2-VL-1.6B-Q4_0.gguf --mmproj ~/models/lfm2-vl/mmproj-LFM2-VL-1.6B-Q8_0.gguf \
+    --host 127.0.0.1 --port 18081 --n-gpu-layers 999 --ctx-size 2048 --parallel 1 >"$LOG" 2>&1 &
+  PID=$!; READY=no
+  for i in $(seq 1 45); do
+    curl -sf -o /dev/null http://127.0.0.1:18081/health && { READY=yes; break; }
+    kill -0 "$PID" 2>/dev/null || break
+    sleep 2
+  done
+  echo "ready: $READY"
+  grep -E 'offloaded|CLIP using|NvMap|cudaMalloc failed|failed to allocate' "$LOG" | sort | uniq -c | head -8
+  kill "$PID" 2>/dev/null; wait "$PID" 2>/dev/null; rm -f "$LOG"
+done
+pgrep -a llama-server || echo "no llama-server left"
+# 9c. The original v1 OOM: kernel OOM kills and NvMap failures in the retained journal
+#     (use sudo if it prints nothing and you are not in the adm/systemd-journal group).
+journalctl --list-boots --no-pager 2>/dev/null | head -3
+journalctl _TRANSPORT=kernel --no-pager -o short-iso 2>/dev/null \
+  | grep -iE 'out of memory|oom-kill|killed process|NvMapMemAlloc' | tail -20
+
+# 2. Rest of check 2: frame rate, bitrate and keyframe spacing of both profiles, 60 s of
+#    video packets each (no decode). The main stream's codec, size and rate are recorded.
 #    Needs SENTINEL_RTSP_URL (substream) exported; prints variable names, never URLs.
 MAIN_URL="${SENTINEL_RTSP_URL/subtype=1/subtype=0}"
-ffprobe -v error -rtsp_transport tcp \
-  -show_entries stream=index,codec_type,codec_name,profile,level,width,height,pix_fmt,avg_frame_rate,r_frame_rate,sample_rate,channels \
-  -of default=noprint_wrappers=1 "$MAIN_URL" 2>&1 | sed -E 's#rtsp://[^[:space:]]+#rtsp://<redacted>#g'
-#    60 s of video packets from each profile: frame rate, bitrate, keyframe spacing (no decode)
 for URL_VAR in MAIN_URL SENTINEL_RTSP_URL; do
   echo "== $URL_VAR"
   ffprobe -v error -rtsp_transport tcp -select_streams v:0 -read_intervals %+60 \
@@ -527,83 +651,16 @@ for URL_VAR in MAIN_URL SENTINEL_RTSP_URL; do
 done
 unset MAIN_URL
 #    Also note from the camera's web/app settings: model, firmware, and the frame-rate
-#    choices offered for each profile (option B of U12, after the demo).
+#    choices offered for each profile (after the demo).
 
-# 3. NEEDED FOR THE DEMO; DECIDES U13. Which libcuda each v1 component resolves when
-#    started the way the launcher starts it. v1 is not running, so each component is
-#    started briefly and stopped again. Nothing here reads or prints secrets.
-# 3a. Python + TensorRT (the engine process), without and with the L4T preload.
-#     An abort ("terminate called ...", exit 134) without the preload is itself a result.
-for PRE in "" /usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1; do
-  echo "== python, LD_PRELOAD=${PRE:-<none>}"
-  env ${PRE:+LD_PRELOAD=$PRE} PYTHONDONTWRITEBYTECODE=1 ~/onvif_env/bin/python - <<'EOF' 2>&1 | tail -5
-import ctypes, json, sys
-cuda = ctypes.CDLL("libcuda.so.1")  # resolved by name, as TensorRT and torch resolve it
-print("libcuda mapped:", sorted({l.split()[-1] for l in open("/proc/self/maps") if "libcuda" in l}))
-print("cuInit:", cuda.cuInit(0), "(0 = OK, 100 = no CUDA device)")
-sys.stdout.flush()
-import tensorrt as trt
-data = open("/home/villain8001/yolov8n.engine", "rb").read()
-n = int.from_bytes(data[:4], "little")
-try:
-    json.loads(data[4:4 + n].decode()); data = data[4 + n:]
-except Exception:
-    pass
-engine = trt.Runtime(trt.Logger(trt.Logger.ERROR)).deserialize_cuda_engine(data)
-print("engine deserialized:", engine is not None)
-EOF
-  echo "exit status: ${PIPESTATUS[0]}"
-done
-# 3b. llama-server with the launcher's flags on a spare loopback port, without and with the
-#     preload: the libcuda it maps, then the CUDA and offload lines of its log (~1 min each).
-for PRE in "" /usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1; do
-  echo "== llama-server, LD_PRELOAD=${PRE:-<none>}"
-  LOG=$(mktemp)
-  env ${PRE:+LD_PRELOAD=$PRE} GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 ~/llama.cpp/build/bin/llama-server \
-    --model ~/models/lfm2-vl/LFM2-VL-1.6B-Q4_0.gguf --mmproj ~/models/lfm2-vl/mmproj-LFM2-VL-1.6B-Q8_0.gguf \
-    --host 127.0.0.1 --port 18081 --n-gpu-layers 999 --ctx-size 2048 --parallel 1 >"$LOG" 2>&1 &
-  PID=$!
-  for i in $(seq 1 60); do
-    curl -s http://127.0.0.1:18081/v1/models >/dev/null && break
-    kill -0 "$PID" 2>/dev/null || break
-    sleep 2
-  done
-  if kill -0 "$PID" 2>/dev/null; then grep -o '/[^ ]*libcuda[^ ]*' /proc/"$PID"/maps | sort -u
-  else echo "llama-server exited early"; fi
-  grep -iE 'ggml_cuda_init|CUDA devices|no usable GPU|offloaded|CUDA0|error' "$LOG" | head -20
-  kill "$PID" 2>/dev/null; wait "$PID" 2>/dev/null; rm -f "$LOG"
-done
-
-# 4. Merged into 3b. It read llama-server's log from v1's tmux pane, and v1 is not running.
-
-# 5. NEEDED FOR THE DEMO. Detector engine: bindings, shapes, Ultralytics metadata
-#    (loads the engine on the GPU; uses the preload, as ~/onvif_env/bin/activate does).
-LD_PRELOAD=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1 PYTHONDONTWRITEBYTECODE=1 ~/onvif_env/bin/python - <<'EOF'
-import json, tensorrt as trt
-data = open('/home/villain8001/yolov8n.engine', 'rb').read()
-n = int.from_bytes(data[:4], 'little'); meta = None
-try:
-    meta = json.loads(data[4:4 + n].decode()); data = data[4 + n:]
-except Exception:
-    pass
-print('ultralytics metadata:', {k: meta.get(k) for k in ('version', 'imgsz', 'batch', 'half', 'int8', 'dynamic', 'task')} if meta else None)
-eng = trt.Runtime(trt.Logger(trt.Logger.WARNING)).deserialize_cuda_engine(data)
-print('deserialized:', eng is not None, 'TensorRT', trt.__version__)
-for i in range(eng.num_io_tensors):
-    t = eng.get_tensor_name(i)
-    print(t, eng.get_tensor_mode(t), eng.get_tensor_shape(t), eng.get_tensor_dtype(t))
-EOF
-
-# 6. Model checksums (V2-01 inventory)
-sha256sum ~/yolov8n.engine ~/models/lfm2-vl/*.gguf
-
-# 7. DEFERRED with V2-05 proper (D24); not needed for the Oct 20 demo. Hardware-decode
-#    smoke test on the substream, 30 s (in a second terminal: tegrastats --interval 1000).
+# 7. DEFERRED with V2-05 proper (D24); not needed for the Oct 20 demo.
+gst-inspect-1.0 nvv4l2decoder | sed -n '1,25p'
+gst-inspect-1.0 nvvidconv | sed -n '1,25p'
+#    Hardware-decode smoke test on the substream, 30 s (in a second terminal: tegrastats --interval 1000).
 timeout -s INT 30 gst-launch-1.0 -e rtspsrc location="$SENTINEL_RTSP_URL" protocols=tcp latency=200 \
   ! rtph264depay ! h264parse ! nvv4l2decoder ! nvvidconv ! 'video/x-raw,format=BGRx' \
   ! fpsdisplaysink video-sink=fakesink text-overlay=false sync=false -v 2>&1 \
   | sed -E 's#rtsp://[^[:space:]]+#rtsp://<redacted>#g' | grep -E 'last-message|ERROR|WARN' | tail -4
 ```
 
-Still open from the guide's V2-01 acceptance, after the commands above: the JetPack release that corresponds to L4T 36.4.7 (NVIDIA release notes); PTZ capability response (C9, may stay deferred); B0 run with unique-frame throughput, stage timings, per-process/thread CPU, `MemTotal − MemAvailable`, tegrastats, PSS, clocks, temperature, headless versus desktop (needs the V2-11 trace contract first); B0/B1 workload manifest, provisional CPU budget and re-estimated effort; a known-good backup and restore point before any runtime change.
-
+Still open from the guide's V2-01 acceptance, after the commands above: the JetPack release that corresponds to L4T 36.4.7 (NVIDIA release notes); PTZ capability response (C9, may stay deferred); B0 run with unique-frame throughput, stage timings, per-process/thread CPU, `MemTotal − MemAvailable`, tegrastats, PSS, clocks, temperature, headless versus desktop (needs the V2-11 trace contract first); B0/B1 workload manifest, provisional CPU budget and re-estimated effort; a known-good backup and restore point before any runtime change (also required by D27 before the post-demo package restore).

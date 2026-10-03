@@ -1,0 +1,438 @@
+"""Demo workload for the resource-profile run (U17 option a, decision D28).
+
+Started by ``demo_profile.py`` inside ``~/onvif_env`` (decision D24) with the
+L4T libcuda preloaded (decision D27). Do not run it by hand.
+
+It loads the two in-process demo models the way v1 and the demo's interim
+adapters use them, then runs them together with scene requests to the
+llama-server that ``demo_profile.py`` started:
+
+- detector: the legacy ``yolov8n.engine`` through Ultralytics ``track()`` with
+  ByteTrack and v1's arguments, on every frame at the source rate;
+- face: DeepFace Facenet512 with the YuNet detector on whole frames, TensorFlow
+  pinned to the CPU as v1 does, in a thread at a sampled rate;
+- scene: one chat request at a time to llama-server, started every 4 s (D16),
+  with v1's image shape (480x360 JPEG, quality 60) and the v2 SceneReport prompt.
+
+Frames come from a replay clip (``--clip``) decoded by OpenCV/FFmpeg on the CPU,
+as the demo decodes the camera (D24), paced at the source rate with
+latest-frame semantics, or from synthetic noise frames without ``--clip``.
+
+Structured results go to stdout as ``@@EVENT <json>`` lines. Model output text
+is never written anywhere: the footage is private. Only counts and timings are.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import ctypes
+import json
+import math
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+
+EVENT_PREFIX = "@@EVENT "
+TRACK_ARGS = {  # as surveillance4_1.py calls yolo.track()
+    "imgsz": 640,
+    "device": 0,
+    "half": True,
+    "verbose": False,
+    "classes": [0],
+    "conf": 0.4,
+    "persist": True,
+    "tracker": "bytetrack.yaml",
+}
+FACE_ARGS = {"model_name": "Facenet512", "detector_backend": "yunet", "enforce_detection": False}
+VLM_IMAGE_SIZE = (480, 360)
+VLM_JPEG_QUALITY = 60
+VLM_MAX_TOKENS = 200
+VLM_TIMEOUT_S = 30.0
+DEMO_SCENE_JOB_TIMEOUT_S = 8.0  # D16; latencies above it are counted, not cut off
+SCENE_SYSTEM = (
+    "You are the scene-analysis component of a home security camera. "
+    "Reply with exactly one JSON object and nothing else."
+)
+SCENE_PROMPT = (
+    "Describe this camera image as JSON with exactly these fields: "
+    '"persons_visible" (integer 0-50), "fire_or_smoke" (true or false), '
+    '"threat" ("none", "low", "medium" or "high"), '
+    '"observations" (a list of at most 5 strings of at most 80 characters), '
+    '"uncertainty" ("low", "medium" or "high"), "summary" (at most 160 characters).'
+)
+
+
+def event(kind: str, /, **fields: object) -> None:
+    sys.stdout.write(EVENT_PREFIX + json.dumps({"event": kind, **fields}) + "\n")
+    sys.stdout.flush()
+
+
+def percentiles(values: list[float]) -> dict[str, float | int | None]:
+    """Nearest-rank p50/p95/p99/max of millisecond values."""
+    if not values:
+        return {"n": 0, "p50": None, "p95": None, "p99": None, "max": None}
+    ordered = sorted(values)
+
+    def rank(p: float) -> float:
+        return round(ordered[max(1, math.ceil(p * len(ordered))) - 1], 1)
+
+    return {"n": len(ordered), "p50": rank(0.50), "p95": rank(0.95), "p99": rank(0.99), "max": round(ordered[-1], 1)}
+
+
+def check_cuda_driver() -> bool:
+    """Decision D27: GPU work only with L4T's libcuda and a working cuInit."""
+    cuda = ctypes.CDLL("libcuda.so.1")
+    rc = cuda.cuInit(0)
+    with open("/proc/self/maps") as maps:
+        mapped = sorted({line.split()[-1] for line in maps if "libcuda" in line})
+    ok = rc == 0 and bool(mapped) and all("/nvidia/" in path for path in mapped)
+    event("cuda_driver", cuinit=rc, libcuda=mapped, ok=ok)
+    return ok
+
+
+class Frames:
+    """Replay clip (looped) or synthetic frames, paced as a live source."""
+
+    def __init__(self, clip: str | None, fps: float) -> None:
+        import cv2
+        import numpy as np
+
+        self._cv2 = cv2
+        self.clip = clip
+        self.fps = fps
+        self.loops = 0
+        self.decoded = 0
+        if clip:
+            self._cap = cv2.VideoCapture(clip)
+            if not self._cap.isOpened():
+                raise SystemExit("cannot open the replay clip")
+        else:
+            rng = np.random.default_rng(0)
+            self._synthetic = [rng.integers(0, 256, (480, 640, 3), dtype=np.uint8) for _ in range(16)]
+
+    def read(self):
+        self.decoded += 1
+        if not self.clip:
+            return self._synthetic[self.decoded % len(self._synthetic)]
+        ok, frame = self._cap.read()
+        if not ok:
+            self._cap.release()
+            self._cap = self._cv2.VideoCapture(self.clip)
+            self.loops += 1
+            ok, frame = self._cap.read()
+            if not ok:
+                raise SystemExit("replay clip became unreadable")
+        return frame
+
+
+class Latest:
+    """Latest decoded frame, shared with the face and scene threads."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._frame = None
+
+    def put(self, frame) -> None:
+        with self._lock:
+            self._frame = frame
+
+    def get(self):
+        with self._lock:
+            return self._frame
+
+
+def load_detector(engine: str):
+    started = time.monotonic()
+    import numpy as np
+    import torch
+    from ultralytics import YOLO
+
+    if not torch.cuda.is_available():
+        event("fatal", reason="torch sees no CUDA device")
+        raise SystemExit(3)
+    model = YOLO(engine, task="detect")
+    blank = np.zeros((480, 640, 3), np.uint8)
+    for _ in range(3):
+        model.track(blank, **TRACK_ARGS)
+    event("detector_loaded", seconds=round(time.monotonic() - started, 2), torch=torch.__version__)
+    return model
+
+
+def load_face():
+    started = time.monotonic()
+    import numpy as np
+    import tensorflow as tf
+
+    try:
+        tf.config.set_visible_devices([], "GPU")  # v1: TensorFlow/DeepFace on the CPU
+    except Exception as exc:  # noqa: BLE001 - recorded, as v1 only warns
+        event("warning", detail=f"could not pin TensorFlow to the CPU: {type(exc).__name__}")
+    from deepface import DeepFace
+
+    DeepFace.build_model(FACE_ARGS["model_name"])
+    DeepFace.represent(img_path=np.zeros((480, 640, 3), np.uint8), **FACE_ARGS)
+    event(
+        "face_loaded",
+        seconds=round(time.monotonic() - started, 2),
+        tensorflow=tf.__version__,
+        tf_visible_gpus=len(tf.config.get_visible_devices("GPU")),
+    )
+    return DeepFace
+
+
+class Stats:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self._clear()
+
+    def reset(self) -> None:
+        """Start counting afresh (at the start of the steady phase)."""
+        with self.lock:
+            self._clear()
+
+    def _clear(self) -> None:
+        self.det_ms: list[float] = []
+        self.det_person_frames = 0
+        self.det_max_persons = 0
+        self.source_frames = 0
+        self.face_ms: list[float] = []
+        self.face_runs_with_face = 0
+        self.face_errors: dict[str, int] = {}
+        self.vlm_ms: list[float] = []
+        self.vlm_errors: dict[str, int] = {}
+        self.vlm_valid = 0
+        self.vlm_invalid = 0
+        self.vlm_unchecked = 0
+        self.vlm_prompt_tokens: list[int] = []
+        self.vlm_completion_tokens: list[int] = []
+
+    def summary(self, seconds: float) -> dict[str, object]:
+        with self.lock:
+            over = sum(1 for ms in self.vlm_ms if ms > DEMO_SCENE_JOB_TIMEOUT_S * 1000)
+
+            def mean(values: list[int]) -> float | None:
+                return round(sum(values) / len(values), 1) if values else None
+
+            return {
+                "seconds": round(seconds, 1),
+                "detector": {
+                    "source_frames": self.source_frames,
+                    "processed_frames": len(self.det_ms),
+                    "processed_fps": round(len(self.det_ms) / seconds, 2) if seconds else None,
+                    "latency_ms": percentiles(self.det_ms),
+                    "frames_with_person": self.det_person_frames,
+                    "max_persons": self.det_max_persons,
+                },
+                "face": {
+                    "runs": len(self.face_ms),
+                    "achieved_hz": round(len(self.face_ms) / seconds, 2) if seconds else None,
+                    "latency_ms": percentiles(self.face_ms),
+                    "runs_with_face": self.face_runs_with_face,
+                    "errors": dict(self.face_errors),
+                },
+                "scene": {
+                    "completed": len(self.vlm_ms),
+                    "latency_ms": percentiles(self.vlm_ms),
+                    "over_d16_timeout": over,
+                    "errors": dict(self.vlm_errors),
+                    "valid_reports": self.vlm_valid,
+                    "invalid_reports": self.vlm_invalid,
+                    "unchecked_reports": self.vlm_unchecked,
+                    "prompt_tokens_mean": mean(self.vlm_prompt_tokens),
+                    "completion_tokens_mean": mean(self.vlm_completion_tokens),
+                },
+            }
+
+
+def face_loop(deepface, latest: Latest, stats: Stats, hz: float, stop: threading.Event) -> None:
+    period = 1.0 / hz
+    next_start = time.monotonic()
+    while not stop.is_set():
+        frame = latest.get()
+        if frame is not None:
+            started = time.perf_counter()
+            try:
+                faces = deepface.represent(img_path=frame, **FACE_ARGS)
+                found = sum(1 for face in faces if float(face.get("face_confidence") or 0) > 0)
+                with stats.lock:
+                    stats.face_ms.append((time.perf_counter() - started) * 1000)
+                    stats.face_runs_with_face += 1 if found else 0
+            except Exception as exc:  # noqa: BLE001 - counted by class, never raised
+                with stats.lock:
+                    name = type(exc).__name__
+                    stats.face_errors[name] = stats.face_errors.get(name, 0) + 1
+        next_start += period
+        stop.wait(max(0.0, next_start - time.monotonic()))
+
+
+def scene_request(port: int, frame) -> dict:
+    import cv2
+
+    small = cv2.resize(frame, VLM_IMAGE_SIZE)
+    ok, jpeg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, VLM_JPEG_QUALITY])
+    if not ok:
+        raise ValueError("JPEG encoding failed")
+    image = "data:image/jpeg;base64," + base64.b64encode(jpeg.tobytes()).decode("ascii")
+    body = {
+        "model": "lfm2-vl",
+        "max_tokens": VLM_MAX_TOKENS,
+        "temperature": 0.05,
+        "messages": [
+            {"role": "system", "content": SCENE_SYSTEM},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": image}},
+                    {"type": "text", "text": SCENE_PROMPT},
+                ],
+            },
+        ],
+    }
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/v1/chat/completions",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=VLM_TIMEOUT_S) as response:
+        return json.loads(response.read(1_000_000))
+
+
+def scene_loop(port: int, latest: Latest, stats: Stats, interval: float, stop: threading.Event) -> None:
+    try:
+        from sentinel.scene.report import SceneReportError, parse_scene_report
+    except Exception:  # noqa: BLE001 - validity is then reported as unchecked
+        parse_scene_report = None
+        SceneReportError = ValueError
+    next_start = time.monotonic()
+    while not stop.is_set():
+        frame = latest.get()
+        if frame is not None:
+            started = time.perf_counter()
+            try:
+                payload = scene_request(port, frame)
+                elapsed = (time.perf_counter() - started) * 1000
+                text = payload["choices"][0]["message"]["content"]
+                usage = payload.get("usage") or {}
+                with stats.lock:
+                    stats.vlm_ms.append(elapsed)
+                    if isinstance(usage.get("prompt_tokens"), int):
+                        stats.vlm_prompt_tokens.append(usage["prompt_tokens"])
+                    if isinstance(usage.get("completion_tokens"), int):
+                        stats.vlm_completion_tokens.append(usage["completion_tokens"])
+                if parse_scene_report is None or not isinstance(text, str):
+                    valid = None
+                else:
+                    try:
+                        parse_scene_report(text)
+                        valid = True
+                    except SceneReportError:
+                        valid = False
+                with stats.lock:
+                    if valid is None:
+                        stats.vlm_unchecked += 1
+                    elif valid:
+                        stats.vlm_valid += 1
+                    else:
+                        stats.vlm_invalid += 1
+            except Exception as exc:  # noqa: BLE001 - counted by class, never raised or echoed
+                if isinstance(exc, urllib.error.HTTPError):
+                    name = f"HTTP {exc.code}"
+                elif isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):
+                    name = "timeout"
+                else:
+                    name = type(exc).__name__
+                with stats.lock:
+                    stats.vlm_errors[name] = stats.vlm_errors.get(name, 0) + 1
+        next_start = max(next_start + interval, time.monotonic())
+        stop.wait(max(0.0, next_start - time.monotonic()))
+
+
+def run_workload(model, deepface, args, stats: Stats) -> None:
+    frames = Frames(args.clip, args.fps)
+    latest = Latest()
+    stop = threading.Event()
+    workers = [
+        threading.Thread(target=face_loop, args=(deepface, latest, stats, args.face_hz, stop), daemon=True),
+        threading.Thread(target=scene_loop, args=(args.port, latest, stats, args.scene_interval_s, stop), daemon=True),
+    ]
+    period = 1.0 / args.fps
+    started = time.monotonic()
+    phase_end = started + args.warmup_s
+    event("phase", name="warmup")
+    for worker in workers:
+        worker.start()
+    in_steady = False
+    steady_started = started
+    shown = 0  # source frames made available so far
+    while True:
+        now = time.monotonic()
+        if now >= phase_end:
+            if in_steady:
+                break
+            in_steady = True
+            stats.reset()
+            steady_started = now
+            phase_end = now + args.steady_s
+            event("phase", name="steady")
+        due = int((now - started) / period) + 1  # frames a live source has delivered by now
+        if due <= shown:
+            time.sleep(max(0.0, started + shown * period - time.monotonic()))
+            continue
+        frame = None
+        while shown < due:  # a live decoder decodes every frame; keep only the latest
+            frame = frames.read()
+            shown += 1
+            with stats.lock:
+                stats.source_frames += 1
+        latest.put(frame)
+        t0 = time.perf_counter()
+        results = model.track(frame, **TRACK_ARGS)
+        elapsed = (time.perf_counter() - t0) * 1000
+        persons = len(results[0].boxes) if results and results[0].boxes is not None else 0
+        with stats.lock:
+            stats.det_ms.append(elapsed)
+            stats.det_person_frames += 1 if persons else 0
+            stats.det_max_persons = max(stats.det_max_persons, persons)
+    steady_seconds = time.monotonic() - steady_started  # before waiting for the worker threads
+    stop.set()
+    for worker in workers:
+        worker.join(timeout=VLM_TIMEOUT_S + 5)
+    summary = stats.summary(steady_seconds)
+    summary["input"] = "replay clip" if args.clip else "synthetic noise"
+    summary["clip_loops"] = frames.loops
+    event("workload_stats", **summary)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--engine", required=True)
+    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--clip")
+    parser.add_argument("--fps", type=float, default=15.0)
+    parser.add_argument("--face-hz", type=float, default=2.0)
+    parser.add_argument("--scene-interval-s", type=float, default=4.0)
+    parser.add_argument("--settle-s", type=float, default=15.0)
+    parser.add_argument("--warmup-s", type=float, default=120.0)
+    parser.add_argument("--steady-s", type=float, default=600.0)
+    args = parser.parse_args(argv)
+
+    if not check_cuda_driver():
+        event("fatal", reason="libcuda is not L4T's or cuInit failed (decision D27)")
+        return 3
+    event("phase", name="detector_load")
+    model = load_detector(args.engine)
+    event("phase", name="detector_settle")
+    time.sleep(args.settle_s)
+    event("phase", name="face_load")
+    deepface = load_face()
+    event("phase", name="face_settle")
+    time.sleep(args.settle_s)
+    run_workload(model, deepface, args, Stats())
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
