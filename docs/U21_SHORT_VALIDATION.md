@@ -4,7 +4,8 @@ Codex session 8, 2026-10-03. This tested entry point supersedes session 7's inli
 controller and the historical unguarded Check 8/9 recipes. **No inspection or
 hardware workload was executed by Codex.** U20's portable increment is complete;
 real-model quality, demo-exception evidence, U18/U19/U21 acceptance and the
-30-minute rerun remain PENDING.
+30-minute rerun remain PENDING. Claude session 11 adds the opt-in S1 prompt-cache
+A/B mode (D38) and the D37 cache-drop preparation step; Claude ran neither.
 
 ## Start here: one read-only command
 
@@ -30,8 +31,8 @@ An inspection can succeed while reporting reasons that prohibit workloads.
 
 ## Explicit execution, only after reviewing inspection output
 
-One entry point, two **separate** opt-in modes; neither automatically runs the
-other. Workload options are not approval to execute them in this session.
+One entry point, three **separate** opt-in modes; none automatically runs another.
+Workload options are not approval to execute them in this session.
 
 - `--execute-workload check9`: bounded device/managed API smoke, sequentially,
   each at most **256 MiB / 268,435,456 B**, with **32 MiB** chunks, projected
@@ -54,6 +55,30 @@ other. Workload options are not approval to execute them in this session.
   face 1 Hz, scene every 4 s, and a **360 s** child/descendant deadline. Existing
   llama readiness/load limits are 60/90 s; HTTP requests are bounded at 2/30 s.
   Expected duration is about 4–5 min, not 30 min. Quality is not evaluated.
+
+- `--execute-workload s1 --s1-arm a|b` (D38, prompt-cache A/B): the same
+  prerequisites as U21 (successful private same-boot/revision Check 9, operator
+  attestation `--confirm-s1-prerequisites`), the same admission, guard, 360 s
+  deadline and owned-group cleanup. It runs `demo_profile.py --scene-only`:
+  llama-server plus scene requests only, **no detector, face model, torch or CUDA
+  driver in the workload process**, 15 s baseline/settle, 30 s warm-up, **180 s
+  steady** (about 45 requests at one per 4 s), no cache eviction, sanitized logs.
+  Every request carries its own deterministic synthetic noise image (index *i* is
+  byte-identical in both arms; no two requests share an image). Arm **a** keeps
+  llama-server's default host-RAM prompt cache (b8932: 8192 MiB); arm **b** adds
+  only `--cache-ram 0`. Nothing else differs. Expected about 5 min per arm.
+  The result adds a numeric excerpt: steady trend (first/last/least-squares
+  slope of pressure, MemFree, Cached and llama-server PSS), the prompt-cache
+  numbers llama-server logged (startup limit; entries/MiB per update; duplicate,
+  eviction and allocation-failure counts), cumulative per-request scene counters
+  (`scene_progress`, emitted after every request so a stop keeps them) and unload
+  residues. It compares the arms; it is not scene accuracy, a long-run result or
+  approval to adopt `--cache-ram 0` (a separate decision).
+
+`--latest-check9-report` (instead of `--check9-report PATH`) selects the newest
+`/tmp/sentinel-operator-*/result.json` whose mode is `check9`; it must still pass
+every same-boot/revision/success/privacy check. If the newest Check 9 failed or
+was refused, the workload refuses: an older success is never used instead.
 
 After the initial output is returned, identify actual remaining conditions and
 provide the appropriate concrete next command; do not guess a report path now.
@@ -91,7 +116,14 @@ Resolve conditions with the maintainer rather than adding automatic shutdowns.
    since timing out the systemctl client does not cancel an outstanding job.
 3. Leave the NVIDIA PVA service running. Do not automatically stop Ollama, v1,
    other services or unrelated processes; resolve remaining refusals explicitly.
-   Do not drop caches. Run the default inspection command and return its JSON.
+   Run the default inspection command and return its JSON.
+   **Cache drop (D37, standing for measurement runs only):** before a Check 9,
+   U21 or S1 measurement run, the operator may run
+   `sync && sudo sysctl -w vm.drop_caches=1` and must then pass
+   `--operator-dropped-caches`, so the result records
+   `preparation.drop_caches: operator_declared`. The runner never drops caches,
+   calls sudo or verifies the declaration; this is never part of the Sentinel
+   runtime (D-1 must not depend on it; U18 stays open).
 4. Restore the desktop **only if it was active before your explicit stop**:
    `timeout --kill-after=2s 30s sudo -n systemctl start display-manager.service`.
    Reauthenticate with the bounded `sudo -v` command if necessary; never change
@@ -135,7 +167,8 @@ at most 5 s per signal and read-only cleanup 0.2 s per signal. Descendants are
 included even if their parent exits first. Lingering groups are reported as
 cleanup failure and prevent dependent phases; uninterruptible kernel tasks
 cannot be guaranteed to disappear. A 5 s post-exit sample is not U19's longer
-reclamation check. No `pkill`, service stop/disable, reboot or drop-caches exists.
+reclamation check. No `pkill`, service stop/disable, reboot or drop-caches exists
+in this workflow's code; the D37 cache drop is an operator command outside it.
 
 The reused profiler's sanitized mode drops raw model/worker output and retains
 only fixed GPU-placement markers, numeric buffers and bounded known telemetry.

@@ -568,3 +568,160 @@ def test_context_exempts_only_verified_pva_main_pid_and_preserves_memory_and_oth
     if expected_unknown:
         assert hardware_children(backend) == []
     assert "private synthetic argument" not in json.dumps(result)
+
+
+def all_argv_text(backend):
+    return " ".join(" ".join(child.argv) for child in backend.children)
+
+
+@pytest.mark.parametrize("case", ["missing_report", "unconfirmed", "no_arm", "wrong_boot", "failed_check9"])
+def test_s1_requires_arm_confirmation_and_a_valid_same_boot_check9(operator, tmp_path, case):
+    backend = FakeBackend()
+    path = None if case == "missing_report" else write_check9(tmp_path, operator)
+    if case in ("wrong_boot", "failed_check9"):
+        previous = json.loads(path.read_text())
+        if case == "wrong_boot":
+            previous["inspection"]["boot_id"] = "previous-boot"
+        else:
+            previous["check9"]["status"] = "inconclusive"
+        path.write_text(json.dumps(previous))
+    result = operator.execute("s1", backend, tmp_path, check9_report=path, confirm_s1=case != "unconfirmed",
+                              s1_arm=None if case == "no_arm" else "a")
+    assert result["s1"]["status"] == "refused"
+    assert hardware_children(backend) == []
+    assert result["u21"]["status"] == result["check9"]["status"] == "PENDING"
+
+
+def test_s1_arms_differ_only_in_cache_ram_and_reuse_the_u21_guard(operator, tmp_path):
+    path = write_check9(tmp_path, operator)
+    argv = {}
+    for arm in ("a", "b"):
+        backend = FakeBackend()
+        output = tmp_path / ("out-" + arm)
+        output.mkdir()
+        result = operator.execute("s1", backend, output, check9_report=path, confirm_s1=True, s1_arm=arm)
+        (child,) = hardware_children(backend)
+        argv[arm] = child.argv[child.argv.index("--out") + 2:]
+        assert result["s1"]["status"] == "completed" and result["hardware_acceptance"] == "PENDING"
+        assert result["s1"]["arm"] == arm and result["s1"]["operator_prerequisites_confirmed"] is True
+        assert result["s1"]["llama_cache_ram_mib"] == {"a": None, "b": 0}[arm]
+        assert result["s1"]["check9_report_dir"] == "sentinel-operator-fake"
+        assert result["s1"]["profile"] == {"status": "unavailable"}  # the fake child writes no profile
+        assert result["u21"]["status"] == "PENDING" and "post_exit" in result["s1"]
+        assert (output / "guard.jsonl").exists() and backend.now < 376
+        assert not any(word in all_argv_text(backend) for word in ("drop_caches", "sysctl", "sudo", "--clip"))
+        assert "secret" not in json.dumps(result)
+    assert argv["b"] == argv["a"] + ["--llama-cache-ram", "0"]
+    for flag in ("--scene-only", "--no-evict", "--sanitized-logs"):
+        assert flag in argv["a"]
+    assert argv["a"][argv["a"].index("--steady-s") + 1] == "180"
+    assert argv["a"][argv["a"].index("--min-free-gb") + 1] == "3.5"
+
+
+@pytest.mark.parametrize("failure", ["pressure_stop", "free_floor", "timeout", "cleanup_failed"])
+def test_s1_guard_stops_timeouts_and_cleanup_match_u21(operator, tmp_path, failure):
+    path = write_check9(tmp_path, operator)
+    backend = FakeBackend()
+    backend.hardware_plan = {"timeout": {"duration": 1000}, "cleanup_failed": {"duration": 1000, "stubborn": True}}.get(
+        failure, {"duration": 1000})
+    if failure in ("pressure_stop", "free_floor"):
+        update = {"MemAvailable": 3_000_000_000} if failure == "pressure_stop" else {"MemFree": (1 << 30) - 1}
+        backend.telemetry = lambda: update if hardware_children(backend) else {}
+    result = operator.execute("s1", backend, tmp_path, check9_report=path, confirm_s1=True, s1_arm="b")
+    expected = {"pressure_stop": "sampled_pressure_stop", "free_floor": "free_or_available_stop"}.get(failure, failure)
+    assert result["s1"]["status"] == expected
+    assert len(hardware_children(backend)) == 1
+    assert backend.now < 377
+
+
+def test_s1_result_excerpt_keeps_numbers_and_fixed_labels_only(operator, tmp_path):
+    assert operator.s1_profile_excerpt(tmp_path) == {"status": "unavailable"}
+    run = tmp_path / "demo-profile-20261004T000000Z"
+    run.mkdir()
+    (run / "profile.json").write_text(json.dumps({
+        "status": "aborted: MemFree is 1.00 GB private detail",
+        "steady_trend": {"seconds": 180.0, "used": {"first": 1, "last": 2, "slope_bytes_per_min": 3, "n": 900}},
+        "prompt_cache": {"startup": {"enabled": True, "limit_mib": 8192}, "state_updates": 53,
+                         "last": {"prompts": 53, "size_mib": 331.5}, "note": "private"},
+        "scene_progress_last": {"phase": "steady", "requests": 53, "utc": "2026-10-04T00:00:00Z",
+                                "source": "workload", "errors": {"http": 0, "HTTP 500": 1}},
+        "unload": {"workload_residual_bytes": -5},
+        "components": {"scene": {"cold_load_seconds": 4.1, "input_limit": {"image": "480x360 private"}}},
+        "workload_steady": {"scene": {"completed": 45, "accuracy": "not evaluated", "latency_ms": {"p50": 900.0}}},
+        "provenance": {"llama_server": {"cache_ram_mib": 0, "version": ["private build text"]}},
+    }))
+    excerpt = operator.s1_profile_excerpt(tmp_path)
+    assert excerpt == {
+        "status": "aborted",
+        "steady_trend": {"seconds": 180.0, "used": {"first": 1, "last": 2, "slope_bytes_per_min": 3, "n": 900}},
+        "prompt_cache": {"startup": {"enabled": True, "limit_mib": 8192}, "state_updates": 53,
+                         "last": {"prompts": 53, "size_mib": 331.5}},
+        "scene_progress_last": {"phase": "steady", "requests": 53, "errors": {"http": 0}},
+        "unload": {"workload_residual_bytes": -5},
+        "scene_component": {"cold_load_seconds": 4.1, "input_limit": {}},
+        "workload_steady_scene": {"completed": 45, "latency_ms": {"p50": 900.0}},
+        "llama_cache_ram_mib": 0,
+    }
+    (tmp_path / "demo-profile-second").mkdir()
+    (tmp_path / "demo-profile-second" / "profile.json").write_text("{}")
+    assert operator.s1_profile_excerpt(tmp_path) == {"status": "unavailable"}
+
+
+def test_latest_check9_report_uses_the_newest_check9_and_fails_closed(operator, tmp_path, monkeypatch):
+    import os
+
+    older = write_check9(tmp_path, operator)
+    newer_dir = tmp_path / "sentinel-operator-newer"
+    newer_dir.mkdir(mode=0o700)
+    failed = json.loads(older.read_text())
+    failed["check9"]["status"] = "inconclusive"
+    newer = newer_dir / "result.json"
+    newer.write_text(json.dumps(failed))
+    newer.chmod(0o600)
+    unrelated_dir = tmp_path / "sentinel-operator-inspection"
+    unrelated_dir.mkdir(mode=0o700)
+    (unrelated_dir / "result.json").write_text(json.dumps({"mode": "inspection"}))
+    (tmp_path / "sentinel-operator-garbage").mkdir()
+    (tmp_path / "sentinel-operator-garbage" / "result.json").write_text("not json")
+    os.utime(older, ns=(1, 1))
+    os.utime(newer, ns=(2, 2))
+    os.utime(unrelated_dir / "result.json", ns=(3, 3))
+    assert operator.latest_check9_report(tmp_path) == newer
+    backend = FakeBackend()
+    result = operator.execute("s1", backend, tmp_path, check9_report=newer, confirm_s1=True, s1_arm="a")
+    assert result["s1"]["status"] == "refused" and "check9_report_mismatch" in result["s1"]["refusals"]
+    assert hardware_children(backend) == []  # an older successful Check 9 is not used instead
+    os.utime(older, ns=(4, 4))
+    assert operator.latest_check9_report(tmp_path) == older
+    assert operator.latest_check9_report(tmp_path / "empty") is None
+
+
+def test_cli_s1_uses_latest_check9_and_records_the_declared_cache_drop(operator, tmp_path, monkeypatch, capsys):
+    path = write_check9(tmp_path, operator)
+    output = tmp_path / "sentinel-operator-main"
+    output.mkdir(mode=0o700)
+    monkeypatch.setattr(operator.tempfile, "mkdtemp", lambda **kwargs: str(output))
+    monkeypatch.setattr(operator.signal, "signal", lambda *args: None)
+    monkeypatch.setattr(operator, "OUTPUT_ROOT", tmp_path)
+    previous = operator.os.umask(0o077)
+    backend = FakeBackend()
+    try:
+        code = operator.main(["--execute-workload", "s1", "--s1-arm", "b", "--latest-check9-report",
+                              "--confirm-s1-prerequisites", "--operator-dropped-caches"], backend=backend)
+    finally:
+        operator.os.umask(previous)
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0 and result["s1"]["status"] == "completed"
+    assert result["s1"]["check9_report_dir"] == path.parent.name
+    assert result["preparation"]["drop_caches"] == "operator_declared"
+    assert "never run or verified by this workflow" in result["preparation"]["procedure"]
+    assert not any(word in all_argv_text(backend) for word in ("drop_caches", "sysctl", "sudo"))
+    with pytest.raises(SystemExit):
+        operator.main(["--execute-workload", "s1", "--latest-check9-report", "--check9-report", str(path)],
+                      backend=FakeBackend())
+
+
+def test_cache_drop_is_not_declared_by_default(operator, tmp_path):
+    result = operator.execute(None, FakeBackend(), tmp_path)
+    assert result["preparation"]["drop_caches"] == "not_declared"
+    assert result["s1"]["status"] == "PENDING"

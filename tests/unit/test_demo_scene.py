@@ -241,3 +241,153 @@ def test_face_counts_positive_calls_not_unique_frames_faces_or_identities(worklo
     face = stats.summary(1.0)["face"]
     assert calls == [frame, frame, frame]
     assert face["runs"] == 3 and face["runs_with_face"] == 2
+
+
+IMAGE_0_SHA256 = "ce13e4815d6f175c05cf554ae5add3ec848d02e4cd86a5de7707f6ff5fc1a0b8"
+
+
+def test_scene_only_images_are_deterministic_across_processes_and_distinct_per_request(workload) -> None:
+    import hashlib
+    import subprocess
+
+    first = [workload.synthetic_scene_bytes(index) for index in range(4)]
+    assert all(len(image) == 480 * 640 * 3 for image in first)
+    assert len(set(first)) == 4
+    assert first == [workload.synthetic_scene_bytes(index) for index in range(4)]
+    # A fresh interpreter (own hash seed) must produce the same bytes; arm A and arm B send this sequence.
+    script = (
+        "import hashlib, importlib.util\n"
+        f"spec = importlib.util.spec_from_file_location('w', {str(Path(workload.__file__))!r})\n"
+        "w = importlib.util.module_from_spec(spec); spec.loader.exec_module(w)\n"
+        "print(hashlib.sha256(w.synthetic_scene_bytes(0)).hexdigest())\n"
+    )
+    other = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=10,
+                           env={"PYTHONHASHSEED": "random"})
+    assert other.stdout.strip() == hashlib.sha256(first[0]).hexdigest() == IMAGE_0_SHA256
+
+
+class FakeArray:
+    def __init__(self, data):
+        self.data = bytes(data)
+        self.shape = None
+
+    def reshape(self, shape):
+        self.shape = shape
+        return self
+
+
+@pytest.fixture
+def no_models(monkeypatch):
+    for name in ("torch", "ultralytics", "deepface", "tensorflow"):
+        monkeypatch.setitem(sys.modules, name, None)
+    monkeypatch.setitem(sys.modules, "numpy", SimpleNamespace(
+        uint8="uint8", frombuffer=lambda data, dtype: FakeArray(data)))
+
+
+def test_scene_only_workload_sends_a_new_image_per_request_and_loads_no_models(workload, monkeypatch, no_models) -> None:
+    events, frames = [], []
+    enough = threading.Event()
+
+    def request(port, frame):
+        frames.append(frame)
+        if len(frames) >= 6:
+            enough.set()
+        return payload(json.dumps(REPORT))
+
+    targets = iter([3, 6])
+
+    def sleep(seconds):  # the warm-up, then the steady phase, each lasts until requests have been sent
+        target = next(targets)
+        for _ in range(5000):  # bounded: a broken loop fails the assertions below instead of hanging
+            if len(frames) >= target:
+                return
+            enough.wait(0.001)
+
+    monkeypatch.setattr(workload, "scene_request", request)
+    monkeypatch.setattr(workload, "check_cuda_driver", lambda: pytest.fail("scene-only touched the CUDA driver"))
+    monkeypatch.setattr(workload, "load_detector", lambda engine: pytest.fail("detector loaded"))
+    monkeypatch.setattr(workload, "load_face", lambda: pytest.fail("face model loaded"))
+    monkeypatch.setattr(workload, "event", lambda kind, **fields: events.append((kind, fields)))
+    monkeypatch.setattr(workload.time, "sleep", sleep)
+    assert workload.main(["--scene-only", "--port", "18081", "--scene-interval-s", "0"]) == 0
+    assert [fields["name"] for kind, fields in events if kind == "phase"] == ["warmup", "steady"]
+    images = [frame.data for frame in frames]
+    assert len(images) >= 6 and len(set(images)) == len(images)
+    assert images[:2] == [workload.synthetic_scene_bytes(0), workload.synthetic_scene_bytes(1)]
+    assert all(frame.shape == (480, 640, 3) for frame in frames)
+    progress = [fields for kind, fields in events if kind == "scene_progress"]
+    assert [item["requests"] for item in progress] == list(range(1, len(frames) + 1))
+    assert progress[-1]["synthetic_images_issued"] == len(frames)
+    assert {item["phase"] for item in progress} == {"warmup", "steady"}
+    (stats,) = [fields for kind, fields in events if kind == "workload_stats"]
+    assert set(stats) == {"seconds", "scene", "input", "synthetic_images_issued"}
+    assert stats["input"] == "synthetic noise, distinct per request"
+    assert 1 <= stats["scene"]["completed"] <= len(frames)  # steady only; progress is cumulative
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--port", "18081"], ["--scene-only", "--port", "18081", "--clip", "private-clip.mp4"],
+])
+def test_workload_requires_an_engine_and_scene_only_refuses_a_clip(workload, monkeypatch, arguments, capsys) -> None:
+    monkeypatch.setattr(workload, "check_cuda_driver", lambda: pytest.fail("work started"))
+    monkeypatch.setattr(workload, "run_scene_only", lambda *args: pytest.fail("work started"))
+    with pytest.raises(SystemExit) as exited:
+        workload.main(arguments)
+    assert exited.value.code == 2
+
+
+def test_scene_progress_is_cumulative_with_fixed_keys_and_survives_interruption(workload, monkeypatch) -> None:
+    import urllib.error
+
+    def http_error(*args):
+        raise urllib.error.HTTPError("http://u:private@camera/", 503, "private reason", {}, None)
+
+    def timeout(*args):
+        raise TimeoutError("private")
+
+    def other(*args):
+        raise RuntimeError("private detail")
+
+    replies = [
+        payload(json.dumps(REPORT)), payload(json.dumps(REPORT), "length"), payload('{"summary": "private'),
+        {**payload(json.dumps(REPORT)), "error": {"message": "private"}}, http_error, timeout, other,
+        payload(json.dumps(REPORT), "private finish reason"),
+    ]
+    emitted = []
+    stop = threading.Event()
+    latest = workload.Latest()
+    latest.put(object())
+    stats = workload.Stats()
+    progress = workload.SceneProgress(clock=lambda: 12.5, emit=lambda kind, **fields: emitted.append((kind, fields)))
+    calls = 0
+
+    def request(port, frame):
+        nonlocal calls
+        reply = replies[calls]
+        calls += 1
+        if calls == 4:  # the phase changes and Stats resets; progress keeps counting
+            progress.phase = "steady"
+            stats.reset()
+        if calls == len(replies):
+            stop.set()  # the guard stops the run here: no workload_stats will follow
+        return reply(port, frame) if callable(reply) else reply
+
+    monkeypatch.setattr(workload, "scene_request", request)
+    workload.scene_loop(18081, latest, stats, 0.0, stop, progress)
+    assert [kind for kind, _ in emitted] == ["scene_progress"] * len(replies)
+    keys = {frozenset(fields) for _, fields in emitted}
+    assert len(keys) == 1
+    last = emitted[-1][1]
+    assert last["requests"] == 8 and last["completed"] == 5 and last["phase"] == "steady"
+    assert (last["valid_reports"], last["invalid_reports"]) == (1, 4)
+    assert last["errors"] == {"http": 1, "timeout": 1, "other": 1}
+    assert last["finish_reasons"] == {"stop": 3, "length": 1, "other": 1, "missing": 0}
+    assert last["rejected_reports_by_reason"] == {
+        "truncated": 1, "invalid_report": 1, "incomplete_completion": 1, "malformed_response": 0,
+        "server_error": 1, "unsupported_completion": 0,
+    }
+    assert emitted[0][1]["phase"] == "warmup" and emitted[0][1]["latency_ms"] is not None
+    assert emitted[4][1]["latency_ms"] is None and emitted[4][1]["t_mono"] == 12.5
+    assert (emitted[0][1]["prompt_tokens"], emitted[0][1]["completion_tokens"]) == (20, 100)
+    assert "private" not in json.dumps(emitted)
+    assert stats.summary(1.0)["scene"]["completed"] == 2  # steady-only view, as before

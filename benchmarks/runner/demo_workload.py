@@ -18,8 +18,16 @@ Frames come from a replay clip (``--clip``) decoded by OpenCV/FFmpeg on the CPU,
 as the demo decodes the camera (D24), paced at the source rate with
 latest-frame semantics, or from synthetic noise frames without ``--clip``.
 
+``--scene-only`` (S1, prompt-cache A/B) runs the scene requests alone: no
+detector, face model, torch or CUDA driver in this process. Each request then
+carries its own deterministic synthetic noise image (index i is the same in
+every run), so no two requests send the same image.
+
 Structured results go to stdout as ``@@EVENT <json>`` lines. Model output text
 is never written anywhere: the footage is private. Only counts and timings are.
+After every scene request a ``scene_progress`` event carries cumulative
+fixed-key counters since the workload started, so an interrupted run keeps its
+counts up to the last request.
 
 Torch allocator samples stream at most once per second, without retaining a
 sample history. t_mono is sample-start time.monotonic() seconds, comparable to
@@ -36,6 +44,7 @@ from __future__ import annotations
 import argparse
 import base64
 import ctypes
+import hashlib
 import json
 import math
 import sys
@@ -70,6 +79,15 @@ VLM_MAX_TOKENS = 200
 VLM_MAX_RESPONSE_BYTES = 1_000_000
 VLM_TIMEOUT_S = 30.0
 DEMO_SCENE_JOB_TIMEOUT_S = 8.0  # D16; latencies above it are counted, not cut off
+SYNTHETIC_SHAPE = (480, 640, 3)
+SCENE_ONLY_SEED = b"sentinel-s1-scene-only-v1"
+SCENE_ONLY_INPUT = "synthetic noise, distinct per request"
+PROGRESS_FINISH_REASONS = ("stop", "length", "other", "missing")
+PROGRESS_REJECTIONS = (
+    "truncated", "invalid_report", "incomplete_completion", "malformed_response", "server_error",
+    "unsupported_completion",
+)
+PROGRESS_ERRORS = ("http", "timeout", "other")
 SCENE_SYSTEM = (
     "You are the scene-analysis component of a home security camera. "
     "Reply with exactly one JSON object and nothing else."
@@ -224,6 +242,26 @@ class Latest:
             return self._frame
 
 
+def synthetic_scene_bytes(index: int) -> bytes:
+    """Deterministic noise pixels for request ``index``: the same bytes in every run, a different image per index."""
+    return hashlib.shake_256(SCENE_ONLY_SEED + index.to_bytes(8, "big")).digest(math.prod(SYNTHETIC_SHAPE))
+
+
+class SyntheticScenes:
+    """Scene-only image source: each get() is a new image; nothing is retained after it is returned."""
+
+    def __init__(self) -> None:
+        import numpy as np
+
+        self._np = np
+        self.issued = 0
+
+    def get(self):
+        data = synthetic_scene_bytes(self.issued)
+        self.issued += 1
+        return self._np.frombuffer(bytearray(data), dtype=self._np.uint8).reshape(SYNTHETIC_SHAPE)
+
+
 def load_detector(engine: str):
     started = time.monotonic()
     import numpy as np
@@ -336,6 +374,53 @@ class Stats:
             }
 
 
+class SceneProgress:
+    """Cumulative scene counters since the workload started (never reset), emitted after every request.
+
+    Keys are fixed: finish reasons, rejection reasons and error classes are counted
+    under fixed labels, with no exception text or model output.
+    """
+
+    def __init__(self, source=None, *, clock: Callable[[], float] = time.monotonic,
+                 emit: Callable[..., None] | None = None) -> None:
+        self.phase = "warmup"
+        self._source = source
+        self._clock = clock
+        self._emit = emit
+        self._lock = threading.Lock()
+        self.requests = self.completed = self.valid = self.invalid = 0
+        self.finish_reasons = dict.fromkeys(PROGRESS_FINISH_REASONS, 0)
+        self.rejections = dict.fromkeys(PROGRESS_REJECTIONS, 0)
+        self.errors = dict.fromkeys(PROGRESS_ERRORS, 0)
+
+    def record(self, *, latency_ms: float | None = None, finish_reason: str | None = None,
+               rejection: str | None = None, valid: bool = False, error: str | None = None,
+               prompt_tokens: int | None = None, completion_tokens: int | None = None) -> None:
+        with self._lock:
+            self.requests += 1
+            self.completed += int(latency_ms is not None)
+            self.valid += int(valid)
+            if finish_reason is not None:
+                key = finish_reason if finish_reason in self.finish_reasons else "other"
+                self.finish_reasons[key] += 1
+            if rejection is not None:
+                self.invalid += 1
+                if rejection in self.rejections:
+                    self.rejections[rejection] += 1
+            if error is not None:
+                self.errors[error if error in self.errors else "other"] += 1
+            snapshot = {
+                "t_mono": round(self._clock(), 3), "phase": self.phase, "requests": self.requests,
+                "completed": self.completed, "valid_reports": self.valid, "invalid_reports": self.invalid,
+                "finish_reasons": dict(self.finish_reasons),
+                "rejected_reports_by_reason": dict(self.rejections), "errors": dict(self.errors),
+                "latency_ms": round(latency_ms, 1) if latency_ms is not None else None,
+                "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+                "synthetic_images_issued": getattr(self._source, "issued", None),
+            }
+        (self._emit or event)("scene_progress", **snapshot)
+
+
 def face_loop(deepface, latest: Latest, stats: Stats, hz: float, stop: threading.Event) -> None:
     period = 1.0 / hz
     next_start = time.monotonic()
@@ -396,12 +481,14 @@ def scene_request(port: int, frame) -> dict:
     return json.loads(data)
 
 
-def scene_loop(port: int, latest: Latest, stats: Stats, interval: float, stop: threading.Event) -> None:
+def scene_loop(port: int, latest: Latest, stats: Stats, interval: float, stop: threading.Event,
+               progress: SceneProgress | None = None) -> None:
     next_start = time.monotonic()
     while not stop.is_set():
         frame = latest.get()
         if frame is not None:
             started = time.perf_counter()
+            outcome: dict[str, object] = {}
             try:
                 from sentinel.scene.completion import (
                     SceneCompletionError, parse_scene_completion, scene_completion_finish_reason,
@@ -413,21 +500,26 @@ def scene_loop(port: int, latest: Latest, stats: Stats, interval: float, stop: t
                 usage = payload.get("usage") if isinstance(payload, Mapping) else None
                 usage = usage if isinstance(usage, Mapping) else {}
                 finish_reason = scene_completion_finish_reason(payload)
+                tokens = {key: usage[key] if type(usage.get(key)) is int and usage[key] >= 0 else None
+                          for key in ("prompt_tokens", "completion_tokens")}
+                outcome.update(latency_ms=elapsed, finish_reason=finish_reason, **tokens)
                 with stats.lock:
                     stats.vlm_ms.append(elapsed)
                     stats.vlm_finish_reasons[finish_reason] = stats.vlm_finish_reasons.get(finish_reason, 0) + 1
-                    if type(usage.get("prompt_tokens")) is int and usage["prompt_tokens"] >= 0:
-                        stats.vlm_prompt_tokens.append(usage["prompt_tokens"])
-                    if type(usage.get("completion_tokens")) is int and usage["completion_tokens"] >= 0:
-                        stats.vlm_completion_tokens.append(usage["completion_tokens"])
+                    if tokens["prompt_tokens"] is not None:
+                        stats.vlm_prompt_tokens.append(tokens["prompt_tokens"])
+                    if tokens["completion_tokens"] is not None:
+                        stats.vlm_completion_tokens.append(tokens["completion_tokens"])
                 try:
                     report = parse_scene_completion(payload)
                 except SceneReportError as exc:
                     rejection = exc.reason if isinstance(exc, SceneCompletionError) else "invalid_report"
+                    outcome["rejection"] = rejection
                     with stats.lock:
                         stats.vlm_invalid += 1
                         stats.vlm_rejections[rejection] = stats.vlm_rejections.get(rejection, 0) + 1
                 else:
+                    outcome["valid"] = True
                     schema = report.model_json_schema()["properties"]
                     with stats.lock:
                         stats.vlm_valid += 1
@@ -438,13 +530,15 @@ def scene_loop(port: int, latest: Latest, stats: Stats, interval: float, stop: t
                         )
             except Exception as exc:  # noqa: BLE001 - counted by class, never raised or echoed
                 if isinstance(exc, urllib.error.HTTPError):
-                    name = f"HTTP {exc.code}"
+                    name, outcome["error"] = f"HTTP {exc.code}", "http"
                 elif isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):
-                    name = "timeout"
+                    name, outcome["error"] = "timeout", "timeout"
                 else:
-                    name = type(exc).__name__
+                    name, outcome["error"] = type(exc).__name__, "other"
                 with stats.lock:
                     stats.vlm_errors[name] = stats.vlm_errors.get(name, 0) + 1
+            if progress is not None:
+                progress.record(**outcome)
         next_start = max(next_start + interval, time.monotonic())
         stop.wait(max(0.0, next_start - time.monotonic()))
 
@@ -453,9 +547,11 @@ def run_workload(model, deepface, args, stats: Stats, allocator: AllocatorSample
     frames = Frames(args.clip, args.fps)
     latest = Latest()
     stop = threading.Event()
+    progress = SceneProgress()
     workers = [
         threading.Thread(target=face_loop, args=(deepface, latest, stats, args.face_hz, stop), daemon=True),
-        threading.Thread(target=scene_loop, args=(args.port, latest, stats, args.scene_interval_s, stop), daemon=True),
+        threading.Thread(target=scene_loop, args=(args.port, latest, stats, args.scene_interval_s, stop, progress),
+                         daemon=True),
     ]
     period = 1.0 / args.fps
     started = time.monotonic()
@@ -476,7 +572,7 @@ def run_workload(model, deepface, args, stats: Stats, allocator: AllocatorSample
             stats.reset()
             steady_started = now
             phase_end = now + args.steady_s
-            allocator.phase = "steady"
+            allocator.phase = progress.phase = "steady"
             event("phase", name="steady")
         due = int((now - started) / period) + 1  # frames a live source has delivered by now
         if due <= shown:
@@ -507,9 +603,35 @@ def run_workload(model, deepface, args, stats: Stats, allocator: AllocatorSample
     event("workload_stats", **summary)
 
 
+def run_scene_only(args, stats: Stats) -> None:
+    """S1: scene requests alone, each with a new deterministic image; no detector, face or CUDA here."""
+    source = SyntheticScenes()
+    progress = SceneProgress(source)
+    stop = threading.Event()
+    worker = threading.Thread(
+        target=scene_loop, args=(args.port, source, stats, args.scene_interval_s, stop, progress), daemon=True,
+    )
+    event("phase", name="warmup")
+    worker.start()
+    time.sleep(args.warmup_s)
+    progress.phase = "steady"
+    stats.reset()
+    event("phase", name="steady")
+    started = time.monotonic()
+    time.sleep(args.steady_s)
+    steady_seconds = time.monotonic() - started  # before waiting for an in-flight request
+    stop.set()
+    worker.join(timeout=VLM_TIMEOUT_S + 5)
+    summary = stats.summary(steady_seconds)
+    event("workload_stats", seconds=summary["seconds"], scene=summary["scene"], input=SCENE_ONLY_INPUT,
+          synthetic_images_issued=source.issued)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--engine", required=True)
+    parser.add_argument("--engine")
+    parser.add_argument("--scene-only", action="store_true",
+                        help="S1: scene requests only, one distinct synthetic image per request; no detector/face/CUDA")
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--clip")
     parser.add_argument("--fps", type=float, default=15.0)
@@ -519,6 +641,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--warmup-s", type=float, default=120.0)
     parser.add_argument("--steady-s", type=float, default=600.0)
     args = parser.parse_args(argv)
+    if args.scene_only:
+        if args.clip:
+            parser.error("--scene-only uses its own synthetic images; --clip is not allowed")
+        run_scene_only(args, Stats())
+        return 0
+    if not args.engine:
+        parser.error("--engine is required unless --scene-only is given")
 
     if not check_cuda_driver():
         event("fatal", reason="libcuda is not L4T's or cuInit failed (decision D27)")
