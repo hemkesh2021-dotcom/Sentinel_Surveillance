@@ -9,7 +9,8 @@ records whole-device memory, per-process memory and tegrastats while they work:
   on the GPU;
 - the detector: the legacy yolov8n.engine through Ultralytics track() and
   ByteTrack at 15 fps;
-- face: DeepFace Facenet512 with YuNet, TensorFlow on the CPU, at 2 Hz.
+- face: DeepFace Facenet512 with YuNet, TensorFlow on the CPU, at 1 Hz (decision
+  D34: check 8 measured p50 896 ms per run on the CPU, so 2 Hz was unreachable).
 
 The detector and face path run in one ~/onvif_env process (decision D24);
 see demo_workload.py. Components load one after another with settle periods,
@@ -921,7 +922,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--out", default=str(HOME / "sentinel-runs"), help="parent directory for run output")
     parser.add_argument("--port", type=int, default=18081, help="loopback port for llama-server")
     parser.add_argument("--fps", type=float, default=15.0)
-    parser.add_argument("--face-hz", type=float, default=2.0)
+    parser.add_argument("--face-hz", type=float, default=1.0)  # D34
     parser.add_argument("--scene-interval-s", type=float, default=4.0)
     parser.add_argument("--baseline-s", type=float, default=30.0)
     parser.add_argument("--settle-s", type=float, default=15.0)

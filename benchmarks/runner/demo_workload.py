@@ -412,7 +412,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--clip")
     parser.add_argument("--fps", type=float, default=15.0)
-    parser.add_argument("--face-hz", type=float, default=2.0)
+    parser.add_argument("--face-hz", type=float, default=1.0)  # D34
     parser.add_argument("--scene-interval-s", type=float, default=4.0)
     parser.add_argument("--settle-s", type=float, default=15.0)
     parser.add_argument("--warmup-s", type=float, default=120.0)
