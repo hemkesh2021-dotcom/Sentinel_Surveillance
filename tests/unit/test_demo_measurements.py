@@ -62,9 +62,12 @@ def test_runner_imports_need_no_ml_or_hardware_libraries() -> None:
             raise AssertionError("hardware library load attempted")
         sys.meta_path.insert(0, Block())
         ctypes.CDLL = no_cuda
-        for name in ("demo_profile", "demo_workload"):
+        sys.path.insert(0, {str(RUNNERS)!r})
+        for name in ("demo_profile", "demo_workload", "operator_check", "gpu_alloc_probe"):
             spec = importlib.util.spec_from_file_location(name, Path({str(RUNNERS)!r}) / (name + ".py"))
-            spec.loader.exec_module(importlib.util.module_from_spec(spec))
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[name] = module
+            spec.loader.exec_module(module)
         assert not blocked.intersection(sys.modules)
         """
     )
