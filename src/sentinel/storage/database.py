@@ -121,6 +121,23 @@ MIGRATIONS: tuple[str, ...] = (
     );
     CREATE INDEX attempts_outbox ON delivery_attempts (outbox_id, attempt_seq);
     """,
+    # 2: worker evidence (scene reports, timeouts, skipped jobs) annotating the incident it was requested for
+    """
+    CREATE TABLE incident_annotations (
+        annotation_seq INTEGER PRIMARY KEY,
+        evidence_id TEXT NOT NULL UNIQUE,
+        incident_id TEXT NOT NULL REFERENCES incidents (incident_id),
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        producer TEXT NOT NULL,
+        producer_revision TEXT NOT NULL,
+        applicability TEXT NOT NULL,
+        observed_utc TEXT NOT NULL,
+        recorded_utc TEXT NOT NULL,
+        payload TEXT NOT NULL CHECK (length(payload) <= 8192)
+    );
+    CREATE INDEX annotations_incident ON incident_annotations (incident_id, annotation_seq);
+    """,
 )
 SCHEMA_VERSION = len(MIGRATIONS)
 

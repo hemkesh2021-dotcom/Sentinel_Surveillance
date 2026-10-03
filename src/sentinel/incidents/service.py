@@ -29,6 +29,11 @@ dismissed from any unresolved state. Rule observations open incidents
 directly: their persistence already happened in the rule. Operators move
 incidents with an expected revision, so a stale screen cannot overwrite a newer
 change.
+
+Enrichment (V2-28): ``annotate()`` appends worker evidence (a scene report, a
+timeout, a skipped job) to the one incident it was requested for, whatever its
+age or the incident's status. It never creates, joins, escalates, notifies or
+moves an incident; evidence that names no incident is not stored here.
 """
 
 from __future__ import annotations
@@ -41,10 +46,11 @@ from datetime import datetime
 from enum import Enum
 
 from ..config import IncidentsConfig, NotificationsConfig
+from ..contracts import Applicability, Evidence
 from ..media.clock import Clock, require_utc
 from ..rules.scene_hazard import Severity
 from ..storage.database import Database
-from .signals import SEVERITY_RANK, IncidentSignal, SignalPhase
+from .signals import MAX_PAYLOAD_CHARS, SEVERITY_RANK, IncidentSignal, SignalPhase
 
 UNRESOLVED = ("candidate", "open", "acknowledged")
 PRIORITY = {Severity.CRITICAL: 0, Severity.WARNING: 1, Severity.INFO: 2}  # lower is more urgent
@@ -97,6 +103,32 @@ class RecordResult:
     incident_id: str | None
     revision: int | None
     outbox_ids: tuple[int, ...] = ()
+
+
+class AnnotationOutcome(str, Enum):
+    ANNOTATED = "annotated"
+    DUPLICATE = "duplicate"  # this evidence ID is already stored: nothing changed
+    NO_INCIDENT = "no_incident"  # periodic evidence names no incident: not stored
+    UNKNOWN_INCIDENT = "unknown_incident"
+    OTHER_CAMERA = "other_camera"  # the evidence is about another camera's frame
+    TOO_LARGE = "too_large"
+
+
+@dataclass(frozen=True)
+class AnnotationResult:
+    outcome: AnnotationOutcome
+    incident_id: str | None
+    revision: int | None = None
+
+
+@dataclass(frozen=True)
+class Annotation:
+    evidence_id: str
+    kind: str
+    status: str
+    applicability: Applicability
+    observed_utc: str
+    payload: str
 
 
 @dataclass(frozen=True)
@@ -307,6 +339,53 @@ class IncidentService:
                 ids.append(cursor.lastrowid)
         return tuple(ids)
 
+    # ------------------------------------------------------------ enrichment
+
+    def annotate(self, evidence: Evidence, applicability: Applicability) -> AnnotationResult:
+        """Append ``evidence`` to the incident it names (V2-28).
+
+        ``applicability`` is how the core routed it on arrival (current, expired,
+        superseded epoch, ...); it is stored for display and changes nothing else.
+        Status, severity, title, observation times and the outbox stay as they are;
+        only the revision moves, as for an ENDED note, so a screen showing the
+        incident without this evidence is stale. A repeated evidence ID (a retry
+        after a crash) is a duplicate.
+        """
+        if evidence.incident_id is None:
+            return AnnotationResult(AnnotationOutcome.NO_INCIDENT, None)
+        incident_id = evidence.incident_id
+        payload = evidence.model_dump_json()
+        if len(payload) > MAX_PAYLOAD_CHARS:
+            return AnnotationResult(AnnotationOutcome.TOO_LARGE, incident_id)
+        stamp = utc_text(self._clock.utc_now())
+        with self._db.write() as c:
+            if c.execute(
+                "SELECT 1 FROM incident_annotations WHERE evidence_id = ?", (evidence.evidence_id,)
+            ).fetchone():
+                return AnnotationResult(AnnotationOutcome.DUPLICATE, incident_id)
+            try:
+                incident = self._load(c, incident_id)
+            except UnknownIncident:
+                return AnnotationResult(AnnotationOutcome.UNKNOWN_INCIDENT, incident_id)
+            if incident.camera_id != evidence.source.camera_id:
+                return AnnotationResult(AnnotationOutcome.OTHER_CAMERA, incident_id)
+            c.execute(
+                """INSERT INTO incident_annotations (evidence_id, incident_id, kind, status, producer,
+                       producer_revision, applicability, observed_utc, recorded_utc, payload)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    evidence.evidence_id, incident_id, evidence.kind, evidence.status.value, evidence.producer,
+                    evidence.producer_revision, applicability.value, utc_text(evidence.observed_utc), stamp, payload,
+                ),
+            )
+            cursor = c.execute(
+                "UPDATE incidents SET updated_utc = ?, revision = revision + 1 WHERE incident_id = ? AND revision = ?",
+                (stamp, incident_id, incident.revision),
+            )
+            if cursor.rowcount != 1:
+                raise RevisionConflict(f"incident {incident_id} changed during the transaction")
+        return AnnotationResult(AnnotationOutcome.ANNOTATED, incident_id, incident.revision + 1)
+
     # ------------------------------------------------------------ operator actions
 
     def transition(
@@ -336,6 +415,16 @@ class IncidentService:
     def incident(self, incident_id: str) -> Incident:
         with self._db.read() as c:
             return self._load(c, incident_id)
+
+    def annotations(self, incident_id: str) -> tuple[Annotation, ...]:
+        """The incident's annotations, oldest first."""
+        with self._db.read() as c:
+            rows = c.execute(
+                """SELECT evidence_id, kind, status, applicability, observed_utc, payload FROM incident_annotations
+                   WHERE incident_id = ? ORDER BY annotation_seq""",
+                (incident_id,),
+            ).fetchall()
+        return tuple(Annotation(r[0], r[1], r[2], Applicability(r[3]), r[4], r[5]) for r in rows)
 
     @staticmethod
     def _load(c: sqlite3.Connection, incident_id: str) -> Incident:

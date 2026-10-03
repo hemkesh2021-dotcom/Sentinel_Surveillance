@@ -13,7 +13,9 @@ import pytest
 
 import sentinel
 from sentinel.config import IncidentsConfig, NotificationsConfig
+from sentinel.contracts import Applicability, Evidence, EvidenceStatus, FrameRef, PixelFormat
 from sentinel.incidents.service import (
+    AnnotationOutcome,
     IncidentService,
     IncidentStatus,
     InvalidTransition,
@@ -22,7 +24,9 @@ from sentinel.incidents.service import (
 )
 from sentinel.incidents.signals import IncidentSignal, SignalPhase
 from sentinel.media.clock import NS_PER_SECOND, FakeClock
+from sentinel.media.frames import FrameStamper
 from sentinel.rules.scene_hazard import Severity
+from sentinel.storage import database
 from sentinel.storage.database import SCHEMA_VERSION, Database, DatabaseError, WriterBusy, connect_reader
 
 SRC = Path(sentinel.__file__).resolve().parents[1]
@@ -86,13 +90,14 @@ def service(db: Database, notifications: NotificationsConfig = TELEGRAM, **incid
 
 def test_new_database_is_migrated_with_durable_settings(db: Database, db_path: Path) -> None:
     c = db.connection
-    assert c.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 1
+    assert c.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 2
     assert c.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     assert c.execute("PRAGMA synchronous").fetchone()[0] == 2  # FULL
     assert c.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
     assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    assert {"incidents", "observations", "incident_evidence", "incident_transitions", "outbox", "delivery_attempts"} <= tables
+    assert {"incidents", "observations", "incident_evidence", "incident_transitions", "outbox", "delivery_attempts",
+            "incident_annotations"} <= tables
 
 
 def test_only_one_writer_and_readers_cannot_write(db: Database, db_path: Path) -> None:
@@ -314,3 +319,158 @@ def test_operator_transitions_check_revision_and_lifecycle(db: Database) -> None
 def test_payloads_are_bounded() -> None:
     with pytest.raises(ValueError, match="at most 8192 characters"):
         IncidentSignal.model_validate(signal().model_dump() | {"payload": "x" * 8193})
+
+
+# ---------------------------------------------------------------- enrichment (V2-28)
+
+FIRE_REPORT = {
+    "persons_visible": 1, "fire_or_smoke": True, "threat": "high",
+    "observations": ["smoke near the ceiling"], "uncertainty": "medium", "summary": "possible smoke",
+}
+
+
+def frame(camera_id: str = "cam-1") -> FrameRef:
+    stamper = FrameStamper(camera_id, FakeClock(utc=T0))
+    stamper.connect()
+    return stamper.stamp(native_width=640, native_height=480, pixel_format=PixelFormat.BGR)
+
+
+def scene_evidence(
+    incident_id: str | None,
+    *,
+    job: str = "job-2",
+    status: EvidenceStatus = EvidenceStatus.OBSERVED,
+    source: FrameRef | None = None,
+    value: object = FIRE_REPORT,
+) -> Evidence:
+    observed = status is EvidenceStatus.OBSERVED
+    return Evidence.observed_on(
+        source or frame(),
+        evidence_id=f"{job}.{status.value}.late",
+        kind="scene.report",
+        status=status,
+        value=value if observed else None,
+        producer="scene.stub",
+        producer_revision="test",
+        ttl_ns=10 * NS_PER_SECOND,
+        correlation_group="scene:cam-1",
+        reason="stub result" if observed else "job timed out",
+        incident_id=incident_id,
+    )
+
+
+def two_incidents(db: Database) -> tuple[IncidentService, str, str]:
+    incidents = service(db)
+    a = incidents.record(signal("zone-a", at_s=1.0)).incident_id
+    b = incidents.record(signal("zone-b", at_s=9.5, zone_id="window")).incident_id
+    assert a is not None and b is not None and a != b
+    return incidents, a, b
+
+
+def snapshot(db: Database) -> dict[str, object]:
+    c = db.connection
+    return {
+        "incidents": c.execute(
+            "SELECT incident_id, kind, zone_id, severity, status, title, last_observed_utc, last_mono_ns FROM incidents"
+            " ORDER BY incident_id"
+        ).fetchall(),
+        **{table: count(db, table) for table in
+           ("observations", "incident_evidence", "incident_transitions", "outbox", "delivery_attempts")},
+    }
+
+
+def test_late_result_enriches_only_its_own_incident_and_changes_nothing_else(db: Database) -> None:
+    # Audit finding 3: v1 applied a late answer to whatever was current. Here the
+    # late fire report for A is history on A: no new incident, no escalation, no
+    # notification, B untouched.
+    incidents, a, b = two_incidents(db)
+    before, revision_a, revision_b = snapshot(db), incidents.incident(a).revision, incidents.incident(b).revision
+
+    result = incidents.annotate(scene_evidence(a), Applicability.EXPIRED)
+
+    assert (result.outcome, result.incident_id, result.revision) == (AnnotationOutcome.ANNOTATED, a, revision_a + 1)
+    assert snapshot(db) == before
+    assert incidents.incident(a).revision == revision_a + 1
+    assert incidents.incident(b).revision == revision_b
+    [note] = incidents.annotations(a)
+    assert (note.evidence_id, note.status, note.applicability) == ("job-2.observed.late", "observed", Applicability.EXPIRED)
+    assert '"fire_or_smoke":true' in note.payload
+    assert incidents.annotations(b) == ()
+    # A screen that showed A before the annotation is stale and must reload.
+    with pytest.raises(RevisionConflict):
+        incidents.transition(a, IncidentStatus.ACKNOWLEDGED, expected_revision=revision_a, actor="op", reason="seen")
+
+
+def test_repeated_annotation_after_a_restart_changes_nothing(db_path: Path) -> None:
+    db = Database.open(db_path)
+    incidents, a, _ = two_incidents(db)
+    evidence = scene_evidence(a)
+    assert incidents.annotate(evidence, Applicability.EXPIRED).outcome is AnnotationOutcome.ANNOTATED
+    revision = incidents.incident(a).revision
+    db.close()  # the runtime stopped before acknowledging, and hands the same evidence again
+
+    db = Database.open(db_path)
+    try:
+        incidents = service(db)
+        again = incidents.annotate(evidence, Applicability.EXPIRED)
+        assert (again.outcome, again.incident_id, again.revision) == (AnnotationOutcome.DUPLICATE, a, None)
+        assert incidents.incident(a).revision == revision
+        assert len(incidents.annotations(a)) == 1
+    finally:
+        db.close()
+
+
+def test_evidence_naming_no_incident_is_not_stored(db: Database) -> None:
+    incidents, a, b = two_incidents(db)
+    before = snapshot(db)
+    result = incidents.annotate(scene_evidence(None, job="job-1"), Applicability.CURRENT)
+    assert result.outcome is AnnotationOutcome.NO_INCIDENT
+    assert snapshot(db) == before and count(db, "incident_annotations") == 0
+    assert incidents.incident(a).revision == incidents.incident(b).revision == 1
+
+
+def test_unknown_incident_other_camera_and_oversized_evidence_are_refused(db: Database) -> None:
+    incidents, a, _ = two_incidents(db)
+    before = snapshot(db)
+    unknown = incidents.annotate(scene_evidence("inc-gone"), Applicability.EXPIRED)
+    other_camera = incidents.annotate(scene_evidence(a, source=frame("cam-2")), Applicability.OTHER_CAMERA)
+    oversized = incidents.annotate(scene_evidence(a, value={"summary": "x" * 9000}), Applicability.EXPIRED)
+    assert [unknown.outcome, other_camera.outcome, oversized.outcome] == [
+        AnnotationOutcome.UNKNOWN_INCIDENT, AnnotationOutcome.OTHER_CAMERA, AnnotationOutcome.TOO_LARGE
+    ]
+    assert snapshot(db) == before and count(db, "incident_annotations") == 0
+    assert incidents.incident(a).revision == 1
+
+
+def test_resolved_incident_keeps_its_status_when_a_timeout_or_late_result_arrives(db: Database) -> None:
+    # Guide ch. 13: a timeout returns unavailable and leaves the original incident intact.
+    incidents, a, _ = two_incidents(db)
+    revision = incidents.transition(a, IncidentStatus.RESOLVED, expected_revision=1, actor="op", reason="checked")
+    timeout = incidents.annotate(scene_evidence(a, status=EvidenceStatus.TIMEOUT), Applicability.CURRENT)
+    late = incidents.annotate(scene_evidence(a), Applicability.EXPIRED)
+    assert [timeout.outcome, late.outcome] == [AnnotationOutcome.ANNOTATED] * 2
+    incident = incidents.incident(a)
+    assert (incident.status, incident.severity, incident.revision) == (IncidentStatus.RESOLVED, Severity.WARNING, revision + 2)
+    assert [(n.evidence_id, n.status) for n in incidents.annotations(a)] == [
+        ("job-2.timeout.late", "timeout"), ("job-2.observed.late", "observed")
+    ]
+    assert count(db, "incidents") == 2 and count(db, "outbox") == 2
+
+
+def test_version_1_database_is_upgraded_in_place(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with monkeypatch.context() as patch:  # a database written by the V2-14 build
+        patch.setattr(database, "MIGRATIONS", database.MIGRATIONS[:1])
+        patch.setattr(database, "SCHEMA_VERSION", 1)
+        old = Database.open(db_path)
+        incident_id = service(old).record(signal()).incident_id
+        assert old.connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        old.close()
+
+    db = Database.open(db_path)
+    try:
+        assert db.connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        incidents = service(db)
+        assert incidents.incident(incident_id).status is IncidentStatus.OPEN
+        assert incidents.annotate(scene_evidence(incident_id), Applicability.EXPIRED).outcome is AnnotationOutcome.ANNOTATED
+    finally:
+        db.close()
