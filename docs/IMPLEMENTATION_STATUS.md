@@ -1,6 +1,6 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-03, session 12 (Claude). The maintainer's runs at `84f15ec` on the current boot are recorded as USER-SUPPLIED MEASUREMENTS: Check 9 succeeded headless, but **neither S1 arm ran**. Arm a was refused at admission, before the headless preparation and the successful Check 9, and the chained command then stopped, so arm b never started. No arm comparison is possible, and the memory timebox's `--cache-ram 0` test is still untested. Re-running S1 or closing the timebox is the maintainer's choice. The open question is recorded for V2-29/V2-30. **V2-05 demo form started:** a portable single-reader capture worker with a one-frame handoff, an OpenCV/FFmpeg software-decode source (TCP, video only, bounded open and read) and `sentinel capture probe`; 40 new tests, 451 portable tests pass. The camera device check is PENDING. Session 11's summary follows. The maintainer made two decisions: D37 makes the operator cache drop a standing preparation step for measurement runs only, and D38 approves S1, the llama-server prompt-cache A/B test. The reboot and E-1 are recorded as USER-SUPPLIED MEASUREMENTS. E-2 is computed from Check 8's `memory.csv`: in steady, llama-server PSS rose about 104 MB/min while workload PSS stayed flat. This corrects session 5's "flat" note. Session 10's read-only review is recorded. S1's portable parts are implemented with 30 new tests; 411 portable tests pass. Claude ran no hardware workload, cache drop, service change, installation or rebuild. Still PENDING: both S1 arms (with a fresh Check 9 at the commit they run on), U18 policy, U19 unload, U20 real-model evidence and the 30-minute U21 rerun. File equivalence and consent/figure labels remain unresolved.
+Last updated 2026-10-04, session 13 (Claude). The maintainer's headless runs at `e9af7f4` are recorded as USER-SUPPLIED MEASUREMENTS: two Check 9 smokes, three S1 arms (arm a twice; the first arm b was interrupted by a signal to the runner) and four capture probes. **S1 result:** with llama-server's default prompt cache, steady pressure rose +115 MB/min (reproduced: +117 MB/min); with `--cache-ram 0` it rose +3.9 MB/min, with the same 53/53 valid requests and no latency penalty. The timebox's first branch applies: Claude proposes adopting `--cache-ram 0` for the demo profile and D-1; the maintainer decides. Other memory work stays paused. Further U19 evidence: the first GPU model load of the boot left a one-time step of about 0.66 GB, in no sampled meminfo field; later cycles added none. **V2-05 demo form:** one upstream session, bounded fresh hand-off, 15 fps 640×480 decode at about 0.07 core-equivalents and credential-free output were observed on the camera (runs b and b2). Run a never connected ("No route to host"), which corrects the maintainer's summary, and no outage was tested (b3 never contacted the camera), so the outage and read-timeout checks stay PENDING. The `pts_quality: none` share (21.5 % and 15.4 %) is explained: OpenCV 4.13's `CAP_PROP_PTS` rounds the PTS to whole periods of the average frame rate and repeats the last value when a frame has none. This was reproduced on a synthetic file. Session 12's summary: the maintainer's first S1 attempt at `84f15ec` never reached either arm; the V2-05 demo-form capture adapter (D39) was implemented with 40 tests (451 portable tests).
 
 ## Position
 
@@ -20,23 +20,24 @@ Last updated 2026-10-03, session 12 (Claude). The maintainer's runs at `84f15ec`
 | Session 9 (Codex, 2026-10-03) | `f606529`: verified PVA service classifier correction, synthetic regressions, operator checklist and pre-commit status record. |
 | Session 10 (Claude, 2026-10-03) | Read-only review of Check 9, the short U21 and the package logs; proposed S1. No commit; recorded in session 11. See the session 10 log. |
 | Session 11 (Claude, 2026-10-03) | `84f15ec`: D37/D38, E-1 and reboot records, E-2 calculations, S1 portable implementation and tests, status record. Pushed by the maintainer (local `origin/v2-beta` = `84f15ec` at session 12 start). See the session 11 log. |
-| Session 12 (Claude, 2026-10-03) | `ed26dc9`: record of the maintainer's Check 9/S1 runs at `84f15ec` (S1 did not run). The following commit: V2-05 demo-form capture adapter, tests and status record. See the session 12 log. |
-| Working tree | Clean at session 12 start (`84f15ec`). Session 12 commits the operator record (`ed26dc9`) and V2-05's demo form: three new media modules, config, CLI, two new test files, a config test and this record. An unrelated trailing blank line in `BUILD.md` appeared during the session (not Claude's) and is left uncommitted. |
+| Session 12 (Claude, 2026-10-03) | `ed26dc9`: record of the maintainer's Check 9/S1 runs at `84f15ec` (S1 did not run). `e9af7f4`: V2-05 demo-form capture adapter, tests and status record. See the session 12 log. |
+| Session 13 (Claude, 2026-10-04) | Record of the maintainer's Check 9, S1 and capture runs at `e9af7f4`, the S1 comparison, timebox and V2-05 evaluation (docs only), then the PTS follow-up and V2-09/V2-10 demo form. See the session 13 log. |
+| Working tree | At session 13 start: HEAD `e9af7f4`, two commits ahead of the local `origin/v2-beta` (`84f15ec`; nothing pushed since session 11). The only change was session 12's unrelated trailing blank line in `BUILD.md` (not Claude's), which stays uncommitted. |
 | Local-only files | `AGENTS.md`, the v2 guide, the audit review and `docs/LOCAL_NOTES.md` (device-specific notes), excluded through `.git/info/exclude`; none included in session 6–11 increments. A fresh clone does not contain them, although CLAUDE.md names the guide and audit. |
-| Selected package | **V2-05 demo form** (session 12): the capture adapter's portable part is complete (D39); its device check is PENDING. It counts as partial at most (D23). S1 (D38) did not run, and re-running it or closing the timebox is the maintainer's choice. U20 and U19/U21 instrumentation remain portable-complete only; live adapters/D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. |
+| Selected package | **V2-09/V2-10 demo form** (session 13): the legacy detector + ByteTrack parity adapter. V2-05's demo form is evaluated (session 13 log): device criteria met except the outage and read-timeout checks (PENDING); partial under D23. S1 (D38) ran; adopting `--cache-ram 0` is the maintainer's decision. U20 and U19/U21 instrumentation remain portable-complete only; D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. |
 | Other branches | `origin/Yogeshvar425-patch-1` (teammate) is **not merged**: a single commit `6755796` that adds @Yogeshvar425 to `.github/CODEOWNERS` (merge base `c66ebde`). `origin/codex/github-audit-fixes-2026-09-19` is already in `master` via PR #4. |
 | Effort | Per-package estimates are in the package table (given to the maintainer on 2026-09-29). The re-estimate of optimization effort still waits for V2-01's B0 run. |
 | v1 on this device | Historically **not running** (maintainer, 2026-09-29); current state must be inspected, not inferred. This workflow never terminates existing v1 processes. |
-| Waiting on the maintainer | Either re-run S1 (Check 9 first, at the commit it runs on, in one headless command; see "Hardware checks PENDING") or close the memory timebox with the `--cache-ram` question open (session 12 log). Afterwards: the U18 runtime policy, whether to adopt `--cache-ram 0` (separate decision), U19 unload, U20 real-model/demo-exception evidence, the 30-minute U21 rerun (not approved) and consent/figure labels. D36 provisionally retains b8932; beta still requires a tested compatible schema-fix descendant. E-1 reported Ollama inactive and disabled (USER-SUPPLIED). Full empty-room-clip review and review-image deletion are not confirmed. |
+| Waiting on the maintainer | **Adopt `--cache-ram 0` for llama-server in the demo profile and D-1?** (Claude's proposal under the timebox; session 13 log.) If yes, a confirming demo-profile run replaces D33's provisional profile (PENDING, not approved). The V2-05 outage check (PENDING). Why S1 arm b #1 was interrupted (a signal to the runner at 01:06:11 IST; not recorded). Afterwards: the U18 runtime policy, U19 unload, U20 real-model/demo-exception evidence, the 30-minute U21 rerun (not approved) and consent/figure labels. D36 provisionally retains b8932; beta still requires a tested compatible schema-fix descendant. E-1 reported Ollama inactive and disabled (USER-SUPPLIED). Full empty-room-clip review and review-image deletion are not confirmed. |
 
 ## Next concrete task
 
-1. **Maintainer choice: S1 (D38) re-run or timebox close.** The session 12 attempt never reached either arm (session 12 log). To re-run, use a plain SSH session on the current boot. **Go headless first**, per the procedure's checklist: display manager stopped, VS Code/Claude Code closed, NVIDIA PVA left running. Then run the single command in "Hardware checks PENDING". It runs Check 9 at the commit it runs on, then arms a and b, in about 12–13 min, and stops at the first failing step. S1 refuses a Check 9 from another commit or boot, and HEAD has moved since `84f15ec`. Return the printed JSON results and copy the new `/tmp/sentinel-operator-*` directories to `~/sentinel-runs/operator/`. If you close the timebox instead, memory work stops until after Oct 20 with the question recorded for V2-29/V2-30. **Do not rename anything**; file equivalence, third-party consent and the early figure label remain unresolved. The 30-minute U21 rerun is not approved.
-2. **V2-05 demo-form device check (maintainer, PENDING):** the two `sentinel capture probe` runs and the credential count in "Hardware checks PENDING" (about 3 min attended, no GPU). It does not depend on S1 and can run in the same headless session.
-3. **Next implementation task: the legacy detector + ByteTrack adapter (V2-09/V2-10 demo form).** It consumes `CapturedFrame` from the capture worker and emits `TrackObservation`s for `EdgeCore`. Before it, record Check 8's provisional demo profiles (D33) in the adapter registry's known profiles. U18 stays open (memory work paused under the timebox).
+1. **Maintainer decision: `--cache-ram 0`.** S1 showed that llama-server's default host-RAM prompt cache causes the steady growth (+115 MB/min, against +3.9 MB/min without it; session 13 log). Claude proposes adding `--cache-ram 0` to the demo profile's and D-1's llama-server launch. If adopted, record it as a decision, and run a confirming demo-profile run with `--llama-cache-ram 0` (PENDING, needs approval) to replace D33's provisional profile. Memory work otherwise stays paused until after Oct 20.
+2. **V2-05 outage check (maintainer, PENDING):** one `sentinel capture probe` run with a real camera outage, after this session's PTS follow-up commit; command in "Hardware checks PENDING". Export `SENTINEL_RTSP_URL` in the same shell; b3 failed because it was missing.
+3. **Implementation (this session): V2-09/V2-10 demo form,** the legacy detector + ByteTrack parity adapter. It consumes `CapturedFrame` from the capture worker and emits `TrackObservation`s for `EdgeCore`. D33's provisional demo profile is recorded in the adapter registry first. U18 stays open (memory work paused under the timebox).
 4. **Remaining week 2 device adapters:** capture is done in portable demo form (session 12); the legacy engine plus ByteTrack (task 3); interim face adapter at 1 Hz (D34) and llama-server adapter using U20's portable completion boundary (actual model acceptance PENDING); and `sentinel run` (D-1) with the D27 GPU guard and U18 memory precheck. `sentinel run` hands every zone observation and hazard candidate to `IncidentService.record()` and acknowledges it only after that returns (D31). It runs `OutboxWorker` in its own thread with `TelegramNotifier.from_environment(timeout_s=notifications.request_timeout_s)` only if `telegram` is listed (D32).
 5. **V2-15 device check (maintainer):** one real Telegram send from the device with the maintainer's bot, after D-1 wiring.
-6. **U19/U21 instrumentation, portable part complete (Codex, session 6):** the six additional meminfo fields and timestamped torch allocator readings now stream to the run files. Real allocator behavior, sampling overhead, ramp attribution and memory reclamation remain PENDING, and memory work is paused under the timebox (session 12).
+6. **U19/U21 instrumentation, portable part complete (Codex, session 6):** the six additional meminfo fields and timestamped torch allocator readings now stream to the run files. Real allocator behavior, sampling overhead and memory reclamation remain PENDING. S1 attributed the Check 8-type steady ramp to llama-server's prompt cache (session 13); other memory work is paused under the timebox.
 7. **V2-13, rest (after the demo):** directed line crossing and a decision on hysteresis (D30).
 
 ## Oct 20 demo milestone: plan and deviations from the guide order
@@ -46,7 +47,7 @@ Target (maintainer, 2026-09-29): a demoable end-to-end path on this Jetson by 20
 | Week | Work | Status |
 |---|---|---|
 | 1 (to Oct 6) | V2-49; V2-13 zone rule; V2-14 SQLite incidents/outbox; V2-15 leased outbox + Telegram (mocked). All portable. | V2-49 done. Demo form done: V2-13 (restricted + dwell; crossing deferred), V2-14, V2-15 (mocked); these count as partial (D23). |
-| 2 (to Oct 13) | Device adapters (D24): capture from the substream (profile A, D22) with `~/onvif_env`'s OpenCV/FFmpeg software decode, video only, stamped by FrameStamper; detector + ByteTrack via the existing `yolov8n.engine` as the *legacy parity adapter*; interim face adapter (existing DeepFace/Facenet512 on CPU) feeding v2 association; llama-server scene adapter; `sentinel run` loop around `EdgeCore` | Checks 3 and 5 done; U13 settled (D27); U17 settled (D28, D33: check 8 run 2026-10-03); U18 open (check 9); U20, U21 need decisions |
+| 2 (to Oct 13) | Device adapters (D24): capture from the substream (profile A, D22) with `~/onvif_env`'s OpenCV/FFmpeg software decode, video only, stamped by FrameStamper; detector + ByteTrack via the existing `yolov8n.engine` as the *legacy parity adapter*; interim face adapter (existing DeepFace/Facenet512 on CPU) feeding v2 association; llama-server scene adapter; `sentinel run` loop around `EdgeCore` | Checks 3 and 5 done; U13 settled (D27); U17 settled (D28, D33: check 8 run 2026-10-03); capture demo form on the camera (session 13; outage check PENDING); S1 run, `--cache-ram 0` proposed; U18 open; U20, U21 need decisions |
 | 3 (to Oct 20) | Loopback-only, read-only status page (stdlib HTTP server) showing LiveState, incidents and delivery outcomes; end-to-end rehearsal; demo script including camera loss and recovery | — |
 
 **Deviations from the guide's order.** Accepted by the maintainer (D23) **on condition that every affected package is marked "demo form, full acceptance pending" in this file and is not counted done.** The package table applies that marking.
@@ -70,11 +71,11 @@ Estimates as given to the maintainer on 2026-09-29. V2-49 has since been done.
 
 | Package | Title | Status | Portable or Jetson | Oct 20 path | Claude h | Maintainer Jetson h | Depends on |
 |---|---|---|---|---|---|---|---|
-| V2-01 | Hardware and v1 timing/memory baseline | in progress | Jetson | yes (checks 3, 5, 8 and the bounded Check 9 smoke done; 9b/U18 pending) | 1.5 | 3 | — |
+| V2-01 | Hardware and v1 timing/memory baseline | in progress | Jetson | yes (checks 3, 5, 8, the bounded Check 9 smokes and S1 done; 9b/U18 pending) | 1.5 | 3 | — |
 | V2-02 | Config, frame/evidence contracts, fake clock | done | Portable | yes | 0 | 0 | — |
 | V2-03 | Replay fixtures, first identity/empty-scene fixes | done | Portable | yes | 0 | 0 | — |
 | V2-04 | Dev setup and CI skeleton | in progress | Portable | no | 0.5 | 0 | — |
-| V2-05 | Relay ownership and hardware decode spike | partial: demo-form capture adapter portable part done (session 12); device check pending | Jetson | yes: **demo form, full acceptance pending** | 2 | 2.5 | 01, 02 |
+| V2-05 | Relay ownership and hardware decode spike | partial: demo-form capture adapter done (session 12); on the camera, all demo-form criteria met except the outage and read-timeout checks (session 13) | Jetson | yes: **demo form, full acceptance pending** | 2 | 2.5 | 01, 02 |
 | V2-06 | Browser/codec/timestamp spike | not started | Jetson | no | 2 | 3 | 05 |
 | V2-07 | Dataset consent, labels, split manifest | not started | Jetson (recording) | no | 1 | 3 | 03 |
 | V2-08 | Gate B record, recoverable device baseline | not started | Jetson | no | 1 | 4 | 01, 05, 06 |
@@ -139,7 +140,7 @@ Estimates as given to the maintainer on 2026-09-29. V2-49 has since been done.
 Notes on partial and in-progress rows:
 
 - **In progress:**
-  - V2-01: records and checks 1 (`nvpmodel`), 3, 5 and 6 are done (session 3); check 8 and the headless idle baseline (0.970 GB) by the maintainer on 2026-10-03; the bounded Check 9 smoke by the maintainer on 2026-10-03, on the boot before the reboot (session 10 log). Checks 2 (rest) and 9b/U18, the B0 run, trace contract, CPU budget and re-estimate are pending.
+  - V2-01: records and checks 1 (`nvpmodel`), 3, 5 and 6 are done (session 3); check 8 and the headless idle baseline (0.970 GB) by the maintainer on 2026-10-03; the bounded Check 9 smoke by the maintainer on 2026-10-03, on the boot before the reboot (session 10 log); two further Check 9 smokes and S1 at `e9af7f4` (session 13 log). Checks 2 (rest) and 9b/U18, the B0 run, trace contract, CPU budget and re-estimate are pending.
   - V2-04: GitHub Actions passed at `32985c2` (maintainer report). The clean-laptop (macOS) run is not done.
 - **Done:** V2-03 with synthetic replays only; real-clip replay needs V2-07. V2-49's registry is empty until real adapters land, and its unknown-profile rule makes every model adapter unavailable until check 8's provisional profiles are recorded (D28).
 - **Partial:**
@@ -149,9 +150,170 @@ Notes on partial and in-progress rows:
   - V2-16: only the scene-hazard correlation.
   - V2-20: validated in-memory enrollment only.
   - V2-25: the association and identity core is done; the adapter, alignment, vectorized matching and report are not.
-  - V2-05: demo form, portable part (session 12, D39): single-reader capture worker, one-frame handoff, OpenCV/FFmpeg software-decode source (TCP, video only, bounded open/read) and `sentinel capture probe`. Not done: the device check (decode, CPU, outage recovery and upstream-connection count on the camera), wiring into `sentinel run` (D-1), and everything in V2-05 proper (relay, NVDEC/GStreamer, main stream D26, connection count with live view and recording, restore point).
+  - V2-05: demo form (session 12, D39): single-reader capture worker, one-frame handoff, OpenCV/FFmpeg software-decode source (TCP, video only, bounded open/read) and `sentinel capture probe`. On the camera (USER-SUPPLIED, session 13): one upstream session from this host, 15 fps 640×480 decode at about 0.07 core-equivalents, sub-millisecond hand-off, open failures retried with backoff, no credentials in output. Not done: a real outage and the read-timeout path on the device, wiring into `sentinel run` (D-1), and everything in V2-05 proper (relay, NVDEC/GStreamer, main stream D26, connection count with live view and recording, restore point).
   - V2-28: demo form done (session 5): the scene lane routes late evidence (session 2) and `IncidentService.annotate()` stores it on its own incident only (D35). Not done: wiring into `sentinel run` (D-1), display on the status page (D-2), and revalidation with the real scene adapter (V2-26) and after V2-11.
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 13 log (Claude, 2026-10-04)
+
+**Scope and preservation.** Maintainer instruction:
+1. Record the headless Check 9, both S1 arms and the V2-05 camera checks as USER-SUPPLIED MEASUREMENTS.
+2. Compare the S1 arms and apply the memory timebox.
+3. Evaluate V2-05 against its acceptance and explain the `pts_quality` "none" counts.
+4. Continue with V2-09/V2-10 (demo form).
+
+Started on `v2-beta` at `e9af7f4`, two commits ahead of the local `origin/v2-beta` (`84f15ec`). The working tree held only session 12's unrelated `BUILD.md` blank line. No fetch or push, branch change, installation, workload, cache drop, service change, camera or GPU access by Claude.
+
+Claude read:
+- the six new sanitized `result.json` files;
+- the interrupted run's `summary.txt`, `events.jsonl` and the tail of its `guard.jsonl`;
+- the four capture JSON files and their stderr files, with addresses masked by `sed`;
+- `ps` start times.
+
+`diff -rq` showed every copy in `~/sentinel-runs/operator/` identical to its `/tmp` original.
+
+### USER-SUPPLIED MEASUREMENTS (maintainer, 2026-10-04 IST, boot `201a195f…`, repository `e9af7f4`)
+
+**Operator runs.** Common to all six runs:
+- `e9af7f4`, on the boot that started 22:27:14 IST;
+- the D37 drop declared (`preparation.drop_caches: operator_declared`);
+- inspection found 0 desktop, dev-tool, model-server, unclassified-Python and media/GPU-tool processes; the display manager inactive; NVIDIA PVA the only known system service; no refusals;
+- 0 OOM and 0 NvMap candidate lines; swap counters at 0.
+
+They form two sequences. **The maintainer's report names only the second.** The first is recorded because its directories are preserved.
+
+| Run (directory) | Finished (UTC / IST) | Result |
+|---|---|---|
+| Check 9 #3 (`5dbqfrm1`) | 19:29:40 / 00:59:40 | `bounded_smoke_complete`: baseline pressure 1,258,913,792 B, sampled peak 1,282,379,776 B, post-exit 1,259,933,696 B |
+| S1 arm a #1 (`0n316rus`) | 19:34:25 / 01:04:25 | `completed` (table below) |
+| S1 arm b #1 (`1lsjvxhd`) | 19:36:13 / 01:06:13 | **`interrupted`** in warm-up, after 2 valid requests. `operator_check.py` itself received SIGINT, SIGTERM or SIGHUP (which one is not recorded) and stopped the child with SIGTERM. Cleanup clear, port free, no post-exit sample. Startup logged the prompt cache as disabled. The cause is not recorded; per `ps`, a new SSH login followed at 01:07:04 IST and a tmux client attached at 01:07:27. |
+| Check 9 #4 (`n51_c4_0`) | 19:38:08 / 01:08:08 | `bounded_smoke_complete`: baseline 1,921,302,528 B, sampled peak 1,942,663,168 B, post-exit 1,925,824,512 B |
+| S1 arm a #2 (`l4ikjyet`) | 19:42:52 / 01:12:52 | `completed` |
+| S1 arm b #2 (`vzh8rtqp`) | 19:48:37 / 01:18:37 | `completed` |
+
+Each Check 9 allocated 268,435,456 B per API in 33,554,432 B chunks (device and managed; rc 0, cleanup clear).
+
+**S1 arms.** Common conditions:
+- a 180 s steady phase, one scene request every 4 s;
+- a distinct synthetic noise image per request;
+- the GPU check passed: 17/17 layers and the vision encoder on CUDA0, L4T libcuda only.
+
+Bytes unless stated:
+
+| | Arm a #2: default cache | Arm b #2: `--cache-ram 0` | Arm a #1 (first sequence) |
+|---|---|---|---|
+| Check 9 used | `n51_c4_0` | `n51_c4_0` | `5dbqfrm1` |
+| Baseline pressure | 1,916,297,216 | 1,915,895,808 | 1,259,565,056 |
+| Prompt cache at startup | enabled, 8192 MiB | disabled | enabled, 8192 MiB |
+| Cache, steady first → last | 8 prompts, 42.482 MiB → 52 prompts, 280.178 MiB; 0 duplicates, evictions, failures | no updates | 8, 43.033 MiB → 52, 278.864 MiB; 0 / 0 / 0 |
+| Pressure, steady first → last | 3,068,239,872 → 3,415,216,128 | 3,054,936,064 → 3,068,571,648 | 2,952,343,552 → 3,303,878,656 |
+| Pressure slope (B/min) | +115,040,663 | +3,855,411 | +117,103,238 |
+| MemFree slope | −115,338,056 | −4,413,870 | −117,731,380 |
+| Cached slope | +200,687 | +437,399 | +532,286 |
+| llama-server PSS, first → last | 570,285,056 → 919,215,104 | 515,972,096 → 529,212,416 | 570,555,392 → 919,249,920 |
+| llama-server PSS slope | +114,939,122 | +3,510,888 | +115,116,080 |
+| Workload PSS slope | +427,991 | +85,942 | +85,690 |
+| Requests (all phases) | 53 / 53 valid, all `stop`, 0 errors | 53 / 53 valid, all `stop`, 0 errors | 53 / 53 valid, all `stop`, 0 errors |
+| Steady scene completed / valid | 46 / 46 | 46 / 46 | 46 / 46 |
+| Latency p50 / p95 / max (ms) | 2,324.4 / 2,497.2 / 2,597.4 | 2,271.7 / 2,382.9 / 2,561.4 | 2,235.4 / 2,421.1 / 2,468.2 |
+| Over the 8 s D16 timeout | 0 | 0 | 0 |
+| Completion tokens (mean); prompt tokens | 110.0; 325 | 107.8; 325 | 106.7; 325 |
+| Valid summaries / observations at limit | 2 / 2 | 1 / 1 | 0 / 1 |
+| Cold load; load delta | 3.36 s; +849,825,792 | 4.11 s; +891,461,632 | 3.6 s; +1,400,885,248 |
+| Sampled peak pressure; min MemFree | 3,415,240,704; 2,759,700,480 | 3,070,148,608; 3,100,798,976 | 3,304,927,232; 2,867,605,504 |
+| Unload residual vs baseline | −9,740,288 | +2,371,584 | +656,420,864 |
+| Post-exit pressure | 1,901,981,696 | 1,917,984,768 | 1,905,340,416 |
+
+**Capture probes** (V2-05 demo form). Common to all runs:
+- `sentinel capture probe` at `e9af7f4`, with `config/default.yaml`'s capture settings;
+- substream URL from `SENTINEL_RTSP_URL`;
+- times from file modification times;
+- no display-manager process started between the S1 inspections and Claude's `ps`.
+
+| Run | Time (IST) | Conditions | Result |
+|---|---|---|---|
+| a (60 s) | about 01:20–01:21 | before any dev tool started | **`no_frames`**: 0 connects, 6 open failures, `problem: open_failed`, 0 frames. Upstream connections 0 in all 60 samples. CPU 0.994 s; max RSS 77,955,072 B. Stderr has six FFmpeg errors `Connection to tcp://<camera>:554 … failed: No route to host`, at 3.1, 6.2, 9.3, 16.4, 27.4 and 45.5 s: the camera was unreachable from this host for the whole run. |
+| b (90 s, outage planned) | about 01:21–01:23 | before any dev tool started; no outage occurred (maintainer) | `frames_received`: 1 connect, 0 open failures, 0 stream ends. Frames captured 1,278, delivered 1,277, replaced 0, discarded 1. 14.191 captured fps; 1 epoch; 640×480 BGR. PTS quality none 274, stream_relative 1,003. Ingest interval p50 52.559 / p95 102.787 / max 410.249 ms (1,276 intervals); hand-off age p50 0.467 / p95 0.510 / max 0.641 ms. CPU 5.991 s = 0.067 core-equivalents; max RSS 87,945,216 B. Upstream connections before 0, min 1, max 1 (90 samples). |
+| b2 (150 s) | about 01:28–01:30 | VS Code server and Claude Code running (started 01:25:46 and 01:25:59); no outage occurred (maintainer) | `frames_received`: 1 connect, 0 open failures, 0 stream ends. Frames captured 2,242, delivered 2,241, replaced 0, discarded 1. 14.932 fps; 1 epoch; 640×480 BGR. PTS none 344, stream_relative 1,897. Ingest p50 52.382 / p95 103.078 / max 376.221 ms; hand-off p50 0.292 / p95 0.502 / max 1.016 ms. CPU 10.160 s = 0.068 core-equivalents; max RSS 88,096,768 B. Upstream before 0, min 1, max 1 (150 samples). |
+| b3 (simulated outage) | 01:47 | the maintainer planned a 15 s `iptables` cut on the Jetson about 25 s in | **Never contacted the camera.** Stderr is `capture probe: rtsp_url_missing` and the JSON file is empty: `SENTINEL_RTSP_URL` was not set in that shell. The maintainer has deferred the outage test. |
+
+**Credentials.** The maintainer reports `userinfo_lines=0` for every stderr file. Claude's addition: `b.err` and `b2.err` are empty. `a.err` has 12 lines: six FFmpeg connection errors that carry the camera's **host and port** (no user information or path) and six OpenCV warnings.
+
+**Correction to the maintainer's summary.** Run a did not connect: 0 connects and 0 epochs. Only b and b2 had one connect and one epoch, with maximum ingest gaps of 0.410 s and 0.376 s.
+
+### S1 comparison and the timebox (Claude's calculations, not measurements)
+
+- **Equal conditions.** Arms a #2 and b #2 used the same Check 9, commit and boot, both headless. Baselines were equal (1,916,297,216 vs 1,915,895,808 B), and both ran the same 53 requests.
+- **`--cache-ram 0` removed about 97 % of the steady growth.**
+  - Steady pressure: +346,976,256 B in arm a, +13,635,584 B in arm b.
+  - Arm b's pressure slope is 3.4 % of arm a's. Its llama-server PSS slope is 3.1 % (+3,510,888 vs +114,939,122 B/min).
+- **Arm a reproduced.** Arm a #1 ran on a different baseline. Its pressure slope was 1.8 % higher, with the same cache growth per prompt (5.36 vs 5.40 MiB).
+- **Per prompt, arm a #2.**
+  - Logged cache: +237.696 MiB over 44 prompts, so 5.40 MiB (5,664,598 B) per prompt.
+  - llama-server PSS: +348,930,048 B, about 7.93 MB per prompt. That is 1.40× the logged cache size; the extra 40 % is unexplained (allocator overhead is one untested candidate).
+  - E-2's estimate for Check 8's mixed workload was 6.32 MB per request.
+- **Same work, no slower.**
+  - Completion, validity and finish counts are identical, and completion tokens are close (110.0 vs 107.8).
+  - Arm b's latency p50 is 52.7 ms lower and p95 114.3 ms lower (one run each; not significant).
+  - The images are noise, so this shows structural equivalence only, not scene accuracy.
+- **Left in arm b:** +3.5 MB/min of llama-server PSS over 3 minutes. Whether it continues, settles or is noise is unknown from 180 s.
+- **Timebox outcome.** The first branch applies: `--cache-ram 0` removes the growth. **Claude proposes adding `--cache-ram 0` to llama-server in the demo profile and in D-1**; the maintainer decides, since D38 made adoption a separate decision.
+  - Why: Check 8's steady ramp (+100 MB/min, E-2) coincides with llama-server PSS growth, and S1 shows that growth is the prompt cache.
+  - Under b8932's default 8192 MiB limit, the cache keeps growing well past the device's 5.4 GB ceiling. Check 8 reached 5.350 GB after 10 minutes.
+  - Cost: no host-RAM prompt reuse between scene requests. With a new image on every request, S1 measured no latency penalty.
+  - If adopted, a full demo-profile run with `--llama-cache-ram 0` must replace D33's provisional profile. Claude's projection, not a measurement: steady would stay near Check 8's 4.42 GB steady start instead of ramping. That run is PENDING and not approved.
+  - **Other memory work stays paused until after Oct 20:** U18 policy, U19 unload and the 30-minute U21 rerun.
+
+### U19 observation from the same runs (Claude's calculations; not investigated further under the timebox)
+
+- **First load of the boot.** The first llama-server load of this boot (arm a #1) had a load delta of +1,400,885,248 B and left +656,420,864 B (the profile's residual vs baseline).
+  - Later loads had deltas of +801,611,776 (b #1), +849,825,792 (a #2) and +891,461,632 B (b #2).
+  - Of those, a #2 and b #2 left −9,740,288 and +2,371,584 B; b #1 recorded no post-exit sample.
+- **Where it went.** Compare Check 9 #3's and #4's baselines, both taken after a D37 drop:
+  - pressure +662,388,736 B and MemFree −662,048,768 B;
+  - but Cached (−45,056), Shmem (+40,960), SUnreclaim (−724,992), KReclaimable (−270,336), CmaFree (0) and Unevictable (0) barely moved.
+  - So about 0.66 GB was consumed in none of the sampled fields. It survived the cache drops and did not grow over three further load/unload cycles (one interrupted).
+- **Earlier evidence.** The short U21 (session 10) left a similar +658,501,632 B.
+- **Narrowed, not explained.** On this boot, the residue behaves like a one-time step at the boot's first large GPU load, not per-cycle accumulation. Its owner is untested (for example, driver or NvMap retention). V2-54's unload acceptance still cannot pass on this evidence.
+
+### V2-05 demo form against its acceptance (Claude's evaluation)
+
+Guide acceptance: "No duplicate upstream session; bounded capture". The demo form is D39. Full V2-05 stays open under D23: relay, NVDEC, connection count with live view and recording, and a restore point.
+
+| Criterion (demo form) | Evidence | Status |
+|---|---|---|
+| One upstream session from this host | b, b2: established connections 0 before, exactly 1 in all 240 samples | **Met for this host.** Other camera clients are invisible here; the relay-based count is V2-05 proper. |
+| Bounded capture, fresh hand-off | b, b2: replaced 0; discarded 1 (the frame pending at stop); hand-off age max ≤ 1.016 ms; max RSS about 88 MB. Portable tests cover the slow-consumer bound. | **Met** with the probe's fast consumer. A slow consumer on the device comes with D-1. |
+| Decode on the camera: 640×480 BGR, about 15 fps, one epoch | b2: 14.932 fps over 150 s, one epoch. b: 14.191 fps including connection setup, about 74 frames short of the 15.01 fps source rate over 90 s; the probe does not report time to first frame. | **Met** |
+| CPU cost of software decode (D24) | 0.067 and 0.068 core-equivalents for the whole probe process, one run each | **Measured** (USER-SUPPLIED): about 7 % of one core at `decode_threads` 1 |
+| Max ingest gap below the 2 s stale threshold | 0.410 s and 0.376 s | **Met** in these runs |
+| Open failure and backoff on the device | a: 6 bounded attempts in 60 s, failing at 3.1, 6.2, 9.3, 16.4, 27.4 and 45.5 s; consistent with 1/2/4/8/15 s waits plus about 1–3 s per failed attempt; clean stop | **Observed** (camera unreachable) |
+| Reconnect after an outage: new epoch, frames after restore, still at most 1 session | no outage in b or b2; b3 never connected | **Not established (PENDING)** |
+| Read-timeout path (5 s) on the device | not exercised | **PENDING** |
+| No credentials in output | 0 userinfo lines; the JSON has no host. FFmpeg's stderr carries the camera host and port on connection failures. | **Met.** D-1 must keep FFmpeg's stderr out of shared or persistent logs, or redact the host. |
+| Source PTS | 21.5 % (b) and 15.4 % (b2) of frames stamped `none` | Explained below; diagnostic only |
+
+V2-05 stays **partial (demo form, full acceptance pending)**. The outage and read-timeout checks are PENDING.
+
+### Why `pts_quality: none` was 274 of 1,277 and 344 of 2,241 (Claude: source, synthetic files and arithmetic; no camera)
+
+- **The rule.** `FrameStamper` stamps `none` when a frame has no PTS, or its PTS is not strictly greater than the previous frame's in the epoch (D21). `OpenCvSource` read the PTS from OpenCV's `CAP_PROP_PTS`.
+- **What `CAP_PROP_PTS` is in OpenCV 4.13.0.** Source: `modules/videoio/src/cap_ffmpeg_impl.hpp` at tag 4.13.0, read by Claude.
+  - It is not a stream timestamp. It is the frame's PTS rescaled to whole periods of the stream's estimated **average** frame rate, and rounded (`av_rescale_q(picture_pts, time_base, 1/avg_frame_rate)`).
+  - It is **not updated when a decoded frame has no PTS**, so the previous value repeats.
+  - When FFmpeg has no average rate (0/0), every frame reads −2⁶³.
+  - Session 12's code comment ("a missing PTS is reported as negative") was therefore wrong for this build.
+- **Why this camera triggers it.**
+  - The substream averages 15.01 fps while FFmpeg reports `tbr 20` (V2-01 inventory). Ingest intervals have p50 ≈ 52 ms and p95 ≈ 103 ms.
+  - Both fit frames timestamped on a 50 ms grid with some slots skipped.
+  - Rounded to periods of about 66.7 ms, two frames 50 ms apart regularly land on the same integer, and the second is stamped `none`. The share depends on frame timing and phase, so it varies between connections.
+- **Reproduced without the camera** (`~/onvif_env`, OpenCV 4.13.0, files in the session scratchpad). One H.264 stream: 120 frames on a 50 ms grid, every fourth slot skipped.
+  - As MP4 (average rate 800/53 ≈ 15.09 fps): `CAP_PROP_PTS` failed to increase on **13 of 120 frames (10.8 %)**, while `CAP_PROP_POS_MSEC` increased on every frame.
+  - The same frames as MKV (average rate 20/1): 0 of 120.
+  - An MPEG-TS file without an average rate: −2⁶³ on every frame.
+- **Not established:** the camera's actual RTP timestamps, the average rate FFmpeg estimated on each connection, and how many `none` frames lacked a PTS rather than repeating a rounded one.
+- **Impact.** None on decisions: every age, TTL and freshness check uses ingest time (D21), and nothing reads `source_pts`. But the value was not a usable stream timestamp, which V2-06's timestamp contract will need.
+- **Follow-up planned in this session:** read OpenCV's unrounded `CAP_PROP_POS_MSEC` instead, and have the probe report why frames are `none`. The device effect will need the next probe run.
 
 ## Session 12 log (Claude, 2026-10-03)
 
@@ -925,7 +1087,7 @@ unittest discovery ignores `tests/unit/` because it has no `__init__.py`. This a
 - No v2 production camera/GPU adapter or `sentinel run` exists yet; the GPU benchmark scripts are separate. `EdgeCore`, the incident store and the outbox are exercised by synthetic replays, mocks and FakeClock smoke runs (CPU). No real Telegram message has been sent by v2. The other ch. 18 CLI commands, including `sentinel replay`, were intentionally not added yet.
 - The replay regressions use synthetic timelines, not the maintainer's clips. They record the behaviour of the v2 components and of a documented reference model of v1 (D12), not of the running v1 process.
 - The mutation sweeps are one-off checks whose scripts are not committed.
-- Checks 3a/3b were run by Claude in session 3 (inventory below). Check 8 was run by the maintainer (session 5 log): one run on an unlabelled clip, a provisional profile and not a benchmark; its steady phase was still ramping (U21). Session 8 portably tests the replacement bounded Check 9 orchestration. The maintainer's bounded Check 9 smoke and short U21 pilot (2026-10-03, previous boot) are USER-SUPPLIED MEASUREMENTS in the session 10 log; neither settles beyond-MemFree/U18 or long-run memory. S1 (session 11) is implemented portably; no S1 run exists (session 12: arm a was refused at admission and arm b never started). Claude's session 5 diagnostics (detector, face and VLM reproductions) are observations with dev tools running, not measurements.
+- Checks 3a/3b were run by Claude in session 3 (inventory below). Check 8 was run by the maintainer (session 5 log): one run on an unlabelled clip, a provisional profile and not a benchmark; its steady phase was still ramping (U21). Session 8 portably tests the replacement bounded Check 9 orchestration. The maintainer's bounded Check 9 smoke and short U21 pilot (2026-10-03, previous boot) are USER-SUPPLIED MEASUREMENTS in the session 10 log; neither settles beyond-MemFree/U18 or long-run memory. S1 (session 11) is implemented portably. Session 12's attempt never reached an arm; the maintainer's S1 runs at `e9af7f4` are USER-SUPPLIED MEASUREMENTS in the session 13 log (scene-only, 180 s steady, noise images; not the full workload or a long run). Claude's session 5 diagnostics (detector, face and VLM reproductions) are observations with dev tools running, not measurements.
 
 ## Decisions
 
@@ -1027,9 +1189,9 @@ D14–D21 are implementation decisions made in session 2 within the guide's rule
 - **U16. Face stage cadence.** `EdgeCore.on_frame(..., faces=None)` means the face stage did not run on that frame. Which frames get face analysis, and whether it runs asynchronously in a worker, is V2-25/V2-29 work. The interim demo adapter will run it on sampled frames.
 - **U17.** Resolved by D28 and D33 (check 8 run by the maintainer on 2026-10-03, admitted with its exceedance recorded). Original question: **Admitting demo adapters without measured resource profiles.** V2-49 makes every model adapter unavailable until its resource profile is known, and no profile has been measured. Decide in D-1 how the demo admits the interim face and scene adapters. Options: record a provisional, clearly labelled "demo-unmeasured" profile from a first measured cold load, or run them outside the manifest path for the demo only.
 - **U18. Free memory at GPU load** (new, session 3). On this device, GPU allocations failed whenever they exceeded **MemFree**, although MemAvailable was over 4 GB (inventory below). llama.cpp's own fit check uses MemAvailable, so it does not catch this. How does `sentinel run` (D-1) make GPU loads reliable? Options: (a) evict the model files' page cache with `posix_fadvise(DONTNEED)` (no root) and refuse to load below a MemFree threshold, as `demo_profile.py` does (3.0 GB default); (b) drop caches system-wide before loading (root; a system action); (c) load GPU components first, right after boot. Also open: whether allocations made after start-up (llama.cpp compute buffers, larger images) can fail the same way once the page cache refills. **Check 9** settles whether this depends on unified memory (`cudaMallocManaged`) or also affects `cudaMalloc`; decide after it. **Session 10/11:** the bounded Check 9 smoke passed for both APIs at 256 MiB, which says nothing about allocation beyond MemFree. The short U21 then stopped on the MemFree floor, because page cache refilled during the loads after a cache drop (session 10 log). D37 permits an operator cache drop before measurement runs only; it is not a runtime answer, and option (b) remains undecided for D-1.
-- **U19. Memory left after unload (V2-54, open issue; hardware acceptance PENDING).** After check 8's workload exited and llama-server stopped, used memory was 1.889 GB: **+0.983 GB above the 0.906 GB baseline**, while Cached stayed +2.2 GB above it (0.41 → 2.61 GB). The workload's exit took used memory to 0.612 GB *below* its level with llama-server alone (2.633 → 2.021 GB). Stopping llama-server then freed only 0.13 GB, although its load had added 1.73 GB. Candidate explanations, none tested: page cache that `MemAvailable` does not credit, shared memory, NvMap/CMA pages kept by the driver, or unreclaimable slab. Check 8 recorded none of `Shmem`, `Unevictable`, `Mlocked`, `SUnreclaim`, `KReclaimable` or `CmaFree`; session 6 now instruments them portably. V2-54's unload acceptance cannot pass until the residue is explained. Proposed operator follow-up remains PENDING, with no execution approval from session 6: sample after 60 s, drop the page cache only (`echo 1`), sample again, then compare a second load/unload cycle for accumulation. **Session 10/11:** the short U21 left +658,501,632 B pressure about 7 s after exit, of which about 0.67 GB of consumed MemFree is in no sampled field. In Check 8 (E-2), llama-server PSS was 1,685,941,248 B while it ran alone, yet stopping it lowered pressure by only 132,759,552 B. Causes remain unknown. S1 records unload residues for both arms, but S1 is not the U19 reclamation check.
+- **U19. Memory left after unload (V2-54, open issue; hardware acceptance PENDING).** After check 8's workload exited and llama-server stopped, used memory was 1.889 GB: **+0.983 GB above the 0.906 GB baseline**, while Cached stayed +2.2 GB above it (0.41 → 2.61 GB). The workload's exit took used memory to 0.612 GB *below* its level with llama-server alone (2.633 → 2.021 GB). Stopping llama-server then freed only 0.13 GB, although its load had added 1.73 GB. Candidate explanations, none tested: page cache that `MemAvailable` does not credit, shared memory, NvMap/CMA pages kept by the driver, or unreclaimable slab. Check 8 recorded none of `Shmem`, `Unevictable`, `Mlocked`, `SUnreclaim`, `KReclaimable` or `CmaFree`; session 6 now instruments them portably. V2-54's unload acceptance cannot pass until the residue is explained. Proposed operator follow-up remains PENDING, with no execution approval from session 6: sample after 60 s, drop the page cache only (`echo 1`), sample again, then compare a second load/unload cycle for accumulation. **Session 10/11:** the short U21 left +658,501,632 B pressure about 7 s after exit, of which about 0.67 GB of consumed MemFree is in no sampled field. In Check 8 (E-2), llama-server PSS was 1,685,941,248 B while it ran alone, yet stopping it lowered pressure by only 132,759,552 B. Causes remain unknown. S1 records unload residues for both arms, but S1 is not the U19 reclamation check. **Session 13:** on the current boot, the first llama-server load left +656,420,864 B (about 0.66 GB of MemFree in no sampled field, surviving D37 drops), and three later cycles added none (within ±12 MB). This fits a one-time step at the boot's first large GPU load rather than per-cycle accumulation; the owner is untested.
 - **U20. Portable constrained-output increment complete; hardware/model acceptance PENDING (D36).** The request schema comes from `SceneReport`; strict parsing/bounds remain unchanged. Descriptions request brevity; `length`, incomplete/error envelopes and invalid JSON are rejected. Fixed-label rejection/finish and valid-field-at-limit counts distinguish structure from accuracy. See session 7 for the 22/24 classification limits, exact b8932 revision/model/template pairing and required demo-exception evidence. Short-prompt/model validation and actual completion/semantic review remain PENDING. Retain b8932 provisionally, do not rebuild now; beta still needs the tested compatible schema-fix descendant. Real adapter/D-1 integration remains unimplemented; no schema relaxation/repair is accepted.
-- **U21. Observed memory trend, hardware acceptance PENDING.** The historical +0.12 GB/min window is not a proven linear leak or GPU attribution. Session 6 adds allocator current/lifetime peaks and six meminfo fields; these views cannot establish total device usage or unload on their own. Session 8 replaces session 7's inline proposal with the tested `operator_check.py` entry point documented in `docs/U21_SHORT_VALIDATION.md`: conservative 0.2 s guard, synthetic 120 s steady pilot, explicit prerequisites, bounded timeout and owned-process cleanup. The 4.8 GB sampled stop is not a guaranteed cap. No short pilot or 30-minute rerun ran; each needs separate approval after load/service/model prerequisites. Equal-input repeated longer runs, sampler/guard overhead, transient headroom, attribution and reclamation remain PENDING; diagnostic guards are not an approved production allocation policy. **Session 10/11:** the short pilot (maintainer, previous boot) stopped on the MemFree floor after 103.77 of 120 steady seconds. Its 16-frame input could not reproduce the ramp. E-2 shows Check 8's steady ramp coincides with llama-server PSS growth (+104 MB/min) while workload PSS was flat. This supports H2 (per-request prompt-cache state; b8932 defaults to 8192 MiB) without confirming it. S1 (D38) tests H2 with distinct images per request. **Session 12:** S1 did not run. Arm a was refused at admission and arm b never started (session 12 log). H2 remains untested, and re-running S1 or closing the memory timebox is the maintainer's choice.
+- **U21. Observed memory trend, hardware acceptance PENDING.** The historical +0.12 GB/min window is not a proven linear leak or GPU attribution. Session 6 adds allocator current/lifetime peaks and six meminfo fields; these views cannot establish total device usage or unload on their own. Session 8 replaces session 7's inline proposal with the tested `operator_check.py` entry point documented in `docs/U21_SHORT_VALIDATION.md`: conservative 0.2 s guard, synthetic 120 s steady pilot, explicit prerequisites, bounded timeout and owned-process cleanup. The 4.8 GB sampled stop is not a guaranteed cap. No short pilot or 30-minute rerun ran; each needs separate approval after load/service/model prerequisites. Equal-input repeated longer runs, sampler/guard overhead, transient headroom, attribution and reclamation remain PENDING; diagnostic guards are not an approved production allocation policy. **Session 10/11:** the short pilot (maintainer, previous boot) stopped on the MemFree floor after 103.77 of 120 steady seconds. Its 16-frame input could not reproduce the ramp. E-2 shows Check 8's steady ramp coincides with llama-server PSS growth (+104 MB/min) while workload PSS was flat. This supports H2 (per-request prompt-cache state; b8932 defaults to 8192 MiB) without confirming it. S1 (D38) tests H2 with distinct images per request. **Session 12:** S1 did not run. Arm a was refused at admission and arm b never started (session 12 log). **Session 13:** S1 ran at `e9af7f4`. With the default prompt cache, steady pressure rose +115,040,663 B/min (reproduced: +117,103,238); with `--cache-ram 0`, +3,855,411 B/min, with identical request counts and validity. H2 is supported for the scene-only workload: llama-server's host-RAM prompt cache causes the ramp. Adopting `--cache-ram 0` is proposed (maintainer decides). Long-run behaviour with the cache off and the full workload mix remain unmeasured.
 
 ## V2-01 inventory so far
 
@@ -1180,39 +1342,24 @@ No v1 code was migrated in this slice.
 
 ## Hardware checks PENDING (for the maintainer to run; none of these results exist yet)
 
-Checks 1 (`nvpmodel` only), 3, 5 and 6 were run by Claude in session 3 (inventory above), check 4 was merged into 3b, and check 8 was run by the maintainer on 2026-10-03 (session 5 log). The bounded Check 9 smoke and short U21 pilot ran on the previous boot (session 10 log); a headless Check 9 succeeded on the current boot at `84f15ec`, and S1 did not run (session 12 log). Those are historical conditions, not current service-state verification. **S1 (D38) re-run is the maintainer's choice**, from a plain SSH session on the current boot, headless per `docs/U21_SHORT_VALIDATION.md` (display manager stopped, VS Code/Claude Code closed, PVA left running), with Check 9 in the same command. Session 8 supersedes the old Check 8/9 service-stop, cache-fill, failure-seeking, server-launch and raw-journal recipes; none is authorized. Check 2/7 and other hardware recipes remain separately PENDING. New operator results require USER-SUPPLIED MEASUREMENT attribution and conditions, including whether D37's cache drop was used.
+Checks 1 (`nvpmodel` only), 3, 5 and 6 were run by Claude in session 3 (inventory above), check 4 was merged into 3b, and check 8 was run by the maintainer on 2026-10-03 (session 5 log). Bounded Check 9 smokes ran on the previous boot (session 10 log) and on the current boot at `84f15ec` and `e9af7f4`; S1 ran at `e9af7f4`; the V2-05 steady capture ran on the camera (session 13 log). Those are historical conditions, not current service-state verification. Session 8 supersedes the old Check 8/9 service-stop, cache-fill, failure-seeking, server-launch and raw-journal recipes; none is authorized. A confirming demo-profile run with `--llama-cache-ram 0` waits for the maintainer's decision on adoption and is not approved. Check 2/7 and other hardware recipes remain separately PENDING. New operator results require USER-SUPPLIED MEASUREMENT attribution and conditions, including whether D37's cache drop was used.
 
 ```bash
-# S1 (D38), only if the maintainer chooses to re-run it. Headless FIRST: display manager
-# and any remote-desktop session stopped, VS Code/Claude Code closed (session 12: arm a was refused
-# because they were still running). Confirm before starting:
-systemctl is-active display-manager; pgrep -fa 'vscode|claude|codex' || echo "clean: no dev tools running"
-
-# Check 9 at the commit this runs on, then both arms, in one command (about 12-13 min).
-# D37 drop before each step; it stops at the first failure.
-# Arm a: llama-server default prompt cache. Arm b: --cache-ram 0. Nothing else differs.
-R=/home/villain8001/sentinel-surveillance; PY=$R/.venv/bin/python; OC=$R/benchmarks/runner/operator_check.py
-sudo -v && sync && sudo -n sysctl -w vm.drop_caches=1 && $PY $OC --execute-workload check9 --operator-dropped-caches && sync && sudo -n sysctl -w vm.drop_caches=1 && $PY $OC --execute-workload s1 --s1-arm a --latest-check9-report --confirm-s1-prerequisites --operator-dropped-caches && sleep 60 && sync && sudo -n sysctl -w vm.drop_caches=1 && $PY $OC --execute-workload s1 --s1-arm b --latest-check9-report --confirm-s1-prerequisites --operator-dropped-caches
-
-# Afterwards: return the printed JSON results and preserve the run directories (/tmp is wiped at boot).
-cp -a --update=none /tmp/sentinel-operator-* ~/sentinel-runs/operator/
-
-# V2-05 demo-form capture check (session 12, D39; about 3 min attended, no GPU, no sudo).
-#    v1 and every other camera client on this host stopped; headless preferred (record conditions).
-#    Needs SENTINEL_RTSP_URL (substream) exported; nothing prints the URL.
-mkdir -p ~/sentinel-runs/capture && cd /home/villain8001/sentinel-surveillance
-#    a) 60 s steady capture.
-PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli capture probe config/default.yaml --seconds 60 \
-  2>~/sentinel-runs/capture/a.err | tee ~/sentinel-runs/capture/a.json
-#    b) 90 s with an outage: about 20 s in, cut the camera's network or power for about 15 s, then restore.
+# V2-05 demo-form outage check (D39; about 3 min attended, no GPU, no sudo). Session 13 recorded
+#    the steady capture (runs b, b2); this run adds the outage. v1 and every other camera client on
+#    this host stopped; headless preferred (record conditions). In the SAME shell:
+[ -n "$SENTINEL_RTSP_URL" ] && echo "url set" || echo "SENTINEL_RTSP_URL missing: export it first"
+set -o pipefail; mkdir -p ~/sentinel-runs/capture && cd /home/villain8001/sentinel-surveillance
+#    About 20 s in, cut the camera's network or power for about 15 s, then restore it.
+#    Note the cut and restore times (IST). Exit status 0 means frames arrived and the worker stopped.
 PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli capture probe config/default.yaml --seconds 90 \
-  2>~/sentinel-runs/capture/b.err | tee ~/sentinel-runs/capture/b.json
-#    Does decoder stderr contain the URL's credentials or path? Prints counts only.
+  2>~/sentinel-runs/capture/c.err | tee ~/sentinel-runs/capture/c.json; echo "exit=$?"
+#    Does decoder stderr contain the URL's credentials? Prints counts only.
 U="${SENTINEL_RTSP_URL#*://}"; U="${U%%@*}"
-for f in ~/sentinel-runs/capture/[ab].err; do printf '%s userinfo_lines=%s lines=%s\n' "$f" "$(grep -cF -- "$U" "$f")" "$(wc -l < "$f")"; done; unset U
-#    Expected: a) frames_received, about 15 captured_fps, 1 epoch, 640x480 BGR,
-#    upstream_connections before 0 and max 1; b) 2+ connects and epochs, frames after the restore,
-#    upstream max 1; 0 userinfo lines in both. Return both JSON files, the counts and the conditions.
+printf 'userinfo_lines=%s lines=%s\n' "$(grep -cF -- "$U" ~/sentinel-runs/capture/c.err)" "$(wc -l < ~/sentinel-runs/capture/c.err)"; unset U
+#    Expected: 2+ connects and epochs, frames after the restore, upstream_connections max 1,
+#    0 userinfo lines. If an iptables rule is used for the cut, confirm afterwards that it is gone.
+#    Return the JSON, the exit status, the counts, the cut/restore times and the conditions.
 
 # 2. Rest of check 2: frame rate, bitrate and keyframe spacing of both profiles, 60 s of
 #    video packets each (no decode). The main stream's codec, size and rate are recorded.
