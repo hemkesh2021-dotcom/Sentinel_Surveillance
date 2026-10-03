@@ -45,6 +45,30 @@ class CameraConfig(_Section):
     id: Identifier
 
 
+class CaptureConfig(_Section):
+    """Camera ingest (V2-05 demo form: OpenCV/FFmpeg software decode, D24). Proposed starting values.
+
+    The stream URL comes from the SENTINEL_RTSP_URL environment variable, never this file.
+    """
+
+    open_timeout_s: Annotated[float, Field(gt=0, le=60, allow_inf_nan=False)] = 10.0
+    # A connection that delivers no frame for this long is closed and reopened (new stream epoch).
+    read_timeout_s: Annotated[float, Field(gt=0, le=60, allow_inf_nan=False)] = 5.0
+    # Wait before reopening; doubles after each connection that delivered no frame.
+    reconnect_initial_s: Annotated[float, Field(gt=0, le=60, allow_inf_nan=False)] = 1.0
+    reconnect_max_s: Annotated[float, Field(gt=0, le=300, allow_inf_nan=False)] = 15.0
+    # FFmpeg frame threading delays each frame by up to (threads - 1) frames.
+    decode_threads: Annotated[int, Field(ge=1, le=4)] = 1
+
+    @field_validator("reconnect_max_s")
+    @classmethod
+    def _max_at_least_initial(cls, value: float, info: ValidationInfo) -> float:
+        initial = info.data.get("reconnect_initial_s")
+        if initial is not None and value < initial:
+            raise ValueError(f"must be at least reconnect_initial_s ({value} < {initial})")
+        return value
+
+
 class FreshnessConfig(_Section):
     """Guide chapter 6 starting targets, to be verified on the actual network."""
 
@@ -268,6 +292,7 @@ class NotificationsConfig(_Section):
 class SentinelConfig(_Section):
     config_version: Literal[1]
     camera: CameraConfig
+    capture: CaptureConfig = Field(default_factory=CaptureConfig)
     freshness: FreshnessConfig = Field(default_factory=FreshnessConfig)
     scene: SceneConfig = Field(default_factory=SceneConfig)
     hazard: HazardConfig = Field(default_factory=HazardConfig)

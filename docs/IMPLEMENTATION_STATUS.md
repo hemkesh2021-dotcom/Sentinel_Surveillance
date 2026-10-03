@@ -1,6 +1,6 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-03, session 12 (Claude). The maintainer's runs at `84f15ec` on the current boot are recorded as USER-SUPPLIED MEASUREMENTS: Check 9 succeeded headless, but **neither S1 arm ran**. Arm a was refused at admission, before the headless preparation and the successful Check 9, and the chained command then stopped, so arm b never started. No arm comparison is possible, and the memory timebox's `--cache-ram 0` test is still untested. Re-running S1 or closing the timebox is the maintainer's choice. The open question is recorded for V2-29/V2-30. Session 11's summary follows. The maintainer made two decisions: D37 makes the operator cache drop a standing preparation step for measurement runs only, and D38 approves S1, the llama-server prompt-cache A/B test. The reboot and E-1 are recorded as USER-SUPPLIED MEASUREMENTS. E-2 is computed from Check 8's `memory.csv`: in steady, llama-server PSS rose about 104 MB/min while workload PSS stayed flat. This corrects session 5's "flat" note. Session 10's read-only review is recorded. S1's portable parts are implemented with 30 new tests; 411 portable tests pass. Claude ran no hardware workload, cache drop, service change, installation or rebuild. Still PENDING: both S1 arms (with a fresh Check 9 at the commit they run on), U18 policy, U19 unload, U20 real-model evidence and the 30-minute U21 rerun. File equivalence and consent/figure labels remain unresolved.
+Last updated 2026-10-03, session 12 (Claude). The maintainer's runs at `84f15ec` on the current boot are recorded as USER-SUPPLIED MEASUREMENTS: Check 9 succeeded headless, but **neither S1 arm ran**. Arm a was refused at admission, before the headless preparation and the successful Check 9, and the chained command then stopped, so arm b never started. No arm comparison is possible, and the memory timebox's `--cache-ram 0` test is still untested. Re-running S1 or closing the timebox is the maintainer's choice. The open question is recorded for V2-29/V2-30. **V2-05 demo form started:** a portable single-reader capture worker with a one-frame handoff, an OpenCV/FFmpeg software-decode source (TCP, video only, bounded open and read) and `sentinel capture probe`; 40 new tests, 451 portable tests pass. The camera device check is PENDING. Session 11's summary follows. The maintainer made two decisions: D37 makes the operator cache drop a standing preparation step for measurement runs only, and D38 approves S1, the llama-server prompt-cache A/B test. The reboot and E-1 are recorded as USER-SUPPLIED MEASUREMENTS. E-2 is computed from Check 8's `memory.csv`: in steady, llama-server PSS rose about 104 MB/min while workload PSS stayed flat. This corrects session 5's "flat" note. Session 10's read-only review is recorded. S1's portable parts are implemented with 30 new tests; 411 portable tests pass. Claude ran no hardware workload, cache drop, service change, installation or rebuild. Still PENDING: both S1 arms (with a fresh Check 9 at the commit they run on), U18 policy, U19 unload, U20 real-model evidence and the 30-minute U21 rerun. File equivalence and consent/figure labels remain unresolved.
 
 ## Position
 
@@ -20,10 +20,10 @@ Last updated 2026-10-03, session 12 (Claude). The maintainer's runs at `84f15ec`
 | Session 9 (Codex, 2026-10-03) | `f606529`: verified PVA service classifier correction, synthetic regressions, operator checklist and pre-commit status record. |
 | Session 10 (Claude, 2026-10-03) | Read-only review of Check 9, the short U21 and the package logs; proposed S1. No commit; recorded in session 11. See the session 10 log. |
 | Session 11 (Claude, 2026-10-03) | `84f15ec`: D37/D38, E-1 and reboot records, E-2 calculations, S1 portable implementation and tests, status record. Pushed by the maintainer (local `origin/v2-beta` = `84f15ec` at session 12 start). See the session 11 log. |
-| Session 12 (Claude, 2026-10-03) | Record of the maintainer's Check 9/S1 runs at `84f15ec` (S1 did not run), then V2-05 demo form. See the session 12 log. |
-| Working tree | Clean at session 11 start (`f606529`). Eight files change: three runners (`operator_check.py`, `demo_profile.py`, `demo_workload.py`), three test files, the operator procedure and this record. Existing work is preserved. |
+| Session 12 (Claude, 2026-10-03) | `ed26dc9`: record of the maintainer's Check 9/S1 runs at `84f15ec` (S1 did not run). The following commit: V2-05 demo-form capture adapter, tests and status record. See the session 12 log. |
+| Working tree | Clean at session 12 start (`84f15ec`). Session 12 commits the operator record (`ed26dc9`) and V2-05's demo form: three new media modules, config, CLI, two new test files, a config test and this record. An unrelated trailing blank line in `BUILD.md` appeared during the session (not Claude's) and is left uncommitted. |
 | Local-only files | `AGENTS.md`, the v2 guide, the audit review and `docs/LOCAL_NOTES.md` (device-specific notes), excluded through `.git/info/exclude`; none included in session 6–11 increments. A fresh clone does not contain them, although CLAUDE.md names the guide and audit. |
-| Selected package | S1 prompt-cache A/B (D38): portable part complete (session 11); its operator run is PENDING. It serves U21/V2-54 attribution and is not a backlog package. U20 and U19/U21 instrumentation remain portable-complete only; live adapters/D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. No following implementation package started. |
+| Selected package | **V2-05 demo form** (session 12): the capture adapter's portable part is complete (D39); its device check is PENDING. It counts as partial at most (D23). S1 (D38) did not run, and re-running it or closing the timebox is the maintainer's choice. U20 and U19/U21 instrumentation remain portable-complete only; live adapters/D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. |
 | Other branches | `origin/Yogeshvar425-patch-1` (teammate) is **not merged**: a single commit `6755796` that adds @Yogeshvar425 to `.github/CODEOWNERS` (merge base `c66ebde`). `origin/codex/github-audit-fixes-2026-09-19` is already in `master` via PR #4. |
 | Effort | Per-package estimates are in the package table (given to the maintainer on 2026-09-29). The re-estimate of optimization effort still waits for V2-01's B0 run. |
 | v1 on this device | Historically **not running** (maintainer, 2026-09-29); current state must be inspected, not inferred. This workflow never terminates existing v1 processes. |
@@ -32,10 +32,12 @@ Last updated 2026-10-03, session 12 (Claude). The maintainer's runs at `84f15ec`
 ## Next concrete task
 
 1. **Maintainer choice: S1 (D38) re-run or timebox close.** The session 12 attempt never reached either arm (session 12 log). To re-run, use a plain SSH session on the current boot. **Go headless first**, per the procedure's checklist: display manager stopped, VS Code/Claude Code closed, NVIDIA PVA left running. Then run the single command in "Hardware checks PENDING". It runs Check 9 at the commit it runs on, then arms a and b, in about 12–13 min, and stops at the first failing step. S1 refuses a Check 9 from another commit or boot, and HEAD has moved since `84f15ec`. Return the printed JSON results and copy the new `/tmp/sentinel-operator-*` directories to `~/sentinel-runs/operator/`. If you close the timebox instead, memory work stops until after Oct 20 with the question recorded for V2-29/V2-30. **Do not rename anything**; file equivalence, third-party consent and the early figure label remain unresolved. The 30-minute U21 rerun is not approved.
-2. **Week 2 device adapters (not started in session 8):** record Check 8's provisional demo profiles (D33) in the adapter registry's known profiles; settle U18 once Check 9 is back. Then capture through `~/onvif_env`'s OpenCV/FFmpeg (D24); the legacy engine plus ByteTrack; interim face adapter at 1 Hz (D34) and llama-server adapter using U20's portable completion boundary (actual model acceptance PENDING); and `sentinel run` (D-1) with the D27 GPU guard and U18 memory precheck. `sentinel run` hands every zone observation and hazard candidate to `IncidentService.record()` and acknowledges it only after that returns (D31). It runs `OutboxWorker` in its own thread with `TelegramNotifier.from_environment(timeout_s=notifications.request_timeout_s)` only if `telegram` is listed (D32).
-3. **V2-15 device check (maintainer):** one real Telegram send from the device with the maintainer's bot, after D-1 wiring.
-4. **U19/U21 instrumentation, portable part complete (Codex, session 6):** the six additional meminfo fields and timestamped torch allocator readings now stream to the run files. Real allocator behavior, sampling overhead, ramp attribution and memory reclamation remain PENDING. No following implementation package was started in this session.
-5. **V2-13, rest (after the demo):** directed line crossing and a decision on hysteresis (D30).
+2. **V2-05 demo-form device check (maintainer, PENDING):** the two `sentinel capture probe` runs and the credential count in "Hardware checks PENDING" (about 3 min attended, no GPU). It does not depend on S1 and can run in the same headless session.
+3. **Next implementation task: the legacy detector + ByteTrack adapter (V2-09/V2-10 demo form).** It consumes `CapturedFrame` from the capture worker and emits `TrackObservation`s for `EdgeCore`. Before it, record Check 8's provisional demo profiles (D33) in the adapter registry's known profiles. U18 stays open (memory work paused under the timebox).
+4. **Remaining week 2 device adapters:** capture is done in portable demo form (session 12); the legacy engine plus ByteTrack (task 3); interim face adapter at 1 Hz (D34) and llama-server adapter using U20's portable completion boundary (actual model acceptance PENDING); and `sentinel run` (D-1) with the D27 GPU guard and U18 memory precheck. `sentinel run` hands every zone observation and hazard candidate to `IncidentService.record()` and acknowledges it only after that returns (D31). It runs `OutboxWorker` in its own thread with `TelegramNotifier.from_environment(timeout_s=notifications.request_timeout_s)` only if `telegram` is listed (D32).
+5. **V2-15 device check (maintainer):** one real Telegram send from the device with the maintainer's bot, after D-1 wiring.
+6. **U19/U21 instrumentation, portable part complete (Codex, session 6):** the six additional meminfo fields and timestamped torch allocator readings now stream to the run files. Real allocator behavior, sampling overhead, ramp attribution and memory reclamation remain PENDING, and memory work is paused under the timebox (session 12).
+7. **V2-13, rest (after the demo):** directed line crossing and a decision on hysteresis (D30).
 
 ## Oct 20 demo milestone: plan and deviations from the guide order
 
@@ -72,7 +74,7 @@ Estimates as given to the maintainer on 2026-09-29. V2-49 has since been done.
 | V2-02 | Config, frame/evidence contracts, fake clock | done | Portable | yes | 0 | 0 | — |
 | V2-03 | Replay fixtures, first identity/empty-scene fixes | done | Portable | yes | 0 | 0 | — |
 | V2-04 | Dev setup and CI skeleton | in progress | Portable | no | 0.5 | 0 | — |
-| V2-05 | Relay ownership and hardware decode spike | not started | Jetson | yes: **demo form, full acceptance pending** | 2 | 2.5 | 01, 02 |
+| V2-05 | Relay ownership and hardware decode spike | partial: demo-form capture adapter portable part done (session 12); device check pending | Jetson | yes: **demo form, full acceptance pending** | 2 | 2.5 | 01, 02 |
 | V2-06 | Browser/codec/timestamp spike | not started | Jetson | no | 2 | 3 | 05 |
 | V2-07 | Dataset consent, labels, split manifest | not started | Jetson (recording) | no | 1 | 3 | 03 |
 | V2-08 | Gate B record, recoverable device baseline | not started | Jetson | no | 1 | 4 | 01, 05, 06 |
@@ -147,6 +149,7 @@ Notes on partial and in-progress rows:
   - V2-16: only the scene-hazard correlation.
   - V2-20: validated in-memory enrollment only.
   - V2-25: the association and identity core is done; the adapter, alignment, vectorized matching and report are not.
+  - V2-05: demo form, portable part (session 12, D39): single-reader capture worker, one-frame handoff, OpenCV/FFmpeg software-decode source (TCP, video only, bounded open/read) and `sentinel capture probe`. Not done: the device check (decode, CPU, outage recovery and upstream-connection count on the camera), wiring into `sentinel run` (D-1), and everything in V2-05 proper (relay, NVDEC/GStreamer, main stream D26, connection count with live view and recording, restore point).
   - V2-28: demo form done (session 5): the scene lane routes late evidence (session 2) and `IncidentService.annotate()` stores it on its own incident only (D35). Not done: wiring into `sentinel run` (D-1), display on the status page (D-2), and revalidation with the real scene adapter (V2-26) and after V2-11.
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
 
@@ -202,6 +205,55 @@ The 7 dev-tool processes reported at 22:53 were gone by 22:55:16, according to C
 - **Open question for V2-29/V2-30 (recorded either way until S1 runs).** Check 8's steady ramp coincides with llama-server PSS growth (+104 MB/min, E-2). Two things are unknown: whether the growth is llama-server's host prompt cache (b8932 default 8192 MiB), and whether `--cache-ram 0` removes it. V2-29's admission controller and V2-30's pressure experiment must not assume a flat llama-server footprint.
 - **Claude's calculation (not a measurement).** About 5 s after exit, Check 9 #2's pressure was 310,018,048 B above its baseline; on the previous boot the residue was 126,685,184 B. Not investigated further (timebox).
 - **Tooling note.** A refused S1 result does not record the requested arm, so the arm had to be read from the scrollback. Not changed, because memory tooling is paused.
+
+### V2-05 demo form: capture adapter (portable part; device check PENDING)
+
+The maintainer's instruction was to start V2-05 in demo form under the standing rules. Per D22, D24 and deviation 3, the demo form means:
+- the v2 runtime itself opens the substream, as the only ingest;
+- software decode with `~/onvif_env`'s OpenCV and its bundled FFmpeg (OpenCV 4.13.0: FFmpeg yes, GStreamer no);
+- video only.
+
+The relay, NVDEC/GStreamer decode and the main stream (D26) remain V2-05 proper. The implementation decision is D39. The v1 capture (`surveillance4_1.py` `FrameReader`) and `~/onvif_env/src/nano_surveillance/capture.py` were read only for comparison (URLs masked); neither was copied.
+
+| File | Change |
+|---|---|
+| `src/sentinel/media/capture.py` (new, portable) | **`CaptureWorker`** is the single reader of a `VideoSource`. Each successful open is a new stream epoch from `FrameStamper`. Frames are stamped when decode returns. On a disconnect it withdraws `connected`, drops the epoch's undelivered frame and closes the source, on every path and only from its own thread. Reconnect waits start at 1 s, double up to 15 s while connections deliver nothing, and reset after a connection delivers frames. A frame-size change or an invalid frame ends the connection, so the new geometry starts a new epoch. **`LatestFrame`** is the single-slot handoff: the newest frame replaces an undelivered one, each frame is delivered at most once, and the counters satisfy published = delivered + replaced + discarded + pending. Problems are fixed labels or exception class names, never exception text. The thread has `start()`/`stop(timeout)`; stop costs at most one bounded source call and also interrupts a reconnect wait. A worker bug is reported as `failed`. |
+| `src/sentinel/media/opencv_source.py` (new, device adapter) | **`OpenCvSource`**: `cv2.VideoCapture(target, CAP_FFMPEG, [open timeout, read timeout, decode threads])`, with `cv2` imported on first open. RTSP targets get `OPENCV_FFMPEG_CAPTURE_OPTIONS=rtsp_transport;tcp\|allowed_media_types;video`. Frames must be HxWx3 `uint8`, reported as BGR. A negative or non-finite PTS becomes `None`. The URL comes only from `SENTINEL_RTSP_URL` and must be `rtsp://` or `rtsps://` with a host. It never appears in errors, status, `repr` or output. A failed open releases the capture. |
+| `src/sentinel/media/probe.py` (new, portable) | The `sentinel capture probe` summary, numbers and fixed labels only: worker counters, captured/delivered/replaced/discarded frames, captured fps, epochs, sizes, PTS quality, ingest cadence (consecutive frames only) and hand-off age p50/p95/max, process CPU s and core-equivalents, max RSS, and **this host's established TCP connections to the camera endpoint** (from `/proc/net/tcp{,6}`; IP-literal hosts only) before and during the run. |
+| `src/sentinel/config.py`, `config/default.yaml` | New `capture` section (proposed values): `open_timeout_s` 10, `read_timeout_s` 5, `reconnect_initial_s` 1, `reconnect_max_s` 15 (≥ initial), `decode_threads` 1 (1–4). The section has no URL setting, and unknown keys are refused. |
+| `src/sentinel/cli.py` | `sentinel capture probe CONFIG [--seconds 1–300]`: prints the JSON summary and exits 0 only if frames arrived and the worker stopped. Without `SENTINEL_RTSP_URL` it prints `capture probe: rtsp_url_missing` and exits 1. |
+| `tests/unit/test_capture.py` (+20), `tests/unit/test_opencv_source.py` (+19), `tests/unit/test_config.py` (+1) | 40 new tests. Worker and slot: epochs and sequence per connection, ingest from the injected clock, the old epoch withdrawn and its frame dropped on reconnect, a frame taken before a reconnect is `NOT_LIVE`, the backoff sequence 1/2/4/5/5/1/1/2 (cap 5), a half-failed open still closed, problems without exception text, geometry change and invalid frames, stop mid-connection, slow consumer, take/close wake-up, thread ownership and bounded stop, stop interrupting the wait, a worker bug. Probe: `/proc/net` decoding including byte order, TIME_WAIT and IPv4-mapped IPv6; percentiles; cadence over skipped frames; summary without the host; CLI wiring and refusal. Adapter with a fake `cv2`: the parameters and TCP/video-only options, no RTSP options for files, PTS handling, pixel-layout refusal, release on failed open and reopen, missing OpenCV, URL source and validation without echo. Config: defaults and bounds. |
+
+**What this establishes.** Portable behaviour only: bounded fresh-frame delivery (at most one waiting image: 921,600 B at 640×480 BGR, plus the frame the consumer holds), epoch and freshness semantics on reconnect, and credential-free diagnostics. **Not established:** decode on the actual camera, the read timeout, the CPU cost of software decode (the D24 question), whether FFmpeg really sets up no audio track, behaviour through camera outages, and the single-upstream-session count on the device. These are the device check in "Hardware checks PENDING". No consumer uses the worker yet: `sentinel run` (D-1) will pass `CapturedFrame.frame` and `worker.connected` to `EdgeCore`. D11's buffer reference stays deferred, because the image travels beside `FrameRef` in `CapturedFrame`.
+
+### Session 12 verification: exact commands and results
+
+```bash
+.venv/bin/python -m pytest -q tests/unit/test_capture.py tests/unit/test_opencv_source.py tests/unit/test_config.py
+# 53 passed in 2.82s, exit 0
+.venv/bin/python -m pytest -q
+# 451 passed in 10.69s, exit 0 (411 before this session)
+.venv/bin/sentinel config validate config/default.yaml
+# valid Sentinel configuration (version 1, camera cam-1); core monitoring only; exit 0
+env -u SENTINEL_RTSP_URL PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli capture probe config/default.yaml --seconds 2
+# capture probe: rtsp_url_missing; exit 1 (no camera contacted)
+git diff --check -- src tests config docs
+# no output, exit 0
+```
+
+- **Mutation sweep (one-off; script not committed): 24/24 caught.** The first pass caught 22. Its two misses, a half-failed open left unclosed and stop not closing the slot (hidden by a 5 s wait), led to one new test and one timing assertion. The mutations were:
+  - Slot: replaced not counted; take keeps the frame; close does not wake waiters.
+  - Disconnect and stop: no discard on disconnect; stream kept after disconnect; stop not closing the slot; stop counted as a stream end.
+  - Backoff: never doubles; not capped; not reset after frames.
+  - Problems and frames: exception text kept; free-text `SourceError`; size change ignored; source not closed after a failed open.
+  - Adapter: no RTSP options; audio allowed; no read timeout; negative PTS kept; failed open not released; any URL scheme.
+  - Probe: big-endian addresses; any TCP state; cadence across skipped frames.
+  - Config: maximum below initial allowed.
+
+  Originals were restored by file copy, and the full suite then passed.
+- **Real OpenCV, no camera (Claude, `~/onvif_env` Python 3.10.14, OpenCV 4.13.0 FFmpeg backend).** A synthetic file in the session scratchpad: 45 frames of random 640×480 noise, MJPG at 15 fps. `OpenCvSource` read 45 BGR `uint8` frames 640×480, with PTS 0…44 strictly increasing. `CAP_PROP_N_THREADS` read back 1. Both timeout properties read back 0, because this build reports no value for them, so they were checked by behaviour instead. Worker and probe over the file for 1.2 s: 2 connections, 2 epochs, 90 frames captured and delivered, 0 replaced, state `stopped`.
+- **Open timeout, loopback only.** A local listener accepted the RTSP connection and never replied. With `open_timeout_s` 2.0, `open_failed` came after 2.15 s; with 4.0, after 4.01 s. During each open, `established_connections` counted exactly 1 connection to the endpoint. OpenCV's two warnings ("Stream timeout triggered", "can't be used to capture by name") contained neither the URL nor its credentials.
+- **Not run:** any camera or GPU access, CI, Python 3.12, the read-timeout path and anything on the actual substream. Mac/replay-style and loopback results do not establish camera decode, CPU, memory or throughput.
 
 ## Session 11 log (Claude, 2026-10-03)
 
@@ -947,6 +999,13 @@ D14–D21 are implementation decisions made in session 2 within the guide's rule
 
 - **D37. Operator cache drop before measurement runs** (maintainer decision, 2026-10-03; supersedes the session 10 one-time deviation and the procedure's "do not drop caches"). `sync && sudo sysctl -w vm.drop_caches=1` is a standing, documented preparation step for **measurement runs only** (Check 9, U21, S1 and their successors). It is operator-run, never by Sentinel code or the runner (which never calls sudo), and **logged in each result**: the operator passes `--operator-dropped-caches`, and `result.json` records `preparation.drop_caches: operator_declared` (`not_declared` otherwise; a declaration, not verified). It is **never part of the Sentinel runtime**: D-1 must not depend on it, and U18's runtime policy stays open. Status records must state for every measurement whether it was used.
 - **D38. S1 prompt-cache A/B approved** (maintainer decision, 2026-10-03). Claude implements the portable parts, with tests, and commits without running hardware. The parts: scene-only mode, a deterministic distinct image per request, per-request cumulative counters, optional `--llama-cache-ram`, prompt-cache log-line capture, and an opt-in operator mode reusing U21's guard. The maintainer runs both arms: **a** with llama-server's default cache and **b** with `--cache-ram 0`, after a same-boot Check 9 at the same commit, with one headless command. Adopting `--cache-ram 0` for the demo or D-1 is a separate decision after the results. No threshold, guard, model, flag of the tracked demo profile or 30-minute run changes.
+- **D39. Demo capture (V2-05 demo form; session 12 implementation decision, not yet reviewed).**
+  - **One reader.** `CaptureWorker` is the only code that reads the camera, in its own thread. Each successful open starts a new stream epoch (D3). A frame's ingest time is when decode returns. The consumer passes `worker.connected` to `EdgeCore`, which is `None` between connections.
+  - **Bounded handoff.** `LatestFrame` keeps only the newest undelivered frame, so a slow consumer skips frames (counted as `replaced`) instead of queueing them. At most one decoded image waits (921,600 B at 640×480 BGR), plus the one the consumer holds. The epoch's undelivered frame is dropped on disconnect.
+  - **Failures.** When a read returns no frame within `read_timeout_s` (5 s), or errors, the source is closed; reopening starts a new epoch. Opening is bounded by `open_timeout_s` (10 s). Reconnect waits start at 1 s and double up to 15 s while connections deliver nothing, resetting after a connection delivers frames. A change in frame size ends the connection, because boxes and tracks assume one geometry per epoch. Freshness (D14) still marks video stale at 2 s and offline at 10 s, independently of reconnects.
+  - **FFmpeg settings.** The source passes TCP transport and video-only RTSP setup (`allowed_media_types;video`) through `OPENCV_FFMPEG_CAPTURE_OPTIONS`, which is process-wide and set before each RTSP open. Timeouts and decode threads go through `VideoCapture` parameters. `decode_threads` is 1, because FFmpeg frame threading delays each frame by up to threads − 1 frames; its CPU cost is unmeasured. FFmpeg's own error log stays at OpenCV's default.
+  - **Credentials.** The URL comes only from `SENTINEL_RTSP_URL` (`rtsp://` or `rtsps://`). It never appears in config, errors, status, `repr` or probe output. Problems are fixed labels or exception class names.
+  - **Unchanged for V2-05 proper.** The relay as the sole ingest owner, NVDEC/GStreamer, the H.265 main stream (D26) and a `FrameRef` buffer reference (D11) are all left for V2-05 proper.
 
 ## Unresolved decisions and semantics
 
@@ -1137,6 +1196,23 @@ sudo -v && sync && sudo -n sysctl -w vm.drop_caches=1 && $PY $OC --execute-workl
 
 # Afterwards: return the printed JSON results and preserve the run directories (/tmp is wiped at boot).
 cp -a --update=none /tmp/sentinel-operator-* ~/sentinel-runs/operator/
+
+# V2-05 demo-form capture check (session 12, D39; about 3 min attended, no GPU, no sudo).
+#    v1 and every other camera client on this host stopped; headless preferred (record conditions).
+#    Needs SENTINEL_RTSP_URL (substream) exported; nothing prints the URL.
+mkdir -p ~/sentinel-runs/capture && cd /home/villain8001/sentinel-surveillance
+#    a) 60 s steady capture.
+PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli capture probe config/default.yaml --seconds 60 \
+  2>~/sentinel-runs/capture/a.err | tee ~/sentinel-runs/capture/a.json
+#    b) 90 s with an outage: about 20 s in, cut the camera's network or power for about 15 s, then restore.
+PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli capture probe config/default.yaml --seconds 90 \
+  2>~/sentinel-runs/capture/b.err | tee ~/sentinel-runs/capture/b.json
+#    Does decoder stderr contain the URL's credentials or path? Prints counts only.
+U="${SENTINEL_RTSP_URL#*://}"; U="${U%%@*}"
+for f in ~/sentinel-runs/capture/[ab].err; do printf '%s userinfo_lines=%s lines=%s\n' "$f" "$(grep -cF -- "$U" "$f")" "$(wc -l < "$f")"; done; unset U
+#    Expected: a) frames_received, about 15 captured_fps, 1 epoch, 640x480 BGR,
+#    upstream_connections before 0 and max 1; b) 2+ connects and epochs, frames after the restore,
+#    upstream max 1; 0 userinfo lines in both. Return both JSON files, the counts and the conditions.
 
 # 2. Rest of check 2: frame rate, bitrate and keyframe spacing of both profiles, 60 s of
 #    video packets each (no decode). The main stream's codec, size and rate are recorded.

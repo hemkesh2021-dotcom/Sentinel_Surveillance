@@ -57,6 +57,26 @@ freshness:
     )
 
 
+def test_capture_defaults_and_bounds(tmp_path: Path) -> None:
+    capture = load_config(DEFAULT_CONFIG).capture
+    assert (capture.open_timeout_s, capture.read_timeout_s) == (10.0, 5.0)
+    assert (capture.reconnect_initial_s, capture.reconnect_max_s, capture.decode_threads) == (1.0, 15.0, 1)
+    assert load_config(write_config(tmp_path, "config_version: 1\ncamera: {id: cam-1}\n")).capture == capture
+
+    problems = problems_for(
+        tmp_path,
+        "config_version: 1\ncamera: {id: cam-1}\n"
+        "capture: {reconnect_initial_s: 5, reconnect_max_s: 2, decode_threads: 0, read_timeout_s: 61,"
+        " url: rtsp://x}\n",
+    )
+    assert sorted(problems) == [
+        "capture.decode_threads: Input should be greater than or equal to 1 (got 0)",
+        "capture.read_timeout_s: Input should be less than or equal to 60 (got 61)",
+        "capture.reconnect_max_s: must be at least reconnect_initial_s (2.0 < 5.0)",
+        "capture.url: unknown setting",
+    ]
+
+
 def test_offline_threshold_must_exceed_stale_threshold(tmp_path: Path) -> None:
     problems = problems_for(
         tmp_path,

@@ -7,6 +7,16 @@ camera:
   # Stable identifier stored with every observation; not a URL or address.
   id: cam-1
 
+capture:
+  # Demo ingest (D24): the runtime opens the substream itself with OpenCV/FFmpeg software
+  # decode, video only. The URL comes from SENTINEL_RTSP_URL, never this file.
+  # Proposed starting values; check them with `sentinel capture probe` on the device.
+  open_timeout_s: 10.0      # opening the stream must finish within this long
+  read_timeout_s: 5.0       # no frame for this long: close and reopen (new stream epoch)
+  reconnect_initial_s: 1.0  # wait before reopening; doubles while connections deliver nothing
+  reconnect_max_s: 15.0
+  decode_threads: 1         # FFmpeg frame threading delays frames by up to threads - 1
+
 freshness:
   # Guide chapter 6 starting targets; verify them under the actual Wi-Fi conditions.
   stale_after_s: 2.0     # video is stale after this long without a fresh frame
