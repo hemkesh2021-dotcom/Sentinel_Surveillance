@@ -23,11 +23,10 @@ Last updated 2026-10-03, session 4: session 3's record completed (V2-01 device c
 
 ## Next concrete task
 
-1. **V2-13, rest (after Week 1):** directed line crossing, and a decision on hysteresis. The restricted-zone and dwell rules are done in demo form (D30).
-2. **V2-14, demo form:** SQLite schema and migration (WAL, busy timeout, single writer). One transaction deduplicates the runtime observation ID, creates or updates the incident with a revision check, appends evidence and a transition, and inserts outbox rows with `UNIQUE(incident, channel, policy_revision, message_kind)`. Test a repeated source event and a crash after commit.
-3. **V2-15, demo form:** leased outbox worker and a stdlib (`urllib`) Telegram adapter tested against a mock: HTTP error, `ok=false`, 429 with `retry_after`, timeout, and a crash after sending. Retries, dead letter, and redacted errors; no real token in tests.
-4. **V2-28, demo form (incident side):** late and enrichment evidence annotates only its own incident in the store.
-5. When check 8's results arrive, record the provisional demo profiles (D28) and add them to the adapter registry's known profiles. When check 9's arrive, settle U18 with the maintainer. Then do the week-2 device adapters under D24 and D27: capture through `~/onvif_env`'s OpenCV/FFmpeg; legacy engine plus ByteTrack; interim face and llama-server adapters; and `sentinel run` (D-1), with the D27 GPU guard and the U18 memory precheck.
+1. **V2-15, demo form:** leased outbox worker and a stdlib (`urllib`) Telegram adapter tested against a mock: HTTP error, `ok=false`, 429 with `retry_after`, timeout, and a crash after sending. Retries, dead letter, and redacted errors; no real token in tests.
+2. **V2-28, demo form (incident side):** late and enrichment evidence annotates only its own incident in the store.
+3. When check 8's results arrive, record the provisional demo profiles (D28) and add them to the adapter registry's known profiles. When check 9's arrive, settle U18 with the maintainer. Then do the week-2 device adapters under D24 and D27: capture through `~/onvif_env`'s OpenCV/FFmpeg; legacy engine plus ByteTrack; interim face and llama-server adapters; and `sentinel run` (D-1), with the D27 GPU guard and the U18 memory precheck. `sentinel run` hands every zone observation and hazard candidate to `IncidentService.record()` and acknowledges it only after that returns (D31).
+4. **V2-13, rest (after Week 1):** directed line crossing, and a decision on hysteresis. The restricted-zone and dwell rules are done in demo form (D30).
 
 ## Oct 20 demo milestone: plan and deviations from the guide order
 
@@ -35,7 +34,7 @@ Target (maintainer, 2026-09-29): a demoable end-to-end path on this Jetson by 20
 
 | Week | Work | Status |
 |---|---|---|
-| 1 (to Oct 6) | V2-49; V2-13 zone rule; V2-14 SQLite incidents/outbox; V2-15 leased outbox + Telegram (mocked). All portable. | V2-49 done; V2-13 demo form done (restricted + dwell; crossing deferred); V2-14 next |
+| 1 (to Oct 6) | V2-49; V2-13 zone rule; V2-14 SQLite incidents/outbox; V2-15 leased outbox + Telegram (mocked). All portable. | V2-49 done; V2-13 demo form done (restricted + dwell; crossing deferred); V2-14 demo form done; V2-15 next |
 | 2 (to Oct 13) | Device adapters (D24): capture from the substream (profile A, D22) with `~/onvif_env`'s OpenCV/FFmpeg software decode, video only, stamped by FrameStamper; detector + ByteTrack via the existing `yolov8n.engine` as the *legacy parity adapter*; interim face adapter (existing DeepFace/Facenet512 on CPU) feeding v2 association; llama-server scene adapter; `sentinel run` loop around `EdgeCore` | Checks 3 and 5 done; U13 settled (D27); U17 settled (D28), its profile run (check 8) PENDING; U18 open |
 | 3 (to Oct 20) | Loopback-only, read-only status page (stdlib HTTP server) showing LiveState, incidents and delivery outcomes; end-to-end rehearsal; demo script including camera loss and recovery | — |
 
@@ -73,7 +72,7 @@ Estimates as given to the maintainer on 2026-09-29. V2-49 has since been done.
 | V2-11 | Telemetry and runtime handoff contract | not started | Portable + device check | no | 1 | 0.5 | 02, 05 |
 | V2-12 | Overlay rendering vs timed fixtures | not started | Portable + device check | no | 1 | 1 | 06, 10 |
 | V2-13 | Zone, crossing and dwell rules | partial: demo form (restricted + dwell) done, directed crossing not started | Portable | yes: **demo form, full acceptance pending** | 1 | 0 | 10, 11 |
-| V2-14 | Incident transaction, SQLite migrations | not started | Portable | yes: **demo form, full acceptance pending** | 1 | 0 | 02, 11 |
+| V2-14 | Incident transaction, SQLite migrations | partial: demo form done | Portable | yes: **demo form, full acceptance pending** | 1 | 0 | 02, 11 |
 | V2-15 | Leased outbox and Telegram adapter | not started | Portable + device check | yes: **demo form, full acceptance pending** | 1 | 0.5 | 14 |
 | V2-16 | Rule evidence/correlation regression suite | partial | Portable | no | 0.5 | 0 | 13, 14 |
 | V2-17 | Sessions, roles, API, media authorization | not started | Portable + device check | no (D-2 stands in for the demo; not a substitute) | 1.5 | 0.5 | 14, 15 |
@@ -134,6 +133,7 @@ Notes on partial and in-progress rows:
 - **Done:** V2-03 with synthetic replays only; real-clip replay needs V2-07. V2-49's registry is empty until real adapters land, and its unknown-profile rule makes every model adapter unavailable until check 8's provisional profiles are recorded (D28).
 - **Partial:**
   - V2-13: restricted-zone and dwell rules in demo form (session 4). Directed line crossing and hysteresis are not done; revalidation after V2-10/V2-11 and calibration of persistence and gap values on labelled replays (V2-07) are pending.
+  - V2-14: demo form done (session 4): schema v1 and migrations, the one-transaction record path, correlation, lifecycle and outbox rows. Not done: the guide's other tables (cameras, zones, policies, users, sessions, identities, audit events, clip manifests), WAL checkpoint monitoring, quotas, and revalidation after V2-11.
   - V2-16: only the scene-hazard correlation.
   - V2-20: validated in-memory enrollment only.
   - V2-25: the association and identity core is done; the adapter, alignment, vectorized matching and report are not.
@@ -147,7 +147,21 @@ Commits on `v2-beta` after `32985c2`, all local until the maintainer pushes them
 | Commit | Content |
 |---|---|
 | `9ec10cf` | Session 3's record completed (this file) and the U17/U18 benchmark scripts. Also, outside the repository: the excluded local notes gained the remote-desktop observation, and the maintainer's Claude Code auto-mode settings now state that the repository is public (maintainer request). |
-| (this commit) | V2-13 demo form: restricted-zone and dwell rules (D30) |
+| `b8102b9` | V2-13 demo form: restricted-zone and dwell rules (D30) |
+| (this commit) | V2-14 demo form: SQLite incidents, observations, evidence, transitions and outbox (D31) |
+
+### V2-14 demo form: what was added
+
+| Path | Purpose |
+|---|---|
+| `src/sentinel/storage/database.py` | `Database.open()`: writer lock file, WAL, `synchronous=FULL`, busy timeout, foreign keys, migrations in `user_version`, `write()`/`read()` transactions; `connect_reader()` read-only. Schema v1: `incidents`, `observations`, `incident_evidence` (payload ≤ 8,192 characters), `incident_transitions`, `outbox`, `delivery_attempts`, with indexes on camera/time, status, correlation and due outbox rows |
+| `src/sentinel/incidents/signals.py` | `IncidentSignal` and converters from `ZoneObservation` and `HazardCandidate` (VLM-only: warning, "unconfirmed") |
+| `src/sentinel/incidents/service.py` | `IncidentService.record()` (the single transaction), `transition()` (lifecycle with expected revision), `incident()` |
+| `src/sentinel/config.py`, `config/default.yaml` | `incidents.merge_window_s`; `notifications.channels` (empty by default) and `min_severity` |
+| `tests/unit/test_incidents.py` (16) | Migration and pragmas; single writer and read-only readers; reopen and newer-schema refusal; repeated source event; **crash after COMMIT** (subprocess `os._exit`) then retry; **crash inside the transaction** (subprocess) leaves nothing; failure at the last step rolls everything back; merge window, linking, resolved incidents, reboot; maximum severity and one notification per rise; ENDED on its own incident; channels off by default; policy revision; operator transitions; payload bound |
+| `tests/replay/test_v2_14_incident_flow.py` (2) | Zone episodes from a replay (including a tracker ID switch) become one incident and replaying every observation changes nothing; a VLM-only fire candidate opens an unconfirmed warning |
+
+**V2-14 mutation sweep (one-off; script not committed): 20/21, plus one equivalent mutant.** Removing `PRAGMA synchronous = FULL` is not observable here, because this SQLite build (3.45.1) already defaults to FULL. Setting it to NORMAL is caught. Caught: no deduplication; merge window ignored; never merge; joins across boots; resolved incidents joined; latest severity wins; operator revision unchecked; resolved can reopen; ENDED resolves the incident; ENDED goes to the newest incident; joined episodes notify; channels on by default; minimum severity ignored; no writer lock; schema version not recorded; newer schema accepted; failed transaction committed; hazard escalated to critical; no link to the previous incident; no WAL. Not covered: `BEGIN IMMEDIATE` versus a deferred `BEGIN` (no concurrent writer exists to observe it).
 
 ### V2-13 demo form: what was added
 
@@ -443,6 +457,12 @@ D14–D21 are implementation decisions made in session 2 within the guide's rule
   - Durations and gaps use source ingest times on the monotonic clock (half-open: a gap of exactly `gap_tolerance_s` continues the presence). **Schedules are the one wall-clock input**: membership is decided from the frame's UTC ingest time in the zone's IANA timezone, so daylight-saving changes follow the zone rules and a wall-clock step can move a frame in or out of a window. Windows are daily `[start, end)`; an end not after the start spans midnight.
   - Rules read neither identity nor scene verdicts. Observations carry no identity; identity can only be added as context by the incident service. Observation IDs are `<episode>.<phase>`, with the episode ID hashed from zone, zone revision, frame identity and track ID, for V2-14 deduplication.
   - Starting values (proposed; calibrate on labelled replays in V2-07): `min_duration_s` 1.0, `gap_tolerance_s` 1.0, severity `warning`. No hysteresis margin yet: the gap tolerance absorbs anchor jitter at the boundary. Up to 16 zones of up to 32 points each.
+- **D31. Incidents and outbox (V2-14 demo form; session 4 implementation decision, not yet reviewed).**
+  - One SQLite file per device, written only by the runtime process. The writer takes an exclusive lock file; one connection is shared by its threads under a lock, so incident recording and the outbox worker never write concurrently, and no transaction spans network I/O. WAL, `synchronous=FULL`, busy timeout 5 s, foreign keys on. Migrations are numbered scripts recorded in `PRAGMA user_version`; a newer schema is refused. Readers use read-only connections.
+  - `record()` is the guide's single transaction: deduplicate `observation_id`, create or join the incident (optimistic revision check), append evidence and the opening transition, insert outbox rows `UNIQUE(incident, channel, policy_revision, message_kind)`. The runtime acknowledges an observation only after `record()` returns.
+  - **Correlation:** an ENTERED observation joins the latest unresolved incident with the same camera, rule kind and zone if that incident's latest observation is from the same boot and at most `incidents.merge_window_s` (proposed 120 s) earlier on the monotonic clock. Otherwise it opens a new incident, linked to the previous one with that key. Across a reboot it never joins. ENDED is evidence on the incident its episode joined and never changes status.
+  - **Severity** is the maximum seen, never a sum. A rise is notified once per level (`escalated-<severity>`). Rule observations open incidents directly (status `open`); the VLM-only hazard opens at most a `warning`, titled unconfirmed.
+  - **Notifications are off by default** (`notifications.channels: []`), with `min_severity: warning`. The policy revision is a hash of that section, so a changed policy may notify an incident again.
 
 ## Unresolved decisions and semantics
 
