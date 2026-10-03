@@ -33,6 +33,12 @@ PVA_FRAGMENT = "/etc/systemd/system/" + PVA_UNIT
 PVA_DAEMON = "/opt/nvidia/pva-allow-2/bin/nvidiaPvaAllowd.py"
 PVA_CHECKSUMS = "/var/lib/dpkg/info/pva-allow-2.md5sums"
 OUTPUT_ROOT = Path("/tmp")
+S1_ARMS = {"a": None, "b": 0}  # llama-server --cache-ram MiB; None keeps b8932's default (8192 MiB)
+_DROPPED = object()
+DROP_CACHES_PROCEDURE = (
+    "D37: operator-run `sync && sudo sysctl -w vm.drop_caches=1` before measurement runs only; "
+    "declared by the operator, never run or verified by this workflow"
+)
 SERVICE_VALUES = {
     "active", "inactive", "failed", "activating", "deactivating", "reloading",
     "enabled", "enabled-runtime", "disabled", "static", "indirect", "masked",
@@ -457,12 +463,66 @@ def check9_prerequisite(path: Path | None, current: dict) -> str | None:
     return None
 
 
+def latest_check9_report(root: Path | None = None) -> Path | None:
+    """The newest private Check 9 result; it must still pass check9_prerequisite, so a failed newest run refuses."""
+    candidates = []
+    for path in (root or OUTPUT_ROOT).glob("sentinel-operator-*/result.json"):
+        try:
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > OUTPUT_LIMIT:
+                continue
+            with path.open("rb") as handle:
+                if json.loads(handle.read(OUTPUT_LIMIT + 1)).get("mode") == "check9":
+                    candidates.append((info.st_mtime_ns, str(path)))
+        except (OSError, ValueError, AttributeError):
+            continue
+    return Path(max(candidates)[1]) if candidates else None
+
+
+def numeric_excerpt(value, depth: int = 0):
+    """Keep only numbers, booleans, None and fixed phase labels under short snake_case keys; drop the rest."""
+    if isinstance(value, dict) and depth < 4:
+        kept = {key: numeric_excerpt(item, depth + 1) for key, item in list(value.items())[:32]
+                if isinstance(key, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,39}", key)}
+        return {key: item for key, item in kept.items() if item is not _DROPPED}
+    if type(value) in (int, float, bool) or value is None:
+        return value if type(value) is not float or math.isfinite(value) else None
+    if isinstance(value, str) and value in profile.PHASES_IN_ORDER:
+        return value
+    return _DROPPED
+
+
+def s1_profile_excerpt(output: Path) -> dict:
+    """Numeric S1 comparison fields from the single profiler run under this result's directory."""
+    paths = list(output.glob("demo-profile-*/profile.json"))
+    if len(paths) != 1:
+        return {"status": "unavailable"}
+    try:
+        with paths[0].open("rb") as handle:
+            data = handle.read(OUTPUT_LIMIT + 1)
+        if len(data) > OUTPUT_LIMIT:
+            return {"status": "unavailable"}
+        prof = json.loads(data)
+        status = prof.get("status")
+        fields = {key: prof.get(key) for key in ("steady_trend", "prompt_cache", "scene_progress_last", "unload")}
+        fields["scene_component"] = (prof.get("components") or {}).get("scene")
+        fields["workload_steady_scene"] = (prof.get("workload_steady") or {}).get("scene")
+        fields["llama_cache_ram_mib"] = ((prof.get("provenance") or {}).get("llama_server") or {}).get("cache_ram_mib")
+    except (OSError, ValueError, AttributeError):
+        return {"status": "unavailable"}
+    label = next((name for name in ("complete", "aborted", "interrupted", "incomplete")
+                  if isinstance(status, str) and status.startswith(name)), "unknown")
+    return {"status": label, **numeric_excerpt(fields)}
+
+
 def execute(mode: str | None, backend, output: Path, *, check9_report=None, confirm_u21=False,
-            interrupted=lambda: False) -> dict:
+            s1_arm=None, confirm_s1=False, dropped_caches=False, interrupted=lambda: False) -> dict:
     runner = ProcessRunner(backend, interrupted)
     report = {"schema_version": 1, "mode": mode or "inspection",
               "hardware_acceptance": "PENDING", "check9": {"status": "PENDING", "u18_acceptance": "PENDING",
-              "server_comparison": "PENDING"}, "u21": {"status": "PENDING"}}
+              "server_comparison": "PENDING"}, "u21": {"status": "PENDING"}, "s1": {"status": "PENDING"},
+              "preparation": {"drop_caches": "operator_declared" if dropped_caches else "not_declared",
+                              "procedure": DROP_CACHES_PROCEDURE}}
     try:
         current = inspection(backend, runner)
         report["inspection"] = current
@@ -470,12 +530,18 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
         if mode is None:
             return report
         refusal = current["workload_refusals"]
-        if mode == "u21":
+        if mode in ("u21", "s1"):
             problem = check9_prerequisite(check9_report, current)
             if problem:
                 refusal.append(problem)
-            if not confirm_u21:
-                refusal.append("u21_operator_prerequisites_unconfirmed")
+            report[mode]["check9_report_dir"] = check9_report.parent.name if check9_report else None
+        if mode == "u21" and not confirm_u21:
+            refusal.append("u21_operator_prerequisites_unconfirmed")
+        if mode == "s1":
+            if s1_arm not in S1_ARMS:
+                refusal.append("s1_arm_required")
+            if not confirm_s1:
+                refusal.append("s1_operator_prerequisites_unconfirmed")
         if refusal:
             report[mode]["status"] = "refused"
             report[mode]["refusals"] = refusal
@@ -524,7 +590,7 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
                         break
                 else:
                     report["check9"]["status"] = "bounded_smoke_complete"
-            else:
+            elif mode == "u21":
                 child = runner.run([
                     "/usr/bin/python3", str(profile.HERE / "demo_profile.py"), "--out", str(output),
                     "--no-evict", "--sanitized-logs", "--baseline-s", "15", "--settle-s", "15",
@@ -533,6 +599,17 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
                 ], 360.0, guard=guard)
                 report["u21"].update(child.diagnostic())
                 report["u21"]["operator_prerequisites_confirmed"] = True
+            else:
+                cache_ram = S1_ARMS[s1_arm]
+                child = runner.run([
+                    "/usr/bin/python3", str(profile.HERE / "demo_profile.py"), "--out", str(output),
+                    "--no-evict", "--sanitized-logs", "--scene-only", "--baseline-s", "15", "--settle-s", "15",
+                    "--warmup-s", "30", "--steady-s", "180", "--scene-interval-s", "4",
+                    "--llama-timeout-s", "60", "--load-timeout-s", "90", "--min-free-gb", "3.5",
+                    *([] if cache_ram is None else ["--llama-cache-ram", str(cache_ram)]),
+                ], 360.0, guard=guard)
+                report["s1"].update(child.diagnostic(), arm=s1_arm, llama_cache_ram_mib=cache_ram,
+                                    operator_prerequisites_confirmed=True, profile=s1_profile_excerpt(output))
             report[mode].update(samples=guard.samples, sampled_peak_pressure_bytes=guard.peak,
                                 sampled_min_free_bytes=guard.minimum_free)
         if not interrupted():
@@ -545,11 +622,20 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
 
 def main(argv: list[str] | None = None, *, backend=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--execute-workload", choices=("check9", "u21"),
+    parser.add_argument("--execute-workload", choices=("check9", "u21", "s1"),
                         help="explicitly execute only this guarded diagnostic; default is read-only")
-    parser.add_argument("--check9-report", type=Path, help="successful same-boot/revision bounded Check 9 report")
+    reports = parser.add_mutually_exclusive_group()
+    reports.add_argument("--check9-report", type=Path, help="successful same-boot/revision bounded Check 9 report")
+    reports.add_argument("--latest-check9-report", action="store_true",
+                         help="use the newest private Check 9 result in /tmp; it must pass the same checks")
     parser.add_argument("--confirm-u21-prerequisites", action="store_true",
                         help="operator confirms reviewed U18 policy, model exception and benchmark conditions")
+    parser.add_argument("--s1-arm", choices=tuple(S1_ARMS),
+                        help="S1 prompt-cache A/B: a = llama-server default cache, b = --cache-ram 0")
+    parser.add_argument("--confirm-s1-prerequisites", action="store_true",
+                        help="operator confirms S1 approval, headless preparation and the same-boot Check 9")
+    parser.add_argument("--operator-dropped-caches", action="store_true",
+                        help="record that the operator ran the D37 drop_caches step before this invocation")
     args = parser.parse_args(argv)
     interrupted = False
 
@@ -561,9 +647,11 @@ def main(argv: list[str] | None = None, *, backend=None) -> int:
         signal.signal(signum, request_stop)
     os.umask(0o077)
     output = Path(tempfile.mkdtemp(prefix="sentinel-operator-", dir=OUTPUT_ROOT))
+    check9_report = latest_check9_report() if args.latest_check9_report else args.check9_report
     report = execute(args.execute_workload, backend or SystemBackend(), output,
-                     check9_report=args.check9_report, confirm_u21=args.confirm_u21_prerequisites,
-                     interrupted=lambda: interrupted)
+                     check9_report=check9_report, confirm_u21=args.confirm_u21_prerequisites,
+                     s1_arm=args.s1_arm, confirm_s1=args.confirm_s1_prerequisites,
+                     dropped_caches=args.operator_dropped_caches, interrupted=lambda: interrupted)
     report["result_file"] = str(output / "result.json")
     report["finished_utc"] = profile.utc_now()
     report["metric"] = "MemTotal - MemAvailable, integer bytes; kB x1024; time.monotonic within boot"

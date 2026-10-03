@@ -65,6 +65,16 @@ HOME = Path.home()
 L4T_LIBCUDA = "/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1"
 L4T_LIBCUDA_DIR = "/usr/lib/aarch64-linux-gnu/nvidia/"
 LLAMA_FLAGS = ["--n-gpu-layers", "999", "--ctx-size", "2048", "--parallel", "1"]  # start_sentinel.sh
+# llama-server's host-RAM prompt cache (b8932 default 8192 MiB); the numbers in these lines are saved.
+PROMPT_CACHE_STARTUP = re.compile(r"prompt cache is (enabled, size limit: (?:(\d+) MiB|no limit)|disabled)")
+PROMPT_CACHE_STATE = re.compile(
+    r"cache state: (\d+) prompts, ([\d.]+) MiB \(limits: ([\d.]+) MiB, (\d+) tokens, (\d+) est\)"
+)
+PROMPT_CACHE_MARKERS = {  # fixed llama-server texts -> saved label
+    "prompt is already in the cache, skipping": "duplicate_skipped",
+    "removing oldest entry": "evicted",
+    "failed to allocate memory for prompt cache state": "allocation_failed",
+}
 TARGET_STEADY_BYTES = 5_000_000_000  # guide ch. 12: decimal target
 TARGET_PEAK_BYTES = 5_400_000_000  # guide ch. 12: decimal ceiling
 MEMORY_FLOOR_BYTES = 300_000_000  # stop the run if MemAvailable stays below this
@@ -212,6 +222,8 @@ def deepface_weights() -> list[Path]:
 
 
 def model_files(args: argparse.Namespace) -> dict[str, Path]:
+    if getattr(args, "scene_only", False):
+        return {"llm": args.model, "mmproj": args.mmproj}
     files = {"engine": args.engine, "llm": args.model, "mmproj": args.mmproj}
     for path in deepface_weights():
         files[path.name] = path
@@ -225,6 +237,8 @@ def preconditions(args: argparse.Namespace) -> tuple[list[str], dict[str, object
     required = {"workload python": args.python, "llama-server": args.llama, "L4T libcuda": Path(L4T_LIBCUDA), **model_files(args)}
     if args.clip:
         required["clip"] = args.clip
+        if args.scene_only:
+            problems.append("--scene-only uses its own synthetic images; do not pass --clip")
     for label, path in required.items():
         if not Path(path).exists():
             problems.append(f"missing {label}: {path}")
@@ -250,6 +264,12 @@ def preconditions(args: argparse.Namespace) -> tuple[list[str], dict[str, object
         problems.append(f"port {args.port} on 127.0.0.1 is in use")
     context = {"display_manager": display_manager, "desktop_processes": desktop, "dev_tools_running": dev_tools}
     return problems, context
+
+
+def llama_flags(args: argparse.Namespace) -> list[str]:
+    """The tracked flags, plus --cache-ram only when it was given (None keeps the server default)."""
+    cache_ram = getattr(args, "llama_cache_ram", None)
+    return LLAMA_FLAGS + ([] if cache_ram is None else ["--cache-ram", str(cache_ram)])
 
 
 def provenance(args: argparse.Namespace, context: dict[str, object], run_id: str) -> dict[str, object]:
@@ -279,13 +299,14 @@ def provenance(args: argparse.Namespace, context: dict[str, object], run_id: str
         "meminfo_at_start": read_meminfo(),
         "repository": {"commit": git_commit, "tracked_changes": git_dirty},
         "scripts_sha256": {path.name: sha256_of(path) for path in (Path(__file__).resolve(), WORKLOAD)},
-        "llama_server": {"version": llama_version, "flags": LLAMA_FLAGS, "unified_memory": True, "preload": L4T_LIBCUDA},
+        "llama_server": {"version": llama_version, "flags": llama_flags(args), "unified_memory": True,
+                         "preload": L4T_LIBCUDA, "cache_ram_mib": args.llama_cache_ram},
         "files": {label: file_facts(path) for label, path in model_files(args).items()},
         "input": {"clip": file_facts(args.clip) if args.clip else None, "synthetic": not args.clip, "fps": args.fps},
         "parameters": {
             "face_hz": args.face_hz, "scene_interval_s": args.scene_interval_s, "baseline_s": args.baseline_s,
             "settle_s": args.settle_s, "warmup_s": args.warmup_s, "steady_s": args.steady_s, "evict_model_cache": args.evict,
-            "min_free_gb": args.min_free_gb,
+            "min_free_gb": args.min_free_gb, "scene_only": args.scene_only,
             "port": args.port, "sample_interval_s": SAMPLE_INTERVAL_S, "pss_interval_s": PSS_INTERVAL_S,
         },
     }
@@ -424,7 +445,7 @@ def start_llama(args: argparse.Namespace, run_dir: Path):
     env = dict(os.environ, LD_PRELOAD=L4T_LIBCUDA, GGML_CUDA_ENABLE_UNIFIED_MEMORY="1")
     log = open(run_dir / "llama-server.log", "wb")
     argv = [str(args.llama), "--model", str(args.model), "--mmproj", str(args.mmproj),
-            "--host", "127.0.0.1", "--port", str(args.port), *LLAMA_FLAGS]
+            "--host", "127.0.0.1", "--port", str(args.port), *llama_flags(args)]
     if not getattr(args, "sanitized_logs", False):
         return subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, env=env), log
     proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
@@ -433,19 +454,35 @@ def start_llama(args: argparse.Namespace, run_dir: Path):
     return proc, log
 
 
-def pump_llama_diagnostics(proc, log) -> None:
-    """Save only fixed GPU-placement markers and numeric buffer sizes."""
+def pump_llama_diagnostics(proc, log, clock=time.monotonic) -> None:
+    """Save only fixed GPU-placement markers, numeric buffer sizes and numeric prompt-cache lines.
+
+    Prompt-cache lines get the receipt time.monotonic() so they can be aligned with memory.csv.
+    """
     try:
         while line := proc.stdout.readline(65_536):
             text = line.decode(errors="replace")
             offload = re.search(r"offloaded (\d+)/(\d+) layers to GPU", text)
             buffer = re.search(r"buffer size =\s*([\d.]+) MiB", text)
+            startup = PROMPT_CACHE_STARTUP.search(text)
+            state = PROMPT_CACHE_STATE.search(text)
+            marker = next((label for key, label in PROMPT_CACHE_MARKERS.items() if key in text), None)
             if offload:
                 log.write(f"offloaded {offload[1]}/{offload[2]} layers to GPU\n".encode())
             if "CLIP using CUDA0" in text:
                 log.write(b"CLIP using CUDA0\n")
             if buffer:
                 log.write(f"diagnostic: buffer size = {buffer[1]} MiB\n".encode())
+            stamp = f"t_mono={clock():.3f}"
+            if startup:
+                limit = "disabled" if startup[1] == "disabled" else (
+                    f"enabled, size limit: {startup[2]} MiB" if startup[2] else "enabled, size limit: no limit")
+                log.write(f"{stamp} prompt cache is {limit}\n".encode())
+            if state:
+                log.write((f"{stamp} prompt cache state: {state[1]} prompts, {state[2]} MiB "
+                           f"(limits: {state[3]} MiB, {state[4]} tokens, {state[5]} est)\n").encode())
+            if marker:
+                log.write(f"{stamp} prompt cache event: {marker}\n".encode())
             log.flush()
     except (OSError, ValueError):
         return
@@ -501,6 +538,8 @@ def start_workload(args: argparse.Namespace, run_dir: Path) -> subprocess.Popen:
     ]
     if args.clip:
         argv += ["--clip", str(args.clip)]
+    if args.scene_only:
+        argv.append("--scene-only")
     # cwd is the run directory so no library can leave files in the repository.
     return subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env, cwd=run_dir)
 
@@ -519,12 +558,13 @@ def sanitize_diagnostic(value, depth: int = 0):
         "prompt_tokens_mean", "completion_tokens_mean", "input", "clip_loops",
         "n", "p50", "p95", "p99", "max", "stop", "length", "other", "missing",
         "truncated", "invalid_report", "incomplete_completion", "malformed_response", "timeout",
-        "server_error", "unsupported_completion",
+        "server_error", "unsupported_completion", "requests", "http", "prompt_tokens", "completion_tokens",
+        "synthetic_images_issued",
     }
     strings = {
         *PHASES_IN_ORDER, "phase", "cuda_driver", "detector_loaded", "face_loaded",
-        "torch_allocator", "workload_stats", "time.monotonic", "bytes", "allocator_lifetime",
-        "observed", "unavailable", "synthetic noise",
+        "torch_allocator", "workload_stats", "scene_progress", "time.monotonic", "bytes", "allocator_lifetime",
+        "observed", "unavailable", "synthetic noise", "synthetic noise, distinct per request",
         "not evaluated; structural validity is not scene accuracy",
     }
     if depth > 6:
@@ -563,6 +603,7 @@ def pump_workload(proc: subprocess.Popen, run_dir: Path, events: Events, set_pha
                 if sanitized:
                     if not isinstance(record, dict) or record.get("event") not in {
                         "phase", "cuda_driver", "detector_loaded", "face_loaded", "torch_allocator", "workload_stats",
+                        "scene_progress",
                     }:
                         continue
                     record = sanitize_diagnostic(record)
@@ -794,8 +835,9 @@ def gb(value: int | None, signed: bool = False) -> str:
 
 
 def load_latest_events(path: Path) -> dict[str, dict[str, object]]:
-    """Retain at most six summary events; allocator telemetry stays on disk."""
-    names = {"run_end", "llama_ready", "detector_loaded", "face_loaded", "workload_stats", "llama_gpu_check"}
+    """Retain at most seven summary events; allocator and per-request history stays on disk."""
+    names = {"run_end", "llama_ready", "detector_loaded", "face_loaded", "workload_stats", "llama_gpu_check",
+             "scene_progress"}
     latest = {}
     with open(path) as handle:
         for line in handle:
@@ -804,6 +846,64 @@ def load_latest_events(path: Path) -> dict[str, dict[str, object]]:
                 if record["event"] in names:
                     latest[record["event"]] = record
     return latest
+
+
+def prompt_cache_summary(log_path: Path, steady: tuple[float, float] | None) -> dict[str, object] | None:
+    """Numbers from llama-server's prompt-cache lines; None when the log has none (older runs)."""
+    try:
+        lines = log_path.read_text(errors="replace").splitlines()
+    except OSError:
+        return None
+    result: dict[str, object] = {"startup": None, "state_updates": 0, "steady_state_updates": None,
+                                 "first": None, "last": None, "steady_first": None, "steady_last": None,
+                                 "max_size_mib": None, **dict.fromkeys(PROMPT_CACHE_MARKERS.values(), 0)}
+    for line in lines:
+        stamp = re.match(r"t_mono=([\d.]+) ", line)
+        t = float(stamp[1]) if stamp else None
+        if startup := PROMPT_CACHE_STARTUP.search(line):
+            result["startup"] = {"enabled": startup[1] != "disabled",
+                                 "limit_mib": int(startup[2]) if startup[2] else None}
+        elif state := PROMPT_CACHE_STATE.search(line):
+            entry = {"t_mono": t, "prompts": int(state[1]), "size_mib": float(state[2]),
+                     "limit_mib": float(state[3]), "limit_tokens": int(state[4]), "estimated_tokens": int(state[5])}
+            result["state_updates"] += 1
+            result["first"] = result["first"] or entry
+            result["last"] = entry
+            result["max_size_mib"] = max(result["max_size_mib"] or 0.0, entry["size_mib"])
+            if steady and t is not None and steady[0] <= t <= steady[1]:
+                result["steady_state_updates"] = (result["steady_state_updates"] or 0) + 1
+                result["steady_first"] = result["steady_first"] or entry
+                result["steady_last"] = entry
+        else:
+            for key, label in PROMPT_CACHE_MARKERS.items():
+                result[label] += int(key in line or line.endswith("prompt cache event: " + label))
+    if result["startup"] is None and not result["state_updates"]:
+        return None
+    return result
+
+
+def steady_trend(rows: list[dict[str, object]]) -> dict[str, object]:
+    """First/last values and least-squares slopes (bytes per minute) over the steady rows, per column.
+
+    The steady label persists until the orchestrator changes it, so rows taken
+    while the workload exits are included: compare arms under equal conditions only.
+    """
+    def fit(key: str) -> dict[str, object]:
+        points = [(r["t"], r[key]) for r in rows if r.get(key) is not None]
+        if len(points) < 2:
+            return {"first": points[0][1] if points else None, "last": points[-1][1] if points else None,
+                    "slope_bytes_per_min": None, "n": len(points)}
+        mean_t = sum(t for t, _ in points) / len(points)
+        mean_v = sum(v for _, v in points) / len(points)
+        spread = sum((t - mean_t) ** 2 for t, _ in points)
+        slope = sum((t - mean_t) * (v - mean_v) for t, v in points) / spread * 60 if spread else None
+        return {"first": points[0][1], "last": points[-1][1],
+                "slope_bytes_per_min": int(slope) if slope is not None else None, "n": len(points)}
+
+    if not rows:
+        return {}
+    return {"seconds": round(rows[-1]["t"] - rows[0]["t"], 1),
+            **{key: fit(key) for key in ("used", "mem_free", "cached", "llama_pss", "work_pss")}}
 
 
 def summarize(run_dir: Path) -> str:
@@ -833,6 +933,8 @@ def summarize(run_dir: Path) -> str:
 
     end = last_event("run_end")
     status = end["status"] if end else "unknown (no run_end event)"
+    cache_ram = (manifest.get("llama_server") or {}).get("cache_ram_mib")
+    cache_flag = "not passed (server default)" if cache_ram is None else f"{cache_ram} MiB"
     lines = [
         f"{LABEL.upper()} RESOURCE PROFILE: {manifest['run_id']}",
         "One cold load and one combined run. Not a benchmark, Gate B record or beta-gate result.",
@@ -840,8 +942,11 @@ def summarize(run_dir: Path) -> str:
         f"Device: {manifest.get('l4t')} | kernel {manifest.get('kernel')} | power mode {manifest.get('power_mode')}",
         f"Host state: display-manager {manifest.get('display_manager')}; desktop processes {manifest.get('desktop_processes') or 'none'}; "
         f"dev tools {manifest.get('dev_tools_running') or 'none'}",
-        f"Input: {'synthetic noise frames' if manifest['input']['synthetic'] else 'replay clip'} at {manifest['input']['fps']} fps; "
-        f"face {manifest['parameters']['face_hz']} Hz; scene every {manifest['parameters']['scene_interval_s']} s",
+        (f"Input: scene-only, one distinct synthetic noise image per request; scene every "
+         f"{manifest['parameters']['scene_interval_s']} s; llama-server --cache-ram {cache_flag}"
+         if manifest["parameters"].get("scene_only") else
+         f"Input: {'synthetic noise frames' if manifest['input']['synthetic'] else 'replay clip'} at {manifest['input']['fps']} fps; "
+         f"face {manifest['parameters']['face_hz']} Hz; scene every {manifest['parameters']['scene_interval_s']} s"),
         f"Repository: {manifest['repository']['commit']} (tracked changes: {manifest['repository']['tracked_changes']})",
         "",
         "Whole-device memory = MemTotal - MemAvailable (decimal bytes).",
@@ -861,7 +966,11 @@ def summarize(run_dir: Path) -> str:
     baseline_used = int(statistics.median(r["used"] for r in baseline_rows)) if baseline_rows else None
     lines += ["", f"Baseline (median of baseline phase): {gb(baseline_used)}", "", "Cold loads, one after another:"]
     profile_components: dict[str, dict[str, object]] = {}
+    scene_only = bool(manifest.get("parameters", {}).get("scene_only"))
     for key, load_phase, settle_phase, load_event in COMPONENTS:
+        if scene_only and key != "scene":
+            lines.append(f"  {key}: not run (scene-only)")
+            continue
         reference = before_phase(load_phase)
         window = in_phases(load_phase, settle_phase)
         loaded = last_event(load_event)
@@ -921,6 +1030,40 @@ def summarize(run_dir: Path) -> str:
             "  (process RSS/PSS and whole-device use have different accounting; never add them)",
         ]
 
+    trend = steady_trend(steady)
+    if trend:
+        lines += [
+            "",
+            f"Steady trend over {trend['seconds']} s (least squares; includes rows while the workload exits):",
+            *(f"  {key}: first {gb(trend[key]['first'])}, last {gb(trend[key]['last'])}, "
+              f"slope {trend[key]['slope_bytes_per_min'] if trend[key]['slope_bytes_per_min'] is not None else 'n/a'} B/min"
+              for key in ("used", "llama_pss", "work_pss") if trend[key]["n"]),
+        ]
+    steady_window = (steady[0]["t"], steady[-1]["t"]) if steady else None
+    cache = prompt_cache_summary(run_dir / "llama-server.log", steady_window)
+    if cache:
+        startup = cache["startup"] or {}
+        lines += [
+            "",
+            "llama-server prompt cache (its own log lines; numbers only):",
+            f"  startup: {'enabled' if startup.get('enabled') else 'disabled' if startup else 'not logged'}"
+            + (f", limit {startup['limit_mib']} MiB" if startup.get("limit_mib") is not None else ""),
+            f"  state updates {cache['state_updates']} (steady {cache['steady_state_updates']}); "
+            f"last {cache['last']['prompts'] if cache['last'] else 'n/a'} prompts, "
+            f"{cache['last']['size_mib'] if cache['last'] else 'n/a'} MiB; max {cache['max_size_mib']} MiB",
+            f"  duplicates skipped {cache['duplicate_skipped']}; evicted {cache['evicted']}; "
+            f"allocation failures {cache['allocation_failed']}",
+        ]
+    progress = last_event("scene_progress")
+    if progress:
+        lines += [
+            "",
+            f"Scene progress at the last request (cumulative since the workload started; phase {progress.get('phase')}):",
+            f"  requests {progress.get('requests')}, completed {progress.get('completed')}, "
+            f"valid/invalid {progress.get('valid_reports')}/{progress.get('invalid_reports')}, errors {progress.get('errors')}, "
+            f"finish reasons {progress.get('finish_reasons')}, synthetic images issued {progress.get('synthetic_images_issued')}",
+        ]
+
     unload: dict[str, object] = {}
     after_work = in_phases("unload_workload")
     before_work = in_phases("llama_settle")
@@ -976,13 +1119,17 @@ def summarize(run_dir: Path) -> str:
     stats = last_event("workload_stats")
     if stats:
         detector, face, scene = stats.get("detector", {}), stats.get("face", {}), stats.get("scene", {})
+        lines += ["", f"Workload, steady phase ({stats.get('seconds')} s, {stats.get('input')}):"]
+        if scene_only:
+            lines.append("  detector and face: not run (scene-only)")
+        else:
+            lines += [
+                f"  detector: {detector.get('processed_frames')} of {detector.get('source_frames')} source frames, "
+                f"{detector.get('processed_fps')} fps; latency ms {detector.get('latency_ms')}; frames with a person {detector.get('frames_with_person')}",
+                f"  face: {face.get('runs')} runs ({face.get('achieved_hz')} Hz achieved), latency ms {face.get('latency_ms')}; "
+                f"runs with a face {face.get('runs_with_face')}; errors {face.get('errors')}",
+            ]
         lines += [
-            "",
-            f"Workload, steady phase ({stats.get('seconds')} s, {stats.get('input')}):",
-            f"  detector: {detector.get('processed_frames')} of {detector.get('source_frames')} source frames, "
-            f"{detector.get('processed_fps')} fps; latency ms {detector.get('latency_ms')}; frames with a person {detector.get('frames_with_person')}",
-            f"  face: {face.get('runs')} runs ({face.get('achieved_hz')} Hz achieved), latency ms {face.get('latency_ms')}; "
-            f"runs with a face {face.get('runs_with_face')}; errors {face.get('errors')}",
             f"  scene: {scene.get('completed')} completed, latency ms {scene.get('latency_ms')}; over the 8 s D16 timeout {scene.get('over_d16_timeout')}; "
             f"errors {scene.get('errors')}; valid/invalid/unchecked reports {scene.get('valid_reports')}/{scene.get('invalid_reports')}/{scene.get('unchecked_reports')}; "
             f"mean prompt/completion tokens {scene.get('prompt_tokens_mean')}/{scene.get('completion_tokens_mean')}",
@@ -1014,12 +1161,16 @@ def summarize(run_dir: Path) -> str:
         "run_id": manifest["run_id"],
         "status": status,
         "provenance": {k: manifest.get(k) for k in ("started_utc", "finished_utc", "boot_id", "l4t", "kernel", "power_mode",
-                                                   "display_manager", "repository", "llama_server", "files", "sha256", "input")},
+                                                   "display_manager", "repository", "llama_server", "files", "sha256", "input",
+                                                   "parameters")},
         "components": profile_components,
         "combined": combined,
         "unload": unload,
         "tegrastats_steady": tegra_summary,
         "workload_steady": stats,
+        "steady_trend": trend,
+        "prompt_cache": cache,
+        "scene_progress_last": progress,
         "targets": {"steady_bytes": TARGET_STEADY_BYTES, "peak_bytes": TARGET_PEAK_BYTES},
     }
     (run_dir / "profile.json").write_text(json.dumps(profile, indent=2) + "\n")
@@ -1029,6 +1180,13 @@ def summarize(run_dir: Path) -> str:
 
 
 # ------------------------------------------------------------------------ main
+
+
+def cache_ram_mib(text: str) -> int:
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError("use 0 (disabled) or a positive MiB limit; 'no limit' is not offered")
+    return value
 
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -1050,6 +1208,10 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                              "fully at 3.08 GB free and failed at 1.70 GB)")
     parser.add_argument("--no-evict", dest="evict", action="store_false",
                         help="keep the model files' page cache (default: evict it so the loads are cold)")
+    parser.add_argument("--scene-only", action="store_true",
+                        help="S1: llama-server and scene requests only, one distinct synthetic image per request")
+    parser.add_argument("--llama-cache-ram", type=cache_ram_mib, metavar="MIB",
+                        help="pass --cache-ram MIB to llama-server (0 disables its prompt cache); default: not passed")
     parser.add_argument("--sanitized-logs", action="store_true",
                         help="discard raw server/workload output; retain fixed numeric/placement diagnostics only")
     parser.add_argument("--allow-desktop", action="store_true", help="measure with a desktop session running")
