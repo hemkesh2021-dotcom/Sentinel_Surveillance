@@ -8,7 +8,9 @@ sees only this host, not other clients of the camera.
 
 The summary holds numbers and fixed labels only: never the URL, host or frames.
 Timing is ingest-based (U3): there is no capture clock, so camera-to-ingest delay
-is not measured.
+is not measured. Source PTS is diagnostic: ``pts_none_reasons`` says why frames
+were stamped without a usable PTS, and ``pts_step_ms`` is the PTS step between
+consecutive frames (OpenCvSource reports microseconds).
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ..contracts import SourceTimeQuality
+from ..contracts import FrameRef, SourceTimeQuality
 from .capture import CapturedFrame, CaptureWorker, LatestFrame
 from .clock import NS_PER_SECOND, Clock
 from .opencv_source import RTSP_FFMPEG_OPTIONS, RtspEndpoint
@@ -95,6 +97,9 @@ class ProbeStats:
         self._formats: set[str] = set()
         self._epochs: set[tuple[str, int]] = set()
         self._last: CapturedFrame | None = None
+        self._last_pts: int | None = None  # last known PTS of an unbroken run of consumed frames
+        self._pts_steps: list[int] = []
+        self._none_reasons = {"missing": 0, "repeated": 0, "backwards": 0, "unattributed": 0}
         self.consumed = 0
 
     def observe(self, captured: CapturedFrame, taken_mono_ns: int) -> None:
@@ -107,11 +112,31 @@ class ProbeStats:
         if len(self._ages) < MAX_SAMPLES:
             self._ages.append(taken_mono_ns - frame.ingest_mono_ns)
         last = self._last.frame if self._last is not None else None
-        # Ingest cadence from consecutive frames only, so skipped frames do not inflate it.
+        previous = None  # the frame stamped just before this one, if the probe consumed it
         if last is not None and last.stream == frame.stream and frame.frame_seq == last.frame_seq + 1:
-            if len(self._intervals) < MAX_SAMPLES:
-                self._intervals.append(frame.ingest_mono_ns - last.ingest_mono_ns)
+            previous = last
+        # Ingest cadence from consecutive frames only, so skipped frames do not inflate it.
+        if previous is not None and len(self._intervals) < MAX_SAMPLES:
+            self._intervals.append(frame.ingest_mono_ns - previous.ingest_mono_ns)
+        self._observe_pts(frame, previous)
         self._last = captured
+
+    def _observe_pts(self, frame: FrameRef, previous: FrameRef | None) -> None:
+        if previous is None:
+            self._last_pts = None  # the stamper compared with a frame the probe did not see
+        pts, known = frame.source_pts, self._last_pts
+        if frame.source_time_quality is SourceTimeQuality.NONE:
+            if pts is None:
+                reason = "missing"
+            elif known is None:
+                reason = "unattributed"
+            else:
+                reason = "repeated" if pts == known else "backwards"
+            self._none_reasons[reason] += 1
+        elif previous is not None and previous.source_pts is not None and len(self._pts_steps) < MAX_SAMPLES:
+            self._pts_steps.append((frame.source_pts - previous.source_pts) * 1000)  # type: ignore[operator]
+        if pts is not None:
+            self._last_pts = pts
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -120,6 +145,8 @@ class ProbeStats:
             "native_sizes": sorted([w, h] for w, h in self._sizes),
             "pixel_formats": sorted(self._formats),
             "pts_quality": dict(self._quality),
+            "pts_none_reasons": dict(self._none_reasons),
+            "pts_step_ms": percentiles_ms(self._pts_steps),
             "ingest_interval_ms": percentiles_ms(self._intervals),
             "handoff_age_ms": percentiles_ms(self._ages),
         }

@@ -458,6 +458,24 @@ def test_probe_cadence_uses_consecutive_frames_only(clock: FakeClock) -> None:
     assert (summary["consumed"], summary["epochs"], summary["native_sizes"]) == (3, 1, [[640, 480]])
 
 
+def test_probe_explains_why_frames_have_no_usable_pts(clock: FakeClock) -> None:
+    stamper = FrameStamper("cam-1", clock)
+    stamper.connect()
+    stats = ProbeStats()
+    #        0  1       2       3     4        5       6        7        8        9   (microseconds)
+    stream = [0, 50_000, 50_000, None, 100_000, 90_000, 200_000, 250_000, 250_000, 300_000]
+    for seq, pts in enumerate(stream):
+        clock.advance(FRAME_S)
+        frame = stamper.stamp(native_width=640, native_height=480, pixel_format=PixelFormat.BGR, source_pts=pts)
+        if seq != 7:  # replaced before the consumer took it: the probe cannot see what 8 was compared with
+            stats.observe(CapturedFrame(frame, object()), frame.ingest_mono_ns)
+    summary = stats.summary()
+    assert summary["pts_quality"] == {"none": 4, "stream_relative": 5, "capture_synced": 0}
+    assert summary["pts_none_reasons"] == {"missing": 1, "repeated": 1, "backwards": 1, "unattributed": 1}
+    # Steps between consecutive consumed frames that both have a PTS and increase: 0->1, 5->6, 8->9.
+    assert summary["pts_step_ms"] == {"count": 3, "p50": 50.0, "p95": 110.0, "max": 110.0}
+
+
 def test_probe_reports_numbers_and_labels_and_stops_the_worker(tmp_path: Path) -> None:
     clock = SystemClock()
     source = PacedSource()

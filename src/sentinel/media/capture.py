@@ -40,7 +40,11 @@ class SourceError(Exception):
 
 @dataclass(frozen=True)
 class DecodedFrame:
-    """One decoded picture; the receiver owns ``image`` (e.g. an HxWx3 array)."""
+    """One decoded picture; the receiver owns ``image`` (e.g. an HxWx3 array).
+
+    ``source_pts`` is the source's stream time in its own unit (OpenCvSource:
+    microseconds), or None when unknown. It is advisory (D21).
+    """
 
     image: Any
     width: int

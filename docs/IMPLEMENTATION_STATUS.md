@@ -313,7 +313,44 @@ V2-05 stays **partial (demo form, full acceptance pending)**. The outage and rea
   - An MPEG-TS file without an average rate: −2⁶³ on every frame.
 - **Not established:** the camera's actual RTP timestamps, the average rate FFmpeg estimated on each connection, and how many `none` frames lacked a PTS rather than repeating a rounded one.
 - **Impact.** None on decisions: every age, TTL and freshness check uses ingest time (D21), and nothing reads `source_pts`. But the value was not a usable stream timestamp, which V2-06's timestamp contract will need.
-- **Follow-up planned in this session:** read OpenCV's unrounded `CAP_PROP_POS_MSEC` instead, and have the probe report why frames are `none`. The device effect will need the next probe run.
+- **Follow-up:** see "PTS follow-up" below.
+
+### PTS follow-up (V2-05 demo form; device effect PENDING)
+
+| File | Change |
+|---|---|
+| `src/sentinel/media/opencv_source.py` | `source_pts` is now stream time in **microseconds** from `CAP_PROP_POS_MSEC`, the same PTS unrounded. OpenCV reports 0 ms for a frame without PTS, so 0 counts as a real value only on the first frame after each open and is `None` afterwards; negative and non-finite values stay `None`. The module docstring records why `CAP_PROP_PTS` is unsuitable, and that FFmpeg's stderr can name the camera host and port. |
+| `src/sentinel/media/capture.py` | `DecodedFrame` documents that `source_pts` is in the source's own unit and advisory (D21). |
+| `src/sentinel/media/probe.py` | The summary adds `pts_none_reasons` (`missing`, `repeated`, `backwards`, and `unattributed` when the probe did not see the frame the stamper compared with) and `pts_step_ms` (p50/p95/max of the PTS step between consecutive consumed frames). |
+| `tests/unit/test_opencv_source.py` (+2 tests, +1 case), `tests/unit/test_capture.py` (+1) | The fake `cv2` now answers only `CAP_PROP_POS_MSEC`. Covered: microsecond values with sub-frame steps (1,400,000 / 1,450,000 / 1,500,000 / 1,600,033); 0 accepted only first after each open; NaN, ±inf, −1 and −2⁶³ give `None`. Probe: one stream with each `none` cause, including a replaced frame, and the step percentiles. |
+
+**Verification with real OpenCV (Claude, `~/onvif_env`, OpenCV 4.13.0, no camera):** reading the scratchpad files through `OpenCvSource` → `FrameStamper` → `ProbeStats`:
+- 50 ms-grid MP4 (average 15.09 fps; 13/120 repeats with `CAP_PROP_PTS`): `none` 0/120, `pts_step_ms` p50 50.0 / p95 100.0 / max 100.0.
+- The same frames as MKV: `none` 0/120, steps p50 50 / p95 100.
+- 15 fps constant-rate MPEG-TS: `none` 0/120, steps 66.667.
+
+What the next camera run will show (`pts_none_reasons`, `pts_step_ms`) is PENDING. If the camera's own timestamps repeat or regress, `none` will stay above 0 with the cause named.
+
+### Session 13 verification: exact commands and results
+
+PTS follow-up (repository `.venv`, Python 3.10.14, pytest 9.1.1; nothing installed):
+
+```bash
+.venv/bin/python -m pytest -q tests/unit/test_capture.py tests/unit/test_opencv_source.py
+# 43 passed in 2.90s, exit 0
+.venv/bin/python -m pytest -q
+# 455 passed in 10.91s, exit 0 (451 before)
+.venv/bin/sentinel config validate config/default.yaml
+# valid Sentinel configuration (version 1, camera cam-1); core monitoring only; exit 0
+env -u SENTINEL_RTSP_URL PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli capture probe config/default.yaml --seconds 2
+# capture probe: rtsp_url_missing; exit 1 (no camera contacted)
+git diff --check -- src tests docs
+# no output, exit 0
+```
+
+- **Mutation sweep (one-off; script not committed): 8/8 caught.** Mutations: read `CAP_PROP_PTS` again; accept 0 after the first frame; no first-frame reset on reopen; milliseconds instead of microseconds; probe keeps the last PTS across a skipped frame; steps measured from the last known PTS instead of the previous frame; backwards counted as repeated; probe never updates its last PTS. Originals were restored by file copy and compared with `cmp`.
+- **OpenCV source reading (Claude):** `cap_ffmpeg_impl.hpp` from OpenCV's public repository at tag 4.13.0, fetched into the scratchpad; the installed wheel is 4.13.0.92.
+- **Not run:** any camera or GPU access, CI, Python 3.12.
 
 ## Session 12 log (Claude, 2026-10-03)
 
@@ -1165,6 +1202,7 @@ D14–D21 are implementation decisions made in session 2 within the guide's rule
   - **One reader.** `CaptureWorker` is the only code that reads the camera, in its own thread. Each successful open starts a new stream epoch (D3). A frame's ingest time is when decode returns. The consumer passes `worker.connected` to `EdgeCore`, which is `None` between connections.
   - **Bounded handoff.** `LatestFrame` keeps only the newest undelivered frame, so a slow consumer skips frames (counted as `replaced`) instead of queueing them. At most one decoded image waits (921,600 B at 640×480 BGR), plus the one the consumer holds. The epoch's undelivered frame is dropped on disconnect.
   - **Failures.** When a read returns no frame within `read_timeout_s` (5 s), or errors, the source is closed; reopening starts a new epoch. Opening is bounded by `open_timeout_s` (10 s). Reconnect waits start at 1 s and double up to 15 s while connections deliver nothing, resetting after a connection delivers frames. A change in frame size ends the connection, because boxes and tracks assume one geometry per epoch. Freshness (D14) still marks video stale at 2 s and offline at 10 s, independently of reconnects.
+  - **Source PTS (amended in session 13).** `source_pts` is stream time in microseconds from `CAP_PROP_POS_MSEC`, not `CAP_PROP_PTS`, which OpenCV 4.13 rounds to whole average-frame periods and holds when a frame has no PTS. 0 is a real value only on the first frame after an open. The value is advisory (D21).
   - **FFmpeg settings.** The source passes TCP transport and video-only RTSP setup (`allowed_media_types;video`) through `OPENCV_FFMPEG_CAPTURE_OPTIONS`, which is process-wide and set before each RTSP open. Timeouts and decode threads go through `VideoCapture` parameters. `decode_threads` is 1, because FFmpeg frame threading delays each frame by up to threads − 1 frames; its CPU cost is unmeasured. FFmpeg's own error log stays at OpenCV's default.
   - **Credentials.** The URL comes only from `SENTINEL_RTSP_URL` (`rtsp://` or `rtsps://`). It never appears in config, errors, status, `repr` or probe output. Problems are fixed labels or exception class names.
   - **Unchanged for V2-05 proper.** The relay as the sole ingest owner, NVDEC/GStreamer, the H.265 main stream (D26) and a `FrameRef` buffer reference (D11) are all left for V2-05 proper.
@@ -1358,7 +1396,7 @@ PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli capture probe config/defau
 U="${SENTINEL_RTSP_URL#*://}"; U="${U%%@*}"
 printf 'userinfo_lines=%s lines=%s\n' "$(grep -cF -- "$U" ~/sentinel-runs/capture/c.err)" "$(wc -l < ~/sentinel-runs/capture/c.err)"; unset U
 #    Expected: 2+ connects and epochs, frames after the restore, upstream_connections max 1,
-#    0 userinfo lines. If an iptables rule is used for the cut, confirm afterwards that it is gone.
+#    0 userinfo lines. The summary now includes pts_none_reasons and pts_step_ms (session 13). If an iptables rule is used for the cut, confirm afterwards that it is gone.
 #    Return the JSON, the exit status, the counts, the cut/restore times and the conditions.
 
 # 2. Rest of check 2: frame rate, bitrate and keyframe spacing of both profiles, 60 s of

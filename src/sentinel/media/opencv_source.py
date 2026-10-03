@@ -7,7 +7,15 @@ decode (NVDEC) and the relay are V2-05 proper.
 
 Device adapter: cv2 is imported on first open, so the portable package imports
 without it. The URL comes from SENTINEL_RTSP_URL and never appears in errors,
-status or repr. FFmpeg's own log stays at OpenCV's default (errors only).
+status or repr. FFmpeg's own log stays at OpenCV's default (errors only); its
+connection errors can name the camera's host and port, so the runtime must not
+copy decoder stderr into shared logs unredacted.
+
+Source PTS is stream time in microseconds from ``CAP_PROP_POS_MSEC``. OpenCV
+4.13's ``CAP_PROP_PTS`` is unsuitable: it rounds the PTS to whole periods of the
+stream's estimated average frame rate and repeats the previous value when a
+frame has no PTS. On the substream (FFmpeg reports tbr 20 against a 15 fps
+average) that stamped 15-21 % of frames without a usable PTS (session 13).
 """
 
 from __future__ import annotations
@@ -85,6 +93,7 @@ class OpenCvSource:
         self._config = config
         self._cv2 = cv2
         self._cap: Any = None
+        self._reads_since_open = 0
 
     @classmethod
     def from_environment(
@@ -111,6 +120,7 @@ class OpenCvSource:
             cap.release()
             raise SourceError("open_failed")
         self._cap = cap
+        self._reads_since_open = 0
 
     def read(self) -> DecodedFrame | None:
         cap = self._cap
@@ -122,10 +132,20 @@ class OpenCvSource:
         shape = getattr(image, "shape", ())
         if len(shape) != 3 or shape[2] != 3 or str(getattr(image, "dtype", "")) != "uint8":
             raise SourceError("unexpected_frame_format")
-        pts = cap.get(self._cv2.CAP_PROP_PTS)
-        # OpenCV reports a missing PTS as a negative number (FFmpeg's AV_NOPTS_VALUE).
-        source_pts = int(pts) if isinstance(pts, float) and math.isfinite(pts) and pts >= 0 else None
-        return DecodedFrame(image, int(shape[1]), int(shape[0]), PixelFormat.BGR, source_pts)
+        first = self._reads_since_open == 0
+        self._reads_since_open += 1
+        return DecodedFrame(image, int(shape[1]), int(shape[0]), PixelFormat.BGR, self._pts_us(cap, first))
+
+    def _pts_us(self, cap: Any, first: bool) -> int | None:
+        """Stream time of the frame just read, in microseconds, or None if unknown.
+
+        OpenCV reports 0 ms for a frame without PTS. Stream time starts at 0, so only
+        the first frame after an open can really be at 0.
+        """
+        msec = cap.get(self._cv2.CAP_PROP_POS_MSEC)
+        if not isinstance(msec, float) or not math.isfinite(msec) or msec < 0 or (msec == 0 and not first):
+            return None
+        return round(msec * 1000)
 
     def close(self) -> None:
         cap, self._cap = self._cap, None

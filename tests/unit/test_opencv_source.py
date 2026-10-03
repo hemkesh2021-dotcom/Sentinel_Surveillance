@@ -43,8 +43,8 @@ class FakeCapture:
         return self._fake.reads.pop(0) if self._fake.reads else (False, None)
 
     def get(self, prop: int) -> float:
-        assert prop == FakeCv2.CAP_PROP_PTS
-        return self._fake.pts
+        assert prop == FakeCv2.CAP_PROP_POS_MSEC  # CAP_PROP_PTS is rounded to frame periods
+        return self._fake.msec.pop(0) if isinstance(self._fake.msec, list) else self._fake.msec
 
     def release(self) -> None:
         self.released = True
@@ -53,6 +53,7 @@ class FakeCapture:
 class FakeCv2(SimpleNamespace):
     CAP_FFMPEG = 1900
     CAP_PROP_PTS = 71
+    CAP_PROP_POS_MSEC = 0
     CAP_PROP_OPEN_TIMEOUT_MSEC = 53
     CAP_PROP_READ_TIMEOUT_MSEC = 54
     CAP_PROP_N_THREADS = 70
@@ -61,7 +62,7 @@ class FakeCv2(SimpleNamespace):
         super().__init__()
         self.opens = opens
         self.reads: list[tuple[bool, object]] = []
-        self.pts = 6000.0
+        self.msec: float | list[float] = 400.0
         self.captures: list[FakeCapture] = []
 
     def VideoCapture(self, target: str, api: int, params: list[int]) -> FakeCapture:  # noqa: N802
@@ -108,19 +109,43 @@ def test_read_returns_bgr_frames_with_pts_and_none_at_the_end() -> None:
     frame = source.read()
     assert frame is not None
     assert (frame.image, frame.width, frame.height, frame.pixel_format, frame.source_pts) == (
-        image, 640, 480, PixelFormat.BGR, 6000,
+        image, 640, 480, PixelFormat.BGR, 400_000,  # stream time in microseconds
     )
-    assert type(frame.width) is int and type(frame.height) is int
-    cv2.pts = -9.223372036854776e18  # AV_NOPTS_VALUE as OpenCV reports it
+    assert type(frame.width) is int and type(frame.height) is int and type(frame.source_pts) is int
+    cv2.msec = 0.0  # OpenCV's value for a frame without PTS
     assert source.read().source_pts is None  # type: ignore[union-attr]
     assert source.read() is None  # (False, None): ended or no frame within the read timeout
 
 
-@pytest.mark.parametrize("pts", [float("nan"), float("inf"), -1.0])
-def test_unusable_pts_values_become_none(pts: float) -> None:
+def test_pts_keeps_sub_frame_resolution_from_the_unrounded_timestamp() -> None:
+    # Frames 50 ms apart on a stream averaging 15 fps: CAP_PROP_PTS would round two
+    # of them to the same frame period; stream time stays strictly increasing.
+    cv2 = FakeCv2()
+    cv2.reads = [(True, FakeImage()) for _ in range(4)]
+    cv2.msec = [1400.0, 1450.0, 1500.0, 1600.0333]
+    source = OpenCvSource(URL, CaptureConfig(), cv2=cv2)
+    source.open()
+    assert [source.read().source_pts for _ in range(4)] == [  # type: ignore[union-attr]
+        1_400_000, 1_450_000, 1_500_000, 1_600_033,
+    ]
+
+
+def test_zero_is_a_real_timestamp_only_on_the_first_frame_after_each_open() -> None:
+    cv2 = FakeCv2()
+    cv2.reads = [(True, FakeImage()) for _ in range(3)]
+    cv2.msec = [0.0, 0.0, 0.0]
+    source = OpenCvSource(URL, CaptureConfig(), cv2=cv2)
+    source.open()
+    assert [source.read().source_pts for _ in range(2)] == [0, None]  # type: ignore[union-attr]
+    source.open()  # a reconnect: stream time starts again
+    assert source.read().source_pts == 0  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("msec", [float("nan"), float("inf"), -1.0, -9.223372036854776e18])
+def test_unusable_pts_values_become_none(msec: float) -> None:
     cv2 = FakeCv2()
     cv2.reads = [(True, FakeImage())]
-    cv2.pts = pts
+    cv2.msec = msec
     source = OpenCvSource(URL, CaptureConfig(), cv2=cv2)
     source.open()
     assert source.read().source_pts is None  # type: ignore[union-attr]
