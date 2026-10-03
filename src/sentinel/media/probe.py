@@ -20,7 +20,7 @@ import math
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from ..contracts import FrameRef, SourceTimeQuality
 from .capture import CapturedFrame, CaptureWorker, LatestFrame
@@ -152,6 +152,14 @@ class ProbeStats:
         }
 
 
+class FrameConsumer(Protocol):
+    """Work done on each frame the probe takes (e.g. tracking); it adds its own summary keys."""
+
+    def observe(self, captured: CapturedFrame) -> None: ...
+
+    def summary(self) -> dict[str, Any]: ...
+
+
 def run_probe(
     worker: CaptureWorker,
     slot: LatestFrame,
@@ -161,8 +169,14 @@ def run_probe(
     endpoint: RtspEndpoint | None = None,
     stop_timeout_s: float = 20.0,
     proc_net: Path = Path("/proc/net"),
+    consumer: FrameConsumer | None = None,
 ) -> dict[str, Any]:
-    """Run ``worker`` for ``seconds`` with a fast consumer and summarize; always stops the worker."""
+    """Run ``worker`` for ``seconds`` and summarize; always stops the worker.
+
+    Without ``consumer`` the probe takes frames as fast as they come. A consumer
+    runs on each taken frame in this thread, so a slow one makes the slot replace
+    frames, as a slow runtime would.
+    """
     stats = ProbeStats()
     before = established_connections(endpoint, proc_net) if endpoint is not None else None
     during: list[int] = []
@@ -177,6 +191,8 @@ def run_probe(
             now = clock.mono()
             if captured is not None:
                 stats.observe(captured, now.ns)
+                if consumer is not None:
+                    consumer.observe(captured)
             if endpoint is not None and now.ns >= next_sample:
                 count = established_connections(endpoint, proc_net)
                 if count is not None:
@@ -200,7 +216,7 @@ def run_probe(
             "min": min(during, default=None),
             "max": max(during, default=None),
         }
-    return {
+    summary = {
         "probe": "capture",
         "status": "frames_received" if stats.consumed else "no_frames",
         "seconds": round(elapsed_s, 3),
@@ -224,6 +240,9 @@ def run_probe(
         "ffmpeg_options": RTSP_FFMPEG_OPTIONS if endpoint is not None else None,
         "limitations": LIMITATIONS,
     }
+    if consumer is not None:
+        summary.update(consumer.summary())
+    return summary
 
 
 def _max_rss_bytes() -> int | None:

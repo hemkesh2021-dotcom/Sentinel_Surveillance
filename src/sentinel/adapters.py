@@ -118,12 +118,25 @@ class AdapterSpec:
     contract_versions: frozenset[int] = SUPPORTED_CONTRACT_VERSIONS
 
 
-# Real adapters join with their packages (capture V2-05, detector V2-09,
-# face V2-25, scene V2-26, notifiers V2-15). Keep this table explicit.
-BUILTIN_ADAPTERS: Mapping[str, AdapterSpec] = {}
+# Real adapters join with their packages (detector V2-09, face V2-25, scene
+# V2-26, notifiers V2-15). Keep this table explicit.
+BUILTIN_ADAPTERS: Mapping[str, AdapterSpec] = {
+    # V2-09/V2-10 demo form: v1's engine through Ultralytics track() with ByteTrack.
+    "legacy-yolov8n-bytetrack": AdapterSpec(
+        adapter_id="legacy-yolov8n-bytetrack",
+        role=AdapterRole.DETECTOR,
+        module="sentinel.inference.legacy_ultralytics",
+        attribute="LegacyUltralyticsTracker",
+        input_kinds=frozenset({"frame"}),
+        output_kinds=frozenset({"person.track"}),
+    ),
+}
 
-# Resource profiles with measured admission data (guide ch. 27); none yet.
-KNOWN_RESOURCE_PROFILES: frozenset[str] = frozenset()
+# Resource profiles with measured admission data (guide ch. 27).
+# provisional-demo-20261003T085010Z: check 8's combined run of the three demo model
+# components (D28, D33). Admits the demo adapters for the Oct 20 demo only, with its
+# exceedance recorded; not a benchmark, Gate B record or beta-gate result.
+KNOWN_RESOURCE_PROFILES: frozenset[str] = frozenset({"provisional-demo-20261003T085010Z"})
 
 
 class AdapterState(str, Enum):
