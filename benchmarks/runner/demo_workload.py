@@ -20,6 +20,15 @@ latest-frame semantics, or from synthetic noise frames without ``--clip``.
 
 Structured results go to stdout as ``@@EVENT <json>`` lines. Model output text
 is never written anywhere: the footage is private. Only counts and timings are.
+
+Torch allocator samples stream at most once per second, without retaining a
+sample history. t_mono is sample-start time.monotonic() seconds, comparable to
+memory.csv within the manifest's boot. Values are bytes for this process's
+torch CUDA allocator on device 0; peaks cover its lifetime and are not reset.
+Missing/failed readings are None. These exclude other processes and allocations
+outside torch's allocator, so they neither measure total GPU/device memory nor
+prove memory was reclaimed after unload. Sampling does not synchronize CUDA,
+empty its cache or change allocation policy.
 """
 
 from __future__ import annotations
@@ -34,8 +43,16 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable, Mapping
 
 EVENT_PREFIX = "@@EVENT "
+ALLOCATOR_INTERVAL_S = 1.0
+ALLOCATOR_FIELDS = {
+    "allocated_bytes": "allocated_bytes.all.current",
+    "allocated_peak_bytes": "allocated_bytes.all.peak",
+    "reserved_bytes": "reserved_bytes.all.current",
+    "reserved_peak_bytes": "reserved_bytes.all.peak",
+}
 TRACK_ARGS = {  # as surveillance4_1.py calls yolo.track()
     "imgsz": 640,
     "device": 0,
@@ -68,6 +85,66 @@ SCENE_PROMPT = (
 def event(kind: str, /, **fields: object) -> None:
     sys.stdout.write(EVENT_PREFIX + json.dumps({"event": kind, **fields}) + "\n")
     sys.stdout.flush()
+
+
+def torch_allocator_stats() -> Mapping[str, int]:
+    """Lazy runtime provider; importing this module does not import torch."""
+    import torch
+
+    return torch.cuda.memory_stats(0)
+
+
+class AllocatorSampler(threading.Thread):
+    """Stream fixed-size allocator snapshots at 1 Hz, with no retained history."""
+
+    def __init__(
+        self,
+        provider: Callable[[], Mapping[str, int]],
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        emit: Callable[..., None] = event,
+    ) -> None:
+        super().__init__(name="allocator-sampler", daemon=True)
+        self.phase = "detector_settle"
+        self._provider = provider
+        self._clock = clock
+        self._emit = emit
+        self._next_sample = 0.0
+        self._halt = threading.Event()
+
+    def sample(self) -> bool:
+        now = self._clock()
+        if self._halt.is_set() or now < self._next_sample:
+            return False
+        self._next_sample = now + ALLOCATOR_INTERVAL_S
+        phase = self.phase
+        error = None
+        try:
+            readings = self._provider()
+            values = {}
+            for field, key in ALLOCATOR_FIELDS.items():
+                value = readings.get(key)
+                values[field] = value if type(value) is int and value >= 0 else None
+        except Exception as exc:
+            error = type(exc).__name__
+            values = dict.fromkeys(ALLOCATOR_FIELDS)
+        self._emit(
+            "torch_allocator", t_mono=round(now, 3), phase=phase, clock="time.monotonic",
+            units="bytes", device=0, peak_scope="allocator_lifetime",
+            status="observed" if all(value is not None for value in values.values()) else "unavailable",
+            error=error, **values,
+        )
+        return True
+
+    def run(self) -> None:
+        while not self._halt.is_set():
+            self.sample()
+            self._halt.wait(max(0.0, self._next_sample - self._clock()))
+
+    def stop(self) -> None:
+        self._halt.set()
+        if self.ident is not None:
+            self.join(timeout=5)
 
 
 def percentiles(values: list[float]) -> dict[str, float | int | None]:
@@ -350,7 +427,7 @@ def scene_loop(port: int, latest: Latest, stats: Stats, interval: float, stop: t
         stop.wait(max(0.0, next_start - time.monotonic()))
 
 
-def run_workload(model, deepface, args, stats: Stats) -> None:
+def run_workload(model, deepface, args, stats: Stats, allocator: AllocatorSampler) -> None:
     frames = Frames(args.clip, args.fps)
     latest = Latest()
     stop = threading.Event()
@@ -361,6 +438,7 @@ def run_workload(model, deepface, args, stats: Stats) -> None:
     period = 1.0 / args.fps
     started = time.monotonic()
     phase_end = started + args.warmup_s
+    allocator.phase = "warmup"
     event("phase", name="warmup")
     for worker in workers:
         worker.start()
@@ -376,6 +454,7 @@ def run_workload(model, deepface, args, stats: Stats) -> None:
             stats.reset()
             steady_started = now
             phase_end = now + args.steady_s
+            allocator.phase = "steady"
             event("phase", name="steady")
         due = int((now - started) / period) + 1  # frames a live source has delivered by now
         if due <= shown:
@@ -424,13 +503,20 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     event("phase", name="detector_load")
     model = load_detector(args.engine)
-    event("phase", name="detector_settle")
-    time.sleep(args.settle_s)
-    event("phase", name="face_load")
-    deepface = load_face()
-    event("phase", name="face_settle")
-    time.sleep(args.settle_s)
-    run_workload(model, deepface, args, Stats())
+    allocator = AllocatorSampler(torch_allocator_stats)
+    allocator.start()
+    try:
+        event("phase", name="detector_settle")
+        time.sleep(args.settle_s)
+        allocator.phase = "face_load"
+        event("phase", name="face_load")
+        deepface = load_face()
+        allocator.phase = "face_settle"
+        event("phase", name="face_settle")
+        time.sleep(args.settle_s)
+        run_workload(model, deepface, args, Stats(), allocator)
+    finally:
+        allocator.stop()
     return 0
 
 

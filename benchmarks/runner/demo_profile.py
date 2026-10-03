@@ -23,6 +23,12 @@ result. Memory follows guide ch. 12: whole-device use is MemTotal - MemAvailable
 in decimal bytes; per-process RSS/PSS and tegrastats are separate views that
 are never added together.
 
+Memory CSV timestamps are sample-start time.monotonic() seconds within the
+recorded boot. Linux meminfo kB values mean 1024 bytes; absent fields are blank
+in CSV and None when loaded. Samples stream to disk every 0.2 seconds without
+an in-memory history. Torch allocator events are a separate process-only view,
+not total GPU/device usage or proof that process exit reclaimed memory.
+
 Run from a plain SSH session on the Jetson, headless (decision D29), with
 VS Code and Claude Code closed; see docs/IMPLEMENTATION_STATUS.md, check 8.
 Standard library only; run with the system Python 3. Nothing here reads camera
@@ -66,7 +72,10 @@ SAMPLE_INTERVAL_S = 0.2
 PSS_INTERVAL_S = 1.0
 LABEL = "provisional-demo"
 EVENT_PREFIX = "@@EVENT "
-MEMINFO_KEYS = ("MemTotal", "MemFree", "MemAvailable", "Cached", "SwapTotal", "SwapFree")
+MEMINFO_KEYS = (
+    "MemTotal", "MemFree", "MemAvailable", "Cached", "SwapTotal", "SwapFree",
+    "Shmem", "Unevictable", "Mlocked", "SUnreclaim", "KReclaimable", "CmaFree",
+)
 DESKTOP_COMMS = frozenset({"Xorg", "Xwayland", "gnome-shell", "Xtigervnc", "Xvnc", "xfwm4", "xfce4-session"})
 V1_SCRIPTS = frozenset({"surveillance4_1.py", "dashboard.py", "dashboard_1.py"})
 DEEPFACE_WEIGHTS = ("facenet512_weights.h5", "face_detection_yunet_2023mar.onnx")
@@ -92,13 +101,16 @@ class Interrupted(Exception):
 # ---------------------------------------------------------------- /proc readers
 
 
-def read_meminfo() -> dict[str, int]:
+def read_meminfo(path: Path = Path("/proc/meminfo")) -> dict[str, int]:
+    """Convert Linux kB (1024 bytes) to bytes; omit missing/invalid fields."""
     values = {}
-    with open("/proc/meminfo") as handle:
+    with open(path) as handle:
         for line in handle:
             key, _, rest = line.partition(":")
             if key in MEMINFO_KEYS:
-                values[key] = int(rest.split()[0]) * 1024
+                fields = rest.split()
+                if len(fields) == 2 and fields[0].isdigit() and fields[1] == "kB":
+                    values[key] = int(fields[0]) * 1024
     return values
 
 
@@ -321,6 +333,7 @@ class Sampler(threading.Thread):
 
     COLUMNS = [
         "t_mono", "phase", "mem_total", "mem_free", "mem_available", "cached", "swap_total", "swap_free",
+        "shmem", "unevictable", "mlocked", "s_unreclaim", "k_reclaimable", "cma_free",
         "llama_rss", "llama_hwm", "llama_pss", "work_rss", "work_hwm", "work_pss", "pswpin", "pswpout",
     ]
 
@@ -624,7 +637,7 @@ def run(args: argparse.Namespace) -> int:
 # ------------------------------------------------------------------ summary
 
 
-def _int(value: str) -> int | None:
+def _int(value: str | None) -> int | None:
     return int(value) if value not in ("", None) else None
 
 
@@ -634,7 +647,7 @@ def load_samples(path: Path) -> list[dict[str, object]]:
         for row in csv.DictReader(handle):
             sample: dict[str, object] = {"t": float(row["t_mono"]), "phase": row["phase"]}
             for key in Sampler.COLUMNS[2:]:
-                sample[key] = _int(row[key])
+                sample[key] = _int(row.get(key))
             sample["used"] = sample["mem_total"] - sample["mem_available"]
             sample["swap_used"] = sample["swap_total"] - sample["swap_free"]
             samples.append(sample)
@@ -696,10 +709,23 @@ def gb(value: int | None, signed: bool = False) -> str:
     return f"{sign}{value:,} B ({sign}{value / 1e9:.3f} GB)"
 
 
+def load_latest_events(path: Path) -> dict[str, dict[str, object]]:
+    """Retain at most six summary events; allocator telemetry stays on disk."""
+    names = {"run_end", "llama_ready", "detector_loaded", "face_loaded", "workload_stats", "llama_gpu_check"}
+    latest = {}
+    with open(path) as handle:
+        for line in handle:
+            if line.strip():
+                record = json.loads(line)
+                if record["event"] in names:
+                    latest[record["event"]] = record
+    return latest
+
+
 def summarize(run_dir: Path) -> str:
     run_dir = Path(run_dir)
     manifest = json.loads((run_dir / "manifest.json").read_text())
-    events = [json.loads(line) for line in (run_dir / "events.jsonl").read_text().splitlines() if line.strip()]
+    events = load_latest_events(run_dir / "events.jsonl")
     samples = load_samples(run_dir / "memory.csv")
     tegra = load_tegrastats(run_dir / "tegrastats.log")
 
@@ -715,8 +741,7 @@ def summarize(run_dir: Path) -> str:
         return None
 
     def last_event(name: str) -> dict[str, object] | None:
-        found = [e for e in events if e["event"] == name]
-        return found[-1] if found else None
+        return events.get(name)
 
     def column_max(rows: list[dict[str, object]], key: str) -> int | None:
         values = [r[key] for r in rows if r.get(key) is not None]
@@ -736,6 +761,7 @@ def summarize(run_dir: Path) -> str:
         f"Repository: {manifest['repository']['commit']} (tracked changes: {manifest['repository']['tracked_changes']})",
         "",
         "Whole-device memory = MemTotal - MemAvailable (decimal bytes).",
+        "Torch allocator events, when present, are process-only bytes; they do not measure total GPU/device usage or prove unload.",
         "",
         f"{'phase':<16}{'seconds':>8}  {'used at start':>14}  {'used max':>14}  {'used at end':>14}  {'MemFree min':>14}  {'swap max':>12}",
     ]
