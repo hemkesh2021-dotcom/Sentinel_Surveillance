@@ -1,6 +1,6 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-03, session 4: session 3's record completed (V2-01 device checks run by Claude on 2026-09-29, the maintainer's decisions D26–D29, the U17 demo-profile script whose run is PENDING as check 8), answers on check 3b and GPU memory (U18, check 9 PENDING). Requirements come from the v2 beta implementation guide (V2-01…V2-56 backlog), and corrections and regression cases from the 23 September audit review. Both documents are local-only (see D13).
+Last updated 2026-10-03, end of session 4: session 3's record completed (V2-01 device checks run by Claude on 2026-09-29, the maintainer's decisions D26–D29, the U17 demo-profile script whose run is PENDING as check 8), answers on check 3b and GPU memory (U18, check 9 PENDING), and V2-13, V2-14 and V2-15 in demo form (D30–D32). Requirements come from the v2 beta implementation guide (V2-01…V2-56 backlog), and corrections and regression cases from the 23 September audit review. Both documents are local-only (see D13).
 
 ## Position
 
@@ -13,9 +13,9 @@ Last updated 2026-10-03, session 4: session 3's record completed (V2-01 device c
 | Session 2 commits | `4587021` PTS tolerance at ingest · `812b42c` V2-01 records · `e81db81` replay timelines · `86889f8` scene lane (R3) · `432dc69` live state and freshness (R2) · `66937ef` face association and identity (R1) · `48d6188` status record · `9593b64` adapter manifests (V2-49) · `32985c2` maintainer decisions D22–D24 |
 | Session 3 work (2026-09-29) | Interrupted by a usage limit before anything was committed; committed in session 4 as the first commit below |
 | Session 4 commits (2026-10-03) | See the session 4 slice log |
-| Working tree | Clean apart from ignored environments/build output and local-only files excluded through `.git/info/exclude` |
+| Working tree | Clean after the session 4 commits, apart from ignored environments/build output and local-only files excluded through `.git/info/exclude` |
 | Local-only files | The v2 guide, the audit review and `docs/LOCAL_NOTES.md` (device-specific notes). A fresh clone does not contain them, although CLAUDE.md names the first two. |
-| Selected package | V2-13 in demo form (Oct 20 path). V2-01's checks 1 (`nvpmodel` only), 3, 5 and 6 were run by Claude in session 3; check 8 (U17 profile) and check 9 (U18) are PENDING. |
+| Selected package | Week 1 portable packages done in demo form (V2-13, V2-14, V2-15). Next: V2-28 incident side, then the week-2 device adapters and D-1 once checks 8 and 9 are back. V2-01's checks 1 (`nvpmodel` only), 3, 5 and 6 were run by Claude in session 3; check 8 (U17 profile) and check 9 (U18) are PENDING. |
 | Other branches | `origin/Yogeshvar425-patch-1` (teammate) is **not merged**: a single commit `6755796` that adds @Yogeshvar425 to `.github/CODEOWNERS` (merge base `c66ebde`). `origin/codex/github-audit-fixes-2026-09-19` is already in `master` via PR #4. |
 | Effort | Per-package estimates are in the package table (given to the maintainer on 2026-09-29). The re-estimate of optimization effort still waits for V2-01's B0 run. |
 | v1 on this device | **Not running** (maintainer, 2026-09-29). Checks must not assume v1 processes exist. |
@@ -150,7 +150,24 @@ Commits on `v2-beta` after `32985c2`, all local until the maintainer pushes them
 | `9ec10cf` | Session 3's record completed (this file) and the U17/U18 benchmark scripts. Also, outside the repository: the excluded local notes gained the remote-desktop observation, and the maintainer's Claude Code auto-mode settings now state that the repository is public (maintainer request). |
 | `b8102b9` | V2-13 demo form: restricted-zone and dwell rules (D30) |
 | `a30445c` | V2-14 demo form: SQLite incidents, observations, evidence, transitions and outbox (D31) |
-| (this commit) | V2-15 demo form: leased outbox worker and Telegram adapter, mocked (D32) |
+| `1c69490` | V2-15 demo form: leased outbox worker and Telegram adapter, mocked (D32) |
+| (this commit) | Session 4 verification record and next task |
+
+### Session 4 verification: exact commands and results
+
+All ran on 2026-10-03 on the Jetson from `~/sentinel-surveillance`. Nothing was installed into or written to `~/onvif_env`. No hardware check ran in session 4.
+
+```bash
+.venv/bin/python -m pytest                                  # 200 passed in 6.2s (Python 3.10.14, pydantic 2.13.5)
+.venv/bin/sentinel config validate config/default.yaml      # valid, exit 0
+/usr/bin/python3 -m py_compile benchmarks/runner/*.py       # ok; demo_profile.py and gpu_alloc_probe.py --help ok
+```
+
+- **Every session 4 commit passes its own tests** (session 1's archive loop over `32985c2..HEAD`): `9ec10cf` 123 · `b8102b9` 151 · `a30445c` 169 · `1c69490` 200 passed.
+- **Clean archive of `1c69490` on Python 3.12.3** (fresh venv): 200 passed; `sentinel config validate` valid. v1 "Dashboard checks" in the same archive (Flask 3.0.3, requests 2.32.3, python-dotenv 1.0.1): `Ran 4 tests ... OK`.
+- **pydantic 2.12.5** (scratch venv on `/usr/local/bin/python3.10`, as in session 2): 200 passed.
+- **Inside `~/onvif_env`** (`PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src`, cwd and database in the session scratchpad; pydantic 2.12.5, SQLite 3.45.1): imported all 36 `sentinel` modules. Then FakeClock frames, an `EdgeCore` zone entry at 23:00 Kolkata, `IncidentService.record()` and an `OutboxWorker` pass with a fake notifier: `['entered'] -> ['created']`, `[(1, 'sent')]`. `find ~/onvif_env -newer <script>` found no changed files.
+- Mutation sweeps: V2-13 22/22, V2-14 20/21 plus one equivalent mutant, V2-15 23/23 (details in each package's section above).
 
 ### V2-15 demo form: what was added
 
@@ -420,7 +437,7 @@ unittest discovery ignores `tests/unit/` because it has no `__init__.py`. This a
 - There was no run on a clean laptop (x86-64 or macOS); all checks ran on this Jetson's aarch64 userspace.
 - No lint or type check is configured yet (guide ch. 21 lists both); deferred to keep the slice small.
 - There were no camera, decoder, GPU, TensorRT, memory, throughput or latency measurements. This slice establishes no hardware, Gate B or beta-readiness result.
-- No v2 code runs on the camera or GPU yet. `EdgeCore` is exercised only by synthetic replays and one FakeClock smoke run in `~/onvif_env` (CPU, no camera). The other ch. 18 CLI commands, including `sentinel replay`, were intentionally not added yet.
+- No v2 code runs on the camera or GPU yet. `EdgeCore`, the incident store and the outbox are exercised only by synthetic replays, mocks and FakeClock smoke runs in `~/onvif_env` (CPU, no camera, no network). No real Telegram message has been sent by v2. The other ch. 18 CLI commands, including `sentinel replay`, were intentionally not added yet.
 - The replay regressions use synthetic timelines, not the maintainer's clips. They record the behaviour of the v2 components and of a documented reference model of v1 (D12), not of the running v1 process.
 - The mutation sweeps are one-off checks whose scripts are not committed.
 - Checks 3a/3b were run by Claude in session 3 (inventory below). Checks 8 and 9 are only syntax-checked (`py_compile`, `--help`); they have not been run. Check 8's script was smoke-tested by Claude with a desktop running and a stand-in or partial workload, which is not a profile.
