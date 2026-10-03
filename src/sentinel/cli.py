@@ -36,6 +36,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("  no optional adapters configured: core monitoring only")
     for status in statuses:
         print(f"  adapter {status.manifest.adapter_id}: {status.state.value} ({status.reason})")
+    for zone in config.zones:
+        if zone.schedule is None:
+            when = "always active"
+        else:
+            windows = ", ".join(f"{w.start}-{w.end}" for w in zone.schedule.windows)
+            when = f"{windows} {zone.schedule.timezone}"
+        state = "enabled" if zone.enabled else "disabled"
+        print(f"  zone {zone.zone_id}: {zone.rule}, {state}, {zone.severity}, {when}")
     return 0
 
 

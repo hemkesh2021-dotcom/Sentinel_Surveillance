@@ -173,3 +173,25 @@ class V1FaceWorker:
 
     def is_stranger(self, tid: int) -> bool:
         return self.verified.get(tid, "Stranger") in ("Stranger", "Unknown")
+
+
+RESTRICTED_HOURS = (22, 6)  # L42
+
+
+def v1_is_restricted_time(local_hour: int) -> bool:
+    """L461-462. ``datetime.now().hour``: the host's local time zone, whole hours only."""
+    return local_hour >= RESTRICTED_HOURS[0] or local_hour < RESTRICTED_HOURS[1]
+
+
+def v1_intruder_alert(any_stranger: bool, scene_threat: str | None, local_hour: int) -> bool:
+    """L616-633 (ignoring the 10 s cooldown): v1's only person alert in the frame.
+
+    It needs all three: a person whose face did not match (``is_stranger``, L587;
+    every unchecked track starts as a stranger, L414), the latest VLM result's
+    threat at medium or high (L620, from ``last_ai_result`` whatever its age), and
+    restricted hours. There are no zones: where the person is does not matter,
+    and a recognised person never alerts. ``scene_threat`` None means no VLM
+    result yet (``'none'``).
+    """
+    threat = str(scene_threat or "none").lower()
+    return any_stranger and threat in ("medium", "high") and v1_is_restricted_time(local_hour)

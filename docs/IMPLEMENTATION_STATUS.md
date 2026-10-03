@@ -23,7 +23,7 @@ Last updated 2026-10-03, session 4: session 3's record completed (V2-01 device c
 
 ## Next concrete task
 
-1. **V2-13, demo form:** restricted-zone rule over current `TrackObservation`s: normalized polygon, bottom-centre anchor, IANA-timezone schedule including intervals across midnight, entry persistence and gap tolerance, and a rule observation that creates a candidate incident without any identity or VLM verdict. Add deterministic replay tests, including midnight, calm entry with the scene lane off, a known person still triggering the rule, and a stall or reconnect ending the observation. Dwell and directed crossing come next in the same package.
+1. **V2-13, rest (after Week 1):** directed line crossing, and a decision on hysteresis. The restricted-zone and dwell rules are done in demo form (D30).
 2. **V2-14, demo form:** SQLite schema and migration (WAL, busy timeout, single writer). One transaction deduplicates the runtime observation ID, creates or updates the incident with a revision check, appends evidence and a transition, and inserts outbox rows with `UNIQUE(incident, channel, policy_revision, message_kind)`. Test a repeated source event and a crash after commit.
 3. **V2-15, demo form:** leased outbox worker and a stdlib (`urllib`) Telegram adapter tested against a mock: HTTP error, `ok=false`, 429 with `retry_after`, timeout, and a crash after sending. Retries, dead letter, and redacted errors; no real token in tests.
 4. **V2-28, demo form (incident side):** late and enrichment evidence annotates only its own incident in the store.
@@ -35,7 +35,7 @@ Target (maintainer, 2026-09-29): a demoable end-to-end path on this Jetson by 20
 
 | Week | Work | Status |
 |---|---|---|
-| 1 (to Oct 6) | V2-49; V2-13 zone rule; V2-14 SQLite incidents/outbox; V2-15 leased outbox + Telegram (mocked). All portable. | V2-49 done; V2-13 next |
+| 1 (to Oct 6) | V2-49; V2-13 zone rule; V2-14 SQLite incidents/outbox; V2-15 leased outbox + Telegram (mocked). All portable. | V2-49 done; V2-13 demo form done (restricted + dwell; crossing deferred); V2-14 next |
 | 2 (to Oct 13) | Device adapters (D24): capture from the substream (profile A, D22) with `~/onvif_env`'s OpenCV/FFmpeg software decode, video only, stamped by FrameStamper; detector + ByteTrack via the existing `yolov8n.engine` as the *legacy parity adapter*; interim face adapter (existing DeepFace/Facenet512 on CPU) feeding v2 association; llama-server scene adapter; `sentinel run` loop around `EdgeCore` | Checks 3 and 5 done; U13 settled (D27); U17 settled (D28), its profile run (check 8) PENDING; U18 open |
 | 3 (to Oct 20) | Loopback-only, read-only status page (stdlib HTTP server) showing LiveState, incidents and delivery outcomes; end-to-end rehearsal; demo script including camera loss and recovery | — |
 
@@ -72,7 +72,7 @@ Estimates as given to the maintainer on 2026-09-29. V2-49 has since been done.
 | V2-10 | Tracker and coordinate parity | not started | Jetson | yes: **demo form, full acceptance pending** | 1.5 | 1.5 | 07, 09 |
 | V2-11 | Telemetry and runtime handoff contract | not started | Portable + device check | no | 1 | 0.5 | 02, 05 |
 | V2-12 | Overlay rendering vs timed fixtures | not started | Portable + device check | no | 1 | 1 | 06, 10 |
-| V2-13 | Zone, crossing and dwell rules | not started | Portable | yes: **demo form, full acceptance pending** | 1 | 0 | 10, 11 |
+| V2-13 | Zone, crossing and dwell rules | partial: demo form (restricted + dwell) done, directed crossing not started | Portable | yes: **demo form, full acceptance pending** | 1 | 0 | 10, 11 |
 | V2-14 | Incident transaction, SQLite migrations | not started | Portable | yes: **demo form, full acceptance pending** | 1 | 0 | 02, 11 |
 | V2-15 | Leased outbox and Telegram adapter | not started | Portable + device check | yes: **demo form, full acceptance pending** | 1 | 0.5 | 14 |
 | V2-16 | Rule evidence/correlation regression suite | partial | Portable | no | 0.5 | 0 | 13, 14 |
@@ -133,6 +133,7 @@ Notes on partial and in-progress rows:
   - V2-04: GitHub Actions passed at `32985c2` (maintainer report). The clean-laptop (macOS) run is not done.
 - **Done:** V2-03 with synthetic replays only; real-clip replay needs V2-07. V2-49's registry is empty until real adapters land, and its unknown-profile rule makes every model adapter unavailable until check 8's provisional profiles are recorded (D28).
 - **Partial:**
+  - V2-13: restricted-zone and dwell rules in demo form (session 4). Directed line crossing and hysteresis are not done; revalidation after V2-10/V2-11 and calibration of persistence and gap values on labelled replays (V2-07) are pending.
   - V2-16: only the scene-hazard correlation.
   - V2-20: validated in-memory enrollment only.
   - V2-25: the association and identity core is done; the adapter, alignment, vectorized matching and report are not.
@@ -145,7 +146,25 @@ Commits on `v2-beta` after `32985c2`, all local until the maintainer pushes them
 
 | Commit | Content |
 |---|---|
-| (this commit) | Session 3's record completed (this file) and the U17/U18 benchmark scripts. Also, outside the repository: the excluded local notes gained the remote-desktop observation, and the maintainer's Claude Code auto-mode settings now state that the repository is public (maintainer request). |
+| `9ec10cf` | Session 3's record completed (this file) and the U17/U18 benchmark scripts. Also, outside the repository: the excluded local notes gained the remote-desktop observation, and the maintainer's Claude Code auto-mode settings now state that the repository is public (maintainer request). |
+| (this commit) | V2-13 demo form: restricted-zone and dwell rules (D30) |
+
+### V2-13 demo form: what was added
+
+| Path | Purpose |
+|---|---|
+| `src/sentinel/rules/geometry.py` | Normalized polygons (3–32 points, no self-intersection, non-zero area), even-odd containment, `bottom_center`/`center` anchors |
+| `src/sentinel/rules/schedule.py` | Daily `[start, end)` windows in an IANA timezone (`zoneinfo`, standard library), windows across midnight; fixed offsets and abbreviations such as `IST` rejected |
+| `src/sentinel/rules/zones.py` | `ZoneRule`/`ZoneRules` and the `ZoneObservation` contract (ENTERED/ENDED, observation and episode IDs, zone revision, first/last source frames, monotonic duration, reason) |
+| `src/sentinel/config.py`, `config/default.yaml`, `cli.py` | `zones:` list (unique IDs; located errors for polygons, schedules, unknown keys); `sentinel config validate` lists each zone |
+| `src/sentinel/runtime.py` | `EdgeCore` evaluates zones on every step from current tracks only; `CoreOutput.zones`; `diagnostics()["zone_episodes"]` |
+| `tests/replay/test_v2_13_zone_rules.py` (15), `zone_harness.py` | Midnight (one episode across 00:00; ends at 06:00 with "outside the zone's schedule"; persistence counted from 22:00:00), daytime gating, calm entry with scene analysis off, known person (KNOWN `alice`) still observed, stall (ends at track expiry), disconnect (ends: no fresh video), reconnect (new episode), persistence and gap tolerance, anchor, dwell, tentative tracks, several zones and disabled zones, IDs |
+| `tests/unit/test_zones.py` (13) | Polygon validation and containment, midnight and DST (New York spring forward, London fall back), input validation, located config errors, revisions, predictions, sparse evaluation, new-epoch reason, wall-clock steps, exact gap boundary, CLI listing |
+| `tests/replay/b0_v1_snapshot.py` | `v1_intruder_alert()`: v1's only person alert (L42, L414, L461-462, L587, L616-633) needs an unmatched face, a medium/high VLM threat and restricted hours, with no zones |
+
+**V2-13 regressions recorded (B0 v1 on the same situation):** a calm intruder with no VLM verdict or a "none" threat at 23:00 gives a v2 ENTERED observation, and v1 does not alert. A recognised person in a restricted zone at 23:00 gives a v2 ENTERED observation, and v1 does not alert, even with a "high" threat. v1 has no zones, so where the person stands never matters to it.
+
+**V2-13 mutation sweep (one-off; script not committed): 22/22.** The first round caught 19. Three survivors were test gaps, fixed before committing: a prediction for a never-detected track, a presence split when no evaluation happens during the gap, and the exact gap boundary. Mutations: predictions count; schedule ignored; midnight window as "and"; inclusive window end; fixed UTC offset instead of zone rules; box centre instead of anchor; in-zone gap never restarts; gap never ends a presence; inclusive gap end; vanished tracks keep their episode; repeated ENTERED; persistence ignored; tentative tracks count; ENDED for presences never entered; episode ID without epoch and frame; persistence on wall-clock time; outage reason lost; self-intersection accepted; disabled zones run; core skips zones; schedule read at evaluation time; revision ignores settings.
 
 ## Session 3 slice log (2026-09-29; committed 2026-10-03)
 
@@ -418,6 +437,12 @@ D14–D21 are implementation decisions made in session 2 within the guide's rule
   - **After Oct 20**, behind a V2-08 restore point (known-good backup first): restore the Jetson `nvidia-cuda-dev` (6.2.1+b38 from the r36.4 repository) and remove or pin Ubuntu's CUDA 12.0 packages (`nvidia-cuda-toolkit`, `libcudart12`, `libnvidia-ml-dev`, `libnvidia-compute-535`), then re-run checks 3a/3b without the preload. Until then, the preload is required, not optional.
 - **D28. Admitting demo adapters (resolves U17)** (maintainer decision, 2026-09-29). Option (a): one measured run of the three demo model components together (check 8) gives provisional profiles labelled `provisional-demo`. They are recorded in this file and the adapter registry's known profiles, admit the adapters for the demo only, and are not a benchmark, Gate B record or beta-gate result.
 - **D29. Headless demo host** (maintainer decision, 2026-09-29). The demo runs with the display manager and any remote-desktop session stopped, as v1's launcher does. Check 8 is measured the same way and refuses to start otherwise (or records `--allow-desktop`).
+- **D30. Zone rules (V2-13 demo form; session 4 implementation decision, not yet reviewed).**
+  - A track is in a zone on a frame when it was really detected on that frame (predictions never count), it is CONFIRMED, the zone's anchor point of its box (default bottom-centre) lies in the polygon, and the frame's UTC ingest time is inside the schedule.
+  - One continuous presence of one track in one zone is an episode. It becomes an ENTERED observation once in-zone detections span `min_duration_s` (entry persistence for `restricted`, the dwell threshold for `dwell`), at most once per episode. It ENDS (only if it was ENTERED) when the track has not been in the zone for longer than `gap_tolerance_s`, the track expires, the video is not fresh, or the stream reconnects. A new epoch always starts a new episode.
+  - Durations and gaps use source ingest times on the monotonic clock (half-open: a gap of exactly `gap_tolerance_s` continues the presence). **Schedules are the one wall-clock input**: membership is decided from the frame's UTC ingest time in the zone's IANA timezone, so daylight-saving changes follow the zone rules and a wall-clock step can move a frame in or out of a window. Windows are daily `[start, end)`; an end not after the start spans midnight.
+  - Rules read neither identity nor scene verdicts. Observations carry no identity; identity can only be added as context by the incident service. Observation IDs are `<episode>.<phase>`, with the episode ID hashed from zone, zone revision, frame identity and track ID, for V2-14 deduplication.
+  - Starting values (proposed; calibrate on labelled replays in V2-07): `min_duration_s` 1.0, `gap_tolerance_s` 1.0, severity `warning`. No hysteresis margin yet: the gap tolerance absorbs anchor jitter at the boundary. Up to 16 zones of up to 32 points each.
 
 ## Unresolved decisions and semantics
 

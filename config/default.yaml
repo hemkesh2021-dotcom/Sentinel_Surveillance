@@ -34,6 +34,23 @@ identity:
   head_fraction: 0.4     # a face centre must lie in this top part of a person box
   min_face_inside: 0.6   # and this much of the face box inside the person box
 
+# Zone rules (guide ch. 9): a confirmed person whose box anchor (default: bottom
+# centre, where they stand) stays in a polygon long enough. They read neither
+# identity nor scene verdicts, so a known person still triggers a restricted zone.
+# Points are fractions of the native image [x, y], x to the right, y downwards.
+# Schedules are daily local-time windows in an IANA timezone; an end not after
+# the start spans midnight. Omit the schedule for a zone that is always active.
+#   - zone_id: front-door
+#     rule: restricted              # or dwell
+#     polygon: [[0.6, 0.6], [1.0, 0.6], [1.0, 1.0], [0.6, 1.0]]
+#     anchor: bottom_center         # or center
+#     min_duration_s: 1.0           # entry persistence (dwell: the dwell threshold)
+#     gap_tolerance_s: 1.0          # unseen in the zone longer than this ends a presence
+#     severity: warning             # info, warning or critical
+#     schedule: {timezone: Asia/Kolkata, windows: [{start: "22:00", end: "06:00"}]}
+#     enabled: true
+zones: []
+
 # Optional adapters (guide ch. 27): scene analysis, extra detectors, face
 # recognition, notifiers. Core monitoring runs with none enabled. Each entry is
 # a versioned manifest naming a built-in adapter; configuration never names code.

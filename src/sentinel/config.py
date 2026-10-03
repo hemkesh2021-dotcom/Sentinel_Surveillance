@@ -8,6 +8,7 @@ reference secrets by ID.
 from __future__ import annotations
 
 import difflib
+import hashlib
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -27,6 +28,8 @@ from .adapters import AdapterManifest, check_unique_ids
 from .contracts import Identifier
 from .media.clock import NS_PER_SECOND
 from .redaction import redact_line
+from .rules.geometry import Anchor, polygon_problem
+from .rules.schedule import Schedule, load_timezone, parse_hhmm
 
 CONFIG_VERSION = 1
 
@@ -127,6 +130,92 @@ class IdentityConfig(_Section):
         return round(self.vote_ttl_s * NS_PER_SECOND)
 
 
+ZoneId = Annotated[str, Field(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")]
+Fraction = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+
+
+class ScheduleWindowConfig(_Section):
+    """Daily local-time window [start, end); an end not after the start spans midnight."""
+
+    start: str
+    end: str
+
+    @field_validator("start", "end")
+    @classmethod
+    def _time_of_day(cls, value: str) -> str:
+        parse_hhmm(value)
+        return value
+
+    @field_validator("end")
+    @classmethod
+    def _not_empty(cls, value: str, info: ValidationInfo) -> str:
+        if info.data.get("start") == value:
+            raise ValueError("must differ from start; omit the schedule for a rule that is always active")
+        return value
+
+
+class ScheduleConfig(_Section):
+    timezone: str  # IANA name, e.g. Asia/Kolkata
+    windows: list[ScheduleWindowConfig] = Field(min_length=1, max_length=8)
+
+    @field_validator("timezone")
+    @classmethod
+    def _iana(cls, value: str) -> str:
+        load_timezone(value)
+        return value
+
+    def build(self) -> Schedule:
+        return Schedule.parse(self.timezone, [(w.start, w.end) for w in self.windows])
+
+
+class ZoneConfig(_Section):
+    """A zone rule over current person tracks (guide ch. 9). Starting values; calibrate on labelled replays (V2-07)."""
+
+    zone_id: ZoneId
+    rule: Literal["restricted", "dwell"] = "restricted"
+    # Normalized native-image points [x, y]; x to the right, y downwards.
+    polygon: list[Annotated[list[Fraction], Field(min_length=2, max_length=2)]]
+    anchor: Literal["bottom_center", "center"] = "bottom_center"
+    # restricted: how long a person must be seen in the zone before it counts as an entry;
+    # dwell: how long before it counts as dwelling.
+    min_duration_s: Seconds = 1.0
+    # How long a person may be unseen in the zone (out of it, predicted only, or outside
+    # the schedule) before the presence ends.
+    gap_tolerance_s: Seconds = 1.0
+    severity: Literal["info", "warning", "critical"] = "warning"
+    schedule: ScheduleConfig | None = None  # None: always active
+    enabled: bool = True
+
+    @field_validator("polygon")
+    @classmethod
+    def _simple_polygon(cls, value: list[list[float]]) -> list[list[float]]:
+        problem = polygon_problem([(x, y) for x, y in value])
+        if problem is not None:
+            raise ValueError(problem)
+        return value
+
+    @property
+    def points(self) -> tuple[tuple[float, float], ...]:
+        return tuple((x, y) for x, y in self.polygon)
+
+    @property
+    def anchor_kind(self) -> Anchor:
+        return Anchor(self.anchor)
+
+    @property
+    def min_duration_ns(self) -> int:
+        return round(self.min_duration_s * NS_PER_SECOND)
+
+    @property
+    def gap_tolerance_ns(self) -> int:
+        return round(self.gap_tolerance_s * NS_PER_SECOND)
+
+    @property
+    def revision(self) -> str:
+        """Changes whenever any setting of this zone changes; recorded with its observations."""
+        return hashlib.sha256(self.model_dump_json().encode()).hexdigest()[:12]
+
+
 class SentinelConfig(_Section):
     config_version: Literal[1]
     camera: CameraConfig
@@ -134,6 +223,7 @@ class SentinelConfig(_Section):
     scene: SceneConfig = Field(default_factory=SceneConfig)
     hazard: HazardConfig = Field(default_factory=HazardConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
+    zones: list[ZoneConfig] = Field(default_factory=list, max_length=16)
     # Optional adapters; core monitoring runs with none enabled (guide ch. 27).
     adapters: list[AdapterManifest] = Field(default_factory=list, max_length=32)
 
@@ -141,6 +231,16 @@ class SentinelConfig(_Section):
     @classmethod
     def _unique_adapter_ids(cls, value: list[AdapterManifest]) -> list[AdapterManifest]:
         check_unique_ids(value)
+        return value
+
+    @field_validator("zones")
+    @classmethod
+    def _unique_zone_ids(cls, value: list[ZoneConfig]) -> list[ZoneConfig]:
+        seen: set[str] = set()
+        for zone in value:
+            if zone.zone_id in seen:
+                raise ValueError(f"duplicate zone_id {zone.zone_id!r}")
+            seen.add(zone.zone_id)
         return value
 
 
