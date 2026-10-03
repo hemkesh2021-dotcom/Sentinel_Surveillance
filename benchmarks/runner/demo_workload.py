@@ -67,6 +67,7 @@ FACE_ARGS = {"model_name": "Facenet512", "detector_backend": "yunet", "enforce_d
 VLM_IMAGE_SIZE = (480, 360)
 VLM_JPEG_QUALITY = 60
 VLM_MAX_TOKENS = 200
+VLM_MAX_RESPONSE_BYTES = 1_000_000
 VLM_TIMEOUT_S = 30.0
 DEMO_SCENE_JOB_TIMEOUT_S = 8.0  # D16; latencies above it are counted, not cut off
 SCENE_SYSTEM = (
@@ -77,8 +78,10 @@ SCENE_PROMPT = (
     "Describe this camera image as JSON with exactly these fields: "
     '"persons_visible" (integer 0-50), "fire_or_smoke" (true or false), '
     '"threat" ("none", "low", "medium" or "high"), '
-    '"observations" (a list of at most 5 strings of at most 80 characters), '
-    '"uncertainty" ("low", "medium" or "high"), "summary" (at most 160 characters).'
+    '"observations" (up to 3 short phrases, aim under 48 characters each), '
+    '"uncertainty" ("low", "medium" or "high"), '
+    '"summary" (one short complete sentence, aim under 100 characters). '
+    "Finish descriptions well before the schema limits; do not fill the available space."
 )
 
 
@@ -283,6 +286,10 @@ class Stats:
         self.vlm_valid = 0
         self.vlm_invalid = 0
         self.vlm_unchecked = 0
+        self.vlm_rejections: dict[str, int] = {}
+        self.vlm_finish_reasons: dict[str, int] = {}
+        self.vlm_summary_at_limit = 0
+        self.vlm_observations_at_limit = 0
         self.vlm_prompt_tokens: list[int] = []
         self.vlm_completion_tokens: list[int] = []
 
@@ -318,6 +325,11 @@ class Stats:
                     "valid_reports": self.vlm_valid,
                     "invalid_reports": self.vlm_invalid,
                     "unchecked_reports": self.vlm_unchecked,
+                    "rejected_reports_by_reason": dict(self.vlm_rejections),
+                    "finish_reasons": dict(self.vlm_finish_reasons),
+                    "valid_summaries_at_limit": self.vlm_summary_at_limit,
+                    "valid_observations_at_limit": self.vlm_observations_at_limit,
+                    "accuracy": "not evaluated; structural validity is not scene accuracy",
                     "prompt_tokens_mean": mean(self.vlm_prompt_tokens),
                     "completion_tokens_mean": mean(self.vlm_completion_tokens),
                 },
@@ -346,6 +358,8 @@ def face_loop(deepface, latest: Latest, stats: Stats, hz: float, stop: threading
 
 
 def scene_request(port: int, frame) -> dict:
+    from sentinel.scene.completion import SceneCompletionError, scene_response_format
+
     import cv2
 
     small = cv2.resize(frame, VLM_IMAGE_SIZE)
@@ -357,6 +371,8 @@ def scene_request(port: int, frame) -> dict:
         "model": "lfm2-vl",
         "max_tokens": VLM_MAX_TOKENS,
         "temperature": 0.05,
+        "stream": False,
+        "response_format": scene_response_format(),
         "messages": [
             {"role": "system", "content": SCENE_SYSTEM},
             {
@@ -374,46 +390,52 @@ def scene_request(port: int, frame) -> dict:
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(request, timeout=VLM_TIMEOUT_S) as response:
-        return json.loads(response.read(1_000_000))
+        data = response.read(VLM_MAX_RESPONSE_BYTES + 1)
+    if len(data) > VLM_MAX_RESPONSE_BYTES:
+        raise SceneCompletionError("response_too_large")
+    return json.loads(data)
 
 
 def scene_loop(port: int, latest: Latest, stats: Stats, interval: float, stop: threading.Event) -> None:
-    try:
-        from sentinel.scene.report import SceneReportError, parse_scene_report
-    except Exception:  # noqa: BLE001 - validity is then reported as unchecked
-        parse_scene_report = None
-        SceneReportError = ValueError
     next_start = time.monotonic()
     while not stop.is_set():
         frame = latest.get()
         if frame is not None:
             started = time.perf_counter()
             try:
+                from sentinel.scene.completion import (
+                    SceneCompletionError, parse_scene_completion, scene_completion_finish_reason,
+                )
+                from sentinel.scene.report import SceneReportError
+
                 payload = scene_request(port, frame)
                 elapsed = (time.perf_counter() - started) * 1000
-                text = payload["choices"][0]["message"]["content"]
-                usage = payload.get("usage") or {}
+                usage = payload.get("usage") if isinstance(payload, Mapping) else None
+                usage = usage if isinstance(usage, Mapping) else {}
+                finish_reason = scene_completion_finish_reason(payload)
                 with stats.lock:
                     stats.vlm_ms.append(elapsed)
-                    if isinstance(usage.get("prompt_tokens"), int):
+                    stats.vlm_finish_reasons[finish_reason] = stats.vlm_finish_reasons.get(finish_reason, 0) + 1
+                    if type(usage.get("prompt_tokens")) is int and usage["prompt_tokens"] >= 0:
                         stats.vlm_prompt_tokens.append(usage["prompt_tokens"])
-                    if isinstance(usage.get("completion_tokens"), int):
+                    if type(usage.get("completion_tokens")) is int and usage["completion_tokens"] >= 0:
                         stats.vlm_completion_tokens.append(usage["completion_tokens"])
-                if parse_scene_report is None or not isinstance(text, str):
-                    valid = None
-                else:
-                    try:
-                        parse_scene_report(text)
-                        valid = True
-                    except SceneReportError:
-                        valid = False
-                with stats.lock:
-                    if valid is None:
-                        stats.vlm_unchecked += 1
-                    elif valid:
-                        stats.vlm_valid += 1
-                    else:
+                try:
+                    report = parse_scene_completion(payload)
+                except SceneReportError as exc:
+                    rejection = exc.reason if isinstance(exc, SceneCompletionError) else "invalid_report"
+                    with stats.lock:
                         stats.vlm_invalid += 1
+                        stats.vlm_rejections[rejection] = stats.vlm_rejections.get(rejection, 0) + 1
+                else:
+                    schema = report.model_json_schema()["properties"]
+                    with stats.lock:
+                        stats.vlm_valid += 1
+                        stats.vlm_summary_at_limit += int(len(report.summary) == schema["summary"]["maxLength"])
+                        stats.vlm_observations_at_limit += sum(
+                            len(observation) == schema["observations"]["items"]["maxLength"]
+                            for observation in report.observations
+                        )
             except Exception as exc:  # noqa: BLE001 - counted by class, never raised or echoed
                 if isinstance(exc, urllib.error.HTTPError):
                     name = f"HTTP {exc.code}"
