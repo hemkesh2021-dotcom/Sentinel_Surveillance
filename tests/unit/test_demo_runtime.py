@@ -724,7 +724,7 @@ def test_sentinel_run_starts_and_stops_on_sigterm_without_leaking_secrets(tmp_pa
     devices = fake_devices(ThreadedSource(on_read=stop_soon))
     previous = signal.getsignal(signal.SIGTERM)
     code = main(["run", str(config), "--data-dir", str(tmp_path / "data"), "--engine", str(tmp_path / "x.engine"),
-                 "--status-interval-s", "1"], devices=devices)
+                 "--status-interval-s", "1", "--status-port", "0"], devices=devices)
     out = capsys.readouterr()
     assert code == 0, out.err
     lines = [json.loads(line) for line in out.out.splitlines()]
@@ -738,7 +738,7 @@ def test_sentinel_run_starts_and_stops_on_sigterm_without_leaking_secrets(tmp_pa
 def test_sentinel_run_reports_a_refusal_by_label(tmp_path, capsys) -> None:
     config = tmp_path / "config.yaml"
     config.write_text("config_version: 1\ncamera: {id: cam-1}\n")
-    code = main(["run", str(config), "--data-dir", str(tmp_path), "--engine", "x"],
+    code = main(["run", str(config), "--data-dir", str(tmp_path), "--engine", "x", "--status-port", "0"],
                 devices=fake_devices(SourceError("rtsp_url_missing")))
     assert code == 1 and capsys.readouterr().err.strip() == "run: rtsp_url_missing"
 
@@ -776,3 +776,68 @@ def test_a_delivery_pass_that_raises_is_shown_and_the_loop_keeps_going(tmp_path)
         assert "delivery worker problem (outbox_error:OperationalError)" in h.runtime.snapshot()["degraded"]
     finally:
         assert h.outbox.stop(1.0)
+
+
+def free_port() -> int:
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def test_sentinel_run_serves_the_status_page_while_running(tmp_path, capsys, monkeypatch) -> None:
+    import http.client
+
+    monkeypatch.setenv("SENTINEL_RTSP_URL", FAKE_URL)
+    monkeypatch.setenv("SENTINEL_TELEGRAM_BOT_TOKEN", FAKE_TOKEN)
+    monkeypatch.delenv("SENTINEL_TELEGRAM_CHAT_ID", raising=False)
+    config = tmp_path / "config.yaml"
+    config.write_text("config_version: 1\ncamera: {id: cam-1}\nnotifications: {channels: [telegram]}\n")
+    port = free_port()
+    pages: list[tuple[int, str]] = []
+
+    def fetch(reads: int) -> None:
+        if reads in (15, 16):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/" if reads == 15 else "/status.json", headers={"Host": f"127.0.0.1:{port}"})
+            response = conn.getresponse()
+            pages.append((response.status, response.read().decode()))
+            conn.close()
+        if reads == 25:
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    devices = fake_devices(ThreadedSource(on_read=fetch))
+    devices.notifiers = environment_notifiers  # the real lookup: the chat ID is missing, so the channel is unavailable
+    code = main(["run", str(config), "--data-dir", str(tmp_path / "data"), "--engine", str(tmp_path / "x.engine"),
+                 "--status-port", str(port)], devices=devices)
+    out = capsys.readouterr()
+    assert code == 0, out.err
+    assert [status for status, _ in pages] == [200, 200]
+    html_page, document = pages[0][1], json.loads(pages[1][1])
+    assert "telegram unavailable (credentials_missing)" in html_page
+    assert document["components"]["capture"]["connects"] >= 1
+    assert document["runtime"]["state"] == "running"
+    lines = [json.loads(line) for line in out.out.splitlines()]
+    assert lines[0]["startup"]["status_page"] == f"http://127.0.0.1:{port}/"
+    assert lines[-1]["shutdown"]["stopped"]["status_page"] is True
+    for secret in ("hunter2", "192.0.2.10", "rtsp://", FAKE_TOKEN):
+        assert secret not in html_page + pages[1][1] + out.out + out.err
+    with __import__("socket").socket() as probe:
+        assert probe.connect_ex(("127.0.0.1", port)) != 0  # the page stopped with the runtime
+
+
+def test_a_busy_status_port_refuses_startup_before_any_model_loads(tmp_path, capsys) -> None:
+    import socket
+
+    config = tmp_path / "config.yaml"
+    config.write_text("config_version: 1\ncamera: {id: cam-1}\n")
+    calls: list[str] = []
+    with socket.socket() as busy:
+        busy.bind(("127.0.0.1", 0))
+        busy.listen()
+        port = busy.getsockname()[1]
+        code = main(["run", str(config), "--data-dir", str(tmp_path), "--engine", "x", "--status-port", str(port)],
+                    devices=fake_devices(ThreadedSource(), calls=calls))
+    assert code == 1 and capsys.readouterr().err.strip() == "run: status_port_unavailable:OSError"
+    assert calls == []

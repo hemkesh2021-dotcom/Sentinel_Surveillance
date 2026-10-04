@@ -14,7 +14,7 @@ from typing import Any
 from . import __version__
 from .adapters import resolve
 from .config import CaptureConfig, ConfigError, SentinelConfig, load_config
-from .demo_runtime import Devices, RunOptions, SceneOptions, StartupRefused, assemble
+from .demo_runtime import DATABASE_NAME, Devices, RunOptions, SceneOptions, StartupRefused, assemble
 from .media.capture import CaptureWorker, LatestFrame, SourceError, VideoSource
 from .media.clock import SystemClock
 from .media.frames import FrameStamper
@@ -63,6 +63,13 @@ def _scene_request(port: int, timeout_s: float) -> Any:
     from .scene.llama_server import LlamaSceneRequest, LoopbackTransport
 
     return LlamaSceneRequest(LoopbackTransport(port, timeout_s))
+
+
+def _status_port(text: str) -> int:
+    value = int(text)
+    if value != 0 and not 1024 <= value <= 65535:
+        raise argparse.ArgumentTypeError("must be 0 (no status page) or between 1024 and 65535")
+    return value
 
 
 def _positive_seconds(text: str) -> float:
@@ -133,6 +140,11 @@ def main(
     run.add_argument(
         "--scene-min-free-gb", type=_min_free_gb, default=3.0,
         help="do not start the scene server below this MemFree (decimal GB; default 3.0, as check 8)",
+    )
+    run.add_argument(
+        "--status-port", type=_status_port, default=18090,
+        help="read-only status page on 127.0.0.1:PORT (D-2; default 18090; 0 = none). Reach it over SSH: "
+        "ssh -L 18090:127.0.0.1:18090 <device>",
     )
     run.add_argument("--status-interval-s", type=_positive_seconds, default=30.0,
                      help="print a numbers-only status line this often (default 30)")
@@ -267,16 +279,41 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices) -> 
         data_dir=args.data_dir.expanduser(), engine=args.engine, min_free_bytes=round(args.min_free_gb * GB), scene=scene
     )
     clock = SystemClock()
+    holder: dict[str, Any] = {}
+    page = None
+    if args.status_port:
+        # Bound before any model loads: a busy port refuses fast, and the page shows "starting" meanwhile.
+        from .status_page import StatusServer
+
+        def snapshot() -> dict[str, Any]:
+            runtime = holder.get("runtime")
+            return runtime.snapshot() if runtime is not None else {
+                "runtime": {"state": "starting", "camera_id": config.camera.id}}
+
+        try:
+            page = StatusServer(args.status_port, snapshot, options.data_dir / DATABASE_NAME)
+        except OSError as exc:
+            print(f"run: status_port_unavailable:{type(exc).__name__}", file=sys.stderr)
+            return 1
+        page.start()
     try:
         assembly = assemble(config, options, devices, clock)
-    except StartupRefused as exc:
+    except (StartupRefused, KeyboardInterrupt) as exc:
+        if page is not None:
+            page.stop(2.0)
+        if isinstance(exc, KeyboardInterrupt):
+            print("run: interrupted during startup", file=sys.stderr)
+            return 130
         print(f"run: {exc.label}", file=sys.stderr)
         return 1
-    except KeyboardInterrupt:
-        print("run: interrupted during startup", file=sys.stderr)
-        return 130
+    except BaseException:
+        if page is not None:
+            page.stop(2.0)
+        raise
     runtime = assembly.runtime
-    print(json.dumps({"run": "starting", "startup": assembly.startup}), flush=True)
+    holder["runtime"] = runtime
+    startup = {**assembly.startup, "status_page": None if page is None else "http://%s:%d/" % page.address}
+    print(json.dumps({"run": "starting", "startup": startup}), flush=True)
     handlers = {sig: signal.signal(sig, lambda *_: runtime.request_stop()) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
         runtime.start()
@@ -288,6 +325,9 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices) -> 
                 next_line = time.monotonic() + args.status_interval_s
     finally:
         shutdown = runtime.shutdown()
+        if page is not None:
+            shutdown["stopped"]["status_page"] = page.stop(2.0)
+            shutdown["all_stopped"] = all(shutdown["stopped"].values())
         closed = assembly.close(shutdown)
         for sig, handler in handlers.items():
             signal.signal(sig, handler)

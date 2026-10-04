@@ -1,6 +1,6 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-04, session 15 (Claude). **D-1 `sentinel run`, demo form, portable part:** wires capture → legacy detector/tracker → EdgeCore → zone/hazard rules → `IncidentService` → outbox/Telegram through their existing contracts (D43). It adds a llama-server process owner that refuses any non-loopback bind before spawning and applies the D27 full-offload guard (D44). Scene analysis stays off by default. 54 new tests; 587 portable tests pass. The device run is PENDING. Session 14's summary: **D41:** S1 met its predeclared criteria, so `--cache-ram 0` is adopted for the demo scene path (maintainer's conditional authorization); scope and limits are in the session 14 log. **V2-26 demo form, portable part:** a loopback-only llama-server launch spec (D42), the S1/check 8 request, a bounded threaded scene worker and the `scene_server` config; 35 new tests; 533 portable tests pass. Privacy item: Ultralytics analytics (operator action PENDING). Session 13's summary: The maintainer's headless runs at `e9af7f4` are recorded as USER-SUPPLIED MEASUREMENTS: two Check 9 smokes, three S1 arms (arm a twice; the first arm b was interrupted by a signal to the runner) and four capture probes. **S1 result:** with llama-server's default prompt cache, steady pressure rose +115 MB/min (reproduced: +117 MB/min); with `--cache-ram 0` it rose +3.9 MB/min, with the same 53/53 valid requests and no latency penalty. The timebox's first branch applies: Claude proposes adopting `--cache-ram 0` for the demo profile and D-1; the maintainer decides. Other memory work stays paused. Further U19 evidence: the first GPU model load of the boot left a one-time step of about 0.66 GB, in no sampled meminfo field; later cycles added none. **V2-05 demo form:** one upstream session, bounded fresh hand-off, 15 fps 640×480 decode at about 0.07 core-equivalents and credential-free output were observed on the camera (runs b and b2). Run a never connected ("No route to host"), which corrects the maintainer's summary, and no outage was tested (b3 never contacted the camera), so the outage and read-timeout checks stay PENDING. The `pts_quality: none` share (21.5 % and 15.4 %) is explained: OpenCV 4.13's `CAP_PROP_PTS` rounds the PTS to whole periods of the average frame rate and repeats the last value when a frame has none. This was reproduced on a synthetic file. The source now reads the unrounded `CAP_PROP_POS_MSEC`, and the probe names the cause of each `none` frame. **V2-09/V2-10 demo form, portable part:** a `PersonTracker` boundary (per-epoch reset, process-once ordering, epoch-unique IDs, v1's confirmation score, validated output) and the legacy `yolov8n.engine` + ByteTrack backend. The backend has the D27 guard, an engine SHA-256 pin and Ultralytics offline mode. Added: `sentinel track probe` and the registry entry with D33's provisional profile. 47 new tests; 498 portable tests pass. The detector device check is PENDING. Session 12's summary: the maintainer's first S1 attempt at `84f15ec` never reached either arm; the V2-05 demo-form capture adapter (D39) was implemented with 40 tests (451 portable tests).
+Last updated 2026-10-04, session 15 (Claude). **D-2 loopback status page, demo form, portable part:** a stdlib, read-only page on 127.0.0.1 (with a Host check) showing component readiness, capture/reconnect state, rates, degradation, incidents, and alerts as queued, attempted, delivered or failed (D45). It is served by `sentinel run` on port 18090. 23 new tests; 610 portable tests pass. One numbered operator checklist (steps 1–5) replaces the separate V2-05 and V2-09/V2-10 blocks; every step is PENDING. **D-1 `sentinel run`, demo form, portable part:** wires capture → legacy detector/tracker → EdgeCore → zone/hazard rules → `IncidentService` → outbox/Telegram through their existing contracts (D43). It adds a llama-server process owner that refuses any non-loopback bind before spawning and applies the D27 full-offload guard (D44). Scene analysis stays off by default. 54 new tests; 587 portable tests pass. The device run is PENDING. Session 14's summary: **D41:** S1 met its predeclared criteria, so `--cache-ram 0` is adopted for the demo scene path (maintainer's conditional authorization); scope and limits are in the session 14 log. **V2-26 demo form, portable part:** a loopback-only llama-server launch spec (D42), the S1/check 8 request, a bounded threaded scene worker and the `scene_server` config; 35 new tests; 533 portable tests pass. Privacy item: Ultralytics analytics (operator action PENDING). Session 13's summary: The maintainer's headless runs at `e9af7f4` are recorded as USER-SUPPLIED MEASUREMENTS: two Check 9 smokes, three S1 arms (arm a twice; the first arm b was interrupted by a signal to the runner) and four capture probes. **S1 result:** with llama-server's default prompt cache, steady pressure rose +115 MB/min (reproduced: +117 MB/min); with `--cache-ram 0` it rose +3.9 MB/min, with the same 53/53 valid requests and no latency penalty. The timebox's first branch applies: Claude proposes adopting `--cache-ram 0` for the demo profile and D-1; the maintainer decides. Other memory work stays paused. Further U19 evidence: the first GPU model load of the boot left a one-time step of about 0.66 GB, in no sampled meminfo field; later cycles added none. **V2-05 demo form:** one upstream session, bounded fresh hand-off, 15 fps 640×480 decode at about 0.07 core-equivalents and credential-free output were observed on the camera (runs b and b2). Run a never connected ("No route to host"), which corrects the maintainer's summary, and no outage was tested (b3 never contacted the camera), so the outage and read-timeout checks stay PENDING. The `pts_quality: none` share (21.5 % and 15.4 %) is explained: OpenCV 4.13's `CAP_PROP_PTS` rounds the PTS to whole periods of the average frame rate and repeats the last value when a frame has none. This was reproduced on a synthetic file. The source now reads the unrounded `CAP_PROP_POS_MSEC`, and the probe names the cause of each `none` frame. **V2-09/V2-10 demo form, portable part:** a `PersonTracker` boundary (per-epoch reset, process-once ordering, epoch-unique IDs, v1's confirmation score, validated output) and the legacy `yolov8n.engine` + ByteTrack backend. The backend has the D27 guard, an engine SHA-256 pin and Ultralytics offline mode. Added: `sentinel track probe` and the registry entry with D33's provisional profile. 47 new tests; 498 portable tests pass. The detector device check is PENDING. Session 12's summary: the maintainer's first S1 attempt at `84f15ec` never reached either arm; the V2-05 demo-form capture adapter (D39) was implemented with 40 tests (451 portable tests).
 
 ## Position
 
@@ -23,25 +23,26 @@ Last updated 2026-10-04, session 15 (Claude). **D-1 `sentinel run`, demo form, p
 | Session 12 (Claude, 2026-10-03) | `ed26dc9`: record of the maintainer's Check 9/S1 runs at `84f15ec` (S1 did not run). `e9af7f4`: V2-05 demo-form capture adapter, tests and status record. See the session 12 log. |
 | Session 13 (Claude, 2026-10-04) | `f6f9d5b` record of the Check 9, S1 and capture runs at `e9af7f4`, S1 comparison and V2-05 evaluation (docs only) · `8836929` PTS follow-up · `cd1c201` V2-09/V2-10 demo form (D40). See the session 13 log. |
 | Session 14 (Claude, 2026-10-04) | `ea95571`: S1 evaluation and D41 adoption, D42, V2-26 demo form (portable), Ultralytics privacy item. See the session 14 log. |
-| Session 15 (Claude, 2026-10-04) | D-1 demo form (portable part), then D-2; one local commit per package, not pushed. See the session 15 log. |
+| Session 15 (Claude, 2026-10-04) | `537557c` D-1 demo form (portable part), then D-2 (portable part) and the operator checklist; one local commit per package, not pushed. See the session 15 log. |
 | Working tree | At session 15 start (10:46 IST): HEAD `ea95571`, equal to the local `origin/v2-beta` (the maintainer pushed after session 14; no fetch ran). The tree was clean. The session-start snapshot had listed `BUILD.md` as modified (session 12's trailing blank line), but by 10:43:07 IST, before Claude's first command, `BUILD.md` matched HEAD again. No other agent process was running; the maintainer's VS Code session was. Claude did not touch `BUILD.md`. Earlier: at session 13 start: HEAD `e9af7f4`, two commits ahead of the local `origin/v2-beta` (`84f15ec`; nothing pushed since session 11). The only change was session 12's unrelated trailing blank line in `BUILD.md` (not Claude's), which stays uncommitted. |
 | Local-only files | `AGENTS.md`, the v2 guide, the audit review and `docs/LOCAL_NOTES.md` (device-specific notes), excluded through `.git/info/exclude`; none included in session 6–11 increments. A fresh clone does not contain them, although CLAUDE.md names the guide and audit. |
-| Selected package | **D-1 `sentinel run`, demo form** (session 15): portable part done, device run PENDING; then **D-2** (loopback status page) in the same session. Before that: **V2-09/V2-10 demo form** (session 13): the legacy detector + ByteTrack parity adapter. Portable part complete (D40); device check PENDING; partial at most (D23). V2-05's demo form is evaluated (session 13 log): device criteria met except the outage and read-timeout checks (PENDING); partial under D23. S1 (D38) ran; adopting `--cache-ram 0` is the maintainer's decision. U20 and U19/U21 instrumentation remain portable-complete only; D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. |
+| Selected package | **D-2 loopback status page, demo form** (session 15): portable part done, device check PENDING (checklist step 5). Before it in session 15: **D-1 `sentinel run`, demo form**, portable part done (`537557c`), device run PENDING. Before that: **V2-09/V2-10 demo form** (session 13): the legacy detector + ByteTrack parity adapter. Portable part complete (D40); device check PENDING; partial at most (D23). V2-05's demo form is evaluated (session 13 log): device criteria met except the outage and read-timeout checks (PENDING); partial under D23. S1 (D38) ran; adopting `--cache-ram 0` is the maintainer's decision. U20 and U19/U21 instrumentation remain portable-complete only; D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. |
 | Other branches | `origin/Yogeshvar425-patch-1` (teammate) is **not merged**: a single commit `6755796` that adds @Yogeshvar425 to `.github/CODEOWNERS` (merge base `c66ebde`). `origin/codex/github-audit-fixes-2026-09-19` is already in `master` via PR #4. |
 | Effort | Per-package estimates are in the package table (given to the maintainer on 2026-09-29). The re-estimate of optimization effort still waits for V2-01's B0 run. |
 | v1 on this device | Historically **not running** (maintainer, 2026-09-29); current state must be inspected, not inferred. This workflow never terminates existing v1 processes. |
-| Waiting on the maintainer | `--cache-ram 0` is adopted for the demo scene path (D41). A confirming full demo-profile run with `--llama-cache-ram 0` is still needed to replace D33's provisional profile (PENDING, not approved). Ultralytics analytics off: `~/onvif_env/bin/yolo settings sync=False` (PENDING until confirmed). The V2-05 outage check (PENDING). Why S1 arm b #1 was interrupted (a signal to the runner at 01:06:11 IST; not recorded). Afterwards: the U18 runtime policy, U19 unload, U20 real-model/demo-exception evidence, the 30-minute U21 rerun (not approved) and consent/figure labels. D36 provisionally retains b8932; beta still requires a tested compatible schema-fix descendant. E-1 reported Ollama inactive and disabled (USER-SUPPLIED). Full empty-room-clip review and review-image deletion are not confirmed. |
+| Waiting on the maintainer | **The session 15 operator checklist, steps 1–5** (all PENDING). Step 1 is the Ultralytics setting; `yolo settings sync=False` is its optional 1b. Step 2 is the V2-05 physical outage, step 3 the V2-09/V2-10 device check, and step 4 the confirming combined profile with `--llama-cache-ram 0` (needs approval and predeclared criteria). Step 5 is the first end-to-end alert and the status page, which is also V2-15's Telegram device check. Then come the decisions on scene admission for D-1 and the review of D43–D45. Still open from earlier: why S1 arm b #1 was interrupted; U18's runtime policy, U19 unload, U20 real-model/demo-exception evidence, the 30-minute U21 rerun (not approved) and consent/figure labels. D36 provisionally retains b8932; beta still requires a tested compatible schema-fix descendant. E-1 reported Ollama inactive and disabled (USER-SUPPLIED). The full empty-room-clip review and the deletion of review images are not confirmed. |
 
 ## Next concrete task
 
-1. **Operator actions (PENDING):** `~/onvif_env/bin/yolo settings sync=False` (privacy item, session 14); a confirming demo-profile run with `--llama-cache-ram 0` when approved (D41).
-2. **V2-05 outage check (maintainer, PENDING):** one `sentinel capture probe` run with a real camera outage, after this session's PTS follow-up commit; command in "Hardware checks PENDING". Export `SENTINEL_RTSP_URL` in the same shell; b3 failed because it was missing.
-3. **V2-09/V2-10 device check (maintainer, PENDING):** the guard refusal without the preload, then a 60 s `sentinel track probe` with it; commands in "Hardware checks PENDING" (about 2 min attended, GPU). It can share a headless session with task 2.
-4. **D-1 portable part done (session 15, D43/D44); D-2 follows in session 15.** The device run of D-1 is PENDING (operator checklist). Earlier: **V2-26 demo form portable part done (session 14).** Next was the interim face adapter or D-1, as the maintainer chooses. D-1 owns starting and stopping llama-server with `llama_server_command()`/`llama_server_environment()`, the D27 full-offload check, putting each frame into `RecentImages`, and draining `ThreadedSceneAnalyzer` into `EdgeCore.on_scene_outcome()`. The interim face adapter (V2-25 demo form, 1 Hz, D34) follows; its enrollment needs consented photos (unresolved), never `face_db.pkl`.
-5. **Remaining week 2 device adapters:** capture (session 12) and the legacy engine plus ByteTrack (session 13) are done in portable demo form; interim face adapter at 1 Hz (D34) and llama-server adapter using U20's portable completion boundary (actual model acceptance PENDING); and `sentinel run` (D-1) with the D27 GPU guard and U18 memory precheck. `sentinel run` hands every zone observation and hazard candidate to `IncidentService.record()` and acknowledges it only after that returns (D31). It runs `OutboxWorker` in its own thread with `TelegramNotifier.from_environment(timeout_s=notifications.request_timeout_s)` only if `telegram` is listed (D32).
-6. **V2-15 device check (maintainer):** one real Telegram send from the device with the maintainer's bot, after D-1 wiring.
-7. **U19/U21 instrumentation, portable part complete (Codex, session 6):** the six additional meminfo fields and timestamped torch allocator readings now stream to the run files. Real allocator behavior, sampling overhead and memory reclamation remain PENDING. S1 attributed the Check 8-type steady ramp to llama-server's prompt cache (session 13); other memory work is paused under the timebox.
-8. **V2-13, rest (after the demo):** directed line crossing and a decision on hysteresis (D30).
+1. **Operator checklist step 1 (maintainer, PENDING).** Inspect the Ultralytics analytics/offline setting (read-only, about 1 min). Steps 2 (V2-05 physical outage) and 3 (V2-09/V2-10 guard refusal and tracking) can share one attended headless session. The commands are in "Hardware checks PENDING → Operator checklist".
+2. **Maintainer decisions before step 4:**
+   - approve the confirming combined-profile run (`--llama-cache-ram 0`) and its predeclared pass criteria, as proposed or amended;
+   - after it, decide whether D-1 may enable scene analysis, and under which profile ID;
+   - review D43–D45;
+   - optionally, make the code refuse `--scene` until a profile measured with the prompt cache off is registered. Today only the procedure gates it (D43).
+3. **Step 5 (maintainer, PENDING):** the first end-to-end alert and status-page check (5a core; 5b scene only after step 4 and admission). It is also V2-15's device check: one real Telegram send.
+4. **Record the step results** as USER-SUPPLIED MEASUREMENTS, with each step's own boot ID and commit. Then the maintainer picks the next package. Claude's suggestion is the interim face adapter (V2-25 demo form, 1 Hz, D34), whose enrollment needs consented photos (unresolved), never `face_db.pkl`.
+5. **Unchanged:** U19/U21 instrumentation is portable-complete only (Codex, session 6). Memory work stays paused under the timebox except the confirming run. V2-13's rest (directed crossing, hysteresis, D30) comes after the demo.
 
 ## Oct 20 demo milestone: plan and deviations from the guide order
 
@@ -131,7 +132,7 @@ Estimates as given to the maintainer on 2026-09-29. V2-49 has since been done.
 | V2-55 | Mock future adapter, embedding repository | not started | Portable | no | 1 | 0 | 49, 53, 54 |
 | V2-56 | Upgrade feature acceptance, manifest freeze | not started | Jetson | no | 1.5 | 1.5 | 50–55 |
 | D-1 | Demo runtime loop `sentinel run` (not in backlog) | partial: demo form, portable part done (session 15, D43, D44); device run PENDING | Jetson | yes (demo only) | 2 | 2.5 | demo parts of 05, 09, 10, 13–15, 20, 25, 26 |
-| D-2 | Loopback read-only status page (not in backlog) | not started | Portable + device check | yes (demo only) | 1 | 0.5 | 14, 15 |
+| D-2 | Loopback read-only status page (not in backlog) | partial: demo form, portable part done (session 15, D45); device check PENDING (checklist step 5) | Portable + device check | yes (demo only) | 1 | 0.5 | 14, 15 |
 
 | Totals | Claude h | Maintainer Jetson h |
 |---|---|---|
@@ -157,6 +158,7 @@ Notes on partial and in-progress rows:
   - V2-09/V2-10: demo form, portable part (session 13, D40): `PersonTracker` boundary, legacy Ultralytics + ByteTrack backend with the D27 guard, engine pin and offline mode, `sentinel track probe`. Not done: the device check (guard, load, timing, throughput, real tracks), wiring into `sentinel run` (D-1), and V2-09/V2-10 proper (TensorRT without torch, fixed buffers, parity report, separated ByteTrack with low-score boxes, labelled occlusion/resize/reconnect replays from V2-07).
   - V2-28: demo form done (session 5): the scene lane routes late evidence (session 2) and `IncidentService.annotate()` stores it on its own incident only (D35). Not done: wiring into `sentinel run` (D-1), display on the status page (D-2), and revalidation with the real scene adapter (V2-26) and after V2-11.
   - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Not done: any run on the device (camera, detector, scene server, Telegram), the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
+  - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Not done: viewing it on the device over the SSH forward (checklist step 5); it stands in for, and does not replace, V2-17/V2-18 (no sessions, roles, API, media or live video).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
 
 ## Session 15 log (Claude, 2026-10-04)
@@ -268,6 +270,74 @@ git diff --check -- src tests docs
 ```
 
 - **Not run:** `sentinel run` against the camera, detector, llama-server or Telegram; any GPU, MemFree or memory measurement; CI; Python 3.12. D-1's device run, the V2-05 outage check, the V2-09/V2-10 device check and the confirming combined profile are PENDING (see "Hardware checks PENDING").
+
+### D-2 loopback status page (demo form, portable part; device check PENDING)
+
+| File | Change |
+|---|---|
+| `src/sentinel/status_page.py` (new) | `StatusServer` (stdlib `ThreadingHTTPServer` on 127.0.0.1); `read_store()` for incidents and deliveries over a read-only connection; `build_status()` for the `/status.json` document; `render_html()`; `delivery_state()`. |
+| `src/sentinel/cli.py` | `sentinel run --status-port` (default 18090; 0 = no page). The page is bound before any model loads, so a busy port refuses startup (`status_port_unavailable:OSError`). It shows `starting` while the models load. It is stopped as part of shutdown and counted in `all_stopped`. The startup line prints its loopback URL. |
+| `tests/unit/test_status_page.py` (+20), `tests/unit/test_demo_runtime.py` (+2, and `--status-port 0` in the two earlier CLI tests) | See "Tests (D-2)". |
+
+- **D45. Status page (D-2 demo form; session 15 implementation decision, not yet reviewed).**
+  - **Binding.** 127.0.0.1 only. Any other host (including `localhost`, `::`, all-interfaces) raises before a socket opens, and the CLI has no host option.
+  - **Host check.** Requests must carry `Host: 127.0.0.1:<port>` or `localhost:<port>`; anything else gets 421. That blocks DNS-rebinding reads from a browser.
+  - **Read only.** GET `/` (HTML, `meta refresh` 2 s) and `/status.json` only. Other methods get 405 with `Allow: GET`, other paths 404.
+  - **Headers.** `Cache-Control: no-store`, `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and a CSP of `default-src 'none'` (inline style only). `Server: sentinel-status`, with no Python version. No request logging.
+  - **Database reads.** Each request opens its own read-only connection (`mode=ro`; a missing database is reported, never created) for one short read transaction, so it never takes the writer's lock or writes.
+  - **Delivery states.** queued = pending with 0 attempts; attempted = at least one attempt, not confirmed (retrying, or `in flight` while leased); delivered = `sent` (Telegram returned `ok` with a message ID); failed = `dead` (needs an operator). Ambiguous rows are counted and labelled "may have been delivered".
+  - **What it shows.** It is built only from the runtime snapshot (numbers and fixed labels) and stored rows: incident title, zone, severity, status and times; channel, message kind, attempts and the redacted `last_error`. Every value is HTML-escaped, including the scene model's summary. A snapshot older than 5 s while running is called out as "runtime status not updated". Rendering errors return a fixed 500 text.
+  - **Limits.** It is not V2-17/V2-18: no authentication, roles, API, actions, media or live video. Access is over `ssh -L 18090:127.0.0.1:18090`.
+
+**Tests (D-2).**
+- Delivery-state mapping; a real store with one alert in each state, plus ambiguity and the redacted token in an error.
+- Reads while the runtime holds the writer lock, with the file unchanged.
+- A missing database is reported and not created.
+- A stale snapshot is called out; the `starting` page.
+- Binds other than 127.0.0.1 refused (5); listens on loopback; HTML and JSON content and headers.
+- Six non-GET methods give 405; unknown paths and traversal give 404; five foreign Host headers give 421; `localhost:<port>` is accepted.
+- Degradation is shown, and script text is escaped; a build failure shows no exception text; stop closes the socket.
+- `sentinel run` serves the page mid-run. It shows `telegram unavailable (credentials_missing)` when a token is set without a chat ID, then stops with the page closed. No URL, password, host or token appears in the page, JSON, stdout or stderr.
+- A busy status port refuses startup before any model load.
+
+**Mutation sweep (one-off; script not committed): 16/16 caught.** The mutations:
+- any bind host; binding all interfaces;
+- an unchecked Host header;
+- dead as attempted; attempted as queued; sent not delivered;
+- ambiguity hidden;
+- no escaping;
+- write methods served;
+- exception text shown;
+- stale snapshot not shown; database failure not shown;
+- no security headers;
+- socket not closed;
+- a reader that creates the database (caught after adding the no-create assertion);
+- page not stopped at shutdown.
+
+**Operator checklist.** Written into "Hardware checks PENDING" as steps 1–5, replacing the separate V2-05 and V2-09/V2-10 blocks. Every shell block passes `bash -n`, and both Python one-liners parse. The `printf` configuration lines, copied with their indentation, produce files that `sentinel config validate` accepts, with the scene adapter `enabled` when the manifest line is added. The pass criteria proposed for step 4 are a proposal for the maintainer to confirm before the run.
+
+**Read-only observations while preparing step 1 (not the step itself).**
+- `~/.config/Ultralytics/settings.json` still has `sync: true`.
+- In the installed Ultralytics 8.4.25 (`utils/events.py`), `events.enabled` requires `ONLINE`, and `utils/__init__.py` `is_online()` returns false when `YOLO_OFFLINE=true`.
+- Claude did not import Ultralytics or run `yolo`.
+- The new modules import under `~/onvif_env` (Python 3.10.14, pydantic 2.12.5) without loading torch, cv2 or Ultralytics, and `sentinel run --help` parses there. Nothing was installed.
+
+### Session 15 verification (D-2): exact commands and results
+
+```bash
+.venv/bin/python -m pytest -q tests/unit/test_status_page.py tests/unit/test_demo_runtime.py tests/unit/test_scene_server.py
+# 77 passed in 12.7 s, exit 0; 3 consecutive runs
+.venv/bin/python -m pytest -q
+# 610 passed, exit 0 (587 after D-1, 533 at session start)
+.venv/bin/sentinel config validate config/default.yaml
+# valid Sentinel configuration (version 1, camera cam-1); core monitoring only; exit 0
+PYTHONPATH=src ~/onvif_env/bin/python -c "import sentinel.demo_runtime, sentinel.status_page, sentinel.scene.server"
+# imports ok (3.10.14, pydantic 2.12.5); torch, cv2 and ultralytics not imported
+git diff --check -- src tests docs
+# no output, exit 0
+```
+
+- **Not run:** the page on the device or over the SSH forward; any browser; any checklist step; CI; Python 3.12.
 
 ## Session 14 log (Claude, 2026-10-04)
 
@@ -1604,44 +1674,205 @@ No v1 code was migrated in this slice.
 
 ## Hardware checks PENDING (for the maintainer to run; none of these results exist yet)
 
-Checks 1 (`nvpmodel` only), 3, 5 and 6 were run by Claude in session 3 (inventory above), check 4 was merged into 3b, and check 8 was run by the maintainer on 2026-10-03 (session 5 log). Bounded Check 9 smokes ran on the previous boot (session 10 log) and on the current boot at `84f15ec` and `e9af7f4`; S1 ran at `e9af7f4`; the V2-05 steady capture ran on the camera (session 13 log). The V2-09/V2-10 detector check (session 13) is new and PENDING. Those are historical conditions, not current service-state verification. Session 8 supersedes the old Check 8/9 service-stop, cache-fill, failure-seeking, server-launch and raw-journal recipes; none is authorized. A confirming demo-profile run with `--llama-cache-ram 0` waits for the maintainer's decision on adoption and is not approved. Check 2/7 and other hardware recipes remain separately PENDING. New operator results require USER-SUPPLIED MEASUREMENT attribution and conditions, including whether D37's cache drop was used.
+Checks 1 (`nvpmodel` only), 3, 5 and 6 were run by Claude in session 3 (inventory above). Check 4 was merged into 3b. Check 8 was run by the maintainer on 2026-10-03 (session 5 log). Bounded Check 9 smokes ran on the previous boot (session 10 log) and on the current boot at `84f15ec` and `e9af7f4`. S1 ran at `e9af7f4`, and the V2-05 steady capture ran on the camera (session 13 log). These are historical conditions, not a verification of the current service state. Session 8 superseded the old Check 8/9 service-stop, cache-fill, failure-seeking, server-launch and raw-journal recipes; none is authorized. **Session 15 replaces the separate V2-05 outage and V2-09/V2-10 blocks with one numbered checklist (below).** It covers the Ultralytics setting, the outage check, the detector check, the confirming profile (`--llama-cache-ram 0`, still subject to the maintainer's approval) and the first end-to-end alert with the status page. Checks 2 and 7 remain separately PENDING. New operator results need USER-SUPPLIED MEASUREMENT attribution and their conditions, including whether D37's cache drop was used.
+
+### Operator checklist (session 15): steps 1–5, all PENDING
+
+Claude ran none of these steps. Run them in order; each step names its prerequisites, and later steps depend on earlier ones. Results are USER-SUPPLIED MEASUREMENTS or observations; record the real boot ID and commit from each step's `provenance.txt`, never the commit this list was written at.
+
+**Rules for every step.**
+- Authenticate with `sudo -v` on its own line first. Each command that needs sudo is then its own line; none is combined with other commands or placed in a script.
+- No firewall rule is added or changed (no iptables, nft or ufw). Outages are physical: camera power or its network uplink.
+- Secrets are entered with `read -rs` into the current shell only, never written to a file, and unset afterwards.
+- Artifacts stay in `~/sentinel-runs/d1-checklist/<step>/` (mode 0700) and are never committed. Return the files each step lists, plus `provenance.txt`.
+
+**Before each step (same shell):**
 
 ```bash
-# V2-05 demo-form outage check (D39; about 3 min attended, no GPU, no sudo). Session 13 recorded
-#    the steady capture (runs b, b2); this run adds the outage. v1 and every other camera client on
-#    this host stopped; headless preferred (record conditions). In the SAME shell:
-[ -n "$SENTINEL_RTSP_URL" ] && echo "url set" || echo "SENTINEL_RTSP_URL missing: export it first"
-set -o pipefail; mkdir -p ~/sentinel-runs/capture && cd /home/villain8001/sentinel-surveillance
-#    About 20 s in, cut the camera's network or power for about 15 s, then restore it.
-#    Note the cut and restore times (IST). Exit status 0 means frames arrived and the worker stopped.
-PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli capture probe config/default.yaml --seconds 90 \
-  2>~/sentinel-runs/capture/c.err | tee ~/sentinel-runs/capture/c.json; echo "exit=$?"
-#    Does decoder stderr contain the URL's credentials? Prints counts only.
-U="${SENTINEL_RTSP_URL#*://}"; U="${U%%@*}"
-printf 'userinfo_lines=%s lines=%s\n' "$(grep -cF -- "$U" ~/sentinel-runs/capture/c.err)" "$(wc -l < ~/sentinel-runs/capture/c.err)"; unset U
-#    Expected: 2+ connects and epochs, frames after the restore, upstream_connections max 1,
-#    0 userinfo lines. The summary now includes pts_none_reasons and pts_step_ms (session 13). If an iptables rule is used for the cut, confirm afterwards that it is gone.
-#    Return the JSON, the exit status, the counts, the cut/restore times and the conditions.
+cd /home/villain8001/sentinel-surveillance && set -o pipefail
+STEP=1-ultralytics       # change per step: 2-capture-outage, 3-detector, 4-confirming-profile, 5-end-to-end
+D=~/sentinel-runs/d1-checklist/$STEP; mkdir -p -m 700 "$D"
+{ echo "utc=$(date -u +%FT%TZ)"; echo "boot_id=$(cat /proc/sys/kernel/random/boot_id)"; echo "boot_started=$(uptime -s)"
+  echo "commit=$(git rev-parse HEAD)"; echo "tracked_changes=$(git status --porcelain --untracked-files=no | wc -l)"
+  echo "display_manager=$(systemctl is-active display-manager)"; } | tee "$D/provenance.txt"
+```
 
-# V2-09/V2-10 demo-form detector check (session 13, D40; about 2 min attended, GPU, no sudo).
-#    Headless; v1, llama-server and other camera clients stopped. SENTINEL_RTSP_URL exported in this shell.
-#    It is a functional check, not a measurement run: no D37 drop. If it refuses for low MemFree
-#    (below 1.5 GB), record that and stop.
-cd /home/villain8001/sentinel-surveillance; set -o pipefail; mkdir -p ~/sentinel-runs/track
-#    a) Without the preload the D27 guard must refuse before any model import.
-#       Expected: "track probe: libcuda_not_l4t", exit 1.
-PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli track probe config/default.yaml --engine ~/yolov8n.engine --seconds 10; echo "exit=$?"
-#    b) 60 s with the L4T preload. Walk through the view for part of it (note roughly when).
-LD_PRELOAD=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1 PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli \
-  track probe config/default.yaml --engine ~/yolov8n.engine --seconds 60 \
-  2>~/sentinel-runs/track/b.err | tee ~/sentinel-runs/track/b.json; echo "exit=$?"
-U="${SENTINEL_RTSP_URL#*://}"; U="${U%%@*}"
-printf 'userinfo_lines=%s lines=%s\n' "$(grep -cF -- "$U" ~/sentinel-runs/track/b.err)" "$(wc -l < ~/sentinel-runs/track/b.err)"; unset U
-#    Expected for b: exit 0; load seconds and MemFree/MemAvailable before and after; tracking failed 0;
-#    processed close to captured (few replaced); backend_ms p50/p95; track_ids > 0 and frames_with_persons
-#    > 0 while someone was in view, 0 otherwise; upstream_connections max 1; 0 userinfo lines.
-#    Return a's output, b.json, the exit statuses, the counts and the conditions.
+**1. Ultralytics analytics and offline setting (inspection; about 1 min; no GPU, camera or sudo).**
+- *Prerequisites:* none.
+- *Commands:*
+  ```bash
+  python3 -c "import json,pathlib; p=pathlib.Path.home()/'.config/Ultralytics/settings.json'; print('settings_sync', json.loads(p.read_text()).get('sync'))" | tee "$D/settings.txt"
+  YOLO_OFFLINE=true ~/onvif_env/bin/python -c "from ultralytics.utils import ONLINE, SETTINGS; from ultralytics.utils.events import events; print('v2_effective online', ONLINE, 'settings_sync', SETTINGS['sync'], 'events_enabled', events.enabled)" | tee -a "$D/settings.txt"
+  grep -n 'YOLO_OFFLINE' src/sentinel/inference/legacy_ultralytics.py | tee -a "$D/settings.txt"
+  ```
+- *Expected:*
+  - Line 1: `settings_sync True`, the device file as of session 13, or `False` if 1b already ran.
+  - Line 2: `v2_effective online False … events_enabled False`. Ultralytics 8.4.25 enables events only when `ONLINE` is true, and `YOLO_OFFLINE=true` makes `is_online()` return false without a DNS lookup. v2's legacy adapter sets the variable before importing Ultralytics, so `sentinel run` and `sentinel track probe` send no analytics, whatever the settings file says.
+  - Line 3: the assignment in `load()`.
+  - v1, `demo_workload.py` and check 8 do not set the variable, so they send analytics when online while `sync` is true.
+- *1b (optional, the maintainer's choice; it changes a user settings file, not the repository):* `YOLO_OFFLINE=true ~/onvif_env/bin/yolo settings sync=False`. Then run line 1 again: it should print `settings_sync False`.
+- *Stop if* line 2 prints `events_enabled True`. Do not run steps 3–5; report it.
+- *Artifacts:* `$D/settings.txt`.
 
+**2. V2-05 attended physical outage and recovery (about 3 min attended; no GPU, no sudo).**
+- *Prerequisites:*
+  - Step 1 done.
+  - v1 and every other camera client on this host stopped: `pgrep -fa 'surveillance4_1|llama-server|ffmpeg|ffprobe'` prints nothing.
+  - Headless preferred (note the conditions either way).
+  - The camera's power or uplink within reach.
+  - The URL in this shell: `read -rs SENTINEL_RTSP_URL; export SENTINEL_RTSP_URL; [ -n "$SENTINEL_RTSP_URL" ] && echo "url set"`.
+- *Command:*
+  ```bash
+  PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli capture probe config/default.yaml --seconds 90 \
+    2>"$D/c.err" | tee "$D/c.json"; echo "exit=$?" | tee -a "$D/provenance.txt"
+  #   About 20 s in, unplug the camera's power (or its network uplink) for about 15 s, then restore it.
+  #   Write the cut and restore times (IST) into $D/provenance.txt.
+  U="${SENTINEL_RTSP_URL#*://}"; U="${U%%@*}"
+  printf 'userinfo_lines=%s lines=%s\n' "$(grep -cF -- "$U" "$D/c.err")" "$(wc -l < "$D/c.err")" | tee -a "$D/provenance.txt"; unset U
+  ```
+- *Expected:*
+  - `exit=0`.
+  - `worker.connects` ≥ 2 and `epochs` ≥ 2, with frames after the restore.
+  - `stream_ends` ≥ 1 with the problem `no_frame`: the read-timeout path, at 5 s without frames. `open_failures` ≥ 1 if the camera was still down when a reopen was tried.
+  - `upstream_connections.max` 1 and `userinfo_lines=0`.
+- *Stop if:*
+  - There are no frames at all: check the URL and camera, and skip step 5.
+  - `userinfo_lines` > 0: do not share `c.err`; report the counts.
+  - The connections max is above 1: another client is connected.
+- *Artifacts:* `$D/c.json` and `$D/provenance.txt` (return them); `$D/c.err` stays local.
+
+**3. V2-09/V2-10 guard refusal and tracking (about 2 min attended; GPU).**
+- *Prerequisites:*
+  - Step 1 printed `events_enabled False`.
+  - Headless (D29): run `sudo -v`, then `sudo systemctl stop display-manager`, then the provenance block again.
+  - v1, llama-server and other camera clients stopped.
+  - `SENTINEL_RTSP_URL` in this shell.
+  - `grep MemFree /proc/meminfo` at least 1.5 GB.
+  - It is a functional check, not a measurement: no D37 drop.
+- *Commands:*
+  ```bash
+  #   a) Without the preload, the D27 guard must refuse before any model import.
+  PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli track probe config/default.yaml --engine ~/yolov8n.engine \
+    --seconds 10 2>&1 | tee "$D/a.txt"; echo "exit_a=$?" | tee -a "$D/provenance.txt"
+  #   b) 60 s with the L4T preload. Walk through the view for part of it; note roughly when.
+  LD_PRELOAD=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1 PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli \
+    track probe config/default.yaml --engine ~/yolov8n.engine --seconds 60 \
+    2>"$D/b.err" | tee "$D/b.json"; echo "exit_b=$?" | tee -a "$D/provenance.txt"
+  U="${SENTINEL_RTSP_URL#*://}"; U="${U%%@*}"
+  printf 'userinfo_lines=%s lines=%s\n' "$(grep -cF -- "$U" "$D/b.err")" "$(wc -l < "$D/b.err")" | tee -a "$D/provenance.txt"; unset U
+  ```
+- *Expected:*
+  - a: `track probe: libcuda_not_l4t` and `exit_a=1`.
+  - b: `exit_b=0`; `tracking.failed` 0; `processed` close to `captured` (few `replaced`); `backend_ms` p50/p95, for information (check 8: 45/56 ms); `track_ids` > 0 and `frames_with_persons` > 0 while someone was in view; `upstream_connections.max` 1; `userinfo_lines=0`; the load memory before and after.
+- *Stop if:*
+  - a does not refuse with that label: the guard is broken, so do not run b, 4 or 5.
+  - b refuses for MemFree: record it, reboot, and run step 3 again.
+  - b has failures: record `failures` and `error_types`, and stop.
+- *Artifacts:* `$D/a.txt`, `$D/b.json` and `$D/provenance.txt` (return them); `$D/b.err` stays local.
+
+**4. Confirming combined profile with `--llama-cache-ram 0` (a measurement run; about 15 min unattended after setup; GPU; sudo for headless and D37).**
+- *Prerequisites:*
+  - Steps 1 and 3 passed.
+  - **The maintainer approves this run.** It was recorded as not approved before session 15.
+  - VS Code Remote and Claude Code closed: `demo_profile.py` refuses otherwise; never pass `--allow-dev-tools`. Run it from a plain SSH session inside `tmux new -s confirm`.
+  - v1 and any llama-server stopped.
+  - The working tree has no tracked changes.
+- *Proposed pass criteria, for the maintainer to confirm before the run, not after:*
+  - The status is complete.
+  - The GPU guard passes: 17/17 layers, the vision encoder on CUDA0, L4T's libcuda only.
+  - The manifest shows `cache_ram_mib` 0, and the log shows the prompt cache disabled.
+  - Run peak and steady p95 are each ≤ 5,400,000,000 B.
+  - The steady pressure slope is ≤ +10 MB/min (S1 arm b: +3.9; arm a: +115).
+  - Scene requests have 0 errors.
+  - The 5,000,000,000 B steady target is recorded as met or exceeded, as D33 was.
+
+  A pass lets the maintainer decide to replace D33's provisional profile. It does not settle U18, U19, U21, long runs or beta memory acceptance. S1 was scene-only, so it was never combined-runtime acceptance.
+- *Commands, in this order:*
+  ```bash
+  sudo -v
+  sudo systemctl stop display-manager
+  #   now run the provenance block above with STEP=4-confirming-profile
+  stat -c '%s %n' ~/clips/two_people_doorway_60s_2026-09-29.mp4 | tee -a "$D/provenance.txt"   # expect 1770670 B: check 8's input file
+  sync
+  sudo sysctl -w vm.drop_caches=1
+  echo "d37_drop=operator_declared $(date -u +%FT%TZ)" | tee -a "$D/provenance.txt"
+  /usr/bin/python3 benchmarks/runner/demo_profile.py --clip ~/clips/two_people_doorway_60s_2026-09-29.mp4 \
+    --llama-cache-ram 0 --sanitized-logs 2>&1 | tee "$D/console.txt"; echo "exit=$?" | tee -a "$D/provenance.txt"
+  .venv/bin/python benchmarks/runner/operator_check.py | tee "$D/inspection-after.json"   # read-only: OOM/NvMap candidate counts
+  ```
+- *Expected:*
+  - `Run demo-profile-<UTC>: writing to …`, then the summary.
+  - The manifest has `llama_server.flags` ending `--cache-ram 0` and `parameters.face_hz` 1.0. That is D34; check 8 ran at 2.0, which is a known difference to record. The detector and face run on the clip, as in check 8.
+  - The inspection afterwards shows 0 OOM and NvMap candidate lines.
+- *Stop if:*
+  - It prints `Not starting:` (desktop, dev tools, v1, another llama-server, MemFree < 3.0 GB): fix the named condition and do not add `--allow-*`.
+  - The clip size differs: stop, because it is not check 8's input.
+  - It aborts on the memory floor or the GPU guard, or the inspection shows OOM/NvMap lines: record it, and do not enable scene analysis in step 5.
+- *Artifacts:* `~/sentinel-runs/demo-profile-<UTC>/` (`manifest.json`, `memory.csv`, `events.jsonl`, sanitized `llama-server.log`, `summary.txt`, `profile.json`); `$D/console.txt`, `$D/inspection-after.json` and `$D/provenance.txt`; and the inspection's own `/tmp/sentinel-operator-*/result.json`, copied to `~/sentinel-runs/operator/`.
+
+**5. First end-to-end alert and status page (about 15 min attended; GPU; Telegram).**
+- *Prerequisites:*
+  - Steps 1–3 passed.
+  - Headless, with v1 and other llama-servers stopped.
+  - MemFree ≥ 1.5 GB (≥ 3.0 GB with 5b).
+  - The maintainer's bot token and chat ID.
+  - **5b only** after step 4 passed and the maintainer admits scene analysis for D-1.
+  - VS Code may stay open: this is not a measurement.
+- *Configuration, outside the repository:*
+  ```bash
+  mkdir -p -m 700 ~/sentinel-config ~/sentinel-data
+  printf '%s\n' 'config_version: 1' 'camera: {id: cam-1}' \
+    'zones: [{zone_id: whole-view, rule: restricted, polygon: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], min_duration_s: 1.0, severity: warning}]' \
+    'notifications: {channels: [telegram]}' > ~/sentinel-config/demo.yaml
+  PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli config validate ~/sentinel-config/demo.yaml | tee "$D/validate.txt"
+  read -rs SENTINEL_TELEGRAM_BOT_TOKEN; export SENTINEL_TELEGRAM_BOT_TOKEN
+  read -rs SENTINEL_TELEGRAM_CHAT_ID; export SENTINEL_TELEGRAM_CHAT_ID
+  ```
+- *5a, the core path (scene analysis off, the default):*
+  ```bash
+  LD_PRELOAD=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1 PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli \
+    run ~/sentinel-config/demo.yaml --data-dir ~/sentinel-data/demo --engine ~/yolov8n.engine \
+    2>"$D/run.err" | tee "$D/run.jsonl"; echo "exit=$?" | tee -a "$D/provenance.txt"
+  ```
+  While it runs, in a second terminal on the Jetson:
+  ```bash
+  ss -ltn | grep -E ':(18090|18081)\b' | tee "$D/listen.txt"   # expect 127.0.0.1:18090 only (and 127.0.0.1:18081 with 5b)
+  curl -s http://127.0.0.1:18090/status.json > "$D/status-idle.json"
+  ```
+  On the laptop, run `ssh -N -L 18090:127.0.0.1:18090 villain8001@<jetson-address>` and open `http://127.0.0.1:18090/`.
+
+  The sequence:
+  1. One minute with nobody in view. The page shows only expected reasons (or "All components working"), occupancy `empty`, about 15 captured fps and processed fps close to it.
+  2. Walk into view and stay at least 3 s. One incident opens, and one Telegram message arrives carrying its incident ID. Under alert delivery, the row moves queued → attempted/in flight → delivered, with delivered 1. Run `curl -s http://127.0.0.1:18090/status.json > "$D/status-alert.json"`.
+  3. *(optional)* Unplug the camera's power for about 15 s. The page shows `capture waiting` and video `stale`/`offline` as degraded. After the restore it shows reconnects 1 and fresh video.
+  4. Ctrl-C. The last line is `"run": "stopped"` with `all_stopped` true and `database_closed` true, and `exit=0`.
+
+  Then:
+  ```bash
+  U="${SENTINEL_RTSP_URL#*://}"; U="${U%%@*}"
+  for f in "$D"/run.err "$D"/run.jsonl "$D"/status-*.json; do printf '%s userinfo=%s token=%s\n' "$(basename "$f")" \
+    "$(grep -cF -- "$U" "$f")" "$(grep -cF -- "$SENTINEL_TELEGRAM_BOT_TOKEN" "$f")"; done | tee -a "$D/provenance.txt"; unset U
+  unset SENTINEL_TELEGRAM_BOT_TOKEN SENTINEL_TELEGRAM_CHAT_ID
+  ```
+- *5b, with scene analysis:* append the manifest line below to `demo.yaml`, validate it again, and add `--scene` to the run command. The defaults are `~/llama.cpp/build/bin/llama-server` and the Q4_0 model with the Q8_0 projector; `--cache-ram 0` and `--host 127.0.0.1` are fixed in code. Use the profile ID the maintainer admits after step 4 if it differs.
+  ```bash
+  printf '%s\n' 'adapters: [{adapter_id: llama-lfm2-vl-scene, contract_version: 1, implementation_revision: "1", enabled: true, input_kinds: [frame], output_kinds: [scene.report], model_revision: lfm2-vl-1.6b-q4_0, resource_profile_id: provisional-demo-20261003T085010Z, timeout_ms: 8000}]' >> ~/sentinel-config/demo.yaml
+  PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli config validate ~/sentinel-config/demo.yaml | tee -a "$D/validate.txt"   # expect: adapter llama-lfm2-vl-scene: enabled (enabled)
+  ```
+  Expected: the startup line shows `scene_server` ready, `layers` 17/17 and `vision_on_gpu` true. The page shows scene analysis available, with reports about every 4 s. `listen.txt` shows `127.0.0.1:18081`.
+- *Stop if:*
+  - Startup is refused: the label is on `run.err`'s last line.
+  - The detector is unavailable at startup (step 3 should have caught this).
+  - Any listener is on an address other than 127.0.0.1: press Ctrl-C at once and report.
+  - A delivery row is `failed`: record its `last_error` from the page (redacted) and check the bot and chat.
+  - A row stays `attempted` for over 2 min.
+  - With 5b, `scene_server` failed: record the label. There is no CPU fallback, and scene analysis stays unavailable.
+  - Any userinfo or token count is above 0: share nothing but the counts.
+- *Artifacts:* `$D/run.jsonl`, `$D/status-idle.json`, `$D/status-alert.json`, `$D/listen.txt`, `$D/validate.txt` and `$D/provenance.txt`; `$D/run.err` stays local. The database `~/sentinel-data/demo/sentinel.db` (incidents, outbox, delivery attempts; no images) stays on the device.
+
+### Other pending hardware checks (outside this checklist)
+
+```bash
 # 2. Rest of check 2: frame rate, bitrate and keyframe spacing of both profiles, 60 s of
 #    video packets each (no decode). The main stream's codec, size and rate are recorded.
 #    Needs SENTINEL_RTSP_URL (substream) exported; prints variable names, never URLs.
