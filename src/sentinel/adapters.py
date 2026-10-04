@@ -203,7 +203,7 @@ class ResourceProfile:
     schedule_age_p95_ms: float | None = None  # replay scheduling age; not camera-to-result
     schedule_age_p99_ms: float | None = None
     face_hz: float | None = None
-    face_errors: int | None = None
+    face_errors: int | None = None  # the workload's face ``error_count`` (a total, not the sanitized names)
     scene_attempts: int | None = None
     scene_valid: int | None = None  # strict U20/SceneReport parse; structural validity, not accuracy
     scene_truncated: int | None = None  # completions that did not finish "stop"

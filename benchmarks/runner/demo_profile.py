@@ -618,7 +618,7 @@ def sanitize_diagnostic(value, depth: int = 0):
         "server_error", "unsupported_completion", "requests", "http", "prompt_tokens", "completion_tokens",
         "synthetic_images_issued", "edge", "boundary_t_mono", "unique_fps", "windows", "window_s", "count",
         "min_fps", "max_fps", "schedule_age_ms", "decode_to_result_age_ms", "attempts", "client_timeouts",
-        "http_errors", "transport_errors", "request_sha256",
+        "http_errors", "transport_errors", "request_sha256", "error_count",
     }
     strings = {
         *PHASES_IN_ORDER, "phase", "cuda_driver", "detector_loaded", "face_loaded",

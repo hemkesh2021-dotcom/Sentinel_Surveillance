@@ -387,6 +387,7 @@ class Stats:
                     "latency_ms": percentiles(self.face_ms),
                     "runs_with_face": self.face_runs_with_face,
                     "errors": dict(self.face_errors),
+                    "error_count": sum(self.face_errors.values()),  # survives sanitizing that drops unknown names
                 },
                 "scene": {
                     "attempts": len(self.vlm_ms) + sum(errors.values()),

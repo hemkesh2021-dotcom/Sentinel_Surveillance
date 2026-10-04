@@ -1,6 +1,6 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-04, session 17 (Claude). **Step-4 criteria v2 and the guarded `step4` mode (D47), portable only:** `step4-combined-cache-off-v2` requires:
+Last updated 2026-10-04, session 18 (Claude). **Review of `268e905` (D47), portable only:** one defect fixed. With `--sanitized-logs`, which step 4 always uses, error names the sanitizer does not recognise (such as `RemoteDisconnected`) were dropped, so criteria F and V1 could pass with real face or scene errors. F and V1 now gate on error totals counted before sanitizing. 728 portable tests pass. Step 4 is still not authorized to run, and no profile is accepted. Session 17's summary: **Step-4 criteria v2 and the guarded `step4` mode (D47), portable only:** `step4-combined-cache-off-v2` requires:
 - every sample in the steady interval ≤ 5,000,000,000 B, with the time above 5.0 GB reported;
 - a sampled run peak ≤ 5,400,000,000 B;
 - monotonic steady boundaries with teardown excluded;
@@ -33,13 +33,14 @@ Last updated 2026-10-04, session 17 (Claude). **Step-4 criteria v2 and the guard
 | Session 12 (Claude, 2026-10-03) | `ed26dc9`: record of the maintainer's Check 9/S1 runs at `84f15ec` (S1 did not run). `e9af7f4`: V2-05 demo-form capture adapter, tests and status record. See the session 12 log. |
 | Session 13 (Claude, 2026-10-04) | `f6f9d5b` record of the Check 9, S1 and capture runs at `e9af7f4`, S1 comparison and V2-05 evaluation (docs only) · `8836929` PTS follow-up · `cd1c201` V2-09/V2-10 demo form (D40). See the session 13 log. |
 | Session 14 (Claude, 2026-10-04) | `ea95571`: S1 evaluation and D41 adoption, D42, V2-26 demo form (portable), Ultralytics privacy item. See the session 14 log. |
-| Session 17 (Claude, 2026-10-04) | Step-4 criteria v2, the guarded `step4` and identity modes, startup identity checks and the runnable checklist (D47); one local commit, not pushed. See the session 17 log. |
+| Session 18 (Claude, 2026-10-04) | Review and portable verification of `268e905`; the F/V1 error-total fix (D47 amendment); one local commit, not pushed. See the session 18 log. |
+| Session 17 (Claude, 2026-10-04) | `268e905`: step-4 criteria v2, the guarded `step4` and identity modes, startup identity checks and the runnable checklist (D47); not pushed. See the session 17 log. |
 | Session 16 (Claude, 2026-10-04) | `7f06055`: the narrow `--scene` admission fix (D46), the acceptance procedure, and the pending-write limitation on the status page. See the session 16 log. |
 | Session 15 (Claude, 2026-10-04) | `537557c` D-1 demo form (portable part); `7f5f9f3` D-2 (portable part) and the operator checklist; not pushed. See the session 15 log. |
 | Working tree | At session 15 start (10:46 IST): HEAD `ea95571`, equal to the local `origin/v2-beta` (the maintainer pushed after session 14; no fetch ran). The tree was clean. The session-start snapshot had listed `BUILD.md` as modified (session 12's trailing blank line), but by 10:43:07 IST, before Claude's first command, `BUILD.md` matched HEAD again. No other agent process was running; the maintainer's VS Code session was. Claude did not touch `BUILD.md`. Earlier: at session 13 start: HEAD `e9af7f4`, two commits ahead of the local `origin/v2-beta` (`84f15ec`; nothing pushed since session 11). The only change was session 12's unrelated trailing blank line in `BUILD.md` (not Claude's), which stays uncommitted. |
 | Known limitation (D-1, D43) | **Pending incident writes are buffered in memory, not in a crash-safe spool.** Rule observations waiting for a failed `record()` to be retried (at most 256) are lost if the process stops abruptly; overflow is counted as lost. The status page states this beside the pending count. A durable spool belongs to the runtime/core split (guide ch. 4, V2-11). |
 | Local-only files | `AGENTS.md`, the v2 guide, the audit review and `docs/LOCAL_NOTES.md` (device-specific notes), excluded through `.git/info/exclude`; none included in session 6–11 increments. A fresh clone does not contain them, although CLAUDE.md names the guide and audit. |
-| Selected package | **Step-4 criteria v2 and guarded mode** (session 17, D47): portable part done; the run is PENDING (checklist step 4). Before it: **`--scene` admission fix** (session 16, D46): a narrow amendment to D-1, done portably; no device check of its own. Before it: **D-2 loopback status page, demo form** (session 15): portable part done, device check PENDING (checklist step 5). Before it in session 15: **D-1 `sentinel run`, demo form**, portable part done (`537557c`), device run PENDING. Before that: **V2-09/V2-10 demo form** (session 13): the legacy detector + ByteTrack parity adapter. Portable part complete (D40); device check PENDING; partial at most (D23). V2-05's demo form is evaluated (session 13 log): device criteria met except the outage and read-timeout checks (PENDING); partial under D23. S1 (D38) ran; adopting `--cache-ram 0` is the maintainer's decision. U20 and U19/U21 instrumentation remain portable-complete only; D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. |
+| Selected package | **Step-4 criteria v2 and guarded mode** (session 17, D47; reviewed and corrected in session 18): portable part done; the run is PENDING (checklist step 4). Before it: **`--scene` admission fix** (session 16, D46): a narrow amendment to D-1, done portably; no device check of its own. Before it: **D-2 loopback status page, demo form** (session 15): portable part done, device check PENDING (checklist step 5). Before it in session 15: **D-1 `sentinel run`, demo form**, portable part done (`537557c`), device run PENDING. Before that: **V2-09/V2-10 demo form** (session 13): the legacy detector + ByteTrack parity adapter. Portable part complete (D40); device check PENDING; partial at most (D23). V2-05's demo form is evaluated (session 13 log): device criteria met except the outage and read-timeout checks (PENDING); partial under D23. S1 (D38) ran; adopting `--cache-ram 0` is the maintainer's decision. U20 and U19/U21 instrumentation remain portable-complete only; D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. |
 | Other branches | `origin/Yogeshvar425-patch-1` (teammate) is **not merged**: a single commit `6755796` that adds @Yogeshvar425 to `.github/CODEOWNERS` (merge base `c66ebde`). `origin/codex/github-audit-fixes-2026-09-19` is already in `master` via PR #4. |
 | Effort | Per-package estimates are in the package table (given to the maintainer on 2026-09-29). The re-estimate of optimization effort still waits for V2-01's B0 run. |
 | v1 on this device | Historically **not running** (maintainer, 2026-09-29); current state must be inspected, not inferred. This workflow never terminates existing v1 processes. |
@@ -49,7 +50,7 @@ Last updated 2026-10-04, session 17 (Claude). **Step-4 criteria v2 and the guard
 
 1. **Operator checklist step 1 (maintainer, PENDING).** Inspect the Ultralytics analytics/offline setting (read-only, about 1 min). Steps 2 (V2-05 physical outage) and 3 (V2-09/V2-10 guard refusal and tracking) can share one attended headless session. The commands are in "Hardware checks PENDING → Operator checklist".
 2. **Maintainer decisions before step 4:**
-   - the D47 criteria (`step4-combined-cache-off-v2`) are approved for implementation (session 17). The step-4 **run** still needs the maintainer's go-ahead, through checklist step 4 (4a–4f);
+   - the D47 criteria (`step4-combined-cache-off-v2`) are approved for implementation (session 17). Session 18 amended F and V1 to gate on error totals (session 18 log); review that amendment. The step-4 **run** still needs the maintainer's explicit go-ahead, through checklist step 4 (4a–4f). Implementation and passing portable tests are not that go-ahead;
    - after it, if it passed, approve the separate acceptance commit (D46) that adds the step-4 profile to `RESOURCE_PROFILES`. That commit is the only way `--scene` can be admitted;
    - review D43–D47.
 3. **Step 5 (maintainer, PENDING):** the first end-to-end alert and status-page check (5a core; 5b scene only after step 4 and admission). It is also V2-15's device check: one real Telegram send.
@@ -172,6 +173,52 @@ Notes on partial and in-progress rows:
   - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Not done: any run on the device (camera, detector, scene server, Telegram), the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Not done: viewing it on the device over the SSH forward (checklist step 5); it stands in for, and does not replace, V2-17/V2-18 (no sessions, roles, API, media or live video).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 18 log (Claude, 2026-10-04)
+
+**Scope.** Maintainer request: review `268e905` (session 17) and complete its portable verification; fix only what that review requires. No new package, hardware, cache drop, service change or push. Started at `268e905` with a clean tree. The session 17 process had been left open in the same checkout. The maintainer confirmed it was closed; it was idle (about 6 s of CPU in 5 min, no tree changes) before this session edited anything.
+
+**Checks before any change, at `268e905`:** `test_step4.py` 49 passed; `test_scene_admission.py` 60 passed; full suite 723 passed; `config validate` ok; `git diff --check 7f06055 268e905` clean.
+
+**Review.** Read the criteria module, the workload and profiler changes, the step-4 orchestration (identity prerequisite and end check, post-run wait, kernel coverage, peak from both samplers, run validity) and the startup identity checks. One defect; the rest held.
+
+- **Defect (fixed): sanitized error names could read as zero errors.** Step 4 runs the profiler with `--sanitized-logs`. `sanitize_diagnostic()` keeps a dict key only if it is allowlisted, ends in `Error`/`Exception`, or is `HTTP nnn`. The workload counts face and scene errors by exception class name, so names such as `RemoteDisconnected` and `IncompleteRead` (`http.client`, typical when llama-server drops a connection) or `OutOfMemory` were dropped, and the `errors` map arrived empty. F and V1 gated only on that map being empty. Reproduced with the real functions: face errors `{"OutOfMemory": 3}` and scene errors `RemoteDisconnected`/`IncompleteRead` were sanitized to `{}`, and F and V1 both returned `pass` while `transport_errors` was 2.
+- **D47 amendment (session 18; not yet reviewed by the maintainer).**
+  - The workload's face summary adds `error_count`, the total counted before sanitizing, and the sanitizer keeps it.
+  - **F** requires an integer `error_count` equal to 0, as well as an empty `errors` map. Without the count, F is `unavailable`.
+  - **V1** requires integer `client_timeouts`, `http_errors` and `transport_errors`, all 0, as well as an empty `errors` map. These totals were already counted before sanitizing. A missing one makes V1 `unavailable`.
+  - A registry profile's `face_errors` is the workload's `error_count`. Thresholds, the criteria ID and every other criterion are unchanged.
+- **Observed, not changed:**
+  - `cache_evidence()` counts a missing steady update count as 0 even when there is no steady window. That cannot make a run eligible, because S is then not `pass`.
+  - The unchanged guard stops at 4.8 GB pressure, so a run above 4.8 GB stops and is invalid (R) before M1's 5.0 GB or M2's 5.4 GB limit can fail it. This is the guard's existing, documented role.
+
+| File | Change |
+|---|---|
+| `benchmarks/runner/demo_workload.py` | Face summary `error_count`. |
+| `benchmarks/runner/demo_profile.py` | Sanitizer keeps `error_count`. |
+| `benchmarks/runner/step4_criteria.py` | F and V1 gate on integer error totals; missing totals are `unavailable`. |
+| `src/sentinel/adapters.py` | Comment: `face_errors` is the workload's `error_count`. |
+| `tests/unit/test_step4.py` (+5) | Fixture with `error_count`; F fails on a count or is unavailable without one; V1 fails on `transport_errors` or is unavailable without `http_errors`; an end-to-end test where the real workload summary, sanitized by the real sanitizer, fails F and V1. All 5 fail against `268e905`'s criteria module (checked by swapping it in, then restored). |
+
+### Session 18 verification: exact commands and results
+
+```bash
+.venv/bin/python -m pytest -q -p no:cacheprovider tests/unit/test_step4.py
+# 54 passed in 3.69s, exit 0 (49 at 268e905)
+.venv/bin/python -m pytest -q -p no:cacheprovider tests/unit/test_scene_admission.py
+# 60 passed in 0.61s, exit 0
+.venv/bin/python -m pytest -q -p no:cacheprovider
+# 728 passed in 32.17s, exit 0 (723 at 268e905)
+.venv/bin/sentinel config validate config/default.yaml
+# valid Sentinel configuration (version 1, camera cam-1); core monitoring only; exit 0
+/usr/bin/python3 and ~/onvif_env/bin/python: compile() of demo_workload.py, step4_criteria.py, demo_profile.py
+# 3.12.3 compile ok; 3.10.14 compile ok
+git diff --check
+# no output, exit 0
+```
+
+- **Authorization is separate from implementation.** The criteria are implemented and tested portably. Nothing in this session authorizes running step 4. Its prerequisites are unchanged: checklist steps 1 and 3 passed, and the maintainer explicitly approves the run and the D47 criteria, now including this amendment.
+- **Not run:** the identity snapshot on real files, Check 9, step 4, any journal query, GPU, camera, model or Telegram work; CI. Step 4 and any acceptance commit stay PENDING, and no profile is accepted.
 
 ## Session 17 log (Claude, 2026-10-04)
 

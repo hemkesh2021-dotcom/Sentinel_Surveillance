@@ -228,19 +228,24 @@ def evaluate_profile(profile: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         f"supplementary: processed/decoded >= {MIN_PROCESSED_RATIO}",
         None if not processed or not source else round(processed / source, 4),
     )
-    hz, face_errors = _num(face.get("achieved_hz")), face.get("errors")
+    # Error totals gate F and V1: the workload counts them before sanitizing, which drops error
+    # names it does not recognise (e.g. RemoteDisconnected), so an empty ``errors`` map alone is not zero.
+    hz, face_errors, face_error_count = _num(face.get("achieved_hz")), face.get("errors"), face.get("error_count")
     out["F_face"] = _check(
-        None if not usable or hz is None or not isinstance(face_errors, dict) else hz >= MIN_FACE_HZ and not face_errors,
+        None if not usable or hz is None or not isinstance(face_errors, dict) or type(face_error_count) is not int
+        else hz >= MIN_FACE_HZ and face_error_count == 0 and not face_errors,
         f"face workload executed: >= {MIN_FACE_HZ} Hz achieved, 0 errors",
-        {"runs": face.get("runs"), "achieved_hz": hz, "errors": face_errors, "latency_ms": face.get("latency_ms")},
+        {"runs": face.get("runs"), "achieved_hz": hz, "error_count": face_error_count, "errors": face_errors,
+         "latency_ms": face.get("latency_ms")},
     )
     attempts = scene.get("attempts")
     errors = scene.get("errors")
     finish = scene.get("finish_reasons")
+    error_counts = [scene.get(key) for key in ("client_timeouts", "http_errors", "transport_errors")]
     out["V1_scene_requests"] = _check(
         None if not usable or type(attempts) is not int or not isinstance(errors, dict)
-        or type(scene.get("over_d16_timeout")) is not int
-        else attempts >= MIN_SCENE_ATTEMPTS and not errors and scene["over_d16_timeout"] == 0,
+        or type(scene.get("over_d16_timeout")) is not int or any(type(n) is not int for n in error_counts)
+        else attempts >= MIN_SCENE_ATTEMPTS and not any(error_counts) and not errors and scene["over_d16_timeout"] == 0,
         f">= {MIN_SCENE_ATTEMPTS} attempts; 0 HTTP, transport or client-timeout errors; 0 completions over "
         f"{MAX_SCENE_LATENCY_MS:g} ms",
         {k: scene.get(k) for k in ("attempts", "completed", "client_timeouts", "http_errors", "transport_errors",

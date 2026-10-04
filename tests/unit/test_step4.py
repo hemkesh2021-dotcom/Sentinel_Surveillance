@@ -240,6 +240,27 @@ def test_workload_counters_separate_timeouts_http_and_transport_errors_and_windo
     assert summary["detector"]["windows"] == {"window_s": 10, "count": 2, "min_fps": 15.0, "max_fps": 15.0}
 
 
+def test_errors_with_names_the_sanitizer_drops_still_fail_face_and_scene(runners) -> None:
+    # Sanitized logs keep only recognised error names; the totals counted before sanitizing must still gate.
+    w = runners.workload
+    stats = w.Stats()
+    stats.face_ms = [900.0] * 600
+    stats.face_errors = {"OutOfMemory": 3}
+    stats.vlm_ms = [4000.0] * 148
+    stats.vlm_errors = {"RemoteDisconnected": 1, "IncompleteRead": 1}
+    stats.vlm_finish_reasons = {"stop": 148}
+    stats.vlm_valid = 148
+    summary = runners.profile.sanitize_diagnostic(w.Stats.summary(stats, 600.0, window_start=0.0))
+    assert summary["face"]["errors"] == {} and summary["scene"]["errors"] == {}  # the names were dropped
+    assert summary["face"]["error_count"] == 3 and summary["scene"]["transport_errors"] == 2
+    profile = good_profile()
+    profile["workload_steady"]["face"] = summary["face"]
+    profile["workload_steady"]["scene"] = summary["scene"]
+    result = runners.criteria.evaluate_profile(profile)
+    assert result["F_face"]["status"] == "fail"
+    assert result["V1_scene_requests"]["status"] == "fail"
+
+
 # ---------------------------------------------------------------- profile evaluation
 
 
@@ -255,7 +276,7 @@ def good_profile() -> dict:
             "detector": {"unique_fps": 14.9, "processed_frames": 8940, "source_frames": 9000,
                          "windows": {"min_fps": 14.3}, "schedule_age_ms": {"p95": 70.0, "p99": 90.0},
                          "decode_to_result_age_ms": {"p95": 60.0}},
-            "face": {"runs": 590, "achieved_hz": 0.98, "errors": {}, "latency_ms": {"p95": 922.0}},
+            "face": {"runs": 590, "achieved_hz": 0.98, "errors": {}, "error_count": 0, "latency_ms": {"p95": 922.0}},
             "scene": {"attempts": 150, "completed": 150, "errors": {}, "over_d16_timeout": 0, "valid_reports": 149,
                       "invalid_reports": 1, "finish_reasons": {"stop": 150}, "rejected_reports_by_reason": {"invalid_report": 1},
                       "client_timeouts": 0, "http_errors": 0, "transport_errors": 0, "latency_ms": {"p95": 4000.0}},
@@ -284,6 +305,10 @@ def test_a_good_profile_passes_the_profile_side_criteria(runners) -> None:
         (lambda p: p["workload_steady"]["detector"]["schedule_age_ms"].update(p99=300.0), "T2_frame_age", "fail"),
         (lambda p: p["workload_steady"]["face"].update(errors={"ValueError": 1}), "F_face", "fail"),
         (lambda p: p["workload_steady"]["scene"].update(errors={"timeout": 1}), "V1_scene_requests", "fail"),
+        (lambda p: p["workload_steady"]["face"].update(error_count=1), "F_face", "fail"),
+        (lambda p: p["workload_steady"]["face"].pop("error_count"), "F_face", "unavailable"),
+        (lambda p: p["workload_steady"]["scene"].update(transport_errors=1), "V1_scene_requests", "fail"),
+        (lambda p: p["workload_steady"]["scene"].pop("http_errors"), "V1_scene_requests", "unavailable"),
         (lambda p: p["workload_steady"]["scene"].update(finish_reasons={"stop": 149, "length": 1}), "V2_scene_completion", "fail"),
         (lambda p: p["workload_steady"]["scene"].update(valid_reports=140), "V2_scene_completion", "fail"),
         (lambda p: p["gpu_evidence"].update(workload_cuda={}), "G_gpu", "unavailable"),
