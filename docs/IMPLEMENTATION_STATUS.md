@@ -1,6 +1,6 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-04, session 14 (Claude). **D41:** S1 met its predeclared criteria, so `--cache-ram 0` is adopted for the demo scene path (maintainer's conditional authorization); scope and limits are in the session 14 log. **V2-26 demo form, portable part:** a loopback-only llama-server launch spec (D42), the S1/check 8 request, a bounded threaded scene worker and the `scene_server` config; 35 new tests; 533 portable tests pass. Privacy item: Ultralytics analytics (operator action PENDING). Session 13's summary: The maintainer's headless runs at `e9af7f4` are recorded as USER-SUPPLIED MEASUREMENTS: two Check 9 smokes, three S1 arms (arm a twice; the first arm b was interrupted by a signal to the runner) and four capture probes. **S1 result:** with llama-server's default prompt cache, steady pressure rose +115 MB/min (reproduced: +117 MB/min); with `--cache-ram 0` it rose +3.9 MB/min, with the same 53/53 valid requests and no latency penalty. The timebox's first branch applies: Claude proposes adopting `--cache-ram 0` for the demo profile and D-1; the maintainer decides. Other memory work stays paused. Further U19 evidence: the first GPU model load of the boot left a one-time step of about 0.66 GB, in no sampled meminfo field; later cycles added none. **V2-05 demo form:** one upstream session, bounded fresh hand-off, 15 fps 640×480 decode at about 0.07 core-equivalents and credential-free output were observed on the camera (runs b and b2). Run a never connected ("No route to host"), which corrects the maintainer's summary, and no outage was tested (b3 never contacted the camera), so the outage and read-timeout checks stay PENDING. The `pts_quality: none` share (21.5 % and 15.4 %) is explained: OpenCV 4.13's `CAP_PROP_PTS` rounds the PTS to whole periods of the average frame rate and repeats the last value when a frame has none. This was reproduced on a synthetic file. The source now reads the unrounded `CAP_PROP_POS_MSEC`, and the probe names the cause of each `none` frame. **V2-09/V2-10 demo form, portable part:** a `PersonTracker` boundary (per-epoch reset, process-once ordering, epoch-unique IDs, v1's confirmation score, validated output) and the legacy `yolov8n.engine` + ByteTrack backend. The backend has the D27 guard, an engine SHA-256 pin and Ultralytics offline mode. Added: `sentinel track probe` and the registry entry with D33's provisional profile. 47 new tests; 498 portable tests pass. The detector device check is PENDING. Session 12's summary: the maintainer's first S1 attempt at `84f15ec` never reached either arm; the V2-05 demo-form capture adapter (D39) was implemented with 40 tests (451 portable tests).
+Last updated 2026-10-04, session 15 (Claude). **D-1 `sentinel run`, demo form, portable part:** wires capture → legacy detector/tracker → EdgeCore → zone/hazard rules → `IncidentService` → outbox/Telegram through their existing contracts (D43). It adds a llama-server process owner that refuses any non-loopback bind before spawning and applies the D27 full-offload guard (D44). Scene analysis stays off by default. 54 new tests; 587 portable tests pass. The device run is PENDING. Session 14's summary: **D41:** S1 met its predeclared criteria, so `--cache-ram 0` is adopted for the demo scene path (maintainer's conditional authorization); scope and limits are in the session 14 log. **V2-26 demo form, portable part:** a loopback-only llama-server launch spec (D42), the S1/check 8 request, a bounded threaded scene worker and the `scene_server` config; 35 new tests; 533 portable tests pass. Privacy item: Ultralytics analytics (operator action PENDING). Session 13's summary: The maintainer's headless runs at `e9af7f4` are recorded as USER-SUPPLIED MEASUREMENTS: two Check 9 smokes, three S1 arms (arm a twice; the first arm b was interrupted by a signal to the runner) and four capture probes. **S1 result:** with llama-server's default prompt cache, steady pressure rose +115 MB/min (reproduced: +117 MB/min); with `--cache-ram 0` it rose +3.9 MB/min, with the same 53/53 valid requests and no latency penalty. The timebox's first branch applies: Claude proposes adopting `--cache-ram 0` for the demo profile and D-1; the maintainer decides. Other memory work stays paused. Further U19 evidence: the first GPU model load of the boot left a one-time step of about 0.66 GB, in no sampled meminfo field; later cycles added none. **V2-05 demo form:** one upstream session, bounded fresh hand-off, 15 fps 640×480 decode at about 0.07 core-equivalents and credential-free output were observed on the camera (runs b and b2). Run a never connected ("No route to host"), which corrects the maintainer's summary, and no outage was tested (b3 never contacted the camera), so the outage and read-timeout checks stay PENDING. The `pts_quality: none` share (21.5 % and 15.4 %) is explained: OpenCV 4.13's `CAP_PROP_PTS` rounds the PTS to whole periods of the average frame rate and repeats the last value when a frame has none. This was reproduced on a synthetic file. The source now reads the unrounded `CAP_PROP_POS_MSEC`, and the probe names the cause of each `none` frame. **V2-09/V2-10 demo form, portable part:** a `PersonTracker` boundary (per-epoch reset, process-once ordering, epoch-unique IDs, v1's confirmation score, validated output) and the legacy `yolov8n.engine` + ByteTrack backend. The backend has the D27 guard, an engine SHA-256 pin and Ultralytics offline mode. Added: `sentinel track probe` and the registry entry with D33's provisional profile. 47 new tests; 498 portable tests pass. The detector device check is PENDING. Session 12's summary: the maintainer's first S1 attempt at `84f15ec` never reached either arm; the V2-05 demo-form capture adapter (D39) was implemented with 40 tests (451 portable tests).
 
 ## Position
 
@@ -22,10 +22,11 @@ Last updated 2026-10-04, session 14 (Claude). **D41:** S1 met its predeclared cr
 | Session 11 (Claude, 2026-10-03) | `84f15ec`: D37/D38, E-1 and reboot records, E-2 calculations, S1 portable implementation and tests, status record. Pushed by the maintainer (local `origin/v2-beta` = `84f15ec` at session 12 start). See the session 11 log. |
 | Session 12 (Claude, 2026-10-03) | `ed26dc9`: record of the maintainer's Check 9/S1 runs at `84f15ec` (S1 did not run). `e9af7f4`: V2-05 demo-form capture adapter, tests and status record. See the session 12 log. |
 | Session 13 (Claude, 2026-10-04) | `f6f9d5b` record of the Check 9, S1 and capture runs at `e9af7f4`, S1 comparison and V2-05 evaluation (docs only) · `8836929` PTS follow-up · `cd1c201` V2-09/V2-10 demo form (D40). See the session 13 log. |
-| Session 14 (Claude, 2026-10-04) | S1 evaluation and D41 adoption, D42, V2-26 demo form (portable), Ultralytics privacy item; one commit. See the session 14 log. |
-| Working tree | At session 13 start: HEAD `e9af7f4`, two commits ahead of the local `origin/v2-beta` (`84f15ec`; nothing pushed since session 11). The only change was session 12's unrelated trailing blank line in `BUILD.md` (not Claude's), which stays uncommitted. |
+| Session 14 (Claude, 2026-10-04) | `ea95571`: S1 evaluation and D41 adoption, D42, V2-26 demo form (portable), Ultralytics privacy item. See the session 14 log. |
+| Session 15 (Claude, 2026-10-04) | D-1 demo form (portable part), then D-2; one local commit per package, not pushed. See the session 15 log. |
+| Working tree | At session 15 start (10:46 IST): HEAD `ea95571`, equal to the local `origin/v2-beta` (the maintainer pushed after session 14; no fetch ran). The tree was clean. The session-start snapshot had listed `BUILD.md` as modified (session 12's trailing blank line), but by 10:43:07 IST, before Claude's first command, `BUILD.md` matched HEAD again. No other agent process was running; the maintainer's VS Code session was. Claude did not touch `BUILD.md`. Earlier: at session 13 start: HEAD `e9af7f4`, two commits ahead of the local `origin/v2-beta` (`84f15ec`; nothing pushed since session 11). The only change was session 12's unrelated trailing blank line in `BUILD.md` (not Claude's), which stays uncommitted. |
 | Local-only files | `AGENTS.md`, the v2 guide, the audit review and `docs/LOCAL_NOTES.md` (device-specific notes), excluded through `.git/info/exclude`; none included in session 6–11 increments. A fresh clone does not contain them, although CLAUDE.md names the guide and audit. |
-| Selected package | **V2-09/V2-10 demo form** (session 13): the legacy detector + ByteTrack parity adapter. Portable part complete (D40); device check PENDING; partial at most (D23). V2-05's demo form is evaluated (session 13 log): device criteria met except the outage and read-timeout checks (PENDING); partial under D23. S1 (D38) ran; adopting `--cache-ram 0` is the maintainer's decision. U20 and U19/U21 instrumentation remain portable-complete only; D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. |
+| Selected package | **D-1 `sentinel run`, demo form** (session 15): portable part done, device run PENDING; then **D-2** (loopback status page) in the same session. Before that: **V2-09/V2-10 demo form** (session 13): the legacy detector + ByteTrack parity adapter. Portable part complete (D40); device check PENDING; partial at most (D23). V2-05's demo form is evaluated (session 13 log): device criteria met except the outage and read-timeout checks (PENDING); partial under D23. S1 (D38) ran; adopting `--cache-ram 0` is the maintainer's decision. U20 and U19/U21 instrumentation remain portable-complete only; D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. |
 | Other branches | `origin/Yogeshvar425-patch-1` (teammate) is **not merged**: a single commit `6755796` that adds @Yogeshvar425 to `.github/CODEOWNERS` (merge base `c66ebde`). `origin/codex/github-audit-fixes-2026-09-19` is already in `master` via PR #4. |
 | Effort | Per-package estimates are in the package table (given to the maintainer on 2026-09-29). The re-estimate of optimization effort still waits for V2-01's B0 run. |
 | v1 on this device | Historically **not running** (maintainer, 2026-09-29); current state must be inspected, not inferred. This workflow never terminates existing v1 processes. |
@@ -36,7 +37,7 @@ Last updated 2026-10-04, session 14 (Claude). **D41:** S1 met its predeclared cr
 1. **Operator actions (PENDING):** `~/onvif_env/bin/yolo settings sync=False` (privacy item, session 14); a confirming demo-profile run with `--llama-cache-ram 0` when approved (D41).
 2. **V2-05 outage check (maintainer, PENDING):** one `sentinel capture probe` run with a real camera outage, after this session's PTS follow-up commit; command in "Hardware checks PENDING". Export `SENTINEL_RTSP_URL` in the same shell; b3 failed because it was missing.
 3. **V2-09/V2-10 device check (maintainer, PENDING):** the guard refusal without the preload, then a 60 s `sentinel track probe` with it; commands in "Hardware checks PENDING" (about 2 min attended, GPU). It can share a headless session with task 2.
-4. **V2-26 demo form portable part done (session 14).** Next: the interim face adapter or D-1, as the maintainer chooses. D-1 owns starting and stopping llama-server with `llama_server_command()`/`llama_server_environment()`, the D27 full-offload check, putting each frame into `RecentImages`, and draining `ThreadedSceneAnalyzer` into `EdgeCore.on_scene_outcome()`. The interim face adapter (V2-25 demo form, 1 Hz, D34) follows; its enrollment needs consented photos (unresolved), never `face_db.pkl`.
+4. **D-1 portable part done (session 15, D43/D44); D-2 follows in session 15.** The device run of D-1 is PENDING (operator checklist). Earlier: **V2-26 demo form portable part done (session 14).** Next was the interim face adapter or D-1, as the maintainer chooses. D-1 owns starting and stopping llama-server with `llama_server_command()`/`llama_server_environment()`, the D27 full-offload check, putting each frame into `RecentImages`, and draining `ThreadedSceneAnalyzer` into `EdgeCore.on_scene_outcome()`. The interim face adapter (V2-25 demo form, 1 Hz, D34) follows; its enrollment needs consented photos (unresolved), never `face_db.pkl`.
 5. **Remaining week 2 device adapters:** capture (session 12) and the legacy engine plus ByteTrack (session 13) are done in portable demo form; interim face adapter at 1 Hz (D34) and llama-server adapter using U20's portable completion boundary (actual model acceptance PENDING); and `sentinel run` (D-1) with the D27 GPU guard and U18 memory precheck. `sentinel run` hands every zone observation and hazard candidate to `IncidentService.record()` and acknowledges it only after that returns (D31). It runs `OutboxWorker` in its own thread with `TelegramNotifier.from_environment(timeout_s=notifications.request_timeout_s)` only if `telegram` is listed (D32).
 6. **V2-15 device check (maintainer):** one real Telegram send from the device with the maintainer's bot, after D-1 wiring.
 7. **U19/U21 instrumentation, portable part complete (Codex, session 6):** the six additional meminfo fields and timestamped torch allocator readings now stream to the run files. Real allocator behavior, sampling overhead and memory reclamation remain PENDING. S1 attributed the Check 8-type steady ramp to llama-server's prompt cache (session 13); other memory work is paused under the timebox.
@@ -129,7 +130,7 @@ Estimates as given to the maintainer on 2026-09-29. V2-49 has since been done.
 | V2-54 | Optional worker lifecycle, resource manifest | partial | Jetson | no | 1.5 | 1.5 | 29, 49 |
 | V2-55 | Mock future adapter, embedding repository | not started | Portable | no | 1 | 0 | 49, 53, 54 |
 | V2-56 | Upgrade feature acceptance, manifest freeze | not started | Jetson | no | 1.5 | 1.5 | 50–55 |
-| D-1 | Demo runtime loop `sentinel run` (not in backlog) | not started | Jetson | yes (demo only) | 2 | 2.5 | demo parts of 05, 09, 10, 13–15, 20, 25, 26 |
+| D-1 | Demo runtime loop `sentinel run` (not in backlog) | partial: demo form, portable part done (session 15, D43, D44); device run PENDING | Jetson | yes (demo only) | 2 | 2.5 | demo parts of 05, 09, 10, 13–15, 20, 25, 26 |
 | D-2 | Loopback read-only status page (not in backlog) | not started | Portable + device check | yes (demo only) | 1 | 0.5 | 14, 15 |
 
 | Totals | Claude h | Maintainer Jetson h |
@@ -155,7 +156,118 @@ Notes on partial and in-progress rows:
   - V2-05: demo form (session 12, D39): single-reader capture worker, one-frame handoff, OpenCV/FFmpeg software-decode source (TCP, video only, bounded open/read) and `sentinel capture probe`. On the camera (USER-SUPPLIED, session 13): one upstream session from this host, 15 fps 640×480 decode at about 0.07 core-equivalents, sub-millisecond hand-off, open failures retried with backoff, no credentials in output. Not done: a real outage and the read-timeout path on the device, wiring into `sentinel run` (D-1), and everything in V2-05 proper (relay, NVDEC/GStreamer, main stream D26, connection count with live view and recording, restore point).
   - V2-09/V2-10: demo form, portable part (session 13, D40): `PersonTracker` boundary, legacy Ultralytics + ByteTrack backend with the D27 guard, engine pin and offline mode, `sentinel track probe`. Not done: the device check (guard, load, timing, throughput, real tracks), wiring into `sentinel run` (D-1), and V2-09/V2-10 proper (TensorRT without torch, fixed buffers, parity report, separated ByteTrack with low-score boxes, labelled occlusion/resize/reconnect replays from V2-07).
   - V2-28: demo form done (session 5): the scene lane routes late evidence (session 2) and `IncidentService.annotate()` stores it on its own incident only (D35). Not done: wiring into `sentinel run` (D-1), display on the status page (D-2), and revalidation with the real scene adapter (V2-26) and after V2-11.
+  - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Not done: any run on the device (camera, detector, scene server, Telegram), the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 15 log (Claude, 2026-10-04)
+
+**Scope.** Maintainer instruction: implement D-1 `sentinel run` in its approved demo form, then D-2, a minimal loopback-only status page, one package at a time. Verify the reported V2-26 commit, the S1 decision and the portable test results first. Preserve `BUILD.md`. Do not push. Keep scene inference optional and off by default; keep `--cache-ram 0`; do not treat S1 as combined-runtime memory acceptance; do not implement V2-29 or face recognition/enrollment. Use portable tests and fakes only: no live capture, model, llama-server or Telegram. Also verify that every llama-server launch in the demo path binds 127.0.0.1 only, with a test that refuses a non-loopback bind. Prepare one numbered operator checklist.
+
+**Starting state, verified.**
+- HEAD `ea95571` ("Adopt --cache-ram 0 for the demo scene path (D41); add V2-26 demo form"); 11 files, as session 14 recorded. The local `origin/v2-beta` equals it.
+- D41's record (session 14 log) matches the S1 evidence recorded in session 13. Arm b's steady pressure slope was +3.9 MB/min against arm a's +115 MB/min, with 46/46 valid requests in each arm.
+- `.venv/bin/python -m pytest -q`: **533 passed** in 14.62 s, exit 0, matching session 14. `sentinel config validate config/default.yaml`: valid, exit 0.
+- `BUILD.md`: see the "Working tree" row. There was no diff to preserve or discard.
+
+### D-1 `sentinel run` (demo form, portable part; device run PENDING)
+
+| File | Change |
+|---|---|
+| `src/sentinel/demo_runtime.py` (new) | `DemoRuntime`: the loop. `OutboxLoop`: runs `OutboxWorker.run_once()` in its own thread. `assemble()`: startup checks and loads. `snapshot()`: status of numbers and labels. `degradation()`: the reasons the runtime is degraded. |
+| `src/sentinel/scene/server.py` (new) | `LlamaServerProcess` and `loopback_problem()` (D44). |
+| `src/sentinel/runtime.py` | `EdgeCore(scene_problem=...)`. A scene adapter that was requested but failed reads `scene_analysis: unavailable` with the reason, not `disabled`. Behaviour is otherwise unchanged. |
+| `src/sentinel/cli.py` | `sentinel run CONFIG --data-dir DIR --engine PATH [--min-free-gb 1.5] [--scene ...] [--status-interval-s 30]`. It prints one JSON line at start, a status line every interval and one at stop. Exit codes: 0 after a clean stop; 1 for a startup refusal (by label); 2 if a component did not stop in time; 130 for an interrupt during startup. |
+| `tests/unit/test_demo_runtime.py` (+30), `tests/unit/test_scene_server.py` (+24) | See "Tests" below. |
+
+- **D43. D-1 wiring (session 15 implementation decision, not yet reviewed).**
+  - **Threads.** One capture thread (`CaptureWorker`, the only camera reader); the loop thread (`step()`: tracker, EdgeCore, rules, `record()`, `annotate()`); one scene worker (`ThreadedSceneAnalyzer`, only with scene analysis); one outbox thread. All share one database writer connection under the lock that D31 describes.
+  - **Frame ownership.** The loop takes frames from the one-slot `LatestFrame`, so it never queues them. The tracker uses the image synchronously. `RecentImages` (4 images) keeps references only while scene analysis runs. A frame whose epoch already ended (`frame.stream != capture.connected`) skips inference.
+  - **Detector state.** It comes from `PersonTracker`'s result: a FAILED frame makes the detector UNAVAILABLE for that step (occupancy UNKNOWN, D18), and the next PROCESSED frame makes it AVAILABLE again. A detector that failed to load stays UNAVAILABLE with its label.
+  - **Incident hand-off (D31).** Zone observations and hazard candidates become signals that are acknowledged only after `record()` returns. A failure keeps them in order, and the retry waits at least 1 s. At most 256 wait; beyond that, new ones are dropped, counted and shown as lost. This is not a durable spool (guide ch. 4); a crash loses whatever is waiting. The waiting signals get one more attempt at shutdown.
+  - **Enrichment (D35).** Every evidence item that names an incident goes to `annotate()`. A newly CREATED zone incident requests enrichment of its own source frame (one of the last 4 frames) while scene analysis runs.
+  - **Startup order.** The stream URL is checked first, then scene admission (when `--scene` is given), then the database writer lock. Any of these refuses startup with a label before anything loads. Then come the notifiers, the scene server and the detector, in check 8's load order. MemFree prechecks guard the GPU loads: 3.0 GB before the scene server (as `demo_profile.py`) and 1.5 GB before the detector (as the track probe). They are provisional, not U18's policy. No page-cache eviction and no sudo. A model failure does not refuse startup: that component is unavailable, and core monitoring runs.
+  - **Scene off by default.** It needs both `--scene` and an enabled `llama-lfm2-vl-scene` manifest in the configuration that the existing registry admits (V2-49, D28). `config/default.yaml` lists none. **The code does not block enabling it before the confirming combined profile (D41)**: the registry still admits D33's provisional profile, which was measured with the default prompt cache. The operator checklist orders the confirming run first.
+  - **Telegram** is used only if listed in `notifications.channels`. Without `SENTINEL_TELEGRAM_BOT_TOKEN`/`_CHAT_ID`, the channel is unavailable (`credentials_missing`) and its rows wait as queued.
+  - **Shutdown.** SIGINT/SIGTERM call `request_stop()`. Bounds: capture `open + read + 1` s (16 s by default); a waiting scene job is dropped, then the scene server gets SIGTERM with a 10 s grace before SIGKILL; the scene worker gets the request timeout + 1 s; the outbox gets the Telegram timeout + 2 s. The database is closed only if the outbox thread stopped. An interrupted send's lease expires and is retried as ambiguous (D32).
+  - **Not included.** No V2-29 admission/degradation controller, memory-pressure response, restart or re-admission; no face stage (`face_recognition: disabled`); no runtime/core process split (V2-11); no systemd unit (V2-19).
+- **D44. llama-server launch owner (session 15 implementation decision, not yet reviewed).** `sentinel run` starts llama-server only through `LlamaServerProcess`. Before spawning, it requires the three model files to exist and runs `loopback_problem()` on the argv. That check refuses any `--host`/`--host=` value other than `127.0.0.1` (including `localhost`, `::`, all-interfaces and `.sock` Unix sockets, since b8932's `--host` takes those), and a missing `--host`. It also refuses a remaining `LLAMA_ARG_*` variable and a port that already answers on 127.0.0.1. The server is ready only when `/health` answers 200, its output shows `offloaded N/N layers to GPU`, `CLIP using CUDA0` appears, and only L4T's libcuda is mapped into the child (D27). Otherwise it is stopped and scene analysis is unavailable. Only those placement markers are read from its output; nothing else is kept. It runs in its own session, with stdin from `/dev/null`.
+
+**Loopback verification (llama-server launches in the demo path).**
+- `sentinel run` → `LlamaServerProcess`: the argv comes from `llama_server_command()` with `--host 127.0.0.1`, checked by `loopback_problem()` at launch, with `LLAMA_ARG_*` removed. Tests check the spawned argv/env and the refusal of a non-loopback command before any spawn.
+- `benchmarks/runner/demo_profile.py` `start_llama()` (Check 8, S1, the confirming run, through `operator_check.py`): it passes `--host 127.0.0.1` literally. A new test launches it, with a fake `Popen`, in all four flag/log combinations; every argv passes `loopback_problem()`. It does not remove `LLAMA_ARG_*` from its environment. The command-line `--host` overrides `LLAMA_ARG_HOST` in b8932 (D42), so it stays loopback. The script is unchanged, so earlier measurements stay reproducible (D41).
+- v1's `start_sentinel.sh` (read only; it is not in the v2 demo path) binds `--host 127.0.0.1` (existing source-scan test).
+- `llama-server --help` in b8932 has only `--host` for the listen address (`common/arg.cpp`, read only).
+
+**Tests (+54).** `test_scene_server.py`:
+- the loopback check on the demo argv and on nine refused variants;
+- refusal before spawn for a non-loopback command, a port in use or missing files;
+- the spawned argv/env (loopback, `--cache-ram 0`, no `LLAMA_ARG_*`, the preload);
+- the benchmark profiler's launches;
+- placement failures: partial offload, no vision line, a libcuda that is not L4T's, or none;
+- exit during load, not ready in time, exit after ready;
+- SIGKILL after the grace;
+- no output text kept.
+
+`test_demo_runtime.py`:
+- an incident and one delivered alert end to end, with no resend;
+- an empty room reads EMPTY;
+- a reconnect gives a new epoch, a tracker reset and the old episode ENDED;
+- a frame from an ended epoch gets no inference;
+- a stall withdraws people and occupancy;
+- a late enrichment report annotates only its incident and never becomes current;
+- a failing detector makes occupancy unknown, and it recovers;
+- a detector that never loaded, and unavailable scene analysis, are shown with their reasons;
+- `record()` failures are retried once a second;
+- a lost commit acknowledgement is a duplicate on retry;
+- overflow is counted as lost;
+- missing credentials keep alerts queued;
+- an ambiguous timeout and a notifier exception are retried, flagged and never counted as delivered;
+- a dead worker's lease is retried as ambiguous;
+- bounded shutdown of every owned component;
+- a send outlasting its bound keeps the database open;
+- waiting observations are recorded at shutdown;
+- the real `CaptureWorker` reconnects (3+ connects) and stops cleanly (open = close);
+- startup refusals: no URL (before any database or model), scene not admitted, a second writer;
+- admitted scene ready; model failures unavailable; low MemFree skips GPU loads; an unexpected error stops the server and releases the lock;
+- the scene server exiting mid-run and an outbox database error are shown;
+- `sentinel run` stopped by SIGTERM (exit 0, handlers restored, no URL, credentials or token in stdout/stderr);
+- a refusal by label.
+
+**Mutation sweep (one-off; script not committed): 22/22 caught.** The mutations:
+- acknowledgement before commit;
+- inference on an ended epoch;
+- a failed frame keeping the detector available;
+- no annotation; no enrichment;
+- retry without backoff;
+- outbox not stopped; no final flush;
+- unbounded overflow;
+- scene without admission;
+- no MemFree precheck;
+- database closed under a running sender;
+- unavailable scene shown as disabled;
+- any host accepted; a missing host accepted;
+- launch without the loopback check;
+- `LLAMA_ARG_*` kept;
+- port in use ignored;
+- partial offload accepted;
+- libcuda unchecked;
+- a failed server left running;
+- no SIGKILL after the grace.
+
+### Session 15 verification (D-1): exact commands and results
+
+```bash
+.venv/bin/python -m pytest -q tests/unit/test_demo_runtime.py tests/unit/test_scene_server.py
+# 54 passed in 6.0 s, exit 0; the 52 tests before the last two additions passed in 5 consecutive runs
+.venv/bin/python -m pytest -q
+# 587 passed, exit 0 (533 before)
+.venv/bin/sentinel config validate config/default.yaml
+# valid Sentinel configuration (version 1, camera cam-1); core monitoring only; exit 0
+git diff --check -- src tests docs
+# no output, exit 0
+```
+
+- **Not run:** `sentinel run` against the camera, detector, llama-server or Telegram; any GPU, MemFree or memory measurement; CI; Python 3.12. D-1's device run, the V2-05 outage check, the V2-09/V2-10 device check and the confirming combined profile are PENDING (see "Hardware checks PENDING").
 
 ## Session 14 log (Claude, 2026-10-04)
 

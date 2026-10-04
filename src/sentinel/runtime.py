@@ -61,12 +61,14 @@ class EdgeCore:
         face_recognition: Capability = Capability.DISABLED,
         enrollment: Enrollment | None = None,
         scene_id_prefix: str | None = None,
+        scene_problem: str | None = None,
     ) -> None:
         self._config = config
         self._clock = clock
         self._freshness = FreshnessMonitor(config.freshness, clock)
         self._tracks = TrackTable(config.freshness.track_expiry_ns)
         # No analyzer: scene analysis is disabled and core monitoring runs without it.
+        # With ``scene_problem`` it was requested but is unavailable (failed to start or not admitted).
         self._lane = (
             None
             if analyzer is None
@@ -79,6 +81,7 @@ class EdgeCore:
             confirmations=config.hazard.confirmations, max_gap_ns=config.hazard.max_gap_ns
         )
         self._zones = ZoneRules(config.zones)
+        self._scene_problem = None if analyzer is not None else scene_problem
         self._detector = detector
         self._face_recognition = face_recognition
         identity = config.identity
@@ -221,7 +224,12 @@ class EdgeCore:
     ) -> LiveState:
         self._sequence += 1
         if self._lane is None:
-            scene, scene_reason = SceneStatus.NO_CURRENT_RESULT, "scene analysis disabled"
+            scene = SceneStatus.NO_CURRENT_RESULT
+            scene_reason = (
+                "scene analysis disabled"
+                if self._scene_problem is None
+                else f"scene analysis unavailable: {self._scene_problem}"
+            )
         elif view.report is not None:
             scene, scene_reason = SceneStatus.REPORTED, "current scene report"
         elif view.evidence is not None:
@@ -245,7 +253,7 @@ class EdgeCore:
             last_frame_age_ms=None if age is None else age // NS_PER_MS,
             detector=self._detector,
             face_recognition=self._face_recognition,
-            scene_analysis=Capability.DISABLED if self._lane is None else Capability.AVAILABLE,
+            scene_analysis=self._scene_capability(),
             occupancy=occupancy,
             occupancy_reason=occupancy_reason,
             people=tuple(
@@ -265,6 +273,11 @@ class EdgeCore:
             scene_report=view.report,
             scene_evidence_id=view.evidence.evidence_id if view.evidence is not None else None,
         )
+
+    def _scene_capability(self) -> Capability:
+        if self._lane is not None:
+            return Capability.AVAILABLE
+        return Capability.DISABLED if self._scene_problem is None else Capability.UNAVAILABLE
 
     def _identity_fields(self, track: TrackObservation, now: MonoInstant) -> dict[str, object]:
         if self._face_recognition is not Capability.AVAILABLE:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -13,6 +14,7 @@ from typing import Any
 from . import __version__
 from .adapters import resolve
 from .config import CaptureConfig, ConfigError, SentinelConfig, load_config
+from .demo_runtime import Devices, RunOptions, SceneOptions, StartupRefused, assemble
 from .media.capture import CaptureWorker, LatestFrame, SourceError, VideoSource
 from .media.clock import SystemClock
 from .media.frames import FrameStamper
@@ -22,6 +24,7 @@ from .tracking.tracker import PersonTracker, TrackerError
 
 PROBE_MAX_S = 300.0
 GB = 1_000_000_000
+HOME = Path.home()
 
 
 def _seconds(text: str) -> float:
@@ -50,12 +53,32 @@ def _legacy_tracker(engine: Path) -> Any:
     return LegacyUltralyticsTracker(engine)
 
 
+def _scene_server(options: SceneOptions, port: int) -> Any:
+    from .scene.server import LlamaServerProcess
+
+    return LlamaServerProcess(options.binary, options.model, options.mmproj, port)
+
+
+def _scene_request(port: int, timeout_s: float) -> Any:
+    from .scene.llama_server import LlamaSceneRequest, LoopbackTransport
+
+    return LlamaSceneRequest(LoopbackTransport(port, timeout_s))
+
+
+def _positive_seconds(text: str) -> float:
+    value = float(text)
+    if not 1.0 <= value <= 3600.0:
+        raise argparse.ArgumentTypeError("must be between 1 and 3600")
+    return value
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
     capture_source: Callable[[CaptureConfig], VideoSource] = _live_source,
     tracker_backend: Callable[[Path], Any] = _legacy_tracker,
     meminfo: Callable[[], dict[str, int] | None] = read_meminfo,
+    devices: Devices | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="sentinel")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -86,6 +109,33 @@ def main(
         "--min-free-gb", type=_min_free_gb, default=1.5,
         help="refuse to load the model below this MemFree (decimal GB; default 1.5; see U18)",
     )
+    run = commands.add_parser(
+        "run",
+        help="run the demo runtime (D-1): camera (SENTINEL_RTSP_URL) -> detector/tracker -> rules -> "
+        "incidents -> outbox; needs the GPU with L4T's libcuda preloaded (D27). Stop with Ctrl-C or SIGTERM",
+    )
+    run.add_argument("path", help="YAML configuration file")
+    run.add_argument("--data-dir", type=Path, required=True, help="directory for the incident database")
+    run.add_argument("--engine", type=Path, required=True, help="the profiled yolov8n.engine")
+    run.add_argument(
+        "--min-free-gb", type=_min_free_gb, default=1.5,
+        help="do not load the detector below this MemFree (decimal GB; default 1.5; provisional, see U18)",
+    )
+    run.add_argument(
+        "--scene", action="store_true",
+        help="also start the scene server and scene analysis; off by default, and refused unless the "
+        "configuration lists an enabled, admitted llama-lfm2-vl-scene adapter",
+    )
+    run.add_argument("--llama-server", type=Path, default=HOME / "llama.cpp/build/bin/llama-server")
+    run.add_argument("--scene-model", type=Path, default=HOME / "models/lfm2-vl/LFM2-VL-1.6B-Q4_0.gguf")
+    run.add_argument("--scene-mmproj", type=Path, default=HOME / "models/lfm2-vl/mmproj-LFM2-VL-1.6B-Q8_0.gguf")
+    run.add_argument("--scene-ready-timeout-s", type=_positive_seconds, default=180.0)
+    run.add_argument(
+        "--scene-min-free-gb", type=_min_free_gb, default=3.0,
+        help="do not start the scene server below this MemFree (decimal GB; default 3.0, as check 8)",
+    )
+    run.add_argument("--status-interval-s", type=_positive_seconds, default=30.0,
+                     help="print a numbers-only status line this often (default 30)")
     args = parser.parse_args(argv)
 
     try:
@@ -99,6 +149,15 @@ def main(
         return _track_probe(
             config, args.seconds, args.engine, round(args.min_free_gb * GB), capture_source, tracker_backend, meminfo
         )
+    if args.command == "run":
+        devices = devices or Devices(
+            capture_source=capture_source,
+            tracker_backend=tracker_backend,
+            scene_server=_scene_server,
+            scene_request=_scene_request,
+            meminfo=meminfo,
+        )
+        return _run(config, args, devices)
     print(
         f"{args.path}: valid Sentinel configuration "
         f"(version {config.config_version}, camera {config.camera.id})"
@@ -195,6 +254,62 @@ def _track_probe(
     print(json.dumps(summary, indent=2))
     tracking = summary["tracking"]
     return 0 if tracking["processed"] and not tracking["failed"] and summary["worker"]["stopped"] else 1
+
+
+def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices) -> int:
+    scene = None
+    if args.scene:
+        scene = SceneOptions(
+            binary=args.llama_server, model=args.scene_model, mmproj=args.scene_mmproj,
+            ready_timeout_s=args.scene_ready_timeout_s, min_free_bytes=round(args.scene_min_free_gb * GB),
+        )
+    options = RunOptions(
+        data_dir=args.data_dir.expanduser(), engine=args.engine, min_free_bytes=round(args.min_free_gb * GB), scene=scene
+    )
+    clock = SystemClock()
+    try:
+        assembly = assemble(config, options, devices, clock)
+    except StartupRefused as exc:
+        print(f"run: {exc.label}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("run: interrupted during startup", file=sys.stderr)
+        return 130
+    runtime = assembly.runtime
+    print(json.dumps({"run": "starting", "startup": assembly.startup}), flush=True)
+    handlers = {sig: signal.signal(sig, lambda *_: runtime.request_stop()) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        runtime.start()
+        next_line = time.monotonic()
+        while not runtime.stop_requested:
+            runtime.step()
+            if time.monotonic() >= next_line:
+                print(json.dumps(status_line(runtime.snapshot())), flush=True)
+                next_line = time.monotonic() + args.status_interval_s
+    finally:
+        shutdown = runtime.shutdown()
+        closed = assembly.close(shutdown)
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+    print(json.dumps({"run": "stopped", "shutdown": shutdown, "database_closed": closed,
+                      "status": status_line(runtime.snapshot())}), flush=True)
+    return 0 if shutdown["all_stopped"] and closed else 2
+
+
+def status_line(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """The periodic one-line summary: numbers and fixed labels only."""
+    live = snapshot.get("live") or {}
+    return {
+        "updated_utc": snapshot["runtime"]["updated_utc"],
+        "state": snapshot["runtime"]["state"],
+        "video": live.get("video"),
+        "occupancy": live.get("occupancy"),
+        "scene": live.get("scene"),
+        "rates": snapshot["rates"],
+        "capture": {k: snapshot["components"]["capture"][k] for k in ("state", "stream_epoch", "reconnects")},
+        "pending_signals": snapshot["components"]["incidents"]["pending_signals"],
+        "degraded": snapshot["degraded"],
+    }
 
 
 if __name__ == "__main__":
