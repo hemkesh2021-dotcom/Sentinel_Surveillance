@@ -1,6 +1,6 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-04, session 21 (Claude). **Checklist step 3 recorded in part** as USER-SUPPLIED MEASUREMENTS (boot `dbdbdc0c-5c27-469b-ac1e-280a2b1140c7`, commit `7dc7a04`, rebooted since step 2). The D27 guard refused without the preload (`exit_a=1`, `libcuda_not_l4t`). 60 s of tracking gave `exit_b=0`, 858 of 888 captured frames processed, no failures, upstream max 1 and no credentials in the output. **Detection correctness is PENDING:** the maintainer's observations of who was in view were not supplied, so the person counters are not evaluated, and track IDs are not counted as people. **Defect found and fixed (D48):** the model load wrote Ultralytics' and TensorRT's diagnostics to stdout, so `b.json` was not valid JSON (446 characters before the object). `sentinel track probe` and `sentinel run` now keep stdout for their JSON and send other stdout output to stderr while they run. 8 new subprocess tests; 736 portable tests pass. Device verification of the fix is PENDING. The caffeine record is corrected, and the TensorRT engine-plan warning is recorded as unresolved (U22). Session 20's summary: **Checklist step 2 recorded** as USER-SUPPLIED MEASUREMENTS: a camera power cut and restore during a 180 s capture probe gave `exit=0`, `frames_received`, `connects` 2, `epochs` 2, `stream_ends` 1, `open_failures` 3, upstream max 1 and no credentials in the output. This meets step 2's outage criteria. It closes V2-05's demo-form outage and read-timeout items; V2-05 stays partial (demo form, full acceptance pending). An earlier run with no physical outage is recorded as steady capture only. **Environment change (USER-SUPPLIED):** the maintainer installed the `caffeine` apt package. Claude saw no caffeine process afterwards; whether it runs during later steps is unverified. Step 3 instructions were tightened (docs only). Session 19's summary: **Checklist step 1 recorded** as USER-SUPPLIED OBSERVATIONS: with `YOLO_OFFLINE=true`, Ultralytics is offline and its events are disabled; `settings_sync` stays `True` (1b not performed). **Step 2 revised before its first run:** a 180 s window for a camera reboot and timed cut/restore prompts. Docs only; no camera, GPU or service was touched. Session 18's summary: **Review of `268e905` (D47), portable only:** one defect fixed. With `--sanitized-logs`, which step 4 always uses, error names the sanitizer does not recognise (such as `RemoteDisconnected`) were dropped, so criteria F and V1 could pass with real face or scene errors. F and V1 now gate on error totals counted before sanitizing. 728 portable tests pass. Step 4 is still not authorized to run, and no profile is accepted. Session 17's summary: **Step-4 criteria v2 and the guarded `step4` mode (D47), portable only:** `step4-combined-cache-off-v2` requires:
+Last updated 2026-10-04, session 22 (Claude). **Step 3's observations recorded as unknown** (USER-SUPPLIED): the first run stays evidence of execution and performance only, and detection correctness stays PENDING. **The track probe now has a per-second timeline** (`7a4d408`): per UTC second of ingest, processed and failed frames, frames with persons, the most persons and confirmed persons in one frame, and the track IDs seen; bounded, numbers only. **New repeatable operator check 3T (PENDING):** 15 s nobody, 30 s only the maintainer, 15 s nobody, with timed prompts recorded apart from the maintainer's own account. It also verifies on the device that `track probe` stdout parses directly as JSON. 5 new tests; 740 portable tests pass. Session 21's summary: **Checklist step 3 recorded in part** as USER-SUPPLIED MEASUREMENTS (boot `dbdbdc0c-5c27-469b-ac1e-280a2b1140c7`, commit `7dc7a04`, rebooted since step 2). The D27 guard refused without the preload (`exit_a=1`, `libcuda_not_l4t`). 60 s of tracking gave `exit_b=0`, 858 of 888 captured frames processed, no failures, upstream max 1 and no credentials in the output. **Detection correctness is PENDING:** the maintainer's observations of who was in view were not supplied, so the person counters are not evaluated, and track IDs are not counted as people. **Defect found and fixed (D48):** the model load wrote Ultralytics' and TensorRT's diagnostics to stdout, so `b.json` was not valid JSON (446 characters before the object). `sentinel track probe` and `sentinel run` now keep stdout for their JSON and send other stdout output to stderr while they run. 8 new subprocess tests; 736 portable tests pass. Device verification of the fix is PENDING. The caffeine record is corrected, and the TensorRT engine-plan warning is recorded as unresolved (U22). Session 20's summary: **Checklist step 2 recorded** as USER-SUPPLIED MEASUREMENTS: a camera power cut and restore during a 180 s capture probe gave `exit=0`, `frames_received`, `connects` 2, `epochs` 2, `stream_ends` 1, `open_failures` 3, upstream max 1 and no credentials in the output. This meets step 2's outage criteria. It closes V2-05's demo-form outage and read-timeout items; V2-05 stays partial (demo form, full acceptance pending). An earlier run with no physical outage is recorded as steady capture only. **Environment change (USER-SUPPLIED):** the maintainer installed the `caffeine` apt package. Claude saw no caffeine process afterwards; whether it runs during later steps is unverified. Step 3 instructions were tightened (docs only). Session 19's summary: **Checklist step 1 recorded** as USER-SUPPLIED OBSERVATIONS: with `YOLO_OFFLINE=true`, Ultralytics is offline and its events are disabled; `settings_sync` stays `True` (1b not performed). **Step 2 revised before its first run:** a 180 s window for a camera reboot and timed cut/restore prompts. Docs only; no camera, GPU or service was touched. Session 18's summary: **Review of `268e905` (D47), portable only:** one defect fixed. With `--sanitized-logs`, which step 4 always uses, error names the sanitizer does not recognise (such as `RemoteDisconnected`) were dropped, so criteria F and V1 could pass with real face or scene errors. F and V1 now gate on error totals counted before sanitizing. 728 portable tests pass. Step 4 is still not authorized to run, and no profile is accepted. Session 17's summary: **Step-4 criteria v2 and the guarded `step4` mode (D47), portable only:** `step4-combined-cache-off-v2` requires:
 - every sample in the steady interval ≤ 5,000,000,000 B, with the time above 5.0 GB reported;
 - a sampled run peak ≤ 5,400,000,000 B;
 - monotonic steady boundaries with teardown excluded;
@@ -33,6 +33,7 @@ Last updated 2026-10-04, session 21 (Claude). **Checklist step 3 recorded in par
 | Session 12 (Claude, 2026-10-03) | `ed26dc9`: record of the maintainer's Check 9/S1 runs at `84f15ec` (S1 did not run). `e9af7f4`: V2-05 demo-form capture adapter, tests and status record. See the session 12 log. |
 | Session 13 (Claude, 2026-10-04) | `f6f9d5b` record of the Check 9, S1 and capture runs at `e9af7f4`, S1 comparison and V2-05 evaluation (docs only) · `8836929` PTS follow-up · `cd1c201` V2-09/V2-10 demo form (D40). See the session 13 log. |
 | Session 14 (Claude, 2026-10-04) | `ea95571`: S1 evaluation and D41 adoption, D42, V2-26 demo form (portable), Ultralytics privacy item. See the session 14 log. |
+| Session 22 (Claude, 2026-10-04) | Step 3 observations recorded as unknown (USER-SUPPLIED); `7a4d408` per-second track-probe timeline with 5 tests; operator check 3T (PENDING); local commits, not pushed. See the session 22 log. |
 | Session 21 (Claude, 2026-10-04) | Step 3 recorded in part (USER-SUPPLIED; detection correctness PENDING); D48 stdout/JSON fix for `track probe` and `run` with 8 subprocess tests; caffeine observation corrected; U22 added; one local commit, not pushed. See the session 21 log. |
 | Session 20 (Claude, 2026-10-04) | Step 2 recorded (USER-SUPPLIED); caffeine package install recorded; step 2a and step 3 instructions tightened (docs only); one local commit, not pushed. See the session 20 log. |
 | Session 19 (Claude, 2026-10-04) | Step 1 recorded (USER-SUPPLIED); step 2 instructions revised (docs only); one local commit, not pushed. See the session 19 log. |
@@ -43,15 +44,15 @@ Last updated 2026-10-04, session 21 (Claude). **Checklist step 3 recorded in par
 | Working tree | At session 15 start (10:46 IST): HEAD `ea95571`, equal to the local `origin/v2-beta` (the maintainer pushed after session 14; no fetch ran). The tree was clean. The session-start snapshot had listed `BUILD.md` as modified (session 12's trailing blank line), but by 10:43:07 IST, before Claude's first command, `BUILD.md` matched HEAD again. No other agent process was running; the maintainer's VS Code session was. Claude did not touch `BUILD.md`. Earlier: at session 13 start: HEAD `e9af7f4`, two commits ahead of the local `origin/v2-beta` (`84f15ec`; nothing pushed since session 11). The only change was session 12's unrelated trailing blank line in `BUILD.md` (not Claude's), which stays uncommitted. |
 | Known limitation (D-1, D43) | **Pending incident writes are buffered in memory, not in a crash-safe spool.** Rule observations waiting for a failed `record()` to be retried (at most 256) are lost if the process stops abruptly; overflow is counted as lost. The status page states this beside the pending count. A durable spool belongs to the runtime/core split (guide ch. 4, V2-11). |
 | Local-only files | `AGENTS.md`, the v2 guide, the audit review and `docs/LOCAL_NOTES.md` (device-specific notes), excluded through `.git/info/exclude`; none included in session 6–11 increments. A fresh clone does not contain them, although CLAUDE.md names the guide and audit. |
-| Selected package | **D48 stdout/JSON separation for `track probe` and `run`** (session 21): a narrow CLI fix for the defect checklist step 3 found; portable part done, device verification PENDING. Before it: **Step-4 criteria v2 and guarded mode** (session 17, D47; reviewed and corrected in session 18): portable part done; the run is PENDING (checklist step 4). Before it: **`--scene` admission fix** (session 16, D46): a narrow amendment to D-1, done portably; no device check of its own. Before it: **D-2 loopback status page, demo form** (session 15): portable part done, device check PENDING (checklist step 5). Before it in session 15: **D-1 `sentinel run`, demo form**, portable part done (`537557c`), device run PENDING. Before that: **V2-09/V2-10 demo form** (session 13): the legacy detector + ByteTrack parity adapter. Portable part complete (D40); device check PENDING; partial at most (D23). V2-05's demo form is evaluated (session 13 log). Its outage and read-timeout checks are now met too (USER-SUPPLIED, session 20 log). It stays partial under D23. S1 (D38) ran; adopting `--cache-ram 0` is the maintainer's decision. U20 and U19/U21 instrumentation remain portable-complete only; D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. |
+| Selected package | **Track-probe timeline and check 3T** (session 22, `7a4d408`): portable part done; the check is PENDING (maintainer). Before it: **D48 stdout/JSON separation for `track probe` and `run`** (session 21): a narrow CLI fix for the defect checklist step 3 found; portable part done, device verification PENDING. Before it: **Step-4 criteria v2 and guarded mode** (session 17, D47; reviewed and corrected in session 18): portable part done; the run is PENDING (checklist step 4). Before it: **`--scene` admission fix** (session 16, D46): a narrow amendment to D-1, done portably; no device check of its own. Before it: **D-2 loopback status page, demo form** (session 15): portable part done, device check PENDING (checklist step 5). Before it in session 15: **D-1 `sentinel run`, demo form**, portable part done (`537557c`), device run PENDING. Before that: **V2-09/V2-10 demo form** (session 13): the legacy detector + ByteTrack parity adapter. Portable part complete (D40); device check PENDING; partial at most (D23). V2-05's demo form is evaluated (session 13 log). Its outage and read-timeout checks are now met too (USER-SUPPLIED, session 20 log). It stays partial under D23. S1 (D38) ran; adopting `--cache-ram 0` is the maintainer's decision. U20 and U19/U21 instrumentation remain portable-complete only; D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. |
 | Other branches | `origin/Yogeshvar425-patch-1` (teammate) is **not merged**: a single commit `6755796` that adds @Yogeshvar425 to `.github/CODEOWNERS` (merge base `c66ebde`). `origin/codex/github-audit-fixes-2026-09-19` is already in `master` via PR #4. |
 | Effort | Per-package estimates are in the package table (given to the maintainer on 2026-09-29). The re-estimate of optimization effort still waits for V2-01's B0 run. |
 | v1 on this device | Historically **not running** (maintainer, 2026-09-29); current state must be inspected, not inferred. This workflow never terminates existing v1 processes. |
-| Waiting on the maintainer | **The session 15 operator checklist, steps 3–5** (PENDING). Step 1, the Ultralytics setting, is done (USER-SUPPLIED, session 19); its optional 1b `yolo settings sync=False` was not performed. Step 2, the V2-05 physical outage, is done (USER-SUPPLIED, session 20). Step 3, the V2-09/V2-10 device check, is recorded in part (USER-SUPPLIED, session 21): the guard and stability criteria are met, and detection correctness waits for the maintainer's observations of who was in view. Step 4 the confirming combined profile with `--llama-cache-ram 0` (needs approval and predeclared criteria). Step 5 is the first end-to-end alert and the status page, which is also V2-15's Telegram device check. Then come the decisions on scene admission for D-1 and the review of D43–D45. Still open from earlier: why S1 arm b #1 was interrupted; U18's runtime policy, U19 unload, U20 real-model/demo-exception evidence, the 30-minute U21 rerun (not approved) and consent/figure labels. D36 provisionally retains b8932; beta still requires a tested compatible schema-fix descendant. E-1 reported Ollama inactive and disabled (USER-SUPPLIED). The full empty-room-clip review and the deletion of review images are not confirmed. |
+| Waiting on the maintainer | **The session 15 operator checklist, steps 3–5** (PENDING). Step 1, the Ultralytics setting, is done (USER-SUPPLIED, session 19); its optional 1b `yolo settings sync=False` was not performed. Step 2, the V2-05 physical outage, is done (USER-SUPPLIED, session 20). Step 3, the V2-09/V2-10 device check, is recorded in part (USER-SUPPLIED, session 21): the guard and stability criteria are met. Its observations are unknown (session 22), so detection correctness waits for the timed check 3T. Step 4 the confirming combined profile with `--llama-cache-ram 0` (needs approval and predeclared criteria). Step 5 is the first end-to-end alert and the status page, which is also V2-15's Telegram device check. Then come the decisions on scene admission for D-1 and the review of D43–D45. Still open from earlier: why S1 arm b #1 was interrupted; U18's runtime policy, U19 unload, U20 real-model/demo-exception evidence, the 30-minute U21 rerun (not approved) and consent/figure labels. D36 provisionally retains b8932; beta still requires a tested compatible schema-fix descendant. E-1 reported Ollama inactive and disabled (USER-SUPPLIED). The full empty-room-clip review and the deletion of review images are not confirmed. |
 
 ## Next concrete task
 
-1. **Step 3 completion (maintainer).** Give the observations from the tracking run (`b_start_utc` 15:49:33Z to `b_end_utc` 15:50:44Z on 2026-10-04, which includes the 8.69 s model load): how many people were in view, roughly when they were visible, whether three were ever visible at once, and any person-like objects or reflections. Until then, detection correctness stays PENDING and step 4's prerequisite "step 3 passed" is not met. Device verification of D48 is also PENDING: step 5's `run.jsonl` must parse line by line, or the maintainer may choose a step 3 rerun in a new directory (not requested).
+1. **Check 3T (maintainer, PENDING).** The timed one-person detection check under "Hardware checks PENDING → Operator checklist → 3T": confirm its proposed criteria, run it at `7a4d408` or later, write `actions.txt`, and return the listed files. Claude then compares the three periods against `actions.txt`. Step 4's prerequisite "step 3 passed" is not met until then. 3T is also the device check of D48 for `track probe` (`stdout_json=valid`); `sentinel run`'s is step 5's `run.jsonl`.
 2. **Maintainer decisions before step 4:**
    - the D47 criteria (`step4-combined-cache-off-v2`) are approved for implementation (session 17). Session 18 amended F and V1 to gate on error totals (session 18 log); review that amendment. The step-4 **run** still needs the maintainer's explicit go-ahead, through checklist step 4 (4a–4f). Implementation and passing portable tests are not that go-ahead;
    - after it, if it passed, approve the separate acceptance commit (D46) that adds the step-4 profile to `RESOURCE_PROFILES`. That commit is the only way `--scene` can be admitted;
@@ -176,6 +177,71 @@ Notes on partial and in-progress rows:
   - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Not done: any run on the device (camera, detector, scene server, Telegram), the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Not done: viewing it on the device over the SSH forward (checklist step 5); it stands in for, and does not replace, V2-17/V2-18 (no sessions, roles, API, media or live video).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 22 log (Claude, 2026-10-04)
+
+**Scope.** The maintainer asked Claude to record step 3's observations as unknown and to prepare one repeatable timed check with timed prompts:
+- 0–15 s: nobody in view.
+- 15–45 s: only the maintainer.
+- 45–60 s: nobody in view.
+
+The check needs preparation time before it starts, prompt times recorded apart from the maintainer's actions, and timestamped numeric results without images. Claude was first to check whether the existing probe supported the comparison, explaining the smallest change before editing, and to verify that stdout parses directly as JSON. The work is portable only. Claude ran no camera, GPU or hardware check and did not start step 4. Earlier artifacts are untouched. The session started at `818b32f` with a clean tree.
+
+**USER-SUPPLIED (maintainer):** "I'm unsure how many people were visible during the step-3 tracking run, when they were visible, whether three appeared simultaneously, or whether reflections affected detection. Record these observations as unknown." They are recorded as unknown in the step 3 entry. The first run remains evidence of execution and the reported performance only. Detection correctness stays PENDING, and no people count is inferred from track IDs.
+
+**Did the probe support the comparison?** No. `TrackProbe.summary()` gave whole-run totals only (`frames_with_persons`, `max_per_frame`, track-ID counts) with no time dimension, so the periods could not be separated. Each frame already carries `ingest_utc`.
+
+**The change (approved by the maintainer before editing; `7a4d408`).**
+- `TrackProbe` adds a `timeline` to the summary, keyed by UTC second of frame ingest. Each second holds:
+  - `processed` and `failed` frames;
+  - `frames_with_persons`, `max_persons` and `max_confirmed`;
+  - the sorted `[stream_epoch, track_id]` pairs seen.
+- It holds at most 320 seconds (the 300 s probe limit plus slack). Frames beyond that are counted in `dropped_frames`, and the totals still count them.
+- Skipped frames add nothing, including an older, never-processed frame from a new second.
+- Numbers only. The existing fields, thresholds, the adapter and the CLI are unchanged.
+- No readiness signal was added. 3T starts its prompts 30 s after launch, and its summary checks afterwards that the window covered all the periods (`covers_periods`).
+
+**Tests (5 new in `tests/unit/test_track_probe.py`):**
+- The timeline splits counts by second: empty, one person with a second in one frame and confirmation, then a failure. It adds up to the run's totals and keeps no exception text.
+- The bound and the dropped-frame count.
+- An older skipped frame adds no second.
+- The CLI's timeline matches its totals.
+
+Mutation check: counting skipped frames, removing the bound, not counting failures, and counting every person as confirmed each made a test fail. The first survived until the skipped-frame test was added. The file was restored byte for byte (`cmp`).
+
+**Stdout parses directly as JSON (portable).** The real CLI ran `track probe` in a subprocess with the noisy fake load from `tests/unit/cli_stdout_child.py`, with stdout redirected straight to a file and no markers:
+- `exit=0`;
+- `python -m json.tool` accepted it, and `json.load` read `probe track`, `status frames_received`;
+- `NOISE` lines: 0 in stdout, 8 in stderr.
+
+It was repeated after the timeline change, which also showed the `timeline` keys. The device check is 3T's `stdout_json`.
+
+**Check 3T (written into the operator checklist after step 3; PENDING).**
+- A new directory per run, named by its UTC start time, so earlier results are never overwritten.
+- The probe runs 100 s and the periods fall at 30–90 s after launch. Step 3's load took 8.69 s, so the window starts about 10 s after launch.
+- `prompts.txt` records prompt times only, to the millisecond. `actions.txt` holds the maintainer's own account, with `unknown` allowed.
+- The summary counts only the whole seconds between two prompts, so boundary seconds are left out.
+- The proposed criteria need the maintainer's confirmation before the run. Detection is judged against `actions.txt`, never from the counters alone, and one run with one person is not an accuracy figure.
+
+**Shell-block checks (Claude; scratchpad only, never `~/sentinel-runs`):**
+- All five 3T blocks pass `bash -n`.
+- The summary is a `python3 -c 'if 1: …'` with no inner single quote, so it works whether pasted with or without the list indentation. The output was identical both ways (same md5), on the system `python3` 3.12.3.
+- **Synthetic `b.json`** (the fake CLI's output with a 100 s timeline) and prompt times:
+  - The period counts matched a hand calculation: 15 person-seconds in p2 and 9 in p3, with the boundary second excluded.
+  - A prompt outside the window gave `covers_periods False` and a gap count (`35/39`).
+  - A planted userinfo string gave `userinfo_lines=1`.
+- **3T-1 and 3T-3 dry run:** run with `HOME` pointed at the scratchpad, a fake probe and shortened sleeps. They wrote `provenance.txt` with `has_timeline_and_stdout_fix=yes`, five `prompts.txt` lines and `exit_b=0`. No directory was created under `~/sentinel-runs`.
+  - The dry run's `other_camera_clients=2` were Claude's own tool shells, whose command text contained the pattern. Checked by process name only: one bash, the checking shell itself. The maintainer's terminal gave 0 in step 3.
+- 3T-5 with `EDITOR=true` wrote the template.
+
+### Session 22 verification: exact commands and results
+
+All portable, in the repository `.venv` (Python 3.10.14):
+- `.venv/bin/python -m pytest -q tests/unit/test_track_probe.py` → 9 passed in 4.72 s, then 10 passed in 4.72 s with the skipped-frame test.
+- `.venv/bin/python -m pytest -q tests/unit/test_track_probe.py tests/unit/test_cli_stdout.py tests/unit/test_demo_runtime.py tests/unit/test_portable_imports.py` → 52 passed in 20.18 s.
+- `.venv/bin/python -m pytest -q` → 740 passed in 37.72 s (736 at `818b32f`).
+- `PYTHONPATH=src .venv/bin/python -m sentinel.cli config validate config/default.yaml` → valid (version 1, camera cam-1), exit 0.
+- **Not run:** 3T itself, or any hardware, camera, GPU or model; step 4; step 5; CI; Python 3.12 for the test suite.
 
 ## Session 21 log (Claude, 2026-10-04)
 
@@ -2164,7 +2230,7 @@ No v1 code was migrated in this slice.
 
 Checks 1 (`nvpmodel` only), 3, 5 and 6 were run by Claude in session 3 (inventory above). Check 4 was merged into 3b. Check 8 was run by the maintainer on 2026-10-03 (session 5 log). Bounded Check 9 smokes ran on the previous boot (session 10 log) and on the current boot at `84f15ec` and `e9af7f4`. S1 ran at `e9af7f4`, and the V2-05 steady capture ran on the camera (session 13 log). These are historical conditions, not a verification of the current service state. Session 8 superseded the old Check 8/9 service-stop, cache-fill, failure-seeking, server-launch and raw-journal recipes; none is authorized. **Session 15 replaces the separate V2-05 outage and V2-09/V2-10 blocks with one numbered checklist (below).** It covers the Ultralytics setting, the outage check, the detector check, the confirming profile (`--llama-cache-ram 0`, still subject to the maintainer's approval) and the first end-to-end alert with the status page. Checks 2 and 7 remain separately PENDING. New operator results need USER-SUPPLIED MEASUREMENT attribution and their conditions, including whether D37's cache drop was used.
 
-### Operator checklist (session 15): steps 1–2 done (sessions 19–20, USER-SUPPLIED); step 3 recorded in part (session 21); steps 4–5 PENDING
+### Operator checklist (session 15): steps 1–2 done (sessions 19–20, USER-SUPPLIED); step 3 recorded in part (session 21); 3T, 4 and 5 PENDING
 
 Claude ran none of these steps. Run them in order; each step names its prerequisites, and later steps depend on earlier ones. Results are USER-SUPPLIED MEASUREMENTS or observations; record the real boot ID and commit from each step's `provenance.txt`, never the commit this list was written at.
 
@@ -2349,6 +2415,119 @@ After a `STOP`, later blocks fail without writing, because `/nonexistent-stop` d
   - Persons: `track_ids` 5, `confirmed_track_ids` 4, `frames_with_persons` 845, `max_per_frame` 3. **Detection correctness is PENDING:** the maintainer's observations of who was in view were not supplied. These are counts, not accuracy, and track IDs are not people.
   - **Deviation:** 3-5's summary could not parse `b.json`, which had 446 characters of library output before the JSON object. The maintainer recovered the object; the original files are unchanged. Fixed in session 21 (D48). The userinfo count was not saved to `provenance.txt`.
   - Details and Claude's calculations are in the session 21 log.
+  - **Maintainer observations (session 22, USER-SUPPLIED): unknown.** The number of people in view, when they were visible, whether three were visible at once, and whether reflections or person-like objects affected detection are all unknown. This run stays evidence of execution and of the reported performance only. Detection correctness stays PENDING, and no people count is inferred from track IDs. It is to be settled by 3T.
+**3T. Timed one-person detection check (repeatable; about 2.5 min attended; GPU; a functional check, not a measurement, so no D37 drop). Added in session 22; PENDING.**
+- *Purpose:* settle step 3's detection-correctness item with known conditions. Nobody is in view for 15 s, then only the maintainer for 30 s, then nobody for 15 s. The probe's per-second timeline (`7a4d408`) gives the numbers for each period. No images or video are saved. It also checks on the device that `track probe` stdout parses directly as JSON (D48, `818b32f`).
+- *Prerequisites:*
+  - Step 3's 3-0 conditions: headless, MemFree ≥ 1,500,000,000 B, `other_camera_clients=0` (run 3-0 first).
+  - Nobody else in the camera view for the whole run, including the 30 s of preparation and the tail. The view should be the same as in step 3.
+  - A place to wait outside the view from which the terminal can be seen or heard. The prompts ring the terminal bell, which may be silent, so the screen is the reference.
+- *Proposed criteria (confirm them before the run; counts, not accuracy):*
+  - Execution: `exit_b=0`, `status frames_received`, `failed 0`, empty failures and error types, upstream observed max 1, `userinfo_lines=0`.
+  - D48 on the device: `stdout_json=valid`.
+  - Coverage: `covers_periods True`. If it is False, the result is inconclusive; report it, do not rerun silently.
+  - Detection, judged by Claude against the maintainer's own `actions.txt` and never from the counters alone:
+    - `p1_nobody` and `p3_nobody`: `frames_with_persons 0`, unless `actions.txt` explains it (for example leaving late).
+    - `p2_person`: persons detected in the seconds the maintainer reports being in view.
+    - `max_persons` at most 1 in every period.
+    - `distinct_track_ids` is reported but is not a people count.
+  - One run with one person in one scene checks these conditions only. It is not a detector accuracy figure.
+- *3T-1. Directory and provenance (paste as one block). Each run gets a new directory named by its UTC start time, so earlier results are never touched:*
+  ```bash
+  cd /home/villain8001/sentinel-surveillance && set -o pipefail
+  STEP=3t-timed-$(date -u +%Y%m%dT%H%M%SZ); D=~/sentinel-runs/d1-checklist/$STEP
+  if [ -e "$D" ]; then echo "STOP: $D already exists; do not continue"; D=/nonexistent-stop; else
+    mkdir -p -m 700 "$D"
+    { echo "utc=$(date -u +%FT%TZ)"; echo "boot_id=$(cat /proc/sys/kernel/random/boot_id)"; echo "boot_started=$(uptime -s)"
+      echo "commit=$(git rev-parse HEAD)"; echo "tracked_changes=$(git status --porcelain --untracked-files=no | wc -l)"
+      echo "has_timeline_and_stdout_fix=$(git merge-base --is-ancestor 7a4d408 HEAD && echo yes || echo no)"
+      echo "display_manager=$(systemctl is-active display-manager)"
+      echo "other_camera_clients=$(pgrep -fc 'surveillance4_1|llama-server|ffmpeg|ffprobe|sentinel\.cli')"
+      echo "caffeine_procs=$(pgrep -fc '[c]affeine')"
+      echo "memfree_bytes=$(awk '/^MemFree:/{printf "%d", $2*1024}' /proc/meminfo)"; } | tee "$D/provenance.txt"
+  fi
+  ```
+  Expected: `tracked_changes=0`, `has_timeline_and_stdout_fix=yes`, `display_manager=inactive`, `other_camera_clients=0` and `memfree_bytes` ≥ 1500000000. Stop on `STOP` or any other value.
+- *3T-2. Credential entry (paste this line alone, then the URL, then Enter):*
+  ```bash
+  read -rsp 'Camera URL (hidden): ' SENTINEL_RTSP_URL; echo; export SENTINEL_RTSP_URL; [ -n "$SENTINEL_RTSP_URL" ] && echo "url set" || echo "URL EMPTY: stop"
+  ```
+- *3T-3. The timed run (paste as one block when ready; about 2 min). Preparation: 30 s from the paste to period 1, while the model loads; leave the view during it. The probe runs 100 s, about 10 s after launch to about 110 s, and the periods fall at 30–90 s:*
+  ```bash
+  ( LD_PRELOAD=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1 PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli \
+      track probe config/default.yaml --engine ~/yolov8n.engine --seconds 100 >"$D/b.json" 2>"$D/b.err"
+    echo "exit_b=$?" >> "$D/provenance.txt" ) &
+  prompt() { echo "$1=$(date -u +%FT%T.%3NZ)" >> "$D/prompts.txt"; printf '\a\n>>> %s  [%s]\n' "$2" "$(date -u +%T)"; }
+  prompt launch_utc "LAUNCHED. Model loading. Leave the camera view now; period 1 starts in 30 s."
+  sleep 30; prompt p1_nobody_utc "PERIOD 1 (15 s): NOBODY in view."
+  sleep 15; prompt p2_person_utc "PERIOD 2 (30 s): ENTER the view now, walk, then stand still briefly."
+  sleep 30; prompt p3_nobody_utc "PERIOD 3 (15 s): LEAVE the view now and stay out."
+  sleep 15; prompt end_utc "END of periods. Stay out of view until the probe finishes (about 20 s)."
+  echo "Waiting for the probe..."; wait; tail -n 1 "$D/provenance.txt"
+  ```
+  - `prompts.txt` holds only the times the prompts were printed, to the millisecond. They are not the times of your actions.
+  - Leave the terminal alone until the `exit_b=` line appears. Ctrl-C stops only the prompts, not the probe; then run `wait`, and the result is inconclusive for the periods.
+- *3T-4. Summary, the stdout check and the userinfo check (paste as one block; numbers only, never the URL):*
+  ```bash
+  python3 -m json.tool "$D/b.json" >/dev/null 2>&1 && J=valid || J=INVALID; echo "stdout_json=$J" | tee -a "$D/provenance.txt"
+  python3 -c 'if 1:
+      import json, sys
+      from datetime import datetime, timedelta
+      d = sys.argv[1]
+      t = lambda s: datetime.fromisoformat(s.replace("Z", "+00:00"))
+      r = json.load(open(d + "/b.json"))
+      if r.get("status") == "refused":
+          sys.exit("REFUSED " + str(r.get("reason")))
+      p = dict(line.strip().split("=", 1) for line in open(d + "/prompts.txt") if "=" in line)
+      tr, f, u, b = r["tracking"], r["frames"], r["upstream_connections"], r["backend_ms"]
+      print("status", r["status"], "| captured", f["captured"], "replaced", f["replaced"], "| processed", tr["processed"],
+            "skipped", tr["skipped"], "failed", tr["failed"], "| failures", tr["failures"], "error_types", tr["error_types"])
+      print("upstream", u.get("status"), "max", u.get("max"), "| load_s", r["load"]["seconds"],
+            "| backend_ms p50", b.get("p50"), "p95", b.get("p95"), "| timeline dropped", r["timeline"]["dropped_frames"])
+      secs = {t(e["utc"]): e for e in r["timeline"]["seconds"]}
+      if not secs:
+          sys.exit("NO TIMELINE SECONDS: no frame was processed")
+      one = timedelta(seconds=1)
+      covered = min(secs) <= t(p["p1_nobody_utc"]).replace(microsecond=0) and max(secs) + one >= t(p["end_utc"])
+      print("window", min(secs).strftime("%H:%M:%S"), "to", (max(secs) + one).strftime("%H:%M:%S"), "| covers_periods", covered)
+      periods = [("p1_nobody", "p1_nobody_utc", "p2_person_utc"), ("p2_person", "p2_person_utc", "p3_nobody_utc"),
+                 ("p3_nobody", "p3_nobody_utc", "end_utc")]
+      for name, start_key, end_key in periods:
+          start, end = t(p[start_key]), t(p[end_key])
+          first = start.replace(microsecond=0) + (one if start.microsecond else timedelta(0))
+          whole = []  # seconds lying wholly between the two prompts; the boundary seconds are left out
+          while first + one <= end:
+              whole.append(first)
+              first += one
+          inside = [secs[s] for s in whole if s in secs]
+          ids = {tuple(i) for e in inside for i in e["track_ids"]}
+          proc = sum(e["processed"] for e in inside)
+          with_p = sum(e["frames_with_persons"] for e in inside)
+          share = "%.0f%%" % (100 * with_p / proc) if proc else "n/a"
+          print(name + ":", "seconds %d/%d" % (len(inside), len(whole)), "| processed", proc,
+                "failed", sum(e["failed"] for e in inside), "| frames_with_persons", with_p, "(" + share + " of processed)",
+                "| seconds_with_persons", sum(1 for e in inside if e["frames_with_persons"]),
+                "| max_persons", max((e["max_persons"] for e in inside), default=0),
+                "max_confirmed", max((e["max_confirmed"] for e in inside), default=0), "| distinct_track_ids", len(ids))
+  ' "$D" | tee "$D/summary.txt"
+  U="${SENTINEL_RTSP_URL#*://}"; U="${U%%@*}"
+  printf 'userinfo_lines=%s lines=%s\n' "$(cat "$D/b.json" "$D/b.err" "$D/prompts.txt" | grep -cF -- "$U")" "$(cat "$D/b.json" "$D/b.err" "$D/prompts.txt" | wc -l)" | tee -a "$D/provenance.txt"
+  unset U SENTINEL_RTSP_URL
+  ```
+  - `seconds n/m`: m whole seconds lie between the two prompts and n of them have processed frames. The boundary seconds are left out, so a late or early step near a prompt does not land in the wrong period.
+  - The summary prints counts only. The per-second detail stays in `b.json`'s `timeline`.
+- *3T-5. Your own account, separate from the prompts (paste, then edit the file; write `unknown` wherever you are unsure, and never copy a prompt time as an action time):*
+  ```bash
+  printf '%s\n' 'entered_view_utc=unknown' 'stood_still_utc=unknown' 'left_view_utc=unknown' \
+    'followed_prompts=unknown   # yes / roughly / no' 'anyone_else_in_view=unknown   # yes / no / unknown' \
+    'person_like_objects_or_reflections=unknown' 'notes=' > "$D/actions.txt"; ${EDITOR:-nano} "$D/actions.txt"
+  ```
+- *Stop if:*
+  - 3T-1 fails its expectations, or `URL EMPTY`.
+  - `REFUSED memfree_below_minimum`: record it; a reboot is the maintainer's decision.
+  - `stdout_json=INVALID`: D48 is not working on the device. Report it, and do not run step 5.
+  - `failed` > 0, non-empty failures or error types, or `userinfo_lines` > 0 (then share only the counts).
+- *Artifacts:* return `$D/provenance.txt`, `$D/prompts.txt`, `$D/summary.txt`, `$D/actions.txt`, and `$D/b.json` if `userinfo_lines=0`. `$D/b.err` stays local.
 
 **4. Confirming combined profile, guarded (`step4-combined-cache-off-v2`, D47; a measurement run: about 25 min, of which about 3 min attended; GPU; sudo only for headless and the D37 drop).**
 - *Prerequisites:*
