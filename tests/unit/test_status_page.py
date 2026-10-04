@@ -234,3 +234,18 @@ def test_stop_closes_the_socket(tmp_path) -> None:
     assert server.stop(2.0)
     with socket.socket() as probe:
         assert probe.connect_ex(("127.0.0.1", port)) != 0
+
+
+def test_the_in_memory_buffer_limitation_is_always_shown(page) -> None:
+    from sentinel.demo_runtime import PENDING_DURABILITY
+
+    page.state["snapshot"] = {**SNAPSHOT, "components": {**SNAPSHOT["components"], "incidents": {
+        "state": "degraded", "pending_signals": 3, "pending_limit": 256, "durability": PENDING_DURABILITY,
+        "signals_dropped": 0, "problem": "record_failed:OperationalError"}}}
+    text = get(page, "/")[2].decode()
+    assert "Waiting to be recorded: 3." in text and "not a crash-safe spool" in text
+    assert "at most 256" in text
+    document = json.loads(get(page, "/status.json")[2])
+    assert document["components"]["incidents"]["durability"] == PENDING_DURABILITY
+    page.state["snapshot"] = {"runtime": {"state": "starting", "camera_id": "cam-1"}}  # before the runtime exists
+    assert "not a crash-safe spool" in get(page, "/")[2].decode()

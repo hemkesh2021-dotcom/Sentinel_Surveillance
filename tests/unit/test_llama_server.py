@@ -266,7 +266,7 @@ def test_a_timeout_and_a_failed_encoding_are_that_jobs_outcome(job: AnalysisJob)
     assert transport.bodies == []  # nothing was sent
 
 
-def test_the_registry_admits_the_scene_adapter_only_with_the_provisional_profile() -> None:
+def test_the_registry_admits_the_scene_adapter_only_with_an_accepted_cache_off_profile(accepted_scene) -> None:
     manifest = {
         "adapter_id": "llama-lfm2-vl-scene",
         "contract_version": 1,
@@ -278,8 +278,12 @@ def test_the_registry_admits_the_scene_adapter_only_with_the_provisional_profile
         "resource_profile_id": "provisional-demo-20261003T085010Z",
         "timeout_ms": 8000,
     }
-    (status,) = resolve([AdapterManifest.model_validate(manifest)])
+    (provisional,) = resolve([AdapterManifest.model_validate(manifest)])  # check 8: default prompt cache (D46)
+    assert provisional.state is AdapterState.UNAVAILABLE and "is provisional" in provisional.reason
+    fixture = accepted_scene()  # synthetic, passed explicitly; never in the runtime registry
+    synthetic = {**manifest, "resource_profile_id": fixture.profile.profile_id}
+    (status,) = resolve([AdapterManifest.model_validate(synthetic)], profiles=fixture.profiles)
     implementation, loaded = load(status)  # imports the module only: no OpenCV
     assert implementation is LlamaSceneRequest and loaded.state is AdapterState.ENABLED
     (unmeasured,) = resolve([AdapterManifest.model_validate({**manifest, "resource_profile_id": "none-yet"})])
-    assert unmeasured.state is AdapterState.UNAVAILABLE
+    assert unmeasured.state is AdapterState.UNAVAILABLE and "not in the registry" in unmeasured.reason

@@ -51,18 +51,20 @@ from __future__ import annotations
 
 import threading
 from collections import Counter, OrderedDict, deque
+from datetime import datetime, timezone
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
-from .adapters import AdapterState, resolve
+from .adapters import RESOURCE_PROFILES, AdapterState, FileFacts, ResourceProfile, resolve
 from .alerts.outbox import Notifier, OutboxWorker
 from .alerts.telegram import NotifierUnavailable, TelegramNotifier
 from .config import CaptureConfig, NotificationsConfig, SentinelConfig
 from .contracts import FrameKey, FrameRef, StreamIdentity, TrackStatus
 from .incidents.service import IncidentService, RecordOutcome
+from .inference.legacy_ultralytics import LEGACY_ENGINE_SHA256
 from .incidents.signals import IncidentSignal, signal_from_hazard, signal_from_zone
 from .jobs import AnalysisJob, WorkerOutcome
 from .live_state import Capability, LiveState
@@ -71,12 +73,17 @@ from .media.clock import NS_PER_SECOND, Clock
 from .rules.zones import ZonePhase
 from .runtime import CoreOutput, EdgeCore
 from .scene.analyzer import IMAGES_KEPT, RecentImages, ThreadedSceneAnalyzer
+from .scene.llama_server import PROFILED_FLAGS, PROMPT_CACHE_FLAGS
 from .storage.database import Database, DatabaseError
 from .tracking.tracker import FrameOutcome, PersonTracker, TrackerError
 
 SCENE_ADAPTER_ID = "llama-lfm2-vl-scene"
 DATABASE_NAME = "sentinel.db"
 MAX_PENDING_SIGNALS = 256
+PENDING_DURABILITY = (
+    f"rule observations waiting to be recorded are held in memory only (at most {MAX_PENDING_SIGNALS}); "
+    "they are lost if the process stops abruptly: not a crash-safe spool"
+)
 RECORD_RETRY_NS = NS_PER_SECOND
 RATE_WINDOW_NS = 10 * NS_PER_SECOND
 
@@ -409,6 +416,8 @@ class DemoRuntime:
             "incidents": {
                 "state": "degraded" if self._pending or self.counters["signals_dropped"] else "ok",
                 "pending_signals": len(self._pending),
+                "pending_limit": MAX_PENDING_SIGNALS,
+                "durability": PENDING_DURABILITY,
                 "signals_dropped": self.counters["signals_dropped"],
                 "problem": self._record_problem,
                 "annotation_problem": self._annotate_problem,
@@ -640,23 +649,81 @@ def memfree_problem(meminfo: Callable[[], dict[str, int] | None], min_free_bytes
     return None, before
 
 
-def scene_admission(config: SentinelConfig) -> tuple[str | None, str | None]:
-    """(problem, producer revision): the scene adapter must be configured and admitted (V2-49, D28)."""
-    statuses = [s for s in resolve(config.adapters) if s.manifest.adapter_id == SCENE_ADAPTER_ID]
+def file_facts(path: Path) -> FileFacts | None:
+    """Name, size and modification time, as demo_profile.py records them; metadata only, nothing is read."""
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return None
+    mtime = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds")
+    return FileFacts(Path(path).name, stat.st_size, mtime)
+
+
+def profile_mismatch(
+    profile: ResourceProfile, config: SentinelConfig, scene: SceneOptions, *, engine_sha256: str = LEGACY_ENGINE_SHA256
+) -> str | None:
+    """None if the selected runtime configuration is the one ``profile`` measured, else the first difference.
+
+    Model files are compared by name, size and modification time from metadata.
+    They are not hashed here: reading 1.26 GB would fill the page cache just
+    before the MemFree precheck (U18). The profile keeps the run's SHA-256 for audit.
+    """
+    expected = PROFILED_FLAGS + PROMPT_CACHE_FLAGS
+    if tuple(profile.llama_flags) != expected:
+        return (f"resource profile {profile.profile_id} measured llama-server flags {' '.join(profile.llama_flags)}, "
+                f"not the runtime's {' '.join(expected)}")
+    if profile.scene_interval_s != config.scene.interval_s:
+        return (f"resource profile {profile.profile_id} measured a {profile.scene_interval_s:g} s scene interval, "
+                f"not the configured {config.scene.interval_s:g} s")
+    for label, path, recorded in (("scene model", scene.model, profile.llm),
+                                  ("scene projector", scene.mmproj, profile.mmproj)):
+        actual = file_facts(path)
+        if actual is None:
+            return f"{label} {Path(path).name} is missing"
+        if (actual.name, actual.bytes, actual.mtime_utc) != (recorded.name, recorded.bytes, recorded.mtime_utc):
+            return (f"{label} {actual.name} ({actual.bytes} B, {actual.mtime_utc}) is not the profiled "
+                    f"{recorded.name} ({recorded.bytes} B, {recorded.mtime_utc})")
+    if profile.engine_sha256 != engine_sha256:
+        return f"resource profile {profile.profile_id} measured another detector engine than the pinned one"
+    return None
+
+
+def scene_admission(
+    config: SentinelConfig,
+    scene: SceneOptions,
+    *,
+    profiles: Mapping[str, ResourceProfile] = RESOURCE_PROFILES,
+) -> tuple[str | None, str | None]:
+    """(problem, producer revision) for ``--scene``: an enabled scene adapter whose resource
+    profile is ACCEPTED (step-4 evidence, D46) and matches the selected configuration."""
+    statuses = [s for s in resolve(config.adapters, profiles=profiles) if s.manifest.adapter_id == SCENE_ADAPTER_ID]
     if not statuses:
         return f"no {SCENE_ADAPTER_ID} adapter in the configuration", None
     status = statuses[0]
     if status.state is not AdapterState.ENABLED:
         return f"{SCENE_ADAPTER_ID} {status.state.value}: {status.reason}", None
+    profile = profiles[status.manifest.resource_profile_id]  # type: ignore[index]  # resolve() checked it
+    problem = profile_mismatch(profile, config, scene)
+    if problem is not None:
+        return f"{SCENE_ADAPTER_ID}: {problem}", None
     return None, status.manifest.producer_revision
 
 
-def assemble(config: SentinelConfig, options: RunOptions, devices: Devices, clock: Clock) -> Assembly:
+def assemble(
+    config: SentinelConfig,
+    options: RunOptions,
+    devices: Devices,
+    clock: Clock,
+    *,
+    profiles: Mapping[str, ResourceProfile] = RESOURCE_PROFILES,
+) -> Assembly:
     """Check, open and load everything ``sentinel run`` needs, then build the runtime (not started).
 
     Refusals (StartupRefused) happen before any model is loaded: a missing or
-    invalid stream URL, a scene request the configuration does not admit, a
-    database another process owns. Model failures do not refuse: that component
+    invalid stream URL, a scene request without an accepted, matching combined
+    profile (D46; checked before the database opens or llama-server starts), a
+    database another process owns. ``profiles`` is the static registry; tests
+    pass synthetic fixtures, and ``sentinel run`` has no option to change it. Model failures do not refuse: that component
     is unavailable, with its reason, and core monitoring runs without it.
     """
     from .media.capture import CaptureWorker
@@ -668,7 +735,7 @@ def assemble(config: SentinelConfig, options: RunOptions, devices: Devices, cloc
         raise StartupRefused(exc.reason) from None
     revision = None
     if options.scene is not None:
-        problem, revision = scene_admission(config)
+        problem, revision = scene_admission(config, options.scene, profiles=profiles)
         if problem is not None:
             raise StartupRefused(f"scene_not_admitted: {problem}")
     try:

@@ -57,6 +57,11 @@ SECURITY_HEADERS = {
     ),
 }
 DELIVERY_STATES = ("queued", "attempted", "delivered", "failed")
+# Shown even before the runtime publishes its own wording (D43 limitation).
+PENDING_DURABILITY_FALLBACK = (
+    "rule observations waiting to be recorded are held in memory only; "
+    "they are lost if the process stops abruptly: not a crash-safe spool"
+)
 
 
 def delivery_state(status: str, attempts: int) -> str:
@@ -217,6 +222,8 @@ def render_html(status: Mapping[str, Any]) -> str:
         scene_rows += [(key.replace("_", " "), report.get(key))
                        for key in ("persons_visible", "fire_or_smoke", "threat", "uncertainty", "summary")]
     incidents = status.get("incidents") or {}
+    recording = components.get("incidents") or {}
+    durability = recording.get("durability") or PENDING_DURABILITY_FALLBACK
     delivery = status.get("delivery") or {}
     totals = delivery.get("totals") or {}
     incident_rows = [
@@ -268,7 +275,9 @@ table.list{{width:100%}} .muted{{color:var(--muted)}} .banner{{padding:8px 12px;
         ("face recognition", live.get("face_recognition")), ("scene analysis", live.get("scene_analysis"))])}</table>
 <table>{_rows(scene_rows)}</table></section>
 </div>
-<h2>Incidents</h2><p>{_e(incidents.get("unresolved"))} unresolved; latest {MAX_INCIDENTS} shown.</p>
+<h2>Incidents</h2><p>{_e(incidents.get("unresolved"))} unresolved; latest {MAX_INCIDENTS} shown.
+Waiting to be recorded: {_e(recording.get("pending_signals"))}.</p>
+<p class=muted>Limitation: {_e(durability)}.</p>
 <div class=wrap>{_table(["incident", "title", "severity", "status", "first seen (UTC)", "latest (UTC)", "annotations"],
                          incident_rows, "No incidents.")}</div>
 <h2>Alert delivery</h2>

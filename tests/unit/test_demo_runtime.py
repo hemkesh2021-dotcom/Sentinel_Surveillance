@@ -7,6 +7,7 @@ are wired as `sentinel run` wires them.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import random
@@ -394,8 +395,10 @@ def test_a_failed_record_keeps_the_observation_and_retries_it_once_a_second(tmp_
     assert h.outbox_rows() == []
     h.frame(dt=1.0)
     assert len(h.outbox_rows()) == 1
-    assert h.runtime.snapshot()["components"]["incidents"] == {
-        "state": "ok", "pending_signals": 0, "signals_dropped": 0, "problem": None, "annotation_problem": None}
+    incidents = h.runtime.snapshot()["components"]["incidents"]
+    assert incidents == {**incidents, "state": "ok", "pending_signals": 0, "signals_dropped": 0, "problem": None,
+                         "annotation_problem": None, "pending_limit": 256}
+    assert incidents["durability"].endswith("not a crash-safe spool")
 
 
 def test_a_retry_after_a_commit_whose_return_was_lost_is_a_duplicate(tmp_path) -> None:
@@ -621,7 +624,7 @@ def test_scene_analysis_is_off_by_default_and_refused_unless_admitted(tmp_path) 
     assert refused.value.label == "scene_not_admitted: no llama-lfm2-vl-scene adapter in the configuration"
     assert calls == []
     unprofiled = make_config(adapters=[scene_manifest(resource_profile_id=None)])
-    with pytest.raises(StartupRefused, match="no measured resource profile"):
+    with pytest.raises(StartupRefused, match="names no resource_profile_id"):
         assemble(unprofiled, RunOptions(tmp_path, tmp_path / "x.engine", scene=scene),
                  fake_devices(ThreadedSource(), calls=calls), FakeClock())
     assembly = assemble(make_config(), RunOptions(tmp_path, tmp_path / "x.engine"),
@@ -648,26 +651,27 @@ def ready_server(state: str = "ready", problem: str | None = None) -> Any:
     return server
 
 
-def test_an_admitted_scene_server_that_is_ready_enables_scene_analysis(tmp_path) -> None:
+def test_an_admitted_scene_server_that_is_ready_enables_scene_analysis(tmp_path, accepted_scene) -> None:
     server = ready_server()
-    config = make_config(adapters=[scene_manifest()])
-    scene = SceneOptions(Path("llama-server"), Path("m"), Path("p"), ready_timeout_s=99.0)
+    fixture = accepted_scene()
+    config = make_config(adapters=[fixture.manifest])
+    scene = dataclasses.replace(fixture.options, ready_timeout_s=99.0)
     assembly = assemble(config, RunOptions(tmp_path, tmp_path / "x.engine", scene=scene),
-                        fake_devices(ThreadedSource(), server=server), FakeClock())
+                        fake_devices(ThreadedSource(), server=server), FakeClock(), profiles=fixture.profiles)
     assert server.started == [99.0]
     assert assembly.runtime.core.lane is not None
     assert assembly.runtime.snapshot()["components"]["scene"]["state"] == "available"
     assembly.database.close()
 
 
-def test_model_failures_leave_that_component_unavailable_and_core_monitoring_runs(tmp_path) -> None:
+def test_model_failures_leave_that_component_unavailable_and_core_monitoring_runs(tmp_path, accepted_scene) -> None:
+    fixture = accepted_scene()
     server = ready_server("failed", "not_fully_offloaded")
     backend = FakeBackend()
     backend.load_error = TrackerError("libcuda_not_l4t")
-    config = make_config(adapters=[scene_manifest()])
-    assembly = assemble(config, RunOptions(tmp_path, tmp_path / "x.engine",
-                                           scene=SceneOptions(Path("l"), Path("m"), Path("p"))),
-                        fake_devices(ThreadedSource(), backend, server=server), FakeClock())
+    config = make_config(adapters=[fixture.manifest])
+    assembly = assemble(config, RunOptions(tmp_path, tmp_path / "x.engine", scene=fixture.options),
+                        fake_devices(ThreadedSource(), backend, server=server), FakeClock(), profiles=fixture.profiles)
     assert assembly.startup["scene_problem"] == "server_failed:not_fully_offloaded"
     assert assembly.startup["detector_problem"] == "libcuda_not_l4t"
     components = assembly.runtime.snapshot()["components"]
@@ -675,27 +679,28 @@ def test_model_failures_leave_that_component_unavailable_and_core_monitoring_run
     assembly.database.close()
 
 
-def test_low_memfree_skips_the_gpu_loads(tmp_path) -> None:
+def test_low_memfree_skips_the_gpu_loads(tmp_path, accepted_scene) -> None:
+    fixture = accepted_scene()
     calls: list[str] = []
     backend = FakeBackend()
-    config = make_config(adapters=[scene_manifest()])
-    assembly = assemble(config, RunOptions(tmp_path, tmp_path / "x.engine",
-                                           scene=SceneOptions(Path("l"), Path("m"), Path("p"))),
-                        fake_devices(ThreadedSource(), backend, memfree=1e9, calls=calls), FakeClock())
+    config = make_config(adapters=[fixture.manifest])
+    assembly = assemble(config, RunOptions(tmp_path, tmp_path / "x.engine", scene=fixture.options),
+                        fake_devices(ThreadedSource(), backend, memfree=1e9, calls=calls), FakeClock(),
+                        profiles=fixture.profiles)
     assert calls == [] and backend.loads == 0
     assert assembly.startup["detector_problem"] == assembly.startup["scene_problem"] == "memfree_below_minimum"
     assembly.database.close()
 
 
-def test_an_unexpected_startup_error_stops_the_scene_server_and_releases_the_database(tmp_path) -> None:
+def test_an_unexpected_startup_error_stops_the_scene_server_and_releases_the_database(tmp_path, accepted_scene) -> None:
+    fixture = accepted_scene()
     server = ready_server()
     backend = FakeBackend()
     backend.load_error = MemoryError()
-    config = make_config(adapters=[scene_manifest()])
+    config = make_config(adapters=[fixture.manifest])
     with pytest.raises(MemoryError):
-        assemble(config, RunOptions(tmp_path, tmp_path / "x.engine",
-                                    scene=SceneOptions(Path("l"), Path("m"), Path("p"))),
-                 fake_devices(ThreadedSource(), backend, server=server), FakeClock())
+        assemble(config, RunOptions(tmp_path, tmp_path / "x.engine", scene=fixture.options),
+                 fake_devices(ThreadedSource(), backend, server=server), FakeClock(), profiles=fixture.profiles)
     assert server.stopped == [10.0]
     Database.open(tmp_path / "sentinel.db").close()  # the writer lock was released
 
