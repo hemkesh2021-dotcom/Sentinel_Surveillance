@@ -1,6 +1,6 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-04, session 18 (Claude). **Review of `268e905` (D47), portable only:** one defect fixed. With `--sanitized-logs`, which step 4 always uses, error names the sanitizer does not recognise (such as `RemoteDisconnected`) were dropped, so criteria F and V1 could pass with real face or scene errors. F and V1 now gate on error totals counted before sanitizing. 728 portable tests pass. Step 4 is still not authorized to run, and no profile is accepted. Session 17's summary: **Step-4 criteria v2 and the guarded `step4` mode (D47), portable only:** `step4-combined-cache-off-v2` requires:
+Last updated 2026-10-04, session 19 (Claude). **Checklist step 1 recorded** as USER-SUPPLIED OBSERVATIONS: with `YOLO_OFFLINE=true`, Ultralytics is offline and its events are disabled; `settings_sync` stays `True` (1b not performed). **Step 2 revised before its first run:** a 180 s window for a camera reboot and timed cut/restore prompts. Docs only; no camera, GPU or service was touched. Session 18's summary: **Review of `268e905` (D47), portable only:** one defect fixed. With `--sanitized-logs`, which step 4 always uses, error names the sanitizer does not recognise (such as `RemoteDisconnected`) were dropped, so criteria F and V1 could pass with real face or scene errors. F and V1 now gate on error totals counted before sanitizing. 728 portable tests pass. Step 4 is still not authorized to run, and no profile is accepted. Session 17's summary: **Step-4 criteria v2 and the guarded `step4` mode (D47), portable only:** `step4-combined-cache-off-v2` requires:
 - every sample in the steady interval ≤ 5,000,000,000 B, with the time above 5.0 GB reported;
 - a sampled run peak ≤ 5,400,000,000 B;
 - monotonic steady boundaries with teardown excluded;
@@ -33,6 +33,7 @@ Last updated 2026-10-04, session 18 (Claude). **Review of `268e905` (D47), porta
 | Session 12 (Claude, 2026-10-03) | `ed26dc9`: record of the maintainer's Check 9/S1 runs at `84f15ec` (S1 did not run). `e9af7f4`: V2-05 demo-form capture adapter, tests and status record. See the session 12 log. |
 | Session 13 (Claude, 2026-10-04) | `f6f9d5b` record of the Check 9, S1 and capture runs at `e9af7f4`, S1 comparison and V2-05 evaluation (docs only) · `8836929` PTS follow-up · `cd1c201` V2-09/V2-10 demo form (D40). See the session 13 log. |
 | Session 14 (Claude, 2026-10-04) | `ea95571`: S1 evaluation and D41 adoption, D42, V2-26 demo form (portable), Ultralytics privacy item. See the session 14 log. |
+| Session 19 (Claude, 2026-10-04) | Step 1 recorded (USER-SUPPLIED); step 2 instructions revised (docs only); one local commit, not pushed. See the session 19 log. |
 | Session 18 (Claude, 2026-10-04) | Review and portable verification of `268e905`; the F/V1 error-total fix (D47 amendment); one local commit, not pushed. See the session 18 log. |
 | Session 17 (Claude, 2026-10-04) | `268e905`: step-4 criteria v2, the guarded `step4` and identity modes, startup identity checks and the runnable checklist (D47); not pushed. See the session 17 log. |
 | Session 16 (Claude, 2026-10-04) | `7f06055`: the narrow `--scene` admission fix (D46), the acceptance procedure, and the pending-write limitation on the status page. See the session 16 log. |
@@ -44,11 +45,11 @@ Last updated 2026-10-04, session 18 (Claude). **Review of `268e905` (D47), porta
 | Other branches | `origin/Yogeshvar425-patch-1` (teammate) is **not merged**: a single commit `6755796` that adds @Yogeshvar425 to `.github/CODEOWNERS` (merge base `c66ebde`). `origin/codex/github-audit-fixes-2026-09-19` is already in `master` via PR #4. |
 | Effort | Per-package estimates are in the package table (given to the maintainer on 2026-09-29). The re-estimate of optimization effort still waits for V2-01's B0 run. |
 | v1 on this device | Historically **not running** (maintainer, 2026-09-29); current state must be inspected, not inferred. This workflow never terminates existing v1 processes. |
-| Waiting on the maintainer | **The session 15 operator checklist, steps 1–5** (all PENDING). Step 1 is the Ultralytics setting; `yolo settings sync=False` is its optional 1b. Step 2 is the V2-05 physical outage, step 3 the V2-09/V2-10 device check, and step 4 the confirming combined profile with `--llama-cache-ram 0` (needs approval and predeclared criteria). Step 5 is the first end-to-end alert and the status page, which is also V2-15's Telegram device check. Then come the decisions on scene admission for D-1 and the review of D43–D45. Still open from earlier: why S1 arm b #1 was interrupted; U18's runtime policy, U19 unload, U20 real-model/demo-exception evidence, the 30-minute U21 rerun (not approved) and consent/figure labels. D36 provisionally retains b8932; beta still requires a tested compatible schema-fix descendant. E-1 reported Ollama inactive and disabled (USER-SUPPLIED). The full empty-room-clip review and the deletion of review images are not confirmed. |
+| Waiting on the maintainer | **The session 15 operator checklist, steps 2–5** (PENDING). Step 1, the Ultralytics setting, is done (USER-SUPPLIED, session 19); its optional 1b `yolo settings sync=False` was not performed. Step 2 is the V2-05 physical outage (revised in session 19), step 3 the V2-09/V2-10 device check, and step 4 the confirming combined profile with `--llama-cache-ram 0` (needs approval and predeclared criteria). Step 5 is the first end-to-end alert and the status page, which is also V2-15's Telegram device check. Then come the decisions on scene admission for D-1 and the review of D43–D45. Still open from earlier: why S1 arm b #1 was interrupted; U18's runtime policy, U19 unload, U20 real-model/demo-exception evidence, the 30-minute U21 rerun (not approved) and consent/figure labels. D36 provisionally retains b8932; beta still requires a tested compatible schema-fix descendant. E-1 reported Ollama inactive and disabled (USER-SUPPLIED). The full empty-room-clip review and the deletion of review images are not confirmed. |
 
 ## Next concrete task
 
-1. **Operator checklist step 1 (maintainer, PENDING).** Inspect the Ultralytics analytics/offline setting (read-only, about 1 min). Steps 2 (V2-05 physical outage) and 3 (V2-09/V2-10 guard refusal and tracking) can share one attended headless session. The commands are in "Hardware checks PENDING → Operator checklist".
+1. **Operator checklist step 2 (maintainer, PENDING).** The V2-05 physical outage and recovery, revised in session 19: a 180 s window with timed cut and restore prompts. Step 1 is done (USER-SUPPLIED, session 19). Steps 2 and 3 (V2-09/V2-10 guard refusal and tracking) can share one attended headless session. The commands are in "Hardware checks PENDING → Operator checklist".
 2. **Maintainer decisions before step 4:**
    - the D47 criteria (`step4-combined-cache-off-v2`) are approved for implementation (session 17). Session 18 amended F and V1 to gate on error totals (session 18 log); review that amendment. The step-4 **run** still needs the maintainer's explicit go-ahead, through checklist step 4 (4a–4f). Implementation and passing portable tests are not that go-ahead;
    - after it, if it passed, approve the separate acceptance commit (D46) that adds the step-4 profile to `RESOURCE_PROFILES`. That commit is the only way `--scene` can be admitted;
@@ -173,6 +174,38 @@ Notes on partial and in-progress rows:
   - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Not done: any run on the device (camera, detector, scene server, Telegram), the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Not done: viewing it on the device over the SSH forward (checklist step 5); it stands in for, and does not replace, V2-17/V2-18 (no sessions, roles, API, media or live video).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 19 log (Claude, 2026-10-04)
+
+**Scope.** Maintainer request: record checklist step 1 as USER-SUPPLIED OBSERVATIONS, mark only step 1 complete, and prepare the step 2 instructions. Docs only. Claude ran no camera, GPU or hardware check, changed no service and cleared no cache. Started at `85fb7e7` with a clean tree.
+
+**USER-SUPPLIED OBSERVATIONS (maintainer; checklist step 1).**
+
+| | |
+|---|---|
+| UTC | 2026-10-04T10:02:46Z |
+| Boot ID | `201a195f-98a2-4cef-b6e3-3955f6f33f2b` (the current boot when Claude recorded it) |
+| Commit | `85fb7e70eac5d7ce3d335d3595881fea09fe096b`, `tracked_changes=0` |
+| Display manager | inactive |
+| `settings_sync` | `True` |
+| With `YOLO_OFFLINE=true` | `ONLINE=False`, `events_enabled=False` |
+| Adapter | sets `YOLO_OFFLINE` before importing Ultralytics |
+| 1b (`sync=False`) | not performed |
+| Artifacts (local) | `~/sentinel-runs/d1-checklist/1-ultralytics/provenance.txt`, `settings.txt` |
+
+These match step 1's expected results, so step 1 is done. v1, `demo_workload.py` and check 8 do not set `YOLO_OFFLINE`. With `sync` still `True`, they send analytics when online (step 1's note); that stays the maintainer's choice (1b).
+
+**Step 2 revised (from the code; not a measurement).**
+- **The window.** A power cut makes the camera reboot, and its boot time is unmeasured. After a failed open, the worker waits 1, 2, 4, 8, then 15 s, and each failing open can take up to 10 s. Once the camera is up, the next successful open can therefore be about 25 s away, so session 15's 90 s window could end before recovery. It is now 180 s.
+- **The timing.** The probe runs in the background while the shell prints `CUT` and `RESTORE` prompts (20 s and 35 s in) and records their UTC times. The old command held the terminal, so the times could not be written while it ran.
+- **The credential.** Credential entry is its own paste (`read -rsp`).
+- **The summary.** A numbers-only summary line is printed. The userinfo check now covers `c.json` too.
+- **Expected results, from the code.** `epochs` counts only epochs whose frames reached the probe, so `epochs` ≥ 2 shows frames after the restore. `exit=0` alone does not show recovery, and `worker.problem` keeps the last problem after recovery.
+- **The stop conditions** add: `epochs` < 2 is reported as not shown, or as inconclusive if the camera was still booting.
+- **Checked.** Each block passed `bash -n`. 2c and 2d ran against a stub probe in a scratch directory, with a synthetic URL and shortened sleeps:
+  - A good stub printed the summary line. The provenance file recorded `probe_start_utc`, `cut_prompt_utc`, `restore_prompt_utc` and `exit=0` in that order, then `userinfo_lines=0`. The URL variable was empty after 2d.
+  - A failing stub that wrote the synthetic URL to stderr and exited 1 produced `exit=1`, `status no_frames … epochs 0` and `userinfo_lines=1`.
+  - No real camera, URL or probe was used. Docs-only change: the portable suite was not rerun (728 passed at `85fb7e7`). `git diff --check` was clean.
 
 ## Session 18 log (Claude, 2026-10-04)
 
@@ -1967,7 +2000,7 @@ No v1 code was migrated in this slice.
 
 Checks 1 (`nvpmodel` only), 3, 5 and 6 were run by Claude in session 3 (inventory above). Check 4 was merged into 3b. Check 8 was run by the maintainer on 2026-10-03 (session 5 log). Bounded Check 9 smokes ran on the previous boot (session 10 log) and on the current boot at `84f15ec` and `e9af7f4`. S1 ran at `e9af7f4`, and the V2-05 steady capture ran on the camera (session 13 log). These are historical conditions, not a verification of the current service state. Session 8 superseded the old Check 8/9 service-stop, cache-fill, failure-seeking, server-launch and raw-journal recipes; none is authorized. **Session 15 replaces the separate V2-05 outage and V2-09/V2-10 blocks with one numbered checklist (below).** It covers the Ultralytics setting, the outage check, the detector check, the confirming profile (`--llama-cache-ram 0`, still subject to the maintainer's approval) and the first end-to-end alert with the status page. Checks 2 and 7 remain separately PENDING. New operator results need USER-SUPPLIED MEASUREMENT attribution and their conditions, including whether D37's cache drop was used.
 
-### Operator checklist (session 15): steps 1–5, all PENDING
+### Operator checklist (session 15): step 1 done (session 19, USER-SUPPLIED); steps 2–5 PENDING
 
 Claude ran none of these steps. Run them in order; each step names its prerequisites, and later steps depend on earlier ones. Results are USER-SUPPLIED MEASUREMENTS or observations; record the real boot ID and commit from each step's `provenance.txt`, never the commit this list was written at.
 
@@ -2004,31 +2037,63 @@ D=~/sentinel-runs/d1-checklist/$STEP; mkdir -p -m 700 "$D"
 - *1b (optional, the maintainer's choice; it changes a user settings file, not the repository):* `YOLO_OFFLINE=true ~/onvif_env/bin/yolo settings sync=False`. Then run line 1 again: it should print `settings_sync False`.
 - *Stop if* line 2 prints `events_enabled True`. Do not run steps 3–5; report it.
 - *Artifacts:* `$D/settings.txt`.
+- **Done (USER-SUPPLIED OBSERVATIONS, maintainer, 2026-10-04T10:02:46Z; recorded in session 19).** Boot `201a195f-98a2-4cef-b6e3-3955f6f33f2b`, commit `85fb7e70eac5d7ce3d335d3595881fea09fe096b`, `tracked_changes=0`, `display_manager=inactive`. `settings_sync=True`. With `YOLO_OFFLINE=true`: `ONLINE=False`, `events_enabled=False`. The adapter sets `YOLO_OFFLINE` before importing Ultralytics. 1b (`sync=False`) was **not** performed. Artifacts: `~/sentinel-runs/d1-checklist/1-ultralytics/provenance.txt` and `settings.txt` (local).
 
-**2. V2-05 attended physical outage and recovery (about 3 min attended; no GPU, no sudo).**
+**2. V2-05 attended physical outage and recovery (about 4 min attended; no GPU, no sudo). Revised in session 19: 180 s window, timed prompts.**
 - *Prerequisites:*
-  - Step 1 done.
-  - v1 and every other camera client on this host stopped: `pgrep -fa 'surveillance4_1|llama-server|ffmpeg|ffprobe'` prints nothing.
+  - Step 1 done (session 19).
+  - v1 and every other camera client on this host stopped (checked in 2a).
   - Headless preferred (note the conditions either way).
-  - The camera's power or uplink within reach.
-  - The URL in this shell: `read -rs SENTINEL_RTSP_URL; export SENTINEL_RTSP_URL; [ -n "$SENTINEL_RTSP_URL" ] && echo "url set"`.
-- *Command:*
+  - The camera's power plug (or its network uplink) within reach, with the terminal visible from there.
+- *Why it changed (session 19, from the code, not a measurement):* a power cut makes the camera reboot, and its boot time on this device has not been measured. After a failed open, the worker waits 1, 2, 4, 8, then 15 s (`reconnect_max_s`) between attempts, and each failing open can take up to 10 s (`open_timeout_s`). Once the camera is up again, the next successful open can therefore be up to about 25 s away. Session 15's 90 s window could end before frames returned. The old command also held the terminal, so the cut and restore times could not be written while it ran. The probe now runs in the background and the shell prints timed prompts and records their times.
+- *2a. Artifact directory, provenance and the client check (paste as one block):*
   ```bash
-  PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli capture probe config/default.yaml --seconds 90 \
-    2>"$D/c.err" | tee "$D/c.json"; echo "exit=$?" | tee -a "$D/provenance.txt"
-  #   About 20 s in, unplug the camera's power (or its network uplink) for about 15 s, then restore it.
-  #   Write the cut and restore times (IST) into $D/provenance.txt.
+  cd /home/villain8001/sentinel-surveillance && set -o pipefail
+  STEP=2-capture-outage
+  D=~/sentinel-runs/d1-checklist/$STEP; mkdir -p -m 700 "$D"
+  { echo "utc=$(date -u +%FT%TZ)"; echo "boot_id=$(cat /proc/sys/kernel/random/boot_id)"; echo "boot_started=$(uptime -s)"
+    echo "commit=$(git rev-parse HEAD)"; echo "tracked_changes=$(git status --porcelain --untracked-files=no | wc -l)"
+    echo "display_manager=$(systemctl is-active display-manager)"; } | tee "$D/provenance.txt"
+  pgrep -fa 'surveillance4_1|llama-server|ffmpeg|ffprobe' || echo "no other camera clients"
+  ```
+  Expected: `tracked_changes=0` and `no other camera clients`. Stop if any process is listed.
+- *2b. Credential entry (paste this line alone, then type or paste the camera URL and press Enter; nothing is echoed and nothing goes into the shell history):*
+  ```bash
+  read -rsp 'Camera URL (hidden): ' SENTINEL_RTSP_URL; echo; export SENTINEL_RTSP_URL; [ -n "$SENTINEL_RTSP_URL" ] && echo "url set" || echo "URL EMPTY: stop"
+  ```
+  Expected: `url set`. Never paste 2b together with other lines: the next pasted line would be read as the URL.
+- *2c. The timed run (paste as one block; about 3 min 20 s):*
+  ```bash
+  ( PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli capture probe config/default.yaml --seconds 180 \
+      >"$D/c.json" 2>"$D/c.err"; echo "exit=$?" >> "$D/provenance.txt" ) &
+  echo "probe_start_utc=$(date -u +%FT%TZ)" | tee -a "$D/provenance.txt"
+  sleep 20; echo "cut_prompt_utc=$(date -u +%FT%TZ)" >> "$D/provenance.txt"; printf '\a\n>>> CUT CAMERA POWER NOW (keep it off until the next prompt)\n'
+  sleep 15; echo "restore_prompt_utc=$(date -u +%FT%TZ)" >> "$D/provenance.txt"; printf '\a\n>>> RESTORE CAMERA POWER NOW\n'
+  echo "Waiting for the probe to finish (about 2.5 min more)..."; wait; tail -n 1 "$D/provenance.txt"
+  ```
+  - At the `CUT` prompt (about 20 s in), unplug the camera's power at once. At the `RESTORE` prompt (15 s later), plug it back in. The recorded times are the prompt times; the physical action follows within a second or two.
+  - Leave the terminal alone until the `exit=` line appears. The probe stops itself after 180 s, plus up to 16 s to close an open attempt.
+  - Ctrl-C during the prompts stops only the prompts, not the probe: then run `wait`, and note in `provenance.txt` that the times are approximate.
+- *2d. Summary and the userinfo check (paste as one block; prints numbers only, never the URL):*
+  ```bash
+  python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); w=r["worker"]; u=r["upstream_connections"]; print("status", r["status"], "| connects", w["connects"], "| epochs", r["epochs"], "| stream_ends", w["stream_ends"], "| open_failures", w["open_failures"], "| last_problem", w["problem"], "| frames", r["frames"]["captured"], "| upstream", u.get("status"), "max", u.get("max"))' "$D/c.json"
   U="${SENTINEL_RTSP_URL#*://}"; U="${U%%@*}"
-  printf 'userinfo_lines=%s lines=%s\n' "$(grep -cF -- "$U" "$D/c.err")" "$(wc -l < "$D/c.err")" | tee -a "$D/provenance.txt"; unset U
+  printf 'userinfo_lines=%s lines=%s\n' "$(cat "$D/c.err" "$D/c.json" | grep -cF -- "$U")" "$(cat "$D/c.err" "$D/c.json" | wc -l)" | tee -a "$D/provenance.txt"
+  unset U SENTINEL_RTSP_URL
   ```
 - *Expected:*
-  - `exit=0`.
-  - `worker.connects` ≥ 2 and `epochs` ≥ 2, with frames after the restore.
-  - `stream_ends` ≥ 1 with the problem `no_frame`: the read-timeout path, at 5 s without frames. `open_failures` ≥ 1 if the camera was still down when a reopen was tried.
-  - `upstream_connections.max` 1 and `userinfo_lines=0`.
+  - `exit=0` and `status frames_received`. These alone show only that frames arrived at some point, not recovery.
+  - **Recovery:** `connects` ≥ 2 and `epochs` ≥ 2. `epochs` counts only epochs whose frames reached the probe, so 2 or more means frames arrived after the restore.
+  - **Read timeout:** `stream_ends` ≥ 1. The stream ends about 5 s after the cut (`read_timeout_s`).
+  - **Reopen during the outage:** `open_failures` ≥ 1 is expected with a power cut.
+  - `last_problem` keeps the last recorded problem (for example `no_frame` or an open failure). Recovery does not clear it, so it is not an error by itself.
+  - `upstream observed max 1`. If it shows `unavailable` (the URL uses a hostname, not an IP address), the session count is not observed: record that.
+  - `userinfo_lines=0`.
 - *Stop if:*
-  - There are no frames at all: check the URL and camera, and skip step 5.
-  - `userinfo_lines` > 0: do not share `c.err`; report the counts.
+  - `URL EMPTY`, or 2a lists another camera client.
+  - `status no_frames`: check the URL and the camera, and do not continue to steps 3 or 5.
+  - `epochs` < 2: recovery is not shown. If the camera was still booting when the probe ended, record the result as inconclusive (camera boot longer than the window), not as a failure. Do not rerun silently: report it. A rerun with the network uplink cut instead of power needs no camera reboot.
+  - `userinfo_lines` > 0: do not share `c.err` or `c.json`; report only the counts.
   - The connections max is above 1: another client is connected.
 - *Artifacts:* `$D/c.json` and `$D/provenance.txt` (return them); `$D/c.err` stays local.
 
