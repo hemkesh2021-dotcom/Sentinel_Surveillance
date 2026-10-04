@@ -1,6 +1,16 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-04, session 16 (Claude). **`--scene` admission fix (D46):** `sentinel run --scene` now needs an ACCEPTED combined profile in the existing resource-profile registry, measured with `--cache-ram 0`, whose recorded evidence passes the predeclared step-4 criteria and matches the selected runtime configuration. The check runs before the database opens or any scene process starts. The registry holds no accepted profile, so scene analysis cannot be admitted until a separate, maintainer-approved acceptance commit (D46). Core-only runs are unchanged. 37 new tests; 647 portable tests pass. The in-memory pending-write limitation is now on the status page. Session 15's summary: **D-2 loopback status page, demo form, portable part:** a stdlib, read-only page on 127.0.0.1 (with a Host check) showing component readiness, capture/reconnect state, rates, degradation, incidents, and alerts as queued, attempted, delivered or failed (D45). It is served by `sentinel run` on port 18090. 23 new tests; 610 portable tests pass. One numbered operator checklist (steps 1–5) replaces the separate V2-05 and V2-09/V2-10 blocks; every step is PENDING. **D-1 `sentinel run`, demo form, portable part:** wires capture → legacy detector/tracker → EdgeCore → zone/hazard rules → `IncidentService` → outbox/Telegram through their existing contracts (D43). It adds a llama-server process owner that refuses any non-loopback bind before spawning and applies the D27 full-offload guard (D44). Scene analysis stays off by default. 54 new tests; 587 portable tests pass. The device run is PENDING. Session 14's summary: **D41:** S1 met its predeclared criteria, so `--cache-ram 0` is adopted for the demo scene path (maintainer's conditional authorization); scope and limits are in the session 14 log. **V2-26 demo form, portable part:** a loopback-only llama-server launch spec (D42), the S1/check 8 request, a bounded threaded scene worker and the `scene_server` config; 35 new tests; 533 portable tests pass. Privacy item: Ultralytics analytics (operator action PENDING). Session 13's summary: The maintainer's headless runs at `e9af7f4` are recorded as USER-SUPPLIED MEASUREMENTS: two Check 9 smokes, three S1 arms (arm a twice; the first arm b was interrupted by a signal to the runner) and four capture probes. **S1 result:** with llama-server's default prompt cache, steady pressure rose +115 MB/min (reproduced: +117 MB/min); with `--cache-ram 0` it rose +3.9 MB/min, with the same 53/53 valid requests and no latency penalty. The timebox's first branch applies: Claude proposes adopting `--cache-ram 0` for the demo profile and D-1; the maintainer decides. Other memory work stays paused. Further U19 evidence: the first GPU model load of the boot left a one-time step of about 0.66 GB, in no sampled meminfo field; later cycles added none. **V2-05 demo form:** one upstream session, bounded fresh hand-off, 15 fps 640×480 decode at about 0.07 core-equivalents and credential-free output were observed on the camera (runs b and b2). Run a never connected ("No route to host"), which corrects the maintainer's summary, and no outage was tested (b3 never contacted the camera), so the outage and read-timeout checks stay PENDING. The `pts_quality: none` share (21.5 % and 15.4 %) is explained: OpenCV 4.13's `CAP_PROP_PTS` rounds the PTS to whole periods of the average frame rate and repeats the last value when a frame has none. This was reproduced on a synthetic file. The source now reads the unrounded `CAP_PROP_POS_MSEC`, and the probe names the cause of each `none` frame. **V2-09/V2-10 demo form, portable part:** a `PersonTracker` boundary (per-epoch reset, process-once ordering, epoch-unique IDs, v1's confirmation score, validated output) and the legacy `yolov8n.engine` + ByteTrack backend. The backend has the D27 guard, an engine SHA-256 pin and Ultralytics offline mode. Added: `sentinel track probe` and the registry entry with D33's provisional profile. 47 new tests; 498 portable tests pass. The detector device check is PENDING. Session 12's summary: the maintainer's first S1 attempt at `84f15ec` never reached either arm; the V2-05 demo-form capture adapter (D39) was implemented with 40 tests (451 portable tests).
+Last updated 2026-10-04, session 17 (Claude). **Step-4 criteria v2 and the guarded `step4` mode (D47), portable only:** `step4-combined-cache-off-v2` requires:
+- every sample in the steady interval ≤ 5,000,000,000 B, with the time above 5.0 GB reported;
+- a sampled run peak ≤ 5,400,000,000 B;
+- monotonic steady boundaries with teardown excluded;
+- unique-frame throughput and replay scheduling age;
+- face and scene completion;
+- verified prompt-cache-off evidence;
+- kernel-log coverage proven per boot and run interval;
+- identity hashing before the cache drop, rehashed at the end.
+
+`operator_check.py --execute-workload step4` runs under the existing guard, thresholds and owned-process cleanup, with a 1,200 s deadline and an explicit same-boot Check 9 result. Checklist step 4 is now runnable shell, exercised against a stub. 723 portable tests pass. The run and any acceptance commit stay PENDING; no profile is accepted. Session 16's summary: **`--scene` admission fix (D46):** `sentinel run --scene` now needs an ACCEPTED combined profile in the existing resource-profile registry, measured with `--cache-ram 0`, whose recorded evidence passes the predeclared step-4 criteria and matches the selected runtime configuration. The check runs before the database opens or any scene process starts. The registry holds no accepted profile, so scene analysis cannot be admitted until a separate, maintainer-approved acceptance commit (D46). Core-only runs are unchanged. 37 new tests; 647 portable tests pass. The in-memory pending-write limitation is now on the status page. Session 15's summary: **D-2 loopback status page, demo form, portable part:** a stdlib, read-only page on 127.0.0.1 (with a Host check) showing component readiness, capture/reconnect state, rates, degradation, incidents, and alerts as queued, attempted, delivered or failed (D45). It is served by `sentinel run` on port 18090. 23 new tests; 610 portable tests pass. One numbered operator checklist (steps 1–5) replaces the separate V2-05 and V2-09/V2-10 blocks; every step is PENDING. **D-1 `sentinel run`, demo form, portable part:** wires capture → legacy detector/tracker → EdgeCore → zone/hazard rules → `IncidentService` → outbox/Telegram through their existing contracts (D43). It adds a llama-server process owner that refuses any non-loopback bind before spawning and applies the D27 full-offload guard (D44). Scene analysis stays off by default. 54 new tests; 587 portable tests pass. The device run is PENDING. Session 14's summary: **D41:** S1 met its predeclared criteria, so `--cache-ram 0` is adopted for the demo scene path (maintainer's conditional authorization); scope and limits are in the session 14 log. **V2-26 demo form, portable part:** a loopback-only llama-server launch spec (D42), the S1/check 8 request, a bounded threaded scene worker and the `scene_server` config; 35 new tests; 533 portable tests pass. Privacy item: Ultralytics analytics (operator action PENDING). Session 13's summary: The maintainer's headless runs at `e9af7f4` are recorded as USER-SUPPLIED MEASUREMENTS: two Check 9 smokes, three S1 arms (arm a twice; the first arm b was interrupted by a signal to the runner) and four capture probes. **S1 result:** with llama-server's default prompt cache, steady pressure rose +115 MB/min (reproduced: +117 MB/min); with `--cache-ram 0` it rose +3.9 MB/min, with the same 53/53 valid requests and no latency penalty. The timebox's first branch applies: Claude proposes adopting `--cache-ram 0` for the demo profile and D-1; the maintainer decides. Other memory work stays paused. Further U19 evidence: the first GPU model load of the boot left a one-time step of about 0.66 GB, in no sampled meminfo field; later cycles added none. **V2-05 demo form:** one upstream session, bounded fresh hand-off, 15 fps 640×480 decode at about 0.07 core-equivalents and credential-free output were observed on the camera (runs b and b2). Run a never connected ("No route to host"), which corrects the maintainer's summary, and no outage was tested (b3 never contacted the camera), so the outage and read-timeout checks stay PENDING. The `pts_quality: none` share (21.5 % and 15.4 %) is explained: OpenCV 4.13's `CAP_PROP_PTS` rounds the PTS to whole periods of the average frame rate and repeats the last value when a frame has none. This was reproduced on a synthetic file. The source now reads the unrounded `CAP_PROP_POS_MSEC`, and the probe names the cause of each `none` frame. **V2-09/V2-10 demo form, portable part:** a `PersonTracker` boundary (per-epoch reset, process-once ordering, epoch-unique IDs, v1's confirmation score, validated output) and the legacy `yolov8n.engine` + ByteTrack backend. The backend has the D27 guard, an engine SHA-256 pin and Ultralytics offline mode. Added: `sentinel track probe` and the registry entry with D33's provisional profile. 47 new tests; 498 portable tests pass. The detector device check is PENDING. Session 12's summary: the maintainer's first S1 attempt at `84f15ec` never reached either arm; the V2-05 demo-form capture adapter (D39) was implemented with 40 tests (451 portable tests).
 
 ## Position
 
@@ -23,12 +33,13 @@ Last updated 2026-10-04, session 16 (Claude). **`--scene` admission fix (D46):**
 | Session 12 (Claude, 2026-10-03) | `ed26dc9`: record of the maintainer's Check 9/S1 runs at `84f15ec` (S1 did not run). `e9af7f4`: V2-05 demo-form capture adapter, tests and status record. See the session 12 log. |
 | Session 13 (Claude, 2026-10-04) | `f6f9d5b` record of the Check 9, S1 and capture runs at `e9af7f4`, S1 comparison and V2-05 evaluation (docs only) · `8836929` PTS follow-up · `cd1c201` V2-09/V2-10 demo form (D40). See the session 13 log. |
 | Session 14 (Claude, 2026-10-04) | `ea95571`: S1 evaluation and D41 adoption, D42, V2-26 demo form (portable), Ultralytics privacy item. See the session 14 log. |
-| Session 16 (Claude, 2026-10-04) | The narrow `--scene` admission fix (D46), the acceptance procedure, and the pending-write limitation on the status page; one local commit, not pushed. See the session 16 log. |
+| Session 17 (Claude, 2026-10-04) | Step-4 criteria v2, the guarded `step4` and identity modes, startup identity checks and the runnable checklist (D47); one local commit, not pushed. See the session 17 log. |
+| Session 16 (Claude, 2026-10-04) | `7f06055`: the narrow `--scene` admission fix (D46), the acceptance procedure, and the pending-write limitation on the status page. See the session 16 log. |
 | Session 15 (Claude, 2026-10-04) | `537557c` D-1 demo form (portable part); `7f5f9f3` D-2 (portable part) and the operator checklist; not pushed. See the session 15 log. |
 | Working tree | At session 15 start (10:46 IST): HEAD `ea95571`, equal to the local `origin/v2-beta` (the maintainer pushed after session 14; no fetch ran). The tree was clean. The session-start snapshot had listed `BUILD.md` as modified (session 12's trailing blank line), but by 10:43:07 IST, before Claude's first command, `BUILD.md` matched HEAD again. No other agent process was running; the maintainer's VS Code session was. Claude did not touch `BUILD.md`. Earlier: at session 13 start: HEAD `e9af7f4`, two commits ahead of the local `origin/v2-beta` (`84f15ec`; nothing pushed since session 11). The only change was session 12's unrelated trailing blank line in `BUILD.md` (not Claude's), which stays uncommitted. |
 | Known limitation (D-1, D43) | **Pending incident writes are buffered in memory, not in a crash-safe spool.** Rule observations waiting for a failed `record()` to be retried (at most 256) are lost if the process stops abruptly; overflow is counted as lost. The status page states this beside the pending count. A durable spool belongs to the runtime/core split (guide ch. 4, V2-11). |
 | Local-only files | `AGENTS.md`, the v2 guide, the audit review and `docs/LOCAL_NOTES.md` (device-specific notes), excluded through `.git/info/exclude`; none included in session 6–11 increments. A fresh clone does not contain them, although CLAUDE.md names the guide and audit. |
-| Selected package | **`--scene` admission fix** (session 16, D46): a narrow amendment to D-1, done portably; no device check of its own. Before it: **D-2 loopback status page, demo form** (session 15): portable part done, device check PENDING (checklist step 5). Before it in session 15: **D-1 `sentinel run`, demo form**, portable part done (`537557c`), device run PENDING. Before that: **V2-09/V2-10 demo form** (session 13): the legacy detector + ByteTrack parity adapter. Portable part complete (D40); device check PENDING; partial at most (D23). V2-05's demo form is evaluated (session 13 log): device criteria met except the outage and read-timeout checks (PENDING); partial under D23. S1 (D38) ran; adopting `--cache-ram 0` is the maintainer's decision. U20 and U19/U21 instrumentation remain portable-complete only; D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. |
+| Selected package | **Step-4 criteria v2 and guarded mode** (session 17, D47): portable part done; the run is PENDING (checklist step 4). Before it: **`--scene` admission fix** (session 16, D46): a narrow amendment to D-1, done portably; no device check of its own. Before it: **D-2 loopback status page, demo form** (session 15): portable part done, device check PENDING (checklist step 5). Before it in session 15: **D-1 `sentinel run`, demo form**, portable part done (`537557c`), device run PENDING. Before that: **V2-09/V2-10 demo form** (session 13): the legacy detector + ByteTrack parity adapter. Portable part complete (D40); device check PENDING; partial at most (D23). V2-05's demo form is evaluated (session 13 log): device criteria met except the outage and read-timeout checks (PENDING); partial under D23. S1 (D38) ran; adopting `--cache-ram 0` is the maintainer's decision. U20 and U19/U21 instrumentation remain portable-complete only; D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. |
 | Other branches | `origin/Yogeshvar425-patch-1` (teammate) is **not merged**: a single commit `6755796` that adds @Yogeshvar425 to `.github/CODEOWNERS` (merge base `c66ebde`). `origin/codex/github-audit-fixes-2026-09-19` is already in `master` via PR #4. |
 | Effort | Per-package estimates are in the package table (given to the maintainer on 2026-09-29). The re-estimate of optimization effort still waits for V2-01's B0 run. |
 | v1 on this device | Historically **not running** (maintainer, 2026-09-29); current state must be inspected, not inferred. This workflow never terminates existing v1 processes. |
@@ -38,9 +49,9 @@ Last updated 2026-10-04, session 16 (Claude). **`--scene` admission fix (D46):**
 
 1. **Operator checklist step 1 (maintainer, PENDING).** Inspect the Ultralytics analytics/offline setting (read-only, about 1 min). Steps 2 (V2-05 physical outage) and 3 (V2-09/V2-10 guard refusal and tracking) can share one attended headless session. The commands are in "Hardware checks PENDING → Operator checklist".
 2. **Maintainer decisions before step 4:**
-   - approve the confirming combined-profile run (`--llama-cache-ram 0`) and its predeclared pass criteria, as proposed or amended;
+   - the D47 criteria (`step4-combined-cache-off-v2`) are approved for implementation (session 17). The step-4 **run** still needs the maintainer's go-ahead, through checklist step 4 (4a–4f);
    - after it, if it passed, approve the separate acceptance commit (D46) that adds the step-4 profile to `RESOURCE_PROFILES`. That commit is the only way `--scene` can be admitted;
-   - review D43–D46.
+   - review D43–D47.
 3. **Step 5 (maintainer, PENDING):** the first end-to-end alert and status-page check (5a core; 5b scene only after step 4 and admission). It is also V2-15's device check: one real Telegram send.
 4. **Record the step results** as USER-SUPPLIED MEASUREMENTS, with each step's own boot ID and commit. Then the maintainer picks the next package. Claude's suggestion is the interim face adapter (V2-25 demo form, 1 Hz, D34), whose enrollment needs consented photos (unresolved), never `face_db.pkl`.
 5. **Unchanged:** U19/U21 instrumentation is portable-complete only (Codex, session 6). Memory work stays paused under the timebox except the confirming run. V2-13's rest (directed crossing, hysteresis, D30) comes after the demo.
@@ -162,6 +173,155 @@ Notes on partial and in-progress rows:
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Not done: viewing it on the device over the SSH forward (checklist step 5); it stands in for, and does not replace, V2-17/V2-18 (no sessions, roles, API, media or live video).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
 
+## Session 17 log (Claude, 2026-10-04)
+
+**Scope.** Maintainer approval: implement, portably, the proposed `step4-combined-cache-off-v2` criteria and the guarded step4 mode, with corrections:
+1. reliable monotonic steady boundaries;
+2. a fail-fast shell flow that passes the exact Check 9 result;
+3. a real 60 s post-run wait and bounded kernel queries with explicit coverage;
+4. clip identity by its recorded hash, with identity hashing before the cache drop and its timing recorded;
+5. cache evidence from the installed build and the running process, with completed work and both frame ages recorded.
+
+Guard thresholds and cleanup stay unchanged. No V2-29, no hardware, cache eviction, service change, reboot or push. Started at `7f06055` with a clean tree.
+
+**Clip identity (Claude, read-only).** The current `~/clips/two_people_doorway_60s_2026-09-29.mp4` has the SHA-256 recorded in the excluded local notes for check 8's input (`room_static`, formerly `one_person`, 1,770,670 B). It is the same bytes. The hash itself stays in the local notes and in local run records only.
+
+- **D47. Step-4 criteria v2 and the guarded step4 mode** (maintainer approval, 2026-10-04; implementation details are session 17 decisions, not yet reviewed).
+  - **Steady interval.** It starts at the workload's `steady_boundary` start and ends at its `steady_boundary` end. Both are `time.monotonic()` stamps. The end is stamped as soon as the steady loop ends, before any worker thread is joined, and the workload's summary is taken at that moment. An orchestrator `stop_boundary` (memory floor, abort, or the interruption time captured in the signal handler) ends it earlier. CSV phase labels are not used: rows after the end, including those still labelled `steady`, are excluded from every steady statistic (maximum, median, p95, time above target, swap deltas, trend, tegrastats, prompt-cache window). The interval reports its duration, coverage, largest gap and what ended it. Without a start or any end it is unavailable, and so is acceptance. The guard's own stop marks the run invalid (criterion R).
+  - **Workload evidence.**
+    - Unique detected frames per second, and the lowest complete 10 s window.
+    - **Replay scheduling age**: from when a live camera would have delivered the frame to the result. It includes any backlog. This one is gated.
+    - **Decode-to-result age**: actual ingest-to-result in the replay. Reported only.
+    - Neither is camera-to-result (U3).
+    - Face runs, rate and errors.
+    - Scene attempts, completed requests, client timeouts (30 s), HTTP and transport errors, completions over 8 s, finish reasons, strict-valid and rejected counts by reason, and latency.
+    - A SHA-256 fingerprint of the request the workload sends: prompts, image size, JPEG quality, token and temperature limits, model name, schema.
+  - **Cache evidence.** "Disabled, verified" requires all five sources to agree:
+    1. the manifest flag (`cache_ram_mib` 0);
+    2. `--cache-ram 0` in the running server's `/proc/<pid>/cmdline`, captured once it was ready;
+    3. the installed build's files containing the option text (llama-server also exits on an unknown option);
+    4. the startup log line "prompt cache is disabled";
+    5. zero cache-state updates in the steady interval, counted only when the startup line was captured with receipt times.
+
+    Missing telemetry is "unverified", never zero updates. A running server without `--cache-ram` counts as "enabled".
+  - **Identity.**
+    - **The snapshot.** `operator_check.py --step4-identity` (read-only) runs **before** the operator's cache drop. It hashes the clip, the llama-server binary, every llama/ggml/mtmd library beside it (real files), the LLM, the projector, the engine and the face weights, and records per-file and total hashing time, the boot ID and the commit. The clip must equal its recorded hash, which is passed from the local notes and never committed. Only a summary is printed; the full result stays in the private `result.json`.
+    - **At step-4 start.** The step4 mode refuses unless the snapshot is complete, from this boot and commit, finished before the Check 9 result, and every file still has its recorded name, size and mtime.
+    - **At the end.** The profiler rehashes all of them, the build and the clip included. Identity is `verified` only if every end hash equals the snapshot.
+    - **Before acceptance.** Checklist 4f rehashes again.
+  - **Kernel evidence.**
+    - **When.** After the owned process group's cleanup, the mode waits 60 s (interruptible, and recorded), then writes an end marker.
+    - **What it queries.** Three bounded `journalctl` queries (10 s, 1 MiB each) for the **manifest's boot ID**, which must still be the current boot because the journal is volatile:
+      1. kernel records from run start − 1 s to run end + 60 s;
+      2. the run's own `sentinel-step4` markers, written with `logger` before the child starts and after the wait;
+      3. journald's own messages in the interval.
+    - **When coverage counts as observed.** Only if:
+      - every query completed untruncated and parsed;
+      - both markers are readable and bracket the interval, which proves the journal is readable and retained from start to end;
+      - journald logged no loss (missed, suppressed, rate-limited, full, truncated, corrupt).
+    - **Otherwise.** Coverage is `truncated`, `uncertain` or `unavailable`, and the OOM/NvMap counts are absent (lower bounds at most), never zero.
+  - **Step-4 mode.**
+    - **Admission.** `--execute-workload step4` requires:
+      - the inspection to pass;
+      - an **explicit** `--check9-report` (`--latest-check9-report` is refused) for a successful Check 9 at the same boot and commit;
+      - the identity report;
+      - `--step4-clip`, `--operator-dropped-caches` and `--confirm-step4-prerequisites`;
+      - the guard's baseline headroom.
+    - **The child.** `demo_profile.py --clip <clip> --no-evict --sanitized-logs --llama-cache-ram 0 --face-hz 1 --scene-interval-s 4 --baseline-s 30 --settle-s 15 --warmup-s 120 --steady-s 600 --llama-timeout-s 60 --load-timeout-s 90 --min-free-gb 3.5`.
+    - **Guard and cleanup.** The unchanged `PressureGuard` stops at 4.8 GB pressure, 1 GiB MemFree, 2 GiB MemAvailable, any swap-counter change, or a sampling gap over 0.5 s. The child deadline is 1,200 s, and cleanup sends TERM then KILL to the owned process group.
+    - **The report.** Every criterion's status, `eligible_for_maintainer_review`, `blocking` and `accepted: false`. Exit 0 only when eligible.
+  - **Startup checks (`sentinel run --scene`), exactly:**
+    - the registry entry's evidence (`accepted_profile_problem()`);
+    - the server flags and the scene interval;
+    - the request fingerprint against `SCENE_REQUEST_SHA256`;
+    - **SHA-256** of the llama-server binary and of every profiled build library up to 32,000,000 B (about 20 MB in total);
+    - **name, size and mtime only** for larger libraries (libggml-cuda, 200 MB) and for the model and projector files;
+    - the detector engine's pin, through the entry, while the engine itself is hashed when the detector loads;
+    - after the server is ready, every mapped llama/ggml/mtmd library must come from the binary's directory (`libraries_not_profiled` otherwise).
+
+    **Limitation:** metadata checks do not detect a same-size replacement that keeps its mtime (a test demonstrates this). An accepted profile must carry `STARTUP_IDENTITY_LIMITATION`. The step-4 snapshot, the end-of-run hashes and the pre-acceptance rehash cover the measured run.
+  - **Acceptance (amends D46).** A run that is eligible goes to the maintainer for review; nothing at runtime marks a profile accepted. The acceptance commit copies into a `ResourceProfile`:
+    - the identity: run directory, commit, boot ID, flags, `cache_ram_mib` 0, interval, `llm`/`mmproj`/`llama_server`/`llama_libraries` with SHA-256, `engine_sha256` and `scene_request_sha256`;
+    - the evidence fields: `cache_verdict`, `steady_status`, `steady_coverage`, `steady_max_bytes`, `steady_seconds_above_target`, `peak_bytes`, `steady_slope_bytes_per_min`, `unique_fps`, `min_window_fps`, `schedule_age_p95_ms`/`p99_ms`, `face_hz`, `face_errors`, `scene_attempts`, `scene_valid`, `scene_truncated`, `scene_errors`, `scene_over_deadline`, `kernel_coverage`, `oom_candidates`, `nvmap_candidates`, `identity_status`, `replay_clip_verified`, `gpu_guard_ok`;
+    - `criteria_id`, `criteria_passed`;
+    - `limitations` including the startup limitation.
+
+    `accepted_profile_problem()` rechecks every threshold.
+
+**Final criteria `step4-combined-cache-off-v2`.** Demo profile only: a 640×480 replay at 15 fps. It does not test the guide's 1080p core-throughput gate or any beta gate.
+
+| # | Criterion | Requirement |
+|---|---|---|
+| R | Valid run | Guard `completed` with cleanup clear; explicit same-boot Check 9; drop declared; profile `complete`; headless; no dev tools; no tracked changes; commit equal to the identity's |
+| S | Steady interval | `complete` from monotonic boundaries (600 s), coverage ≥ 0.95, no gap > 1 s |
+| M1 | Steady pressure | Every steady sample ≤ 5,000,000,000 B; 0 s above (time above and its share reported) |
+| M2 | Run peak | Sampled cold-load/runtime peak ≤ 5,400,000,000 B, the higher of the profiler's and the guard's samplers |
+| M3 | Trend, swap | Steady slope ≤ +10,000,000 B/min; 0 pages swapped in during steady (unavailable if not sampled) |
+| T1 | Throughput | Mean ≥ 14.5 unique detected frames/s; every complete 10 s window ≥ 13.5/s |
+| T2 | Frame age | Replay scheduling age p95 ≤ 150 ms, p99 ≤ 250 ms; decode-to-result age reported |
+| T3 | Processed/decoded | ≥ 0.99 (supplementary) |
+| F | Face | ≥ 0.95 Hz achieved; 0 errors |
+| V1 | Scene requests | ≥ 140 attempts; 0 HTTP, transport or client-timeout errors; 0 completions over 8 s |
+| V2 | Scene completion | Every completion `stop` (0 truncated or other); strict-valid ≥ 0.95 of attempts; rejections by reason; structural validity only, not accuracy |
+| G | GPU | All layers and the vision encoder on CUDA0, L4T libcuda only; workload `cuInit` 0 |
+| C | Prompt cache | Flags exactly `--n-gpu-layers 999 --ctx-size 2048 --parallel 1 --cache-ram 0`; cache verdict `disabled_verified` |
+| K | Kernel | Coverage `observed` (boot plus interval plus markers plus no journald loss); 0 OOM, 0 NvMap candidate lines |
+| I | Identity | Snapshot before the drop; clip equals its recorded hash; unchanged at start; end hashes equal |
+
+Any criterion that is not `pass` blocks eligibility. When R fails, the others become unavailable. Recorded but not gated: steady median and p95, per-process PSS, latencies, tegrastats, tokens, unload residue (U19).
+
+| File | Change |
+|---|---|
+| `benchmarks/runner/step4_criteria.py` (new) | Constants, `steady_interval()`, `cache_evidence()`, `evaluate_profile()`, `evaluate()`. Standard library only. |
+| `benchmarks/runner/demo_workload.py` | Steady boundaries; summary before joins; `stopping` labels for teardown; frame ages, windows, scene counters; request fingerprint. |
+| `benchmarks/runner/demo_profile.py` | `stopping` phase; build files and option evidence; running command line; stop boundaries; end-of-run build and clip hashes; sanitizer keys; summary on the monotonic interval; cache and GPU evidence; profile-side criteria. |
+| `benchmarks/runner/operator_check.py` | `--step4-identity`; `--execute-workload step4`; identity prerequisite; post-run wait; markers; bounded kernel queries; end-of-run identity check; criteria report. Guard and cleanup unchanged. |
+| `src/sentinel/adapters.py` | v2 fields and checks; `STARTUP_IDENTITY_LIMITATION`; `STARTUP_HASH_LIMIT_BYTES`. |
+| `src/sentinel/demo_runtime.py`, `scene/server.py`, `scene/llama_server.py` | Startup identity checks; mapped-library check; `request_fingerprint()` and `SCENE_REQUEST_SHA256`. |
+| Tests | `test_step4.py` (+49); updates in `test_scene_admission.py`, `test_scene_server.py`, `test_demo_measurements.py`, and `conftest.py` (synthetic v2 fixture). |
+
+**Tests and checks.**
+- **New tests:**
+  - teardown excluded;
+  - time above target measured while p95 stays under it;
+  - early stop truncates, and missing boundaries are unavailable;
+  - each cache source required;
+  - the workload ends steady before joins and excludes work finished in teardown, labelling it `stopping`;
+  - error and window counters;
+  - each criterion on its own;
+  - an invalid run or uncertain evidence is never eligible;
+  - the summary on the interval, and without an end;
+  - the sanitizer;
+  - identity snapshot, mismatch and missing file;
+  - nine step-4 refusals before any process;
+  - a completed run waits, then queries the recorded boot and interval;
+  - six kernel coverage failures;
+  - an interrupted wait;
+  - a guard stop;
+  - a file changed during the run;
+  - CLI exit and hash privacy;
+  - startup identity checks and the limitation demonstration.
+- **Mutation sweep** (one-off): 22/22 caught after strengthening one test.
+- **Checklist flow:** 4a–4f (without sudo) ran against a stub `operator_check` in a scratch repository. That found and fixed one defect: `set -e` is ignored in a subshell on the left of `||`. The blocks now use `( … ); echo "<block>_exit=$?"`. Every case behaved as intended (the table above). All checklist shell blocks pass `bash -n`.
+
+### Session 17 verification: exact commands and results
+
+```bash
+.venv/bin/python -m pytest -q tests/unit/test_step4.py
+# 49 passed, exit 0 (3 consecutive runs)
+.venv/bin/python -m pytest -q
+# 723 passed, exit 0 (647 before)
+.venv/bin/sentinel config validate config/default.yaml
+# valid Sentinel configuration (version 1, camera cam-1); core monitoring only; exit 0
+PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m py_compile benchmarks/runner/*.py   # system Python 3.12.3: ok
+PYTHONDONTWRITEBYTECODE=1 ~/onvif_env/bin/python -m py_compile benchmarks/runner/demo_workload.py benchmarks/runner/step4_criteria.py   # 3.10: ok
+/usr/bin/python3 benchmarks/runner/demo_profile.py --help; .venv/bin/python benchmarks/runner/operator_check.py --help   # both parse
+git diff --check -- src tests docs benchmarks
+# no output, exit 0
+```
+
+- **Not run:** the identity snapshot on the real files (it would fill the page cache), Check 9, step 4, any journal query, any GPU, camera or model work; CI. Console output for a full run is estimated at about 300 KB, under the runner's 1 MiB limit (not measured). Step 4 and any acceptance commit stay PENDING, and no profile is accepted.
+
 ## Session 16 log (Claude, 2026-10-04)
 
 **Scope.** Maintainer instruction: implement the narrow `--scene` admission fix. Scene analysis stays off by default. `--scene` requires an explicitly accepted combined profile, measured with `--cache-ram 0` and matching the selected runtime configuration, through the existing profile/registry mechanism. The old provisional cache-enabled profile and missing, pending, failed or mismatched evidence are rejected before llama-server starts or scene resources load, with a sanitized reason. Core-only operation stays available. No real profile is marked accepted, no evidence is fabricated, and there is no bypass. Tests may use explicitly synthetic fixtures. Also: define how a real profile becomes accepted after step 4, and keep the in-memory pending-write limitation visible in this file and on the status page. No push, hardware, cache eviction, service change or further package. Started on `v2-beta` at `7f5f9f3`, two commits ahead of the local `origin/v2-beta` (`ea95571`), with a clean tree.
@@ -190,6 +350,8 @@ Notes on partial and in-progress rows:
     - `llm`, `mmproj` and `engine_sha256`, from the manifest's file facts and SHA-256;
     - `criteria_id`, `criteria_passed=True`, `gpu_guard_ok`, `prompt_cache_disabled`, `peak_bytes`, `steady_p95_bytes`, `steady_slope_bytes_per_min` and `scene_errors`, from the run's results;
     - a note citing the status-record section that records the run as a USER-SUPPLIED MEASUREMENT.
+
+    **Amended by D47 (session 17):** the entry now carries the v2 fields (see the session 17 log), and `criteria_id` must be `step4-combined-cache-off-v2`.
 
     The same commit updates `test_the_runtime_registry_holds_no_synthetic_and_no_admissible_scene_profile`, whose second assertion states that no profile is admissible today. A run that failed may be recorded as `failed`. **Nothing at runtime creates, edits or accepts a profile**, and no runtime file, flag or database row can.
   - **Unchanged.** Scene analysis is off by default, and core-only runs need no scene profile. A scene manifest that names the provisional profile without `--scene` is harmless.
@@ -1852,59 +2014,95 @@ D=~/sentinel-runs/d1-checklist/$STEP; mkdir -p -m 700 "$D"
   - b has failures: record `failures` and `error_types`, and stop.
 - *Artifacts:* `$D/a.txt`, `$D/b.json` and `$D/provenance.txt` (return them); `$D/b.err` stays local.
 
-**4. Confirming combined profile with `--llama-cache-ram 0` (a measurement run; about 15 min unattended after setup; GPU; sudo for headless and D37).**
+**4. Confirming combined profile, guarded (`step4-combined-cache-off-v2`, D47; a measurement run: about 25 min, of which about 3 min attended; GPU; sudo only for headless and the D37 drop).**
 - *Prerequisites:*
   - Steps 1 and 3 passed.
-  - **The maintainer approves this run.** It was recorded as not approved before session 15.
-  - VS Code Remote and Claude Code closed: `demo_profile.py` refuses otherwise; never pass `--allow-dev-tools`. Run it from a plain SSH session inside `tmux new -s confirm`.
-  - v1 and any llama-server stopped.
-  - The working tree has no tracked changes.
-- *Proposed pass criteria `step4-combined-cache-off-v1`, for the maintainer to confirm or amend before the run, never after.*
-  - **Run conditions.** If these do not hold, the run is invalid rather than failed:
-    - `demo_profile.py` with check 8's clip (1,770,670 B), `--llama-cache-ram 0 --sanitized-logs` and the default phases (30 s baseline, 15 s settles, 120 s warm-up, 600 s steady), face at 1 Hz (D34), scene interval 4 s;
-    - a recorded commit with no tracked changes;
-    - headless, with no desktop or dev-tool processes;
-    - the D37 drop declared in `provenance.txt`.
-  - **Pass criteria:**
-    1. **Complete:** exit 0 and run status `complete`.
-    2. **GPU guard:** llama-server `offloaded N/N layers to GPU` with all N (check 8: 17/17), `CLIP using CUDA0`, only L4T's libcuda mapped, workload `cuInit` 0.
-    3. **Prompt cache off:** the manifest's `llama_server.flags` are exactly `--n-gpu-layers 999 --ctx-size 2048 --parallel 1 --cache-ram 0` with `cache_ram_mib` 0, and the sanitized log says the prompt cache is disabled.
-    4. **Run peak** of `MemTotal − MemAvailable`, cold loads included: ≤ 5,400,000,000 B.
-    5. **Steady-phase p95:** ≤ 5,400,000,000 B.
-    6. **Steady pressure least-squares slope** (`profile.json` `steady_trend`): ≤ +10,000,000 B/min. S1 arm b was +3.9 MB/min; arm a was +115 MB/min.
-    7. **Scene:** 0 request errors (HTTP, timeout, other) over the run.
-    8. **Detector:** processes ≥ 99 % of the decoded source frames (check 8: 9,000 of 9,000).
-    9. **Kernel and swap:** 0 OOM and 0 NvMap candidate lines in the inspection afterwards, and no pages swapped in during the steady phase.
-  - **Recorded, not gated:**
-    - the steady median against the 5,000,000,000 B target (met or exceeded, as for D33);
-    - per-process PSS;
-    - scene latency and valid/invalid report counts;
-    - the face rate;
-    - the unload residue (U19).
-  - **Checked by the code.** Criteria 2–7 are checked again by `sentinel run --scene` from the registry entry (`accepted_profile_problem()`), as are the entry's status, criteria ID, recorded pass, run directory, full commit and boot ID, and the match with the runtime's flags, scene interval, model files and pinned engine. Criteria 1, 8 and 9 and the run conditions are the maintainer's recorded judgment (`criteria_passed`).
-  - **What a pass decides, and what it does not.** A pass allows, but does not perform, the acceptance commit described in D46. It does not settle U18, U19, U21, long runs or beta memory acceptance. S1 was scene-only, so it was never combined-runtime acceptance.
-- *Commands, in this order:*
+  - **The maintainer approved this run and the D47 criteria before it starts.**
+  - A plain SSH session inside `tmux new -s step4`. `operator_check` stops on SIGHUP, so a dropped SSH must not end the run.
+  - v1, any llama-server and Ollama stopped.
+  - No tracked changes.
+  - **VS Code Remote and Claude Code closed before 4d**: the inspection and the profiler refuse dev tools, and `--allow-*` is never used.
+  - No reboot between 4b and 4d. The identity, Check 9 and kernel evidence are per boot, and the journal is volatile.
+- *4a. Variables and a unique artifact directory (current shell):*
+  ```bash
+  cd /home/villain8001/sentinel-surveillance && set -o pipefail
+  RUN="step4-$(date -u +%Y%m%dT%H%M%SZ)"
+  D="$HOME/sentinel-runs/d1-checklist/$RUN"
+  CLIP="$HOME/clips/two_people_doorway_60s_2026-09-29.mp4"
+  mkdir -p -m 700 "$HOME/sentinel-runs/d1-checklist" && mkdir -m 700 "$D" && echo "artifacts: $D"
+  ```
+  Stop if `mkdir` reports an error.
+- *4b. Identity snapshot, before the cache drop (read-only hashing of about 1.5 GB; no sudo). It stops at the first failure:*
+  ```bash
+  ( set -euo pipefail
+    { echo "utc=$(date -u +%FT%TZ)"; echo "boot_id=$(cat /proc/sys/kernel/random/boot_id)"; echo "boot_started=$(uptime -s)"
+      echo "commit=$(git rev-parse HEAD)"; echo "tracked_changes=$(git status --porcelain --untracked-files=no | wc -l)"
+      echo "display_manager=$(systemctl is-active display-manager || true)"; } > "$D/provenance.txt"
+    [ "$(git status --porcelain --untracked-files=no | wc -l)" -eq 0 ] || { echo "tracked changes present"; exit 1; }
+    CLIP_SHA="$(grep -F 'room_static_60s_2026-09-29.mp4' docs/LOCAL_NOTES.md | grep -oE '[0-9a-f]{64}' || true)"
+    [ "${#CLIP_SHA}" -eq 64 ] || { echo "recorded clip hash not found in docs/LOCAL_NOTES.md"; exit 1; }
+    .venv/bin/python benchmarks/runner/operator_check.py --step4-identity --step4-clip "$CLIP" \
+      --step4-clip-sha256 "$CLIP_SHA" | tee "$D/identity.json"
+    python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["status"] == "complete"; print(r["result_file"])' \
+      "$D/identity.json" > "$D/identity.path"
+    cp "$(cat "$D/identity.path")" "$D/identity-result.json"
+    echo "identity_finished_utc=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["finished_utc"])' "$D/identity.json")" >> "$D/provenance.txt"
+    echo "4b passed"
+  ); echo "4b_exit=$?" | tee -a "$D/provenance.txt"
+  ```
+  - *Expected:* `"status": "complete"`, `"clip_matches_recorded": true`, the file count and `hash_seconds_total`.
+  - The terminal shows a summary only. The full result, with every SHA-256 including the clip's, stays in `identity-result.json` and is never committed.
+  - *Stop unless* it prints `4b passed` and `4b_exit=0`. A clip mismatch, a missing file or tracked changes stop it at the failing command. (Never put `|| …` after these blocks: bash ignores `set -e` inside a subshell on the left of `||`.)
+- *4c. Headless and the D37 drop (current shell; each sudo command on its own line; only after `4b passed`):*
   ```bash
   sudo -v
   sudo systemctl stop display-manager
-  #   now run the provenance block above with STEP=4-confirming-profile
-  stat -c '%s %n' ~/clips/two_people_doorway_60s_2026-09-29.mp4 | tee -a "$D/provenance.txt"   # expect 1770670 B: check 8's input file
   sync
   sudo sysctl -w vm.drop_caches=1
-  echo "d37_drop=operator_declared $(date -u +%FT%TZ)" | tee -a "$D/provenance.txt"
-  /usr/bin/python3 benchmarks/runner/demo_profile.py --clip ~/clips/two_people_doorway_60s_2026-09-29.mp4 \
-    --llama-cache-ram 0 --sanitized-logs 2>&1 | tee "$D/console.txt"; echo "exit=$?" | tee -a "$D/provenance.txt"
-  .venv/bin/python benchmarks/runner/operator_check.py | tee "$D/inspection-after.json"   # read-only: OOM/NvMap candidate counts
+  echo "d37_drop_utc=$(date -u +%FT%TZ)" | tee -a "$D/provenance.txt"
   ```
-- *Expected:*
-  - `Run demo-profile-<UTC>: writing to …`, then the summary.
-  - The manifest has `llama_server.flags` ending `--cache-ram 0` and `parameters.face_hz` 1.0. That is D34; check 8 ran at 2.0, which is a known difference to record. The detector and face run on the clip, as in check 8.
-  - The inspection afterwards shows 0 OOM and NvMap candidate lines.
-- *Stop if:*
-  - It prints `Not starting:` (desktop, dev tools, v1, another llama-server, MemFree < 3.0 GB): fix the named condition and do not add `--allow-*`.
-  - The clip size differs: stop, because it is not check 8's input.
-  - It aborts on the memory floor or the GPU guard, or the inspection shows OOM/NvMap lines: record it, and do not enable scene analysis in step 5.
-- *Artifacts:* `~/sentinel-runs/demo-profile-<UTC>/` (`manifest.json`, `memory.csv`, `events.jsonl`, sanitized `llama-server.log`, `summary.txt`, `profile.json`); `$D/console.txt`, `$D/inspection-after.json` and `$D/provenance.txt`; and the inspection's own `/tmp/sentinel-operator-*/result.json`, copied to `~/sentinel-runs/operator/`.
+- *4d. Same-boot Check 9, then step 4 with that exact Check 9 result. It stops at the first failure, and the exit status is preserved:*
+  ```bash
+  ( set -euo pipefail
+    .venv/bin/python benchmarks/runner/operator_check.py --execute-workload check9 --operator-dropped-caches \
+      | tee "$D/check9.json"
+    CHECK9="$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["check9"]["status"] == "bounded_smoke_complete"; print(r["result_file"])' "$D/check9.json")"
+    echo "check9_result=$CHECK9" >> "$D/provenance.txt"
+    timeout -s TERM --kill-after=30s 1440s .venv/bin/python benchmarks/runner/operator_check.py \
+      --execute-workload step4 --check9-report "$CHECK9" --identity-report "$(cat "$D/identity.path")" \
+      --step4-clip "$CLIP" --confirm-step4-prerequisites --operator-dropped-caches | tee "$D/step4.json"
+    echo "4d passed: eligible for maintainer review, not accepted"
+  ); echo "4d_exit=$?" | tee -a "$D/provenance.txt"
+  ```
+  - *Expected:*
+    - Check 9 is `bounded_smoke_complete`.
+    - Step 4 runs about 17 min, with a 1,200 s child deadline, then waits 60 s and queries the journal; the outer `timeout` bounds everything at 24 min.
+    - `step4.json` has `criteria` with every criterion `pass`, `eligible_for_maintainer_review: true` and `accepted: false`, and `4d_exit=0`.
+  - *Stop if:*
+    - Check 9 fails: do not run step 4 against any other report.
+    - Step 4 is `refused`: fix the named refusal; a changed identity or a new boot means starting again at 4a.
+    - A guard stop (`sampled_pressure_stop`, `free_or_available_stop`, `swap_counter_change`, `sampling_gap`, `timeout`) or any `fail`/`unavailable` criterion: record it as not eligible. No threshold, guard or flag is changed, and nothing is retried silently.
+- *4e. Keep the evidence (always, even after a failure):*
+  ```bash
+  for f in check9 step4; do
+    [ -s "$D/$f.json" ] && python3 -c 'import json,os,sys; print(os.path.dirname(json.load(open(sys.argv[1]))["result_file"]))' "$D/$f.json" || true
+  done | while read -r dir; do cp -a "$dir" "$D/"; done; ls -l "$D"
+  sudo systemctl start display-manager   # only if the desktop was active before 4c
+  ```
+- *4f. Rehash before any acceptance commit (after the run; not part of the measurement):*
+  ```bash
+  ( set -euo pipefail
+    CLIP_SHA="$(grep -F 'room_static_60s_2026-09-29.mp4' docs/LOCAL_NOTES.md | grep -oE '[0-9a-f]{64}' || true)"
+    .venv/bin/python benchmarks/runner/operator_check.py --step4-identity --step4-clip "$CLIP" \
+      --step4-clip-sha256 "$CLIP_SHA" | tee "$D/identity-rehash.json"
+    NEW="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["result_file"])' "$D/identity-rehash.json")"
+    python3 -c 'import json,sys; a,b=(json.load(open(p))["step4_identity"]["files"] for p in sys.argv[1:3]); c=sorted(k for k in set(a)|set(b) if (a.get(k) or {}).get("sha256")!=(b.get(k) or {}).get("sha256")); print("rehash equal" if not c else "CHANGED: %s" % c); sys.exit(1 if c else 0)' \
+      "$D/identity-result.json" "$NEW"
+  )
+  ```
+  Expected: `rehash equal`. Anything else blocks the acceptance commit.
+- *Artifacts:* everything is under `$D`: `provenance.txt`, `identity.json` (a summary), `identity-result.json` (local only: it holds the clip's hash), `check9.json`, `step4.json`, and the copied `sentinel-operator-*` directories with `guard.jsonl` and the `demo-profile-*` run. Return `provenance.txt`, `check9.json` and `step4.json`.
+- *Afterwards (D46, D47):* a pass makes the run eligible for the maintainer's review, nothing more. A profile becomes accepted only through a separate, maintainer-approved commit that adds a `ResourceProfile` with the D47 fields copied from this run.
 
 **5. First end-to-end alert and status page (about 15 min attended; GPU; Telegram).**
 - *Prerequisites:*

@@ -49,6 +49,7 @@ Not thread-safe apart from ``snapshot()`` and ``request_stop()``: one loop threa
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from collections import Counter, OrderedDict, deque
 from datetime import datetime, timezone
@@ -58,7 +59,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
-from .adapters import RESOURCE_PROFILES, AdapterState, FileFacts, ResourceProfile, resolve
+from .adapters import (
+    RESOURCE_PROFILES,
+    STARTUP_HASH_LIMIT_BYTES,
+    AdapterState,
+    FileFacts,
+    ResourceProfile,
+    resolve,
+)
 from .alerts.outbox import Notifier, OutboxWorker
 from .alerts.telegram import NotifierUnavailable, TelegramNotifier
 from .config import CaptureConfig, NotificationsConfig, SentinelConfig
@@ -73,7 +81,7 @@ from .media.clock import NS_PER_SECOND, Clock
 from .rules.zones import ZonePhase
 from .runtime import CoreOutput, EdgeCore
 from .scene.analyzer import IMAGES_KEPT, RecentImages, ThreadedSceneAnalyzer
-from .scene.llama_server import PROFILED_FLAGS, PROMPT_CACHE_FLAGS
+from .scene.llama_server import PROFILED_FLAGS, PROMPT_CACHE_FLAGS, SCENE_REQUEST_SHA256
 from .storage.database import Database, DatabaseError
 from .tracking.tracker import FrameOutcome, PersonTracker, TrackerError
 
@@ -659,14 +667,47 @@ def file_facts(path: Path) -> FileFacts | None:
     return FileFacts(Path(path).name, stat.st_size, mtime)
 
 
+def _sha256(path: Path) -> str | None:
+    digest = hashlib.sha256()
+    try:
+        with Path(path).open("rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(block)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def _identity_problem(label: str, path: Path, recorded: FileFacts) -> str | None:
+    """Hash files up to STARTUP_HASH_LIMIT_BYTES; compare larger ones by name, size and mtime only."""
+    actual = file_facts(path)
+    if actual is None:
+        return f"{label} {Path(path).name} is missing"
+    if actual.name != recorded.name:
+        return f"{label} {actual.name} is not the profiled {recorded.name}"
+    if recorded.bytes <= STARTUP_HASH_LIMIT_BYTES and recorded.sha256:
+        if actual.bytes != recorded.bytes or _sha256(path) != recorded.sha256:
+            return f"{label} {actual.name} does not have the profiled SHA-256"
+        return None
+    if (actual.bytes, actual.mtime_utc) != (recorded.bytes, recorded.mtime_utc):
+        return (f"{label} {actual.name} ({actual.bytes} B, {actual.mtime_utc}) is not the profiled "
+                f"{recorded.name} ({recorded.bytes} B, {recorded.mtime_utc})")
+    return None
+
+
 def profile_mismatch(
     profile: ResourceProfile, config: SentinelConfig, scene: SceneOptions, *, engine_sha256: str = LEGACY_ENGINE_SHA256
 ) -> str | None:
     """None if the selected runtime configuration is the one ``profile`` measured, else the first difference.
 
-    Model files are compared by name, size and modification time from metadata.
-    They are not hashed here: reading 1.26 GB would fill the page cache just
-    before the MemFree precheck (U18). The profile keeps the run's SHA-256 for audit.
+    Startup checks, in order: the server flags; the scene interval; the request
+    fingerprint; the llama-server binary and every build library up to
+    STARTUP_HASH_LIMIT_BYTES by SHA-256; larger libraries (libggml-cuda) and the
+    model files by name, size and modification time only; the detector engine's
+    pin. Large files are not hashed here: that would fill the page cache just
+    before the MemFree precheck (U18). Metadata checks do not detect a same-size
+    replacement that keeps its modification time (STARTUP_IDENTITY_LIMITATION);
+    the step-4 identity snapshot and acceptance rehashing cover the measured run.
     """
     expected = PROFILED_FLAGS + PROMPT_CACHE_FLAGS
     if tuple(profile.llama_flags) != expected:
@@ -675,6 +716,17 @@ def profile_mismatch(
     if profile.scene_interval_s != config.scene.interval_s:
         return (f"resource profile {profile.profile_id} measured a {profile.scene_interval_s:g} s scene interval, "
                 f"not the configured {config.scene.interval_s:g} s")
+    if profile.scene_request_sha256 != SCENE_REQUEST_SHA256:
+        return f"resource profile {profile.profile_id} measured another scene request than the runtime sends"
+    if profile.llama_server is None:
+        return f"resource profile {profile.profile_id} lacks the llama-server identity"
+    problem = _identity_problem("llama-server", scene.binary, profile.llama_server)
+    if problem is not None:
+        return problem
+    for library in profile.llama_libraries:
+        problem = _identity_problem("llama.cpp library", Path(scene.binary).parent / library.name, library)
+        if problem is not None:
+            return problem
     for label, path, recorded in (("scene model", scene.model, profile.llm),
                                   ("scene projector", scene.mmproj, profile.mmproj)):
         actual = file_facts(path)

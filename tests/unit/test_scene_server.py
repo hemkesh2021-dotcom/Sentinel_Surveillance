@@ -78,7 +78,8 @@ def files(tmp_path: Path) -> dict[str, Path]:
 
 
 def server(files: dict[str, Path], popen: FakePopen, *, healthy_after: int = 2, libcuda: list[str] | None = None,
-           in_use: bool = False, environ: dict[str, str] | None = None, command=llama_server_command) -> LlamaServerProcess:
+           in_use: bool = False, environ: dict[str, str] | None = None, command=llama_server_command,
+           libraries: list[str] | None = None) -> LlamaServerProcess:
     polls = {"n": 0}
     clock = Clock()
 
@@ -91,6 +92,7 @@ def server(files: dict[str, Path], popen: FakePopen, *, healthy_after: int = 2, 
         environ=environ if environ is not None else {"PATH": "/usr/bin"},
         command=command, popen=popen, health=health, in_use=lambda port: in_use,
         libcuda=lambda pid: [L4T] if libcuda is None else libcuda,
+        libraries=lambda pid: [str(files["llama-server"].parent / "libllama.so.0.0.8932")] if libraries is None else libraries,
         sleep=clock.sleep, monotonic=clock.monotonic,
     )
 
@@ -234,3 +236,11 @@ def test_stop_is_bounded_and_kills_a_server_that_ignores_sigterm(files) -> None:
     assert fake.signals == ["TERM", "KILL"]
     assert process.status().state is ServerState.STOPPED
     assert fake.stdout.closed
+
+
+@pytest.mark.parametrize("mapped", [[], ["/usr/local/lib/libggml-cuda.so.0.10.0"], ["/tmp/other/libllama.so.0"]])
+def test_libraries_from_outside_the_checked_build_are_refused(files, mapped) -> None:
+    fake = FakeProcess(GOOD_OUTPUT)
+    status = server(files, FakePopen(fake), libraries=mapped).start(30.0)
+    assert (status.state, status.problem) == (ServerState.FAILED, "libraries_not_profiled")
+    assert fake.signals == ["TERM"]

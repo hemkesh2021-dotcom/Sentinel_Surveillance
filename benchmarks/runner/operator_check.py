@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import demo_profile as profile
+import step4_criteria
 
 SAMPLE_S = 0.2
 PRESSURE_STOP = 4_800_000_000
@@ -33,6 +34,10 @@ PVA_FRAGMENT = "/etc/systemd/system/" + PVA_UNIT
 PVA_DAEMON = "/opt/nvidia/pva-allow-2/bin/nvidiaPvaAllowd.py"
 PVA_CHECKSUMS = "/var/lib/dpkg/info/pva-allow-2.md5sums"
 OUTPUT_ROOT = Path("/tmp")
+STEP4_DEADLINE_S = 1200.0  # expected about 1,040 s: 30 s baseline, loads, 3 settles, 120 s warm-up, 600 s steady, unload
+STEP4_JOURNAL_TIMEOUT_S = 10.0
+STEP4_MARKER_TAG = "sentinel-step4"
+JOURNAL_LOSS = re.compile(r"missed|suppress|rate.?limit|is full|truncat|corrupt", re.IGNORECASE)
 S1_ARMS = {"a": None, "b": 0}  # llama-server --cache-ram MiB; None keeps b8932's default (8192 MiB)
 _DROPPED = object()
 DROP_CACHES_PROCEDURE = (
@@ -157,6 +162,10 @@ class SystemBackend:
     clock = staticmethod(time.monotonic)
     sleep = staticmethod(time.sleep)
     spawn = staticmethod(NativeChild)
+
+    @staticmethod
+    def boot_id() -> str:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
 
     def sample(self) -> dict:
         stamp = self.clock()
@@ -429,23 +438,31 @@ def inspection(backend, runner: ProcessRunner) -> dict:
             "limitations": "comm-based classification with verified PVA exception; no process argv/environment displayed; not proof of no GPU users"}
 
 
+def private_result(path: Path) -> dict | None:
+    """A result.json this user wrote in a private /tmp/sentinel-operator-* directory, or None."""
+    resolved = path.resolve(strict=True)
+    info = path.stat()
+    if (path.is_symlink() or resolved.name != "result.json"
+            or not resolved.parent.name.startswith("sentinel-operator-")
+            or not resolved.is_relative_to(OUTPUT_ROOT.resolve())
+            or info.st_uid != os.getuid() or info.st_mode & 0o077 or not stat.S_ISREG(info.st_mode)
+            or info.st_size > OUTPUT_LIMIT):
+        return None
+    with path.open("rb") as handle:
+        data = handle.read(OUTPUT_LIMIT + 1)
+    if len(data) > OUTPUT_LIMIT:
+        return None
+    prior = json.loads(data)
+    return prior if isinstance(prior, dict) else None
+
+
 def check9_prerequisite(path: Path | None, current: dict) -> str | None:
     if path is None:
         return "check9_report_required"
     try:
-        resolved = path.resolve(strict=True)
-        info = path.stat()
-        if (path.is_symlink() or resolved.name != "result.json"
-                or not resolved.parent.name.startswith("sentinel-operator-")
-                or not resolved.is_relative_to(OUTPUT_ROOT.resolve())
-                or info.st_uid != os.getuid() or info.st_mode & 0o077 or not stat.S_ISREG(info.st_mode)
-                or info.st_size > OUTPUT_LIMIT):
+        prior = private_result(path)
+        if prior is None:
             return "check9_report_refused"
-        with path.open("rb") as handle:
-            data = handle.read(OUTPUT_LIMIT + 1)
-        if len(data) > OUTPUT_LIMIT:
-            return "check9_report_refused"
-        prior = json.loads(data)
         previous = prior["inspection"]
         if (prior["schema_version"] != 1 or prior["mode"] != "check9"
                 or prior["check9"]["status"] != "bounded_smoke_complete"
@@ -515,12 +532,227 @@ def s1_profile_excerpt(output: Path) -> dict:
     return {"status": label, **numeric_excerpt(fields)}
 
 
+# ---------------------------------------------------------------- step 4 (D47)
+
+
+def file_facts(path: Path) -> dict | None:
+    """Name, size and modification time (as demo_profile.py records them); metadata only."""
+    try:
+        info = Path(path).stat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        return None
+    mtime = profile.datetime.fromtimestamp(info.st_mtime, profile.timezone.utc).isoformat(timespec="seconds")
+    return {"name": Path(path).name, "bytes": info.st_size, "mtime_utc": mtime}
+
+
+def identity_files(clip: Path) -> dict[str, Path]:
+    """Everything step 4 measures with: the replay clip, the llama.cpp build, the models and the engine."""
+    args = profile.parse_args([])
+    files = {"clip": Path(clip)}
+    files.update({f"build:{label}": path for label, path in profile.llama_build_files(args.llama).items()})
+    files.update({f"model:{label}": path for label, path in profile.model_files(args).items()})
+    return files
+
+
+def sha256_file(path: Path, interrupted=lambda: False) -> str | None:
+    digest = hashlib.sha256()
+    try:
+        with Path(path).open("rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                if interrupted():
+                    return None
+                digest.update(block)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def step4_identity(backend, runner, clip: Path, clip_sha256: str, *, files=None, interrupted=lambda: False) -> dict:
+    """Hash every file step 4 depends on. Run it BEFORE the operator's cache drop: hashing fills the page cache."""
+    started_utc, started = profile.utc_now(), backend.clock()
+    entries: dict[str, dict | None] = {}
+    problems = []
+    for label, path in (files or identity_files(clip)).items():
+        if interrupted():
+            problems.append("interrupted")
+            break
+        facts = file_facts(path)
+        if facts is None:
+            entries[label] = None
+            problems.append(f"missing:{label}")
+            continue
+        before = backend.clock()
+        digest = sha256_file(path, interrupted)
+        if digest is None:
+            problems.append(f"unreadable:{label}")
+        entries[label] = {**facts, "sha256": digest, "hash_seconds": round(backend.clock() - before, 3)}
+    clip_entry = entries.get("clip")
+    clip_ok = bool(clip_entry and clip_entry["sha256"] == clip_sha256)
+    revision = runner.run(["git", "-C", str(profile.REPO), "rev-parse", "HEAD"], 3.0)
+    commit = revision.output.decode(errors="replace").strip()
+    status = "complete" if not problems and clip_ok else ("clip_mismatch" if not problems else "incomplete")
+    return {
+        "status": status, "problems": problems, "clip_matches_recorded": clip_ok,
+        "started_utc": started_utc, "finished_utc": profile.utc_now(),
+        "hash_seconds_total": round(backend.clock() - started, 3),
+        "boot_id": backend.boot_id(),
+        "commit": commit if revision.status == "completed" and re.fullmatch(r"[0-9a-f]{40}", commit) else None,
+        "files": entries,
+        "note": "hashing reads every file into the page cache; take this snapshot before the D37 cache drop",
+    }
+
+
+def _utc(text: object):
+    try:
+        return profile.datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def identity_prerequisite(path: Path | None, current: dict, check9_path: Path | None, files: dict) -> tuple[str | None, dict | None]:
+    """The identity snapshot must be complete, this boot and commit, taken before the Check 9, and unchanged since."""
+    if path is None:
+        return "step4_identity_report_required", None
+    try:
+        prior = private_result(path)
+        if prior is None:
+            return "step4_identity_report_refused", None
+        identity = prior["step4_identity"]
+        if prior.get("mode") != "step4_identity" or identity["status"] != "complete" or not identity["clip_matches_recorded"]:
+            return "step4_identity_incomplete", identity
+        if identity["boot_id"] != current["boot_id"] or identity["commit"] != current["repository_commit"]:
+            return "step4_identity_other_boot_or_commit", identity
+        check9 = private_result(check9_path) if check9_path is not None else None
+        taken, check9_done = _utc(identity["finished_utc"]), _utc((check9 or {}).get("finished_utc"))
+        if taken is None or check9_done is None or not taken < check9_done:
+            return "step4_identity_not_before_check9", identity
+        for label, path_now in files.items():
+            recorded, now = identity["files"].get(label), file_facts(path_now)
+            if recorded is None or now is None or {k: recorded[k] for k in ("name", "bytes", "mtime_utc")} != now:
+                return f"step4_identity_changed:{label}", identity
+        if set(identity["files"]) != set(files):
+            return "step4_identity_file_set_changed", identity
+    except (OSError, ValueError, KeyError, TypeError):
+        return "step4_identity_report_unavailable", None
+    return None, identity
+
+
+def identity_end_check(identity: dict | None, manifest: dict | None) -> dict:
+    """Do the profiler's end-of-run hashes equal the snapshot? (``verified`` only if every file matches.)"""
+    if identity is None or manifest is None:
+        return {"status": "unavailable", "reason": "identity snapshot or profiler manifest unavailable"}
+    ends: dict[str, object] = {"clip": manifest.get("sha256_clip")}
+    ends.update({f"build:{k}": v for k, v in (manifest.get("sha256_build") or {}).items()})
+    ends.update({f"model:{k}": v for k, v in (manifest.get("sha256") or {}).items()})
+    missing = sorted(label for label in identity["files"] if not ends.get(label))
+    changed = sorted(label for label, entry in identity["files"].items()
+                     if ends.get(label) and (entry or {}).get("sha256") != ends[label])
+    status = "verified" if not missing and not changed else ("changed" if changed else "unavailable")
+    return {"status": status, "missing_end_hashes": missing, "changed": changed,
+            "clip_matches_recorded": identity.get("clip_matches_recorded"),
+            "snapshot_finished_utc": identity.get("finished_utc"), "hash_seconds_total": identity.get("hash_seconds_total"),
+            "files": len(identity["files"])}
+
+
+def _journal(result: ChildResult) -> tuple[str, list[dict]]:
+    if result.status == "output_limit":
+        return "truncated", []
+    if result.status != "completed":
+        return "unavailable", []
+    records = []
+    for line in result.output.decode(errors="replace").splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            return "unavailable", []
+        if not isinstance(record, dict):
+            return "unavailable", []
+        message = record.get("MESSAGE")
+        stamp = record.get("__REALTIME_TIMESTAMP")
+        records.append({"message": message if isinstance(message, str) else "",
+                        "t": int(stamp) / 1e6 if isinstance(stamp, str) and stamp.isdigit() else None})
+    return "observed", records
+
+
+def kernel_evidence(runner, backend, manifest: dict | None, tag: str, wait_complete: bool) -> dict:
+    """Kernel candidate lines for the recorded boot over the run plus the post-run wait, with coverage proof.
+
+    Coverage is ``observed`` only when every bounded query completed untruncated and parsed, the
+    run's own journal markers (written before the run and after the wait) are readable and bracket
+    the interval, and journald logged no loss in it. Otherwise it is ``truncated``, ``uncertain``
+    or ``unavailable``, and the candidate counts are not zero but absent (lower bounds at most).
+    """
+    def result(status, reasons, **extra):
+        return {"status": status, "reasons": reasons, "oom_candidates": None, "nvmap_candidates": None, **extra}
+
+    if manifest is None:
+        return result("unavailable", ["profiler manifest unavailable"])
+    boot = manifest.get("boot_id")
+    if not isinstance(boot, str) or not boot or boot != backend.boot_id():
+        return result("unavailable", ["the recorded boot is not the current boot; the journal is volatile"])
+    start, end = _utc(manifest.get("started_utc")), _utc(manifest.get("finished_utc"))
+    if start is None or end is None:
+        return result("unavailable", ["run interval not recorded"])
+    if not wait_complete:
+        return result("unavailable", ["post-run wait incomplete"])
+    since, until = int(start.timestamp()) - 1, int(end.timestamp() + step4_criteria.POST_RUN_WAIT_S) + 1
+    window = {"boot_id": boot, "since_utc": start.isoformat(), "until_epoch_s": until, "since_epoch_s": since}
+    common = ["-o", "json", "--quiet", "--no-pager"]
+    kernel_q = runner.run(["/usr/bin/journalctl", "-k", "-b", boot, "--since", f"@{since}", "--until", f"@{until}",
+                           *common], STEP4_JOURNAL_TIMEOUT_S)
+    marker_q = runner.run(["/usr/bin/journalctl", "-b", boot, "-t", STEP4_MARKER_TAG, "--since", f"@{since - 600}",
+                           *common], STEP4_JOURNAL_TIMEOUT_S)
+    loss_q = runner.run(["/usr/bin/journalctl", "-b", boot, "_COMM=systemd-journal", "--since", f"@{since}",
+                         "--until", f"@{until}", *common], STEP4_JOURNAL_TIMEOUT_S)
+    states = {name: _journal(q) for name, q in (("kernel", kernel_q), ("markers", marker_q), ("journald", loss_q))}
+    if any(state == "unavailable" for state, _ in states.values()):
+        return result("unavailable", [f"{name} query unavailable" for name, (state, _) in states.items()
+                                      if state == "unavailable"], **window)
+    records = states["kernel"][1]
+    oom = sum(any(m in r["message"].lower() for m in ("out of memory", "oom-kill", "killed process")) for r in records)
+    nvmap = sum("nvmapmemalloc" in r["message"].lower() for r in records)
+    reasons = [f"{name} query output truncated" for name, (state, _) in states.items() if state == "truncated"]
+    marks = {r["message"]: r["t"] for r in states["markers"][1]}
+    started_at, ended_at = marks.get(f"step4 start {tag}"), marks.get(f"step4 end {tag}")
+    if started_at is None or ended_at is None:
+        reasons.append("run markers not readable: journal access or coverage not proven")
+    elif not (started_at <= since + 1 and ended_at >= until - 1):
+        reasons.append("run markers do not bracket the interval")
+    loss = sum(bool(JOURNAL_LOSS.search(r["message"])) for r in states["journald"][1])
+    if loss:
+        reasons.append(f"journald reported possible loss ({loss} lines)")
+    status = "observed" if not reasons else ("truncated" if any("truncated" in r for r in reasons) else "uncertain")
+    counts = {"oom_candidates": oom, "nvmap_candidates": nvmap} if status == "observed" else {
+        "oom_candidates_lower_bound": oom, "nvmap_candidates_lower_bound": nvmap}
+    return {**result(status, reasons, **window), **counts, "records": len(records), "journald_loss_lines": loss,
+            "note": "candidate lines, not unique events"}
+
+
+def _profiler_files(output: Path) -> tuple[dict | None, dict | None]:
+    runs = list(output.glob("demo-profile-*"))
+    if len(runs) != 1:
+        return None, None
+    loaded = []
+    for name in ("manifest.json", "profile.json"):
+        try:
+            with (runs[0] / name).open("rb") as handle:
+                data = handle.read(OUTPUT_LIMIT * 4 + 1)
+            loaded.append(json.loads(data) if len(data) <= OUTPUT_LIMIT * 4 else None)
+        except (OSError, ValueError):
+            loaded.append(None)
+    return loaded[0], loaded[1]
+
+
 def execute(mode: str | None, backend, output: Path, *, check9_report=None, confirm_u21=False,
-            s1_arm=None, confirm_s1=False, dropped_caches=False, interrupted=lambda: False) -> dict:
+            s1_arm=None, confirm_s1=False, dropped_caches=False, interrupted=lambda: False,
+            identity_report=None, clip=None, confirm_step4=False, explicit_check9=True, identity_files_fn=None) -> dict:
     runner = ProcessRunner(backend, interrupted)
     report = {"schema_version": 1, "mode": mode or "inspection",
               "hardware_acceptance": "PENDING", "check9": {"status": "PENDING", "u18_acceptance": "PENDING",
               "server_comparison": "PENDING"}, "u21": {"status": "PENDING"}, "s1": {"status": "PENDING"},
+              "step4": {"status": "PENDING", "acceptance": "PENDING: only a maintainer-approved registry commit (D46)"},
               "preparation": {"drop_caches": "operator_declared" if dropped_caches else "not_declared",
                               "procedure": DROP_CACHES_PROCEDURE}}
     try:
@@ -530,13 +762,29 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
         if mode is None:
             return report
         refusal = current["workload_refusals"]
-        if mode in ("u21", "s1"):
+        if mode in ("u21", "s1", "step4"):
             problem = check9_prerequisite(check9_report, current)
             if problem:
                 refusal.append(problem)
             report[mode]["check9_report_dir"] = check9_report.parent.name if check9_report else None
         if mode == "u21" and not confirm_u21:
             refusal.append("u21_operator_prerequisites_unconfirmed")
+        identity = None
+        if mode == "step4":
+            if not explicit_check9:
+                refusal.append("step4_requires_explicit_check9_report")
+            if not confirm_step4:
+                refusal.append("step4_operator_prerequisites_unconfirmed")
+            if not dropped_caches:
+                refusal.append("step4_cache_drop_not_declared")
+            if clip is None:
+                refusal.append("step4_clip_required")
+            else:
+                files = (identity_files_fn or identity_files)(clip)
+                problem, identity = identity_prerequisite(identity_report, current, check9_report, files)
+                if problem:
+                    refusal.append(problem)
+            report["step4"]["identity_report_dir"] = identity_report.parent.name if identity_report else None
         if mode == "s1":
             if s1_arm not in S1_ARMS:
                 refusal.append("s1_arm_required")
@@ -599,6 +847,8 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
                 ], 360.0, guard=guard)
                 report["u21"].update(child.diagnostic())
                 report["u21"]["operator_prerequisites_confirmed"] = True
+            elif mode == "step4":
+                run_step4(report["step4"], runner, backend, guard, output, clip, identity, dropped_caches, interrupted)
             else:
                 cache_ram = S1_ARMS[s1_arm]
                 child = runner.run([
@@ -620,9 +870,57 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
     return report
 
 
+def run_step4(section: dict, runner, backend, guard, output: Path, clip: Path, identity: dict,
+              dropped_caches: bool, interrupted) -> None:
+    """The guarded combined profile: same guard and cleanup as U21/S1, full phases, then the post-run evidence."""
+    tag = output.name
+    start_marker = runner.run(["/usr/bin/logger", "-t", STEP4_MARKER_TAG, "--", f"step4 start {tag}"], 3.0)
+    child = runner.run([
+        "/usr/bin/python3", str(profile.HERE / "demo_profile.py"), "--out", str(output), "--clip", str(clip),
+        "--no-evict", "--sanitized-logs", "--llama-cache-ram", "0", "--face-hz", "1", "--scene-interval-s", "4",
+        "--baseline-s", "30", "--settle-s", "15", "--warmup-s", "120", "--steady-s", str(int(step4_criteria.STEADY_S)),
+        "--llama-timeout-s", "60", "--load-timeout-s", "90", "--min-free-gb", "3.5",
+    ], STEP4_DEADLINE_S, guard=guard)
+    section.update(child.diagnostic(), deadline_s=STEP4_DEADLINE_S, guard_stopped_at_s=None)
+    if child.status not in ("completed", "child_failed"):
+        section["guard_stopped_at_s"] = round(backend.clock(), 3)  # the earliest authoritative stop boundary
+    waited = 0.0
+    while waited < step4_criteria.POST_RUN_WAIT_S and not interrupted():  # after the owned group's cleanup
+        backend.sleep(1.0)
+        waited += 1.0
+    wait_complete = waited >= step4_criteria.POST_RUN_WAIT_S
+    end_marker = runner.run(["/usr/bin/logger", "-t", STEP4_MARKER_TAG, "--", f"step4 end {tag}"], 3.0)
+    manifest, prof = _profiler_files(output)
+    kernel = kernel_evidence(runner, backend, manifest, tag, wait_complete)  # unwritten markers -> not observed
+    kernel["markers_written"] = {"start": start_marker.status == "completed", "end": end_marker.status == "completed"}
+    identity_check = identity_end_check(identity, manifest)
+    if prof is not None and guard.peak is not None:
+        combined = dict(prof.get("combined") or {})
+        combined["run_peak_bytes"] = max(combined.get("run_peak_bytes") or 0, guard.peak)  # either sampler's peak
+        prof = {**prof, "combined": combined}
+    repo = (manifest or {}).get("repository") or {}
+    run = {
+        "guard_completed": child.status == "completed", "cleanup_clear": child.cleanup_clear, "check9_ok": True,
+        "drop_declared": dropped_caches, "profile_complete": (prof or {}).get("status") == "complete",
+        "headless": (manifest or {}).get("display_manager") == "inactive" and not (manifest or {}).get("desktop_processes"),
+        "no_dev_tools": manifest is not None and not manifest.get("dev_tools_running"),
+        "no_tracked_changes": repo.get("tracked_changes") is False and repo.get("commit") == (identity or {}).get("commit"),
+    }
+    evaluation = step4_criteria.evaluate(prof, run=run, kernel=kernel, identity=identity_check)
+    section.update(post_run_wait_s=waited, kernel=kernel, identity=identity_check, criteria=evaluation,
+                   status_detail="eligible for maintainer review" if evaluation["eligible_for_maintainer_review"]
+                   else "not eligible: " + ", ".join(evaluation["blocking"]))
+
+
+def _sha256_arg(text: str) -> str:
+    if not re.fullmatch(r"[0-9a-f]{64}", text):
+        raise argparse.ArgumentTypeError("expected 64 lowercase hex characters")
+    return text
+
+
 def main(argv: list[str] | None = None, *, backend=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--execute-workload", choices=("check9", "u21", "s1"),
+    parser.add_argument("--execute-workload", choices=("check9", "u21", "s1", "step4"),
                         help="explicitly execute only this guarded diagnostic; default is read-only")
     reports = parser.add_mutually_exclusive_group()
     reports.add_argument("--check9-report", type=Path, help="successful same-boot/revision bounded Check 9 report")
@@ -636,7 +934,18 @@ def main(argv: list[str] | None = None, *, backend=None) -> int:
                         help="operator confirms S1 approval, headless preparation and the same-boot Check 9")
     parser.add_argument("--operator-dropped-caches", action="store_true",
                         help="record that the operator ran the D37 drop_caches step before this invocation")
+    parser.add_argument("--step4-identity", action="store_true",
+                        help="read-only: hash the clip, llama.cpp build, models and engine for step 4 (before the cache drop)")
+    parser.add_argument("--step4-clip", type=Path, help="step 4 replay clip (check 8's input)")
+    parser.add_argument("--step4-clip-sha256", type=_sha256_arg,
+                        help="the clip's recorded SHA-256 (from the local notes; never committed)")
+    parser.add_argument("--identity-report", type=Path, help="the result.json of this boot's --step4-identity")
+    parser.add_argument("--confirm-step4-prerequisites", action="store_true",
+                        help="operator confirms step-4 approval, headless preparation, the identity snapshot, "
+                             "the cache drop and the same-boot Check 9")
     args = parser.parse_args(argv)
+    if args.step4_identity and (args.execute_workload or not args.step4_clip or not args.step4_clip_sha256):
+        parser.error("--step4-identity takes only --step4-clip and --step4-clip-sha256")
     interrupted = False
 
     def request_stop(signum, frame):
@@ -647,20 +956,41 @@ def main(argv: list[str] | None = None, *, backend=None) -> int:
         signal.signal(signum, request_stop)
     os.umask(0o077)
     output = Path(tempfile.mkdtemp(prefix="sentinel-operator-", dir=OUTPUT_ROOT))
-    check9_report = latest_check9_report() if args.latest_check9_report else args.check9_report
-    report = execute(args.execute_workload, backend or SystemBackend(), output,
-                     check9_report=check9_report, confirm_u21=args.confirm_u21_prerequisites,
-                     s1_arm=args.s1_arm, confirm_s1=args.confirm_s1_prerequisites,
-                     dropped_caches=args.operator_dropped_caches, interrupted=lambda: interrupted)
+    backend = backend or SystemBackend()
+    if args.step4_identity:
+        report = {"schema_version": 1, "mode": "step4_identity",
+                  "step4_identity": step4_identity(backend, ProcessRunner(backend, lambda: interrupted), args.step4_clip,
+                                                   args.step4_clip_sha256, interrupted=lambda: interrupted)}
+    else:
+        check9_report = latest_check9_report() if args.latest_check9_report else args.check9_report
+        report = execute(args.execute_workload, backend, output,
+                         check9_report=check9_report, confirm_u21=args.confirm_u21_prerequisites,
+                         s1_arm=args.s1_arm, confirm_s1=args.confirm_s1_prerequisites,
+                         dropped_caches=args.operator_dropped_caches, interrupted=lambda: interrupted,
+                         identity_report=args.identity_report, clip=args.step4_clip,
+                         confirm_step4=args.confirm_step4_prerequisites,
+                         explicit_check9=not args.latest_check9_report)
     report["result_file"] = str(output / "result.json")
     report["finished_utc"] = profile.utc_now()
     report["metric"] = "MemTotal - MemAvailable, integer bytes; kB x1024; time.monotonic within boot"
     report["sampled_stop_bytes"] = PRESSURE_STOP
     report["sampled_stop_is_guaranteed_cap"] = False
     (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
-    print(json.dumps(report, indent=2))
+    if args.step4_identity:  # the full report (with the clip's hash) stays in the private result.json
+        identity = report["step4_identity"]
+        print(json.dumps({"mode": "step4_identity", "result_file": report["result_file"],
+                          **{k: identity[k] for k in ("status", "problems", "clip_matches_recorded", "started_utc",
+                                                      "finished_utc", "hash_seconds_total", "boot_id", "commit")},
+                          "files": len(identity["files"])}, indent=2))
+    else:
+        print(json.dumps(report, indent=2))
     if interrupted:
         return 130
+    if args.step4_identity:
+        return 0 if report["step4_identity"]["status"] == "complete" else 1
+    if args.execute_workload == "step4":
+        criteria = report["step4"].get("criteria") or {}
+        return 0 if criteria.get("eligible_for_maintainer_review") else 1
     if args.execute_workload:
         return 0 if report[args.execute_workload]["status"] in ("completed", "bounded_smoke_complete") else 1
     return 0 if "inspection" in report else 1

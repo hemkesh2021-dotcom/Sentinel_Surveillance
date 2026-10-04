@@ -60,6 +60,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
+if str(HERE) not in sys.path:  # loaded by path in tests; step4_criteria lives beside this file
+    sys.path.insert(0, str(HERE))
+import step4_criteria  # noqa: E402 - standard library only
 WORKLOAD = HERE / "demo_workload.py"
 HOME = Path.home()
 L4T_LIBCUDA = "/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1"
@@ -91,8 +94,11 @@ V1_SCRIPTS = frozenset({"surveillance4_1.py", "dashboard.py", "dashboard_1.py"})
 DEEPFACE_WEIGHTS = ("facenet512_weights.h5", "face_detection_yunet_2023mar.onnx")
 PHASES_IN_ORDER = (
     "baseline", "llama_load", "llama_settle", "detector_load", "detector_settle",
-    "face_load", "face_settle", "warmup", "steady", "unload_workload", "unload_llama",
+    "face_load", "face_settle", "warmup", "steady", "stopping", "unload_workload", "unload_llama",
 )
+# Events that carry monotonic boundaries and run-side evidence (kept in full, few per run).
+BOUNDARY_EVENTS = frozenset({"steady_boundary", "stop_boundary", "llama_cmdline", "cuda_driver"})
+LLAMA_BUILD_PREFIXES = ("libllama", "libggml", "libmtmd")
 COMPONENTS = (  # (key, load phase, settle phase, event carrying the load time)
     ("scene", "llama_load", "llama_settle", "llama_ready"),
     ("detector", "detector_load", "detector_settle", "detector_loaded"),
@@ -300,7 +306,9 @@ def provenance(args: argparse.Namespace, context: dict[str, object], run_id: str
         "repository": {"commit": git_commit, "tracked_changes": git_dirty},
         "scripts_sha256": {path.name: sha256_of(path) for path in (Path(__file__).resolve(), WORKLOAD)},
         "llama_server": {"version": llama_version, "flags": llama_flags(args), "unified_memory": True,
-                         "preload": L4T_LIBCUDA, "cache_ram_mib": args.llama_cache_ram},
+                         "preload": L4T_LIBCUDA, "cache_ram_mib": args.llama_cache_ram,
+                         "build_files": {label: file_facts(path) for label, path in llama_build_files(args.llama).items()},
+                         "build_has_cache_ram_option": build_has_option(llama_build_files(args.llama))},
         "files": {label: file_facts(path) for label, path in model_files(args).items()},
         "input": {"clip": file_facts(args.clip) if args.clip else None, "synthetic": not args.clip, "fps": args.fps},
         "parameters": {
@@ -310,6 +318,55 @@ def provenance(args: argparse.Namespace, context: dict[str, object], run_id: str
             "port": args.port, "sample_interval_s": SAMPLE_INTERVAL_S, "pss_interval_s": PSS_INTERVAL_S,
         },
     }
+
+
+def llama_build_files(binary: Path) -> dict[str, Path]:
+    """The llama-server binary and the llama/ggml/mtmd shared libraries beside it (real files, not links)."""
+    files = {"llama-server": Path(binary)}
+    try:
+        for path in sorted(Path(binary).parent.iterdir()):
+            if (path.name.startswith(LLAMA_BUILD_PREFIXES) and ".so" in path.name
+                    and path.is_file() and not path.is_symlink()):
+                files[path.name] = path
+    except OSError:
+        pass
+    return files
+
+
+def build_has_option(files: dict[str, Path], option: bytes = b"--cache-ram") -> bool | None:
+    """Whether the installed build's files contain the option's text; None if they could not be read."""
+    readable = False
+    for name, path in files.items():
+        if not (name == "llama-server" or name.startswith("libllama-common")):
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        readable = True
+        if option in data:
+            return True
+    return False if readable else None
+
+
+def cmdline_evidence(pid: int, read=lambda pid: Path(f"/proc/{pid}/cmdline").read_bytes()) -> dict[str, object]:
+    """The running server's own flags (no paths) and its --cache-ram value, from /proc/<pid>/cmdline."""
+    try:
+        argv = read(pid).decode(errors="replace").split("\0")
+    except OSError:
+        return {"seen": False, "cache_ram": None, "flags": None}
+    argv = [arg for arg in argv[1:] if arg]
+    flags, skip = [], False
+    for index, arg in enumerate(argv):
+        if skip:
+            skip = False
+            continue
+        if arg in ("--model", "--mmproj"):
+            skip = True
+            continue
+        flags.append(arg)
+    values = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--cache-ram"]
+    return {"seen": True, "cache_ram": values[-1] if values else None, "flags": flags}
 
 
 def evict_page_cache(paths: list[Path]) -> int:
@@ -559,13 +616,15 @@ def sanitize_diagnostic(value, depth: int = 0):
         "n", "p50", "p95", "p99", "max", "stop", "length", "other", "missing",
         "truncated", "invalid_report", "incomplete_completion", "malformed_response", "timeout",
         "server_error", "unsupported_completion", "requests", "http", "prompt_tokens", "completion_tokens",
-        "synthetic_images_issued",
+        "synthetic_images_issued", "edge", "boundary_t_mono", "unique_fps", "windows", "window_s", "count",
+        "min_fps", "max_fps", "schedule_age_ms", "decode_to_result_age_ms", "attempts", "client_timeouts",
+        "http_errors", "transport_errors", "request_sha256",
     }
     strings = {
         *PHASES_IN_ORDER, "phase", "cuda_driver", "detector_loaded", "face_loaded",
         "torch_allocator", "workload_stats", "scene_progress", "time.monotonic", "bytes", "allocator_lifetime",
         "observed", "unavailable", "synthetic noise", "synthetic noise, distinct per request",
-        "not evaluated; structural validity is not scene accuracy",
+        "not evaluated; structural validity is not scene accuracy", "steady_boundary", "start", "end",
     }
     if depth > 6:
         return None
@@ -582,6 +641,8 @@ def sanitize_diagnostic(value, depth: int = 0):
         return value
     if isinstance(value, str):
         if value in strings or re.fullmatch(r"\d+(?:\.\d+){1,3}(?:[A-Za-z0-9.+-]{0,24})", value):
+            return value
+        if re.fullmatch(r"[0-9a-f]{64}", value):  # a SHA-256 fingerprint
             return value
         if re.fullmatch(r"[A-Za-z]{1,40}(?:Error|Exception)", value):
             return value
@@ -603,7 +664,7 @@ def pump_workload(proc: subprocess.Popen, run_dir: Path, events: Events, set_pha
                 if sanitized:
                     if not isinstance(record, dict) or record.get("event") not in {
                         "phase", "cuda_driver", "detector_loaded", "face_loaded", "torch_allocator", "workload_stats",
-                        "scene_progress",
+                        "scene_progress", "steady_boundary",
                     }:
                         continue
                     record = sanitize_diagnostic(record)
@@ -654,6 +715,7 @@ def run(args: argparse.Namespace) -> int:
 
     def on_floor() -> None:
         events.add("orchestrator", "memory_floor", floor_bytes=MEMORY_FLOOR_BYTES)
+        events.add("orchestrator", "stop_boundary", reason="memory_floor", boundary_t_mono=round(time.monotonic(), 3))
         for proc in procs.values():
             if proc is not None and proc.poll() is None:
                 proc.terminate()
@@ -665,7 +727,10 @@ def run(args: argparse.Namespace) -> int:
         sampler.phase = name
         events.add(source, "phase", name=name)
 
+    stop_mark: dict[str, float] = {}
+
     def interrupted(signum, _frame) -> None:
+        stop_mark.setdefault("t", time.monotonic())  # no lock here; the event is written in the handler below
         raise Interrupted(signal.Signals(signum).name)
 
     signal.signal(signal.SIGTERM, interrupted)
@@ -702,6 +767,7 @@ def run(args: argparse.Namespace) -> int:
             raise RunAborted("llama-server did not become ready; see llama-server.log")
         check = llama_gpu_check(procs["llama"], run_dir / "llama-server.log")
         events.add("orchestrator", "llama_gpu_check", **check)
+        events.add("orchestrator", "llama_cmdline", **cmdline_evidence(procs["llama"].pid))
         if not check["ok"]:
             raise RunAborted("llama-server is not fully on the GPU with L4T's libcuda (decision D27)")
         set_phase("llama_settle")
@@ -734,8 +800,11 @@ def run(args: argparse.Namespace) -> int:
         status = "complete"
     except RunAborted as exc:
         status = f"aborted: {exc}"
+        events.add("orchestrator", "stop_boundary", reason="aborted", boundary_t_mono=round(time.monotonic(), 3))
     except (Interrupted, KeyboardInterrupt) as exc:
         status = f"interrupted ({exc or 'SIGINT'})"
+        events.add("orchestrator", "stop_boundary", reason="interrupted",
+                   boundary_t_mono=round(stop_mark.get("t", time.monotonic()), 3))
     finally:
         stop_process(procs["work"], "workload", events)
         stop_process(procs["llama"], "llama-server", events)
@@ -754,6 +823,8 @@ def run(args: argparse.Namespace) -> int:
     manifest["finished_utc"] = utc_now()
     manifest["status"] = status
     manifest["sha256"] = {label: sha256_of(path) for label, path in model_files(args).items()}
+    manifest["sha256_build"] = {label: sha256_of(path) for label, path in llama_build_files(args.llama).items()}
+    manifest["sha256_clip"] = sha256_of(args.clip) if args.clip else None  # local run record only
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(summarize(run_dir))
     return 0 if status == "complete" else 1
@@ -816,6 +887,10 @@ def load_tegrastats(path: Path) -> list[dict[str, object]]:
         if len(parts) == 3:
             row = parse_tegrastats_line(parts[2])
             row["phase"] = parts[1]
+            try:
+                row["t"] = float(parts[0])
+            except ValueError:
+                pass
             rows.append(row)
     return rows
 
@@ -834,10 +909,25 @@ def gb(value: int | None, signed: bool = False) -> str:
     return f"{sign}{value:,} B ({sign}{value / 1e9:.3f} GB)"
 
 
+def load_boundary_events(path: Path) -> list[dict[str, object]]:
+    """Every boundary/evidence event (BOUNDARY_EVENTS), in order; a few per run."""
+    found = []
+    try:
+        with open(path) as handle:
+            for line in handle:
+                if line.strip():
+                    record = json.loads(line)
+                    if record.get("event") in BOUNDARY_EVENTS:
+                        found.append(record)
+    except OSError:
+        pass
+    return found
+
+
 def load_latest_events(path: Path) -> dict[str, dict[str, object]]:
     """Retain at most seven summary events; allocator and per-request history stays on disk."""
     names = {"run_end", "llama_ready", "detector_loaded", "face_loaded", "workload_stats", "llama_gpu_check",
-             "scene_progress"}
+             "scene_progress", "cuda_driver", "llama_cmdline"}
     latest = {}
     with open(path) as handle:
         for line in handle:
@@ -862,7 +952,7 @@ def prompt_cache_summary(log_path: Path, steady: tuple[float, float] | None) -> 
         t = float(stamp[1]) if stamp else None
         if startup := PROMPT_CACHE_STARTUP.search(line):
             result["startup"] = {"enabled": startup[1] != "disabled",
-                                 "limit_mib": int(startup[2]) if startup[2] else None}
+                                 "limit_mib": int(startup[2]) if startup[2] else None, "t_mono": t}
         elif state := PROMPT_CACHE_STATE.search(line):
             entry = {"t_mono": t, "prompts": int(state[1]), "size_mib": float(state[2]),
                      "limit_mib": float(state[3]), "limit_tokens": int(state[4]), "estimated_tokens": int(state[5])}
@@ -988,8 +1078,16 @@ def summarize(run_dir: Path) -> str:
         }
         lines.append(f"  {key:<9} load {seconds if seconds is not None else 'n/a'} s; peak delta {gb(peak, True)}; settled delta {gb(settled, True)}")
 
-    warm = in_phases("warmup", "steady")
-    steady = in_phases("steady")
+    boundary_events = load_boundary_events(run_dir / "events.jsonl")
+    steady_s = float(manifest.get("parameters", {}).get("steady_s") or step4_criteria.STEADY_S)
+    interval, interval_rows = step4_criteria.steady_interval(boundary_events, samples, steady_s)
+    if interval["status"] != step4_criteria.UNAVAILABLE:
+        steady = list(interval_rows)  # monotonic boundaries: teardown excluded from every steady statistic
+        steady_basis = "monotonic boundaries"
+    else:
+        steady = in_phases("steady")  # legacy run: phase labels, includes rows while the workload exits
+        steady_basis = "phase labels (legacy; includes rows while the workload exits; acceptance unavailable)"
+    warm = in_phases("warmup") + steady
     combined: dict[str, object] = {}
     if warm:
         steady_used = [r["used"] for r in steady]
@@ -1013,7 +1111,6 @@ def summarize(run_dir: Path) -> str:
             combined["steady_pages_swapped_out"] = swapout[-1] - swapout[0]
         if baseline_used is not None:
             combined["warm_peak_minus_baseline_bytes"] = combined["warm_peak_bytes"] - baseline_used
-        verdict_steady = combined["steady_p95_bytes"] is not None and combined["steady_p95_bytes"] <= TARGET_STEADY_BYTES
         verdict_peak = combined["run_peak_bytes"] is not None and combined["run_peak_bytes"] <= TARGET_PEAK_BYTES
         lines += [
             "",
@@ -1021,8 +1118,14 @@ def summarize(run_dir: Path) -> str:
             f"  run peak (includes cold loads) {gb(combined['run_peak_bytes'])}: "
             f"{'within' if verdict_peak else 'ABOVE'} the 5,400,000,000 B ceiling",
             f"  warm peak {gb(combined['warm_peak_bytes'])}; minus baseline {gb(combined.get('warm_peak_minus_baseline_bytes'), True)}",
-            f"  steady median {gb(combined['steady_median_bytes'])}; steady p95 {gb(combined['steady_p95_bytes'])}: "
-            f"{'within' if verdict_steady else 'ABOVE'} the 5,000,000,000 B target",
+            f"  steady basis: {steady_basis}",
+            *([f"  steady interval {interval['status']}, {interval['duration_s']} s of {interval['expected_s']:g} s, "
+               f"coverage {interval['coverage']}, largest gap {interval['max_gap_s']} s, ended by {interval['ended_by']}",
+               f"  steady max {gb(interval.get('max_bytes'))}; {interval.get('seconds_above_target')} s above the "
+               f"5,000,000,000 B target: {'within' if interval.get('seconds_above_target') == 0 else 'ABOVE'}"]
+              if interval["status"] != step4_criteria.UNAVAILABLE else
+              [f"  steady interval unavailable ({interval.get('reason')}): no steady verdict"]),
+            f"  steady median {gb(combined['steady_median_bytes'])}; steady p95 {gb(combined['steady_p95_bytes'])} (reported only)",
             f"  swap used max {gb(combined['swap_used_max_bytes'])}; steady pages swapped in/out "
             f"{combined.get('steady_pages_swapped_in', 'n/a')}/{combined.get('steady_pages_swapped_out', 'n/a')}",
             f"  llama-server peak RSS {gb(combined['llama_server_peak_rss_bytes'])}, peak PSS {gb(combined['llama_server_peak_pss_bytes'])}",
@@ -1034,12 +1137,15 @@ def summarize(run_dir: Path) -> str:
     if trend:
         lines += [
             "",
-            f"Steady trend over {trend['seconds']} s (least squares; includes rows while the workload exits):",
+            f"Steady trend over {trend['seconds']} s (least squares; {steady_basis}):",
             *(f"  {key}: first {gb(trend[key]['first'])}, last {gb(trend[key]['last'])}, "
               f"slope {trend[key]['slope_bytes_per_min'] if trend[key]['slope_bytes_per_min'] is not None else 'n/a'} B/min"
               for key in ("used", "llama_pss", "work_pss") if trend[key]["n"]),
         ]
-    steady_window = (steady[0]["t"], steady[-1]["t"]) if steady else None
+    if interval["status"] != step4_criteria.UNAVAILABLE:
+        steady_window = (interval["start_t_mono"], interval["end_t_mono"])
+    else:
+        steady_window = (steady[0]["t"], steady[-1]["t"]) if steady else None
     cache = prompt_cache_summary(run_dir / "llama-server.log", steady_window)
     if cache:
         startup = cache["startup"] or {}
@@ -1080,7 +1186,10 @@ def summarize(run_dir: Path) -> str:
             f"  after llama-server stops, vs baseline: {gb(unload.get('residual_vs_baseline_bytes'), True)}",
         ]
 
-    steady_tegra = [row for row in tegra if row["phase"] == "steady"]
+    if interval["status"] != step4_criteria.UNAVAILABLE:
+        steady_tegra = [row for row in tegra if "t" in row and steady_window[0] <= row["t"] <= steady_window[1]]
+    else:
+        steady_tegra = [row for row in tegra if row["phase"] == "steady"]
     tegra_summary: dict[str, object] = {}
     if steady_tegra:
         def mean(values: list[float]) -> float | None:
@@ -1172,7 +1281,16 @@ def summarize(run_dir: Path) -> str:
         "prompt_cache": cache,
         "scene_progress_last": progress,
         "targets": {"steady_bytes": TARGET_STEADY_BYTES, "peak_bytes": TARGET_PEAK_BYTES},
+        "steady_interval": interval,
+        "gpu_evidence": {"llama": last_event("llama_gpu_check"), "workload_cuda": last_event("cuda_driver")},
+        "cache_evidence": step4_criteria.cache_evidence(
+            manifest, last_event("llama_cmdline"), cache,
+            telemetry_timestamped=bool(cache and (cache.get("startup") or {}).get("t_mono") is not None)),
     }
+    profile["step4_profile_criteria"] = step4_criteria.evaluate_profile(profile)
+    lines += ["", f"Step-4 criteria decidable from this run ({step4_criteria.CRITERIA_ID}; demo profile, "
+              "not the 1080p beta gates; never acceptance):"]
+    lines += [f"  {name}: {item['status']}" for name, item in profile["step4_profile_criteria"].items()]
     (run_dir / "profile.json").write_text(json.dumps(profile, indent=2) + "\n")
     text = "\n".join(lines) + "\n"
     (run_dir / "summary.txt").write_text(text)

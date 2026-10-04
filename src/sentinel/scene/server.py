@@ -12,7 +12,9 @@ owns the child from start to stop:
   talk to some other server.
 - **D27 guard.** The server counts as ready only after ``/health`` answers 200
   and its output shows a full offload (every layer and the vision encoder on
-  CUDA0) with only L4T's libcuda mapped into the child. There is no silent CPU
+  CUDA0) with only L4T's libcuda mapped into the child, and every llama/ggml/mtmd
+  library it mapped comes from the binary's own directory (the identity-checked
+  build, D47), not from ``LD_LIBRARY_PATH``. There is no silent CPU
   fallback: otherwise the server is stopped and scene analysis is unavailable.
 - **No raw output kept.** A pump thread reads the child's output so it never
   blocks on a full pipe, and keeps only fixed placement markers. Server text
@@ -105,6 +107,19 @@ def health_ok(port: int, *, timeout_s: float = 2.0) -> bool:
         conn.close()
 
 
+LLAMA_LIBRARY_PREFIXES = ("libllama", "libggml", "libmtmd")
+
+
+def mapped_llama_libraries(pid: int) -> list[str]:
+    """The llama.cpp/ggml/mtmd shared libraries mapped into the child."""
+    try:
+        text = Path(f"/proc/{pid}/maps").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return sorted({path for line in text.splitlines() if (path := line.split()[-1]).startswith("/")
+                   and Path(path).name.startswith(LLAMA_LIBRARY_PREFIXES)})
+
+
 def mapped_libcuda(pid: int) -> list[str]:
     try:
         text = Path(f"/proc/{pid}/maps").read_text(encoding="utf-8", errors="replace")
@@ -127,6 +142,7 @@ class LlamaServerProcess:
         health: Callable[[int], bool] = health_ok,
         in_use: Callable[[int], bool] = port_in_use,
         libcuda: Callable[[int], list[str]] = mapped_libcuda,
+        libraries: Callable[[int], list[str]] = mapped_llama_libraries,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -138,6 +154,7 @@ class LlamaServerProcess:
         self._health = health
         self._in_use = in_use
         self._libcuda = libcuda
+        self._libraries = libraries
         self._sleep = sleep
         self._monotonic = monotonic
         self._proc: Any = None
@@ -224,6 +241,11 @@ class LlamaServerProcess:
         libcuda = self._libcuda(self._proc.pid)
         if not libcuda or not all(path.startswith(L4T_LIBCUDA_DIR) for path in libcuda):
             raise ServerRefused("libcuda_not_l4t")
+        # The build that was identity-checked at startup: every llama/ggml/mtmd library from the binary's directory.
+        build_dir = Path(self._files["llama_server_binary"]).resolve().parent
+        loaded = self._libraries(self._proc.pid)
+        if not loaded or not all(Path(path).resolve().parent == build_dir for path in loaded):
+            raise ServerRefused("libraries_not_profiled")
 
     def _placement_complete(self) -> bool:
         with self._lock:

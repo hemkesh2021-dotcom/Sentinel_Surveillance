@@ -188,22 +188,60 @@ class ResourceProfile:
     mmproj: FileFacts
     engine_sha256: str  # manifest ``sha256.engine``
     criteria_id: str | None = None  # the predeclared criteria it was judged against
-    criteria_passed: bool | None = None  # the maintainer's recorded judgment
-    gpu_guard_ok: bool | None = None  # D27: every layer and the vision encoder on CUDA0, L4T libcuda only
-    prompt_cache_disabled: bool | None = None  # llama-server logged its prompt cache as disabled
-    peak_bytes: int | None = None  # run peak of MemTotal - MemAvailable, decimal bytes
-    steady_p95_bytes: int | None = None
-    steady_slope_bytes_per_min: int | None = None  # least-squares slope of steady pressure
-    scene_errors: int | None = None  # scene request errors (http, timeout, other) in the run
+    criteria_passed: bool | None = None  # the maintainer's recorded judgment of every criterion
+    # Copied from the step-4 report (operator_check step4 ``criteria``) and profile.json; checked again here.
+    gpu_guard_ok: bool | None = None  # D27: every layer and the vision encoder on CUDA0, L4T libcuda, workload cuInit 0
+    cache_verdict: str | None = None  # must be "disabled_verified" (manifest, running command line, build, log, 0 updates)
+    steady_status: str | None = None  # "complete": monotonic boundaries, teardown excluded
+    steady_coverage: float | None = None
+    steady_max_bytes: int | None = None  # every steady sample, decimal bytes
+    steady_seconds_above_target: float | None = None  # time above 5,000,000,000 B in the steady interval
+    peak_bytes: int | None = None  # sampled cold-load/runtime peak
+    steady_slope_bytes_per_min: int | None = None
+    unique_fps: float | None = None
+    min_window_fps: float | None = None
+    schedule_age_p95_ms: float | None = None  # replay scheduling age; not camera-to-result
+    schedule_age_p99_ms: float | None = None
+    face_hz: float | None = None
+    face_errors: int | None = None
+    scene_attempts: int | None = None
+    scene_valid: int | None = None  # strict U20/SceneReport parse; structural validity, not accuracy
+    scene_truncated: int | None = None  # completions that did not finish "stop"
+    scene_errors: int | None = None  # HTTP, transport and client-timeout errors
+    scene_over_deadline: int | None = None  # completions over the 8 s job timeout
+    kernel_coverage: str | None = None  # must be "observed"
+    oom_candidates: int | None = None
+    nvmap_candidates: int | None = None
+    identity_status: str | None = None  # "verified": snapshot before the cache drop equals the end-of-run hashes
+    replay_clip_verified: bool | None = None  # the clip's hash equals the recorded check 8 clip
+    llama_server: FileFacts | None = None  # with sha256
+    llama_libraries: tuple[FileFacts, ...] = ()  # each with sha256
+    scene_request_sha256: str | None = None
+    limitations: tuple[str, ...] = ()  # must include STARTUP_IDENTITY_LIMITATION
     note: str = ""
 
 
-# Step-4 criteria (operator checklist step 4, proposed in session 15; the maintainer confirms them
-# before the run). The numeric ones are checked again here; the rest are in criteria_passed.
-STEP4_CRITERIA_ID = "step4-combined-cache-off-v1"
+# Step-4 criteria (D47; the same values as benchmarks/runner/step4_criteria.py, which a test enforces).
+# Demo criteria only: they do not establish the guide's 1080p beta gates.
+STEP4_CRITERIA_ID = "step4-combined-cache-off-v2"
+STEP4_TARGET_STEADY_BYTES = 5_000_000_000
 STEP4_MAX_PEAK_BYTES = 5_400_000_000
-STEP4_MAX_STEADY_P95_BYTES = 5_400_000_000
 STEP4_MAX_STEADY_SLOPE_BYTES_PER_MIN = 10_000_000
+STEP4_MIN_STEADY_COVERAGE = 0.95
+STEP4_MIN_UNIQUE_FPS = 14.5
+STEP4_MIN_WINDOW_FPS = 13.5
+STEP4_MAX_SCHEDULE_AGE_P95_MS = 150.0
+STEP4_MAX_SCHEDULE_AGE_P99_MS = 250.0
+STEP4_MIN_FACE_HZ = 0.95
+STEP4_MIN_SCENE_ATTEMPTS = 140
+STEP4_MIN_SCENE_STRICT_VALID_SHARE = 0.95
+# What `sentinel run --scene` checks at startup, and what it cannot (D47). An accepted profile must carry this text.
+STARTUP_HASH_LIMIT_BYTES = 32_000_000
+STARTUP_IDENTITY_LIMITATION = (
+    "startup hashes the llama-server binary and build libraries up to 32,000,000 B; larger libraries "
+    "(libggml-cuda) and the model files are checked by name, size and modification time only, so a "
+    "same-size replacement that keeps its modification time is not detected at startup (demo limitation)"
+)
 _RUN_DIR = re.compile(r"^demo-profile-\d{8}T\d{6}Z$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _BOOT_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -273,20 +311,48 @@ def accepted_profile_problem(
         return f"resource profile {profile_id} lacks its boot ID"
     if profile.gpu_guard_ok is not True:
         return f"resource profile {profile_id} has no recorded GPU guard pass"
-    if profile.prompt_cache_disabled is not True:
-        return f"resource profile {profile_id} has no record of the prompt cache being disabled"
+    if profile.cache_verdict != "disabled_verified":
+        return f"resource profile {profile_id} has no verified record of the prompt cache being off"
+    if profile.steady_status != "complete" or profile.steady_coverage is None or profile.steady_coverage < STEP4_MIN_STEADY_COVERAGE:
+        return f"resource profile {profile_id} lacks a complete, covered steady interval"
     checks = (
-        ("run peak", profile.peak_bytes, STEP4_MAX_PEAK_BYTES),
-        ("steady p95", profile.steady_p95_bytes, STEP4_MAX_STEADY_P95_BYTES),
-        ("steady slope per minute", profile.steady_slope_bytes_per_min, STEP4_MAX_STEADY_SLOPE_BYTES_PER_MIN),
+        ("steady max", profile.steady_max_bytes, STEP4_TARGET_STEADY_BYTES, "max"),
+        ("seconds above the steady target", profile.steady_seconds_above_target, 0, "max"),
+        ("run peak", profile.peak_bytes, STEP4_MAX_PEAK_BYTES, "max"),
+        ("steady slope per minute", profile.steady_slope_bytes_per_min, STEP4_MAX_STEADY_SLOPE_BYTES_PER_MIN, "max"),
+        ("unique frames per second", profile.unique_fps, STEP4_MIN_UNIQUE_FPS, "min"),
+        ("lowest 10 s window frames per second", profile.min_window_fps, STEP4_MIN_WINDOW_FPS, "min"),
+        ("scheduling age p95 ms", profile.schedule_age_p95_ms, STEP4_MAX_SCHEDULE_AGE_P95_MS, "max"),
+        ("scheduling age p99 ms", profile.schedule_age_p99_ms, STEP4_MAX_SCHEDULE_AGE_P99_MS, "max"),
+        ("face rate Hz", profile.face_hz, STEP4_MIN_FACE_HZ, "min"),
+        ("face errors", profile.face_errors, 0, "max"),
+        ("scene attempts", profile.scene_attempts, STEP4_MIN_SCENE_ATTEMPTS, "min"),
+        ("scene request errors", profile.scene_errors, 0, "max"),
+        ("scene completions over the deadline", profile.scene_over_deadline, 0, "max"),
+        ("truncated scene completions", profile.scene_truncated, 0, "max"),
+        ("OOM candidate lines", profile.oom_candidates, 0, "max"),
+        ("NvMap candidate lines", profile.nvmap_candidates, 0, "max"),
     )
-    for label, value, limit in checks:
+    for label, value, limit, kind in checks:
         if value is None:
             return f"resource profile {profile_id} lacks its recorded {label}"
-        if value > limit:
-            return f"resource profile {profile_id} {label} {value} B exceeds {limit} B"
-    if profile.scene_errors != 0:
-        return f"resource profile {profile_id} lacks a record of zero scene request errors"
+        if (value > limit) if kind == "max" else (value < limit):
+            relation = "exceeds" if kind == "max" else "is below"
+            return f"resource profile {profile_id} {label} {value} {relation} {limit}"
+    if profile.scene_valid is None or profile.scene_valid < STEP4_MIN_SCENE_STRICT_VALID_SHARE * profile.scene_attempts:
+        return f"resource profile {profile_id} lacks {STEP4_MIN_SCENE_STRICT_VALID_SHARE:.0%} strictly valid scene reports"
+    if profile.kernel_coverage != "observed":
+        return f"resource profile {profile_id} has no observed kernel-log coverage"
+    if profile.identity_status != "verified" or profile.replay_clip_verified is not True:
+        return f"resource profile {profile_id} has no verified identity (files and replay clip)"
+    if (profile.llama_server is None or not profile.llama_server.sha256 or not profile.llama_libraries
+            or any(not lib.sha256 for lib in profile.llama_libraries)
+            or profile.llm.sha256 is None or profile.mmproj.sha256 is None):
+        return f"resource profile {profile_id} lacks its llama.cpp build or model hashes"
+    if not profile.scene_request_sha256 or not re.fullmatch(r"[0-9a-f]{64}", profile.scene_request_sha256):
+        return f"resource profile {profile_id} lacks its scene request fingerprint"
+    if STARTUP_IDENTITY_LIMITATION not in profile.limitations:
+        return f"resource profile {profile_id} does not carry the startup identity limitation"
     return None
 
 

@@ -439,7 +439,7 @@ def test_prompt_cache_summary_counts_updates_and_the_steady_window(profile, tmp_
     else:
         log.write_text("".join(B8932_CACHE_LOG[:9]))
     result = profile.prompt_cache_summary(log, (10.0, 20.0))
-    assert result["startup"] == {"enabled": True, "limit_mib": 8192}
+    assert result["startup"] == {"enabled": True, "limit_mib": 8192, "t_mono": 5.0 if sanitized else None}
     if sanitized:
         assert result["state_updates"] == 4 and result["steady_state_updates"] == 2
         assert (result["steady_first"]["prompts"], result["steady_last"]["prompts"]) == (2, 3)
@@ -493,7 +493,8 @@ def test_scene_only_summary_reports_trend_cache_and_progress(profile, tmp_path: 
     assert trend["used"]["slope_bytes_per_min"] == 60_000_000 and trend["llama_pss"]["slope_bytes_per_min"] == 120_000_000
     assert (trend["used"]["first"], trend["used"]["last"]) == (2_000_000_000, 2_060_000_000)
     assert trend["work_pss"]["n"] == 0 and trend["work_pss"]["slope_bytes_per_min"] is None
-    assert result["prompt_cache"]["startup"] == {"enabled": False, "limit_mib": None}
+    assert {k: v for k, v in result["prompt_cache"]["startup"].items() if k != "t_mono"} == {
+        "enabled": False, "limit_mib": None}
     assert result["scene_progress_last"]["requests"] == 53
     assert result["provenance"]["parameters"]["scene_only"] is True
     assert "scene-only, one distinct synthetic noise image per request" in summary

@@ -182,3 +182,23 @@ under that run's private temporary directory. Record conditions and limitations
 when treating operator output as **USER-SUPPLIED MEASUREMENT**. Bounded Check 9
 success and a short U21 completion do not grant hardware acceptance, approve the
 demo exception, validate scene accuracy or authorize the 30-minute rerun.
+
+## Step-4 combined profile (D47, Claude session 17) — PENDING
+
+Two further opt-in modes of the same entry point, documented with their exact
+operator commands in `docs/IMPLEMENTATION_STATUS.md` (checklist step 4):
+
+- `--step4-identity --step4-clip PATH --step4-clip-sha256 HEX` (read-only):
+  hashes the clip, the llama.cpp build, the models and the engine, with timing.
+  Take it **before** the D37 cache drop; the full result (with the clip's hash)
+  stays in the private `result.json`, and only a summary is printed.
+- `--execute-workload step4 --check9-report <that run's result.json>
+  --identity-report <result.json> --step4-clip PATH --confirm-step4-prerequisites
+  --operator-dropped-caches`: the full 600 s combined profile with
+  `--llama-cache-ram 0` under the **unchanged** guard (4.8 GB sampled pressure,
+  1 GiB MemFree, 2 GiB MemAvailable, swap-counter change, sampling gap) and
+  owned-group cleanup, a 1,200 s deadline, a 60 s post-run wait, bounded
+  kernel-journal queries for the recorded boot and interval, and the
+  `step4-combined-cache-off-v2` evaluation. `--latest-check9-report` is refused.
+  The result can be at most "eligible for maintainer review"; it never accepts a
+  profile (D46).

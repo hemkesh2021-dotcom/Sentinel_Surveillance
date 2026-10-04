@@ -78,6 +78,8 @@ VLM_JPEG_QUALITY = 60
 VLM_MAX_TOKENS = 200
 VLM_MAX_RESPONSE_BYTES = 1_000_000
 VLM_TIMEOUT_S = 30.0
+WINDOW_S = 10  # unique-frame throughput windows (step-4 criterion T1)
+MAX_FRAME_SAMPLES = 20_000  # 600 s at 15 fps is 9,000
 DEMO_SCENE_JOB_TIMEOUT_S = 8.0  # D16; latencies above it are counted, not cut off
 SYNTHETIC_SHAPE = (480, 640, 3)
 SCENE_ONLY_SEED = b"sentinel-s1-scene-only-v1"
@@ -178,6 +180,17 @@ def percentiles(values: list[float]) -> dict[str, float | int | None]:
         return round(ordered[max(1, math.ceil(p * len(ordered))) - 1], 1)
 
     return {"n": len(ordered), "p50": rank(0.50), "p95": rank(0.95), "p99": rank(0.99), "max": round(ordered[-1], 1)}
+
+
+def scene_request_sha256() -> str | None:
+    """Fingerprint of the request this workload sends (prompts, image shape, limits, schema), or None."""
+    try:
+        from sentinel.scene.llama_server import request_fingerprint
+    except ImportError:
+        return None
+    return request_fingerprint(system=SCENE_SYSTEM, prompt=SCENE_PROMPT, image_size=VLM_IMAGE_SIZE,
+                               jpeg_quality=VLM_JPEG_QUALITY, max_tokens=VLM_MAX_TOKENS, temperature=0.05,
+                               model="lfm2-vl")
 
 
 def check_cuda_driver() -> bool:
@@ -313,6 +326,9 @@ class Stats:
 
     def _clear(self) -> None:
         self.det_ms: list[float] = []
+        self.det_done: list[float] = []  # time.monotonic() when each unique frame's result was ready
+        self.det_decode_age_ms: list[float] = []  # decode return -> result (actual ingest-to-result in the replay)
+        self.det_schedule_age_ms: list[float] = []  # scheduled live arrival -> result (includes any backlog)
         self.det_person_frames = 0
         self.det_max_persons = 0
         self.source_frames = 0
@@ -331,9 +347,22 @@ class Stats:
         self.vlm_prompt_tokens: list[int] = []
         self.vlm_completion_tokens: list[int] = []
 
-    def summary(self, seconds: float) -> dict[str, object]:
+    def summary(self, seconds: float, window_start: float | None = None) -> dict[str, object]:
         with self.lock:
             over = sum(1 for ms in self.vlm_ms if ms > DEMO_SCENE_JOB_TIMEOUT_S * 1000)
+            windows = None
+            if window_start is not None:
+                counts = [0] * int(seconds // WINDOW_S)
+                for done in self.det_done:
+                    index = int((done - window_start) // WINDOW_S)
+                    if 0 <= index < len(counts):
+                        counts[index] += 1
+                windows = {"window_s": WINDOW_S, "count": len(counts),
+                           "min_fps": round(min(counts) / WINDOW_S, 2) if counts else None,
+                           "max_fps": round(max(counts) / WINDOW_S, 2) if counts else None}
+            errors = dict(self.vlm_errors)
+            http = sum(n for name, n in errors.items() if name.startswith("HTTP "))
+            timeouts = errors.get("timeout", 0)
 
             def mean(values: list[int]) -> float | None:
                 return round(sum(values) / len(values), 1) if values else None
@@ -344,7 +373,11 @@ class Stats:
                     "source_frames": self.source_frames,
                     "processed_frames": len(self.det_ms),
                     "processed_fps": round(len(self.det_ms) / seconds, 2) if seconds else None,
+                    "unique_fps": round(len(self.det_ms) / seconds, 2) if seconds else None,  # each frame once
+                    "windows": windows,
                     "latency_ms": percentiles(self.det_ms),
+                    "schedule_age_ms": percentiles(self.det_schedule_age_ms),
+                    "decode_to_result_age_ms": percentiles(self.det_decode_age_ms),
                     "frames_with_person": self.det_person_frames,
                     "max_persons": self.det_max_persons,
                 },
@@ -356,10 +389,14 @@ class Stats:
                     "errors": dict(self.face_errors),
                 },
                 "scene": {
+                    "attempts": len(self.vlm_ms) + sum(errors.values()),
+                    "client_timeouts": timeouts,
+                    "http_errors": http,
+                    "transport_errors": sum(errors.values()) - http - timeouts,
                     "completed": len(self.vlm_ms),
                     "latency_ms": percentiles(self.vlm_ms),
                     "over_d16_timeout": over,
-                    "errors": dict(self.vlm_errors),
+                    "errors": errors,
                     "valid_reports": self.vlm_valid,
                     "invalid_reports": self.vlm_invalid,
                     "unchecked_reports": self.vlm_unchecked,
@@ -574,6 +611,7 @@ def run_workload(model, deepface, args, stats: Stats, allocator: AllocatorSample
             phase_end = now + args.steady_s
             allocator.phase = progress.phase = "steady"
             event("phase", name="steady")
+            event("steady_boundary", edge="start", boundary_t_mono=round(now, 3))
         due = int((now - started) / period) + 1  # frames a live source has delivered by now
         if due <= shown:
             time.sleep(max(0.0, started + shown * period - time.monotonic()))
@@ -584,20 +622,32 @@ def run_workload(model, deepface, args, stats: Stats, allocator: AllocatorSample
             shown += 1
             with stats.lock:
                 stats.source_frames += 1
+        decoded_at = time.monotonic()
+        scheduled_at = started + (shown - 1) * period  # when a live camera would have delivered this frame
         latest.put(frame)
         t0 = time.perf_counter()
         results = model.track(frame, **TRACK_ARGS)
         elapsed = (time.perf_counter() - t0) * 1000
+        done = time.monotonic()
         persons = len(results[0].boxes) if results and results[0].boxes is not None else 0
         with stats.lock:
             stats.det_ms.append(elapsed)
+            if len(stats.det_done) < MAX_FRAME_SAMPLES:
+                stats.det_done.append(done)
+                stats.det_decode_age_ms.append((done - decoded_at) * 1000)
+                stats.det_schedule_age_ms.append((done - scheduled_at) * 1000)
             stats.det_person_frames += 1 if persons else 0
             stats.det_max_persons = max(stats.det_max_persons, persons)
-    steady_seconds = time.monotonic() - steady_started  # before waiting for the worker threads
+    steady_ended = time.monotonic()
+    # The steady interval ends here, before any worker is joined: nothing finished during teardown counts.
+    event("steady_boundary", edge="end", boundary_t_mono=round(steady_ended, 3))
+    allocator.phase = progress.phase = "stopping"
+    event("phase", name="stopping")
+    summary = stats.summary(steady_ended - steady_started, window_start=steady_started)
+    summary["request_sha256"] = scene_request_sha256()
     stop.set()
     for worker in workers:
         worker.join(timeout=VLM_TIMEOUT_S + 5)
-    summary = stats.summary(steady_seconds)
     summary["input"] = "replay clip" if args.clip else "synthetic noise"
     summary["clip_loops"] = frames.loops
     event("workload_stats", **summary)

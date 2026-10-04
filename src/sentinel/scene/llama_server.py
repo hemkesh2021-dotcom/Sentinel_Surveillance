@@ -29,6 +29,7 @@ Device adapter: OpenCV is imported only by the default JPEG encoder.
 from __future__ import annotations
 
 import base64
+import hashlib
 import http.client
 import json
 import socket
@@ -64,6 +65,23 @@ SCENE_PROMPT = (
     '"summary" (one short complete sentence, aim under 100 characters). '
     "Finish descriptions well before the schema limits; do not fill the available space."
 )
+
+
+def request_fingerprint(
+    *, system: str, prompt: str, image_size: tuple[int, int], jpeg_quality: int, max_tokens: int,
+    temperature: float, model: str,
+) -> str:
+    """SHA-256 of everything that shapes a scene request except the image (D47).
+
+    The step-4 workload records it for what it sent; an accepted profile keeps it, and
+    ``sentinel run --scene`` refuses a profile whose fingerprint differs from SCENE_REQUEST_SHA256.
+    """
+    canonical = {
+        "system": system, "prompt": prompt, "image_size": list(image_size), "jpeg_quality": jpeg_quality,
+        "max_tokens": max_tokens, "temperature": temperature, "model": model, "stream": False,
+        "response_format": scene_response_format(),
+    }
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def llama_server_command(binary: Path, model: Path, mmproj: Path, port: int) -> list[str]:
@@ -104,6 +122,12 @@ def scene_request_body(jpeg: bytes) -> bytes:
         ],
     }
     return json.dumps(body).encode("utf-8")
+
+
+SCENE_REQUEST_SHA256 = request_fingerprint(
+    system=SCENE_SYSTEM, prompt=SCENE_PROMPT, image_size=IMAGE_SIZE, jpeg_quality=JPEG_QUALITY,
+    max_tokens=MAX_TOKENS, temperature=TEMPERATURE, model=MODEL_NAME,
+)
 
 
 def opencv_jpeg(image: Any) -> bytes:
