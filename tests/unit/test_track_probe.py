@@ -171,3 +171,94 @@ def test_tracking_failures_make_the_probe_exit_non_zero(capsys: pytest.CaptureFi
     summary = json.loads(capsys.readouterr().out)
     assert code == 1 and summary["tracking"]["failed"] > 0
     assert summary["tracking"]["failures"] == {"backend_error": summary["tracking"]["failed"]}
+
+
+class ScriptedBackend:
+    """Returns the scripted tracks per call; an exception in the script is raised instead."""
+
+    def __init__(self, script: list[object]) -> None:
+        self.script = list(script)
+
+    def load(self) -> None:
+        pass
+
+    def track(self, image: object) -> Sequence[RawTrack]:
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item  # type: ignore[return-value]
+
+    def reset(self) -> None:
+        pass
+
+
+def timeline_frames(backend: ScriptedBackend, count: int, step_s: float = 0.25) -> tuple[TrackProbe, list]:
+    clock = FakeClock()  # wall clock starts at 2026-01-01T00:00:00Z
+    stamper = FrameStamper("cam-1", clock)
+    stamper.connect()
+    probe = TrackProbe(PersonTracker(backend), clock)
+    frames = []
+    for _ in range(count):
+        clock.advance(step_s)
+        frames.append(stamper.stamp(native_width=640, native_height=480, pixel_format=PixelFormat.BGR))
+    for frame in frames:
+        probe.observe(CapturedFrame(frame, object()))
+    return probe, frames
+
+
+def test_the_timeline_splits_counts_by_utc_second_of_ingest() -> None:
+    a, b = RawTrack(7, 64, 48, 320, 480, 0.8), RawTrack(9, 400, 48, 600, 480, 0.7)
+    # Ingest at 0.25-0.75 s: nobody; 1.0-1.75 s: one person, a second one in one frame; 2.0-2.5 s: a failure.
+    script: list[object] = [[], [], [], [a], [a, b], [a], [a], [], RuntimeError("private detail"), []]
+    probe, frames = timeline_frames(ScriptedBackend(script), 10)
+    probe.observe(CapturedFrame(frames[4], object()))  # a repeat is skipped and counted nowhere
+    summary = probe.summary()
+    seconds = summary["timeline"]["seconds"]
+    assert [entry["utc"] for entry in seconds] == ["2026-01-01T00:00:00Z", "2026-01-01T00:00:01Z", "2026-01-01T00:00:02Z"]
+    empty, person, failing = seconds
+    assert (empty["processed"], empty["frames_with_persons"], empty["max_persons"], empty["track_ids"]) == (3, 0, 0, [])
+    assert (person["processed"], person["frames_with_persons"], person["max_persons"]) == (4, 4, 2)
+    assert person["max_confirmed"] == 1  # the first person is confirmed from its second detection; the other never
+    assert len(person["track_ids"]) == 2 and {epoch for epoch, _ in person["track_ids"]} == {frames[0].stream_epoch}
+    assert (failing["processed"], failing["failed"], failing["frames_with_persons"]) == (2, 1, 0)
+    assert summary["timeline"]["dropped_frames"] == 0
+    # The timeline adds up to the run's totals.
+    assert sum(entry["processed"] for entry in seconds) == summary["tracking"]["processed"] == 9
+    assert sum(entry["failed"] for entry in seconds) == summary["tracking"]["failed"] == 1
+    assert sum(entry["frames_with_persons"] for entry in seconds) == summary["persons"]["frames_with_persons"]
+    assert "private" not in json.dumps(summary)
+
+
+def test_the_timeline_is_bounded_and_counts_what_it_drops(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sentinel.tracking.probe.MAX_TIMELINE_SECONDS", 2)
+    probe, _ = timeline_frames(ScriptedBackend([[]] * 10), 10, step_s=0.5)  # ingest spans seconds 0-5
+    timeline = probe.summary()["timeline"]
+    assert len(timeline["seconds"]) == 2 and timeline["dropped_frames"] == 10 - sum(
+        entry["processed"] for entry in timeline["seconds"])
+    assert probe.summary()["tracking"]["processed"] == 10  # the totals still count every frame
+
+
+def test_cli_track_probe_timeline_matches_its_totals(capsys: pytest.CaptureFixture[str]) -> None:
+    code, _ = run_cli(FakeBackend())
+    summary = json.loads(capsys.readouterr().out)
+    seconds = summary["timeline"]["seconds"]
+    assert code == 0 and 1 <= len(seconds) <= 3
+    assert sum(entry["processed"] for entry in seconds) == summary["tracking"]["processed"]
+    assert sum(entry["frames_with_persons"] for entry in seconds) == summary["persons"]["frames_with_persons"]
+    assert all(entry["utc"].endswith("Z") for entry in seconds)
+
+
+def test_an_older_skipped_frame_adds_no_second_to_the_timeline() -> None:
+    clock = FakeClock()
+    stamper = FrameStamper("cam-1", clock)
+    stamper.connect()
+    probe = TrackProbe(PersonTracker(ScriptedBackend([[]])), clock)
+    clock.advance(0.5)
+    older = stamper.stamp(native_width=640, native_height=480, pixel_format=PixelFormat.BGR)
+    clock.advance(1.0)
+    newer = stamper.stamp(native_width=640, native_height=480, pixel_format=PixelFormat.BGR)
+    probe.observe(CapturedFrame(newer, object()))
+    probe.observe(CapturedFrame(older, object()))  # not newer than a processed frame: skipped
+    summary = probe.summary()
+    assert summary["tracking"]["skipped"] == 1
+    assert [entry["utc"] for entry in summary["timeline"]["seconds"]] == ["2026-01-01T00:00:01Z"]
