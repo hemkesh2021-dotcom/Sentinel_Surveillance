@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import ctypes
 import json
+import os
 import signal
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from . import __version__
 from .adapters import resolve
@@ -77,6 +80,56 @@ def _positive_seconds(text: str) -> float:
     if not 1.0 <= value <= 3600.0:
         raise argparse.ArgumentTypeError("must be between 1 and 3600")
     return value
+
+
+def _flush_streams(*streams: TextIO) -> None:
+    """Flush Python's streams and libc's stdio buffers; a failing flush never stops the caller's restore."""
+    for stream in (*streams, sys.stdout, sys.stderr):
+        with contextlib.suppress(AttributeError, OSError, ValueError):
+            stream.flush()
+    with contextlib.suppress(AttributeError, OSError):
+        ctypes.CDLL(None).fflush(None)  # native writers such as TensorRT's logger buffer in libc
+
+
+@contextlib.contextmanager
+def _json_stdout() -> Iterator[TextIO]:
+    """Keep stdout for this command's JSON; whatever else is written to it goes to stderr meanwhile.
+
+    Loading the legacy model writes diagnostics to stdout: Ultralytics' logger (a
+    handler bound to sys.stdout at import) and TensorRT's logger, possibly from
+    native code. That made the track probe's stdout invalid JSON on the device
+    (checklist step 3, session 21). While the command runs, descriptor 1 points
+    at stderr for the whole process (every thread, library, handler and child
+    that inherits it), and the command writes its JSON to a private duplicate of
+    the original stdout. Buffers are flushed before the switch and before the
+    restore; the restore and descriptor cleanup run in finally blocks, so an
+    exception or Ctrl-C leaves stdout as it was. Logging handlers are not touched.
+    Without real descriptors 1 and 2 behind sys.stdout and sys.stderr (in-process
+    tests), nothing is redirected.
+    """
+    try:
+        redirect = sys.stdout.fileno() == 1 and sys.stderr.fileno() == 2
+    except (AttributeError, OSError, ValueError):
+        redirect = False
+    if not redirect:
+        yield sys.stdout
+        return
+    _flush_streams()
+    saved = os.dup(1)
+    try:
+        out = open(saved, "w", encoding="utf-8", closefd=False)
+        try:
+            os.dup2(2, 1)
+            try:
+                yield out
+            finally:
+                _flush_streams(out)
+                os.dup2(saved, 1)
+        finally:
+            with contextlib.suppress(OSError, ValueError):
+                out.close()
+    finally:
+        os.close(saved)
 
 
 def main(
@@ -158,9 +211,11 @@ def main(
     if args.command == "capture":
         return _capture_probe(config, args.seconds, capture_source)
     if args.command == "track":
-        return _track_probe(
-            config, args.seconds, args.engine, round(args.min_free_gb * GB), capture_source, tracker_backend, meminfo
-        )
+        with _json_stdout() as out:
+            return _track_probe(
+                config, args.seconds, args.engine, round(args.min_free_gb * GB), capture_source, tracker_backend,
+                meminfo, out,
+            )
     if args.command == "run":
         devices = devices or Devices(
             capture_source=capture_source,
@@ -169,7 +224,8 @@ def main(
             scene_request=_scene_request,
             meminfo=meminfo,
         )
-        return _run(config, args, devices)
+        with _json_stdout() as out:
+            return _run(config, args, devices, out)
     print(
         f"{args.path}: valid Sentinel configuration "
         f"(version {config.config_version}, camera {config.camera.id})"
@@ -224,6 +280,7 @@ def _track_probe(
     capture_source: Callable[[CaptureConfig], VideoSource],
     tracker_backend: Callable[[Path], Any],
     meminfo: Callable[[], dict[str, int] | None],
+    out: TextIO,
 ) -> int:
     capture = config.capture
     try:
@@ -236,7 +293,7 @@ def _track_probe(
     if before is not None and before["MemFree"] < min_free_bytes:
         refusal = {"probe": "track", "status": "refused", "reason": "memfree_below_minimum",
                    "memory_before": before, "min_free_bytes": min_free_bytes}
-        print(json.dumps(refusal, indent=2))
+        print(json.dumps(refusal, indent=2), file=out, flush=True)
         return 1
     backend = tracker_backend(engine)
     started = time.monotonic()
@@ -263,12 +320,12 @@ def _track_probe(
     summary["load"] = {"seconds": round(load_s, 2), "memory_before": before, "memory_after": after,
                        "min_free_bytes": min_free_bytes}
     summary["settings"] = capture.model_dump()
-    print(json.dumps(summary, indent=2))
+    print(json.dumps(summary, indent=2), file=out, flush=True)
     tracking = summary["tracking"]
     return 0 if tracking["processed"] and not tracking["failed"] and summary["worker"]["stopped"] else 1
 
 
-def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices) -> int:
+def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out: TextIO) -> int:
     scene = None
     if args.scene:
         scene = SceneOptions(
@@ -313,7 +370,7 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices) -> 
     runtime = assembly.runtime
     holder["runtime"] = runtime
     startup = {**assembly.startup, "status_page": None if page is None else "http://%s:%d/" % page.address}
-    print(json.dumps({"run": "starting", "startup": startup}), flush=True)
+    print(json.dumps({"run": "starting", "startup": startup}), file=out, flush=True)
     handlers = {sig: signal.signal(sig, lambda *_: runtime.request_stop()) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
         runtime.start()
@@ -321,7 +378,7 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices) -> 
         while not runtime.stop_requested:
             runtime.step()
             if time.monotonic() >= next_line:
-                print(json.dumps(status_line(runtime.snapshot())), flush=True)
+                print(json.dumps(status_line(runtime.snapshot())), file=out, flush=True)
                 next_line = time.monotonic() + args.status_interval_s
     finally:
         shutdown = runtime.shutdown()
@@ -332,7 +389,7 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices) -> 
         for sig, handler in handlers.items():
             signal.signal(sig, handler)
     print(json.dumps({"run": "stopped", "shutdown": shutdown, "database_closed": closed,
-                      "status": status_line(runtime.snapshot())}), flush=True)
+                      "status": status_line(runtime.snapshot())}), file=out, flush=True)
     return 0 if shutdown["all_stopped"] and closed else 2
 
 
