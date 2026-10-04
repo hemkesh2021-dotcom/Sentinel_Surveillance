@@ -9,6 +9,7 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
@@ -27,6 +28,7 @@ from .tracking.tracker import PersonTracker, TrackerError
 
 PROBE_MAX_S = 300.0
 GB = 1_000_000_000
+PREVIEW_STOP_TIMEOUT_S = 3.0
 HOME = Path.home()
 
 
@@ -139,6 +141,8 @@ def main(
     tracker_backend: Callable[[Path], Any] = _legacy_tracker,
     meminfo: Callable[[], dict[str, int] | None] = read_meminfo,
     devices: Devices | None = None,
+    preview_port: int | None = None,
+    preview_render: Callable[[Any], bytes] | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="sentinel")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -168,6 +172,16 @@ def main(
     track_probe.add_argument(
         "--min-free-gb", type=_min_free_gb, default=1.5,
         help="refuse to load the model below this MemFree (decimal GB; default 1.5; see U18)",
+    )
+    track_probe.add_argument(
+        "--preview", action="store_true",
+        help="operator-only live preview on 127.0.0.1:18091 (P1): the counted boxes on their frames with track ID, "
+        "confidence and C/T, at most 5 frames/s; path token from SENTINEL_PREVIEW_TOKEN; saves nothing. "
+        "Reach it over SSH: ssh -L 18091:127.0.0.1:18091 <device>",
+    )
+    track_probe.add_argument(
+        "--box-summary", action="store_true",
+        help="add track_boxes to the JSON: numbers-only box statistics per track, at most 64 tracks",
     )
     run = commands.add_parser(
         "run",
@@ -214,7 +228,8 @@ def main(
         with _json_stdout() as out:
             return _track_probe(
                 config, args.seconds, args.engine, round(args.min_free_gb * GB), capture_source, tracker_backend,
-                meminfo, out,
+                meminfo, out, preview=args.preview, box_summary=args.box_summary, preview_port=preview_port,
+                preview_render=preview_render,
             )
     if args.command == "run":
         devices = devices or Devices(
@@ -281,6 +296,11 @@ def _track_probe(
     tracker_backend: Callable[[Path], Any],
     meminfo: Callable[[], dict[str, int] | None],
     out: TextIO,
+    *,
+    preview: bool = False,
+    box_summary: bool = False,
+    preview_port: int | None = None,
+    preview_render: Callable[[Any], bytes] | None = None,
 ) -> int:
     capture = config.capture
     try:
@@ -288,6 +308,14 @@ def _track_probe(
     except SourceError as exc:
         print(f"track probe: {exc.reason}", file=sys.stderr)
         return 1
+    token = None
+    if preview:
+        from .tracking.preview import TOKEN_ENV, valid_token
+
+        token = os.environ.get(TOKEN_ENV)
+        if not valid_token(token):  # never printed: it is the preview's access secret
+            print(f"track probe: preview_token_{'invalid' if token else 'missing'}", file=sys.stderr)
+            return 1
     # GPU allocations failed beyond MemFree on this device (U18); a provisional probe guard, not a policy.
     before = meminfo()
     if before is not None and before["MemFree"] < min_free_bytes:
@@ -295,32 +323,78 @@ def _track_probe(
                    "memory_before": before, "min_free_bytes": min_free_bytes}
         print(json.dumps(refusal, indent=2), file=out, flush=True)
         return 1
-    backend = tracker_backend(engine)
-    started = time.monotonic()
+    observers: list[Callable[[Any, Any], None]] = []
+    boxes = None
+    if box_summary:
+        from .tracking.box_summary import BoxSummary
+
+        boxes = BoxSummary()
+        observers.append(boxes.observe)
+    server = None
+    stop: threading.Event | None = None
+    handlers: dict[int, Any] = {}
+    summary: dict[str, Any] | None = None
     try:
-        backend.load()
-    except TrackerError as exc:
-        detail = f" ({exc.error_type})" if exc.error_type else ""
-        print(f"track probe: {exc.label}{detail}", file=sys.stderr)
-        return 1
-    load_s = time.monotonic() - started
-    after = meminfo()
-    clock = SystemClock()
-    slot = LatestFrame()
-    worker = CaptureWorker(source, FrameStamper(config.camera.id, clock), slot, capture)
-    summary = run_probe(
-        worker,
-        slot,
-        clock,
-        seconds,
-        endpoint=getattr(source, "endpoint", None),
-        stop_timeout_s=capture.open_timeout_s + capture.read_timeout_s + 1.0,
-        consumer=TrackProbe(PersonTracker(backend), clock),
-    )
+        if preview:
+            # Bound before the model loads, so a busy port refuses fast; it stops in the finally below on any exit.
+            from .tracking.preview import PREVIEW_PORT, PreviewFeed, PreviewServer, render_jpeg
+
+            feed = PreviewFeed()
+            try:
+                server = PreviewServer(PREVIEW_PORT if preview_port is None else preview_port, feed, token or "",
+                                       render=preview_render or render_jpeg)
+            except OSError as exc:
+                print(f"track probe: preview_port_unavailable:{type(exc).__name__}", file=sys.stderr)
+                return 1
+            observers.append(feed.observe)
+            stop = threading.Event()
+            handlers = {sig: signal.signal(sig, lambda *_: stop.set()) for sig in (signal.SIGINT, signal.SIGTERM)}
+            server.start()
+        backend = tracker_backend(engine)
+        started = time.monotonic()
+        try:
+            backend.load()
+        except TrackerError as exc:
+            detail = f" ({exc.error_type})" if exc.error_type else ""
+            print(f"track probe: {exc.label}{detail}", file=sys.stderr)
+            return 1
+        load_s = time.monotonic() - started
+        after = meminfo()
+        if stop is None or not stop.is_set():
+            clock = SystemClock()
+            slot = LatestFrame()
+            worker = CaptureWorker(source, FrameStamper(config.camera.id, clock), slot, capture)
+            summary = run_probe(
+                worker,
+                slot,
+                clock,
+                seconds,
+                endpoint=getattr(source, "endpoint", None),
+                stop_timeout_s=capture.open_timeout_s + capture.read_timeout_s + 1.0,
+                consumer=TrackProbe(PersonTracker(backend), clock, observers),
+                stop=stop,
+            )
+    finally:
+        if server is not None:
+            server.stop(PREVIEW_STOP_TIMEOUT_S)
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+    interrupted = stop is not None and stop.is_set()
+    if summary is None:  # a signal arrived during the model load: the camera was never opened
+        stopped = {"probe": "track", "status": "interrupted", "reason": "signal_before_capture",
+                   "preview": None if server is None else {**server.summary(), "ended_by": "signal"}}
+        print(json.dumps(stopped, indent=2), file=out, flush=True)
+        return 130
     summary["load"] = {"seconds": round(load_s, 2), "memory_before": before, "memory_after": after,
                        "min_free_bytes": min_free_bytes}
     summary["settings"] = capture.model_dump()
+    if boxes is not None:
+        summary.update(boxes.summary())
+    if server is not None:
+        summary["preview"] = {**server.summary(), "ended_by": "signal" if interrupted else "duration"}
     print(json.dumps(summary, indent=2), file=out, flush=True)
+    if interrupted:
+        return 130
     tracking = summary["tracking"]
     return 0 if tracking["processed"] and not tracking["failed"] and summary["worker"]["stopped"] else 1
 

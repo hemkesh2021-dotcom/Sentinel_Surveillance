@@ -102,6 +102,31 @@ def test_an_exception_or_interrupt_restores_stdout_and_closes_the_duplicate(
     assert_restored(checks)
 
 
+def test_the_preview_keeps_stdout_one_json_document_and_never_prints_its_token(tmp_path: Path) -> None:
+    done, payload, checks = run_child("track_preview", tmp_path)
+    assert done.returncode == 0, done.stderr
+    summary = json.loads(payload)
+    preview, viewer = summary["preview"], checks["preview"]
+    assert viewer["status"] == "200" and len(viewer["parts"]) == 2
+    assert all(part.startswith("frame-") for part in viewer["parts"])
+    assert preview["frames_sent"] >= 2 and preview["closed"] and preview["ended_by"] == "duration"
+    assert summary["track_boxes"]["tracks"] and viewer["port_closed_after"]
+    assert viewer["token"] not in done.stdout and viewer["token"] not in done.stderr
+    assert_library_output_on_stderr(done, "load", "track")
+    assert_restored(checks) and checks["raised"] is None
+
+
+def test_ctrl_c_ends_a_preview_run_early_with_its_json_summary_and_the_port_closed(tmp_path: Path) -> None:
+    done, payload, checks = run_child("track_previewsigint", tmp_path)
+    assert done.returncode == 130, done.stderr
+    summary = json.loads(payload)
+    assert summary["preview"]["ended_by"] == "signal" and summary["preview"]["closed"]
+    assert summary["seconds"] < 10 and summary["worker"]["stopped"] and summary["tracking"]["processed"] > 0
+    assert checks["preview"]["port_closed_after"] and checks["raised"] is None
+    assert checks["preview"]["token"] not in done.stdout + done.stderr
+    assert_restored(checks)
+
+
 def test_without_a_real_stdout_descriptor_nothing_is_redirected(capsys: pytest.CaptureFixture[str]) -> None:
     before = os.fstat(1)
     with _json_stdout() as out:

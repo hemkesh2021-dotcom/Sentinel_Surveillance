@@ -6,6 +6,9 @@ the command (as Ultralytics binds its handler at import), os.write on descriptor
 and libc's buffered stdio (as a native logger may). Before and after the command
 the child writes its own markers to stdout. It saves descriptor checks to
 WORK_DIR/checks.json and exits with main()'s code, or 3 if main() raised.
+
+The track_preview scenarios (P1) also run a viewer thread against the preview
+and record what it received, the token and whether the port was closed after.
 """
 
 from __future__ import annotations
@@ -15,7 +18,9 @@ import json
 import logging
 import os
 import signal
+import socket
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +38,8 @@ LIBRARY.propagate = False
 IMAGE = SimpleNamespace(shape=(480, 640, 3))
 PLENTY = {"MemFree": 4_000_000_000, "MemAvailable": 5_000_000_000}
 LOW = {"MemFree": 1_000_000_000, "MemAvailable": 2_000_000_000}
+TOKEN = "Child_token-0123456789abcdef"  # synthetic
+PREVIEW: dict[str, object] = {}
 
 
 def noise(tag: str) -> None:
@@ -45,8 +52,9 @@ def noise(tag: str) -> None:
 class Source:
     endpoint = None
 
-    def __init__(self, stop_after: int = 0) -> None:
+    def __init__(self, stop_after: int = 0, sig: signal.Signals = signal.SIGTERM) -> None:
         self.stop_after = stop_after
+        self.sig = sig
         self.reads = 0
 
     def open(self) -> None:
@@ -56,7 +64,7 @@ class Source:
         self.reads += 1
         time.sleep(0.01)
         if self.reads == self.stop_after:
-            os.kill(os.getpid(), signal.SIGTERM)
+            os.kill(os.getpid(), self.sig)
         return DecodedFrame(IMAGE, 640, 480, PixelFormat.BGR, self.reads * 66_667)
 
     def close(self) -> None:
@@ -91,6 +99,8 @@ def command(scenario: str, work: Path) -> int:
     }
     kind, _, variant = scenario.partition("_")
     backend = Backend(failures.get(variant))
+    if variant in ("preview", "previewsigint"):
+        return preview_command(work, backend, interrupt=variant == "previewsigint")
     if kind == "track":
         return main(
             ["track", "probe", str(work / "config.yaml"), "--engine", str(work / "x.engine"), "--seconds", "1"],
@@ -113,6 +123,58 @@ def command(scenario: str, work: Path) -> int:
     )
 
 
+def viewer(port: int) -> None:
+    """Read the page and two stream parts, as a browser would; record what came back."""
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and "parts" not in PREVIEW:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+                sock.sendall(f"GET /{TOKEN}/stream.mjpg HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode())
+                with sock.makefile("rb") as stream:
+                    PREVIEW["status"] = stream.readline().split()[1].decode()
+                    while stream.readline() not in (b"\r\n", b""):
+                        pass
+                    parts = []
+                    while len(parts) < 2 and stream.readline() == b"--frame\r\n":
+                        length = 0
+                        while (line := stream.readline()) not in (b"\r\n", b""):
+                            if line.lower().startswith(b"content-length:"):
+                                length = int(line.split(b":")[1])
+                        parts.append(stream.read(length).decode())
+                        stream.read(2)
+                    PREVIEW["parts"] = parts
+        except OSError:
+            time.sleep(0.05)
+
+
+def preview_command(work: Path, backend: Backend, *, interrupt: bool) -> int:
+    os.environ["SENTINEL_PREVIEW_TOKEN"] = TOKEN
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    PREVIEW["token"] = TOKEN
+    thread = threading.Thread(target=viewer, args=(port,), daemon=True)
+    thread.start()
+    source = Source(stop_after=40, sig=signal.SIGINT) if interrupt else Source()
+    try:
+        return main(
+            ["track", "probe", str(work / "config.yaml"), "--engine", str(work / "x.engine"),
+             "--seconds", "30" if interrupt else "2", "--preview", "--box-summary"],
+            capture_source=lambda config: source,
+            tracker_backend=lambda engine: backend,
+            meminfo=lambda: PLENTY,
+            preview_port=port,
+            preview_render=lambda update: f"frame-{update.frame_seq}".encode(),
+        )
+    finally:
+        thread.join(5)
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=1).close()
+            PREVIEW["port_closed_after"] = False
+        except ConnectionRefusedError:
+            PREVIEW["port_closed_after"] = True
+
+
 def descriptors() -> dict[str, object]:
     def identity(fd: int) -> list[int]:
         st = os.fstat(fd)
@@ -132,7 +194,8 @@ def child(scenario: str, work: Path) -> int:
     except BaseException as exc:  # noqa: BLE001 - the test checks what happens to stdout on any exit
         code, raised = 3, type(exc).__name__
     after = descriptors()
-    (work / "checks.json").write_text(json.dumps({"before": before, "after": after, "raised": raised}))
+    (work / "checks.json").write_text(json.dumps({"before": before, "after": after, "raised": raised,
+                                                  "preview": PREVIEW}))
     print("AFTER-print")
     os.write(1, b"AFTER-oswrite\n")
     LIBC.puts(b"AFTER-native")

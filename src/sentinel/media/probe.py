@@ -18,6 +18,7 @@ from __future__ import annotations
 import ipaddress
 import math
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Protocol
@@ -170,8 +171,9 @@ def run_probe(
     stop_timeout_s: float = 20.0,
     proc_net: Path = Path("/proc/net"),
     consumer: FrameConsumer | None = None,
+    stop: threading.Event | None = None,
 ) -> dict[str, Any]:
-    """Run ``worker`` for ``seconds`` and summarize; always stops the worker.
+    """Run ``worker`` for ``seconds`` (or until ``stop`` is set) and summarize; always stops the worker.
 
     Without ``consumer`` the probe takes frames as fast as they come. A consumer
     runs on each taken frame in this thread, so a slow one makes the slot replace
@@ -186,7 +188,7 @@ def run_probe(
     cpu_start = time.process_time()
     worker.start()
     try:
-        while clock.mono().ns_since(start) < duration_ns:
+        while clock.mono().ns_since(start) < duration_ns and not (stop is not None and stop.is_set()):
             captured = slot.take(timeout_s=0.25)
             now = clock.mono()
             if captured is not None:

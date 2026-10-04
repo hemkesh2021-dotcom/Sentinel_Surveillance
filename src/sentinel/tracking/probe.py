@@ -11,11 +11,17 @@ The timeline splits the same counts by UTC second of frame ingest, so a timed
 operator check can compare periods (for example nobody in view, then one
 person, then nobody again) against its own prompt times. It is bounded and
 holds numbers only.
+
+Observers (P1, session 26) receive each processed or failed frame with its
+result after it has been counted, on the probe thread: the operator preview
+(tracking.preview) and the opt-in box statistics (tracking.box_summary). They
+see exactly what was counted and cannot change the counts.
 """
 
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -24,7 +30,7 @@ from ..contracts import TrackStatus
 from ..media.capture import CapturedFrame
 from ..media.clock import Clock
 from ..media.probe import MAX_SAMPLES, percentiles_ms
-from .tracker import FrameOutcome, PersonTracker
+from .tracker import FrameOutcome, PersonTracker, TrackingResult
 
 MAX_TRACK_IDS = 10_000
 MAX_TIMELINE_SECONDS = 320  # the longest probe (300 s) plus slack; later seconds are counted as dropped
@@ -32,6 +38,7 @@ LIMITATIONS = (
     "legacy parity adapter (Ultralytics track, ByteTrack, v1 arguments) on software-decoded "
     "frames; ingest-based timing; counts, not accuracy; not hardware acceptance"
 )
+ResultObserver = Callable[[CapturedFrame, TrackingResult], None]
 
 
 def read_meminfo(path: Path = Path("/proc/meminfo")) -> dict[str, int] | None:
@@ -51,9 +58,10 @@ def read_meminfo(path: Path = Path("/proc/meminfo")) -> dict[str, int] | None:
 class TrackProbe:
     """A FrameConsumer for run_probe that tracks every frame it is given."""
 
-    def __init__(self, tracker: PersonTracker, clock: Clock) -> None:
+    def __init__(self, tracker: PersonTracker, clock: Clock, observers: Sequence[ResultObserver] = ()) -> None:
         self._tracker = tracker
         self._clock = clock
+        self._observers = tuple(observers)
         self._outcomes = {outcome.value: 0 for outcome in FrameOutcome}
         self._failures: Counter[str] = Counter()
         self._error_types: Counter[str] = Counter()
@@ -69,8 +77,14 @@ class TrackProbe:
         self._timeline_dropped = 0
 
     def observe(self, captured: CapturedFrame) -> None:
+        result = self._tracker.process(captured.frame, captured.image)
+        self._count(captured, result)
+        if result.outcome is not FrameOutcome.SKIPPED:
+            for observer in self._observers:
+                observer(captured, result)
+
+    def _count(self, captured: CapturedFrame, result: TrackingResult) -> None:
         frame = captured.frame
-        result = self._tracker.process(frame, captured.image)
         done = self._clock.mono().ns
         self._outcomes[result.outcome.value] += 1
         if result.backend_ns is not None and len(self._backend_ns) < MAX_SAMPLES:
