@@ -1,21 +1,29 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-05, session 31 (Claude). **The timer-based empty-scene run (`3e-timer-mxlIc1hs`) is recorded** (USER-SUPPLIED; docs only; no run).
-- **Zero person detections:** no person in any of the 2,634 processed frames (179 s, from launch + 7.3 s to the end), no track, upstream max 1. It is the maintainer's own design: a 60 s departure delay, a 180 s probe with `--box-summary`, no preview, and a six-minute phone timer.
-- **Execution: met on the saved evidence**, except the exact userinfo count, which was not supplied:
-  - saved: `exit_b=0`, 0 skipped or failed, timeline dropped 0, and after-run probe and listener counts of 0;
-  - retrospective: Claude's parse of `b.json` is valid.
-- **3E's empty-scene window is not established:**
-  - the scene preconditions were not declared (`scene_changes_since_3v=unknown`);
-  - no `observations.txt` was returned; the maintainer's account was given after the run;
-  - 3E-1's fields were not recorded as specified, and its `src_config_same_as_3t=yes` can no longer hold after D49. Detector, tracker, capture and configuration code are unchanged.
+Last updated 2026-10-05, session 32 (Claude). **Timer-based empty-scene check 3ET prepared** (D51; docs only; no run; PENDING, maintainer-run).
+- **D51:** the maintainer had authorized the timer setup, because watching the Mac from outside the camera's view is impossible. This supersedes the session 28 restriction on unattended empty-room checks, and session 30's physical-setup question is withdrawn.
+- **`3e-timer-mxlIc1hs` stays a successful diagnostic with zero detections.** Its confirmation that everyone stayed out is recorded as retrospective, and scene changes stay unknown.
+- **Its gaps, classified:**
+  - documentation gaps, now closed from git or the saved files: the stdout line, the summary fields and the provenance comparisons;
+  - one missing check that needs no hardware: the userinfo count on the unchanged files (optional block);
+  - one unrecoverable missing measurement: the v1 and other-client process counts;
+  - **one experimental gap, the only reason a new run is needed:** the account was not recorded before the counts were seen.
+- **Stale comparison corrected:** the whole-tree `src_config_same_as_3t` is replaced by two fields. One compares `src`+`config` with 3T outside D49's five files; the other compares those five files with the reviewed `92bce43`. Both are yes at `78d3581`.
+- **3ET:**
+  - a 60 s departure delay, a six-minute absence and a 240 s-bounded 180 s probe with `--box-summary`;
+  - a before-launch box and nothing under a deadline;
+  - honest current-condition declarations, with no historical equivalence claimed;
+  - full provenance and secret checks;
+  - the account written and hashed before any count is shown;
+  - 27 predeclared gates;
+  - explicit limitations: a clean result explains no historical U23 report and establishes no general accuracy.
 
-  Claude's retrospective window computation (launch + 60 s on, 1,847 frames) finds 0 persons.
-- **Conditional on the maintainer's report** that everyone stayed out of view from within the first 60 s until the timer rang: a second non-reproduction under undeclared conditions, after the session 27 retry. It does not explain U23's earlier reports, and it does not show that the scene matched earlier runs. It has no positive control of its own. 3V stays a separate person-present run, with movement not assessed.
+  It passed `bash -n`, a full dry run with a fake probe and 12 edge and negative cases.
+- **Reproducing 3T's or 3E's conditions is a separate track, not prepared:** no verifiable references exist. 3E as written stays PENDING. U23, step 3's detection correctness and 3P's empty-scene purpose stay PENDING.
 
-U23, step 3's detection correctness, formal 3E and 3P's empty-scene purpose stay PENDING. **Next:** a decision by the maintainer, with no run. Should this delayed-departure timer design become the formal empty-scene control, with the declarations it lacked? It conflicts with the session 28 decision to schedule no unattended empty-room runs. If not, session 30's question about reading the Mac's screen from outside the view stands.
+**Next:** the maintainer runs 3ET when convenient. Optionally, with no hardware, they run the retrospective userinfo count on `3e-timer`.
 
-Session 30's summary: **The 3V review is completed by evidence source** (docs only). Session 29 had committed the review (`180445d`) before the maintainer's Mac slept; nothing was redone. Each item is labelled as saved run evidence, the maintainer's report or Claude's retrospective check, and unrecorded checklist fields stay unrecorded. Execution is not fully established as predeclared: the after-run counts are the maintainer's report only, and the exact secret counts were not supplied. Viewer delivery stays verified, with its account condition from the maintainer's report of three screenshots. The saved counts give at most one person box per frame, and the preview draws only counted boxes; this is not a visual check. Session 29's summary (as corrected in session 30): **The 3V run (`3v-retry-qnBEh8ON`) is recorded** (USER-SUPPLIED; docs only). Viewer delivery (D49) is verified on the device. A viewer connected at launch + 2.0 s and stayed until the probe stopped. 279 frames were rendered and sent (about 5 per second) with no render failures, and the preview closed cleanly. One track was reported in all 814 processed frames (confirmed in 813), never two counted boxes in one frame. In three screenshots, by the maintainer's report, the one confirmed box covers the seated maintainer. Movement responsiveness was not assessed. The gaps are the exact secret checks, the after-run counts (the maintainer's statement only), and the lighting and camera position. 3V tests no empty scene. **D50:** operator instructions state the total duration, position, timed actions and finish condition before the launch command, and never need a second command under a deadline. Session 28's summary: **The first 3P attempt (`3p-preview-yRa1jXnA`) is reviewed** (USER-SUPPLIED; docs only). No viewer evidence: every request counter is 0, and no frame was sent. Numeric box evidence: one confirmed track in 2,610 of 2,611 frames at mean confidence 0.909, in the left third touching the bottom edge, plus a 5-frame track overlapping it. What the boxes covered is not recorded. The run's declared location ("outside the room, watching the Mac") conflicts with the setup stated in that session; nothing is inferred about presence or timing. **Prepared: 3V**, a short attended person-present viewer check with the existing P1 code: a 60 s probe (about 70 s with the load), copy-ready Mac and Jetson blocks with no placeholders, and a stop at launch + 30 s if no viewer connects. Its blocks were dry-run with a fake probe. No unattended empty-room run is scheduled. Session 27's summary: **The delayed-start 3P retry is recorded** (USER-SUPPLIED; docs only). It ran on 3E's boot at commit `be646c3`, with detector, capture, configuration and engine unchanged. The maintainer's wrapper gave 60 s to leave before launching the 180 s probe with `--preview --box-summary`. Execution met: `exit_b=0`, 2,640 processed, none skipped or failed, upstream max 1, stdout one JSON document, `preview.closed` true. The adapter reported no person in any frame, and `track_boxes` is empty. Conditional on the maintainer's retrospective account of staying out of view, this is a non-reproduction of the earlier person reports under this run's conditions. It is not proof that those reports were right or wrong, or that the maintainer was visible then. The scene conditions were not declared, and there is no positive control. **Preview delivery is unverified:** no request reached the server, and no frame was rendered or sent. Not supplied: `preconditions.txt`, `observations.txt`, and 3P-6's after-run and exact secret checks. 3P, U23, step 3's detection correctness and formal 3E stay PENDING. Recommended next: one complete 3P run with the viewer connected and the same delayed start. Session 26's summary: **Preview P1 implemented, portable part (D49):** `sentinel track probe --preview` serves, on 127.0.0.1:18091 only, the boxes the probe counts on the frames they came from: track ID, confidence, C/T, epoch and sequence, at most 5 frames/s. Access needs a token and the Host check, and nothing is saved. `--box-summary` adds numbers-only positions for at most 64 tracks. Retention and network buffering are bounded, and a slow or gone viewer never blocks inference. The server closes on completion, error and Ctrl-C. Detector, tracker, capture and configuration code is unchanged. 18 new tests; 758 portable tests pass. The operator blocks (3P, with separate Mac and Jetson commands) passed a full dry run with a fake device. The device run is PENDING, and its overhead is unverified. **Session 25 corrected:** caffeine was stopped before the preparation, the countdown was 195 − elapsed (return about +160–165 s, an estimate), and the credential-check result was not supplied (not "not run"). Formatting differences are now separate from evidence gaps. Session 25's summary: **The 3E run is recorded as a partially usable diagnostic** (USER-SUPPLIED; docs only). Formal 3E acceptance stays PENDING: there is no declared `preconditions.txt`, the maintainer returned early, the exact credential-check result was not supplied, and the post-hoc window holds 1,310 frames, under the 1,500 condition (as corrected in session 26). Conditional on the maintainer's retrospective account and the 60 s washout assumption, every frame in the window from launch + 60 s to + 150 s had a person box: one track alone for 78 s, then up to three. The run used a new boot, commit `d12d4d5` and unchanged source and engine. Execution met: `exit_b=0`, 2,638 processed, no failures, upstream max 1. The probe records no box positions, and no existing tool shows the counted boxes without a display, saved media or a different inference path. **Diagnostic P1 proposed (not implemented):** an operator-only live annotated preview on loopback (`track probe --preview-port`) that saves no media. Detection correctness and U23 stay PENDING. Session 24's summary: **3E empty-room control prepared** (PENDING; maintainer-run, docs only). It has copy-ready blocks: a fresh directory, a 180 s probe with the same engine and thresholds, and a visible countdown. The v1 process check is corrected (bracketed names that cannot match their own command text, and a separate `v1_procs`). Preconditions declared before the run and observations written after it are kept in separate files. The interpretation is predeclared with no acceptance threshold. The blocks were checked with `bash -n`, eight synthetic summaries, credential and invalid-JSON cases, a dummy-process test and a full dry run with a fake probe. **Session 23's overstated conclusions corrected:** the constant-delay argument is now explicitly conditional, and normal arrival spacing no longer counts as evidence against accumulated buffering. 3E no longer claims to separate H1 from H2/H3, to bound the camera delay, or to use a 25 % threshold. **Device state:** MemFree was about 0.13 GB at 19:54 UTC, so 3E-1 would stop until it is at least 1.5 GB; how to get there is the maintainer's decision. Session 23's summary (as corrected in session 24): **First 3T run reviewed** (USER-SUPPLIED; docs only). Execution, coverage and D48's device check for `track probe` are met. **Detection correctness stays PENDING:** person boxes appeared in both stated stay-out periods (136/187 and 99/210 frames) and 2 boxes in P2, against the maintainer's account of at most one person. If the account is accurate and the camera delay was constant, a time shift cannot explain the stay-out counts; a varying delay, including accumulated buffering, is not excluded. Predicted tracker outputs cannot enter the counters, and results were at most 0.12 s behind their frames. Camera-to-ingest delay is unmeasured. The cause is undetermined (U23). v1's absence is not established, because of the wrapper's misspelled process pattern. Session 22's summary: **Step 3's observations recorded as unknown** (USER-SUPPLIED): the first run stays evidence of execution and performance only, and detection correctness stays PENDING. **The track probe now has a per-second timeline** (`7a4d408`): per UTC second of ingest, processed and failed frames, frames with persons, the most persons and confirmed persons in one frame, and the track IDs seen; bounded, numbers only. **New repeatable operator check 3T (PENDING):** 15 s nobody, 30 s only the maintainer, 15 s nobody, with timed prompts recorded apart from the maintainer's own account. It also verifies on the device that `track probe` stdout parses directly as JSON. 5 new tests; 740 portable tests pass. Session 21's summary: **Checklist step 3 recorded in part** as USER-SUPPLIED MEASUREMENTS (boot `dbdbdc0c-5c27-469b-ac1e-280a2b1140c7`, commit `7dc7a04`, rebooted since step 2). The D27 guard refused without the preload (`exit_a=1`, `libcuda_not_l4t`). 60 s of tracking gave `exit_b=0`, 858 of 888 captured frames processed, no failures, upstream max 1 and no credentials in the output. **Detection correctness is PENDING:** the maintainer's observations of who was in view were not supplied, so the person counters are not evaluated, and track IDs are not counted as people. **Defect found and fixed (D48):** the model load wrote Ultralytics' and TensorRT's diagnostics to stdout, so `b.json` was not valid JSON (446 characters before the object). `sentinel track probe` and `sentinel run` now keep stdout for their JSON and send other stdout output to stderr while they run. 8 new subprocess tests; 736 portable tests pass. Device verification of the fix is PENDING. The caffeine record is corrected, and the TensorRT engine-plan warning is recorded as unresolved (U22). Session 20's summary: **Checklist step 2 recorded** as USER-SUPPLIED MEASUREMENTS: a camera power cut and restore during a 180 s capture probe gave `exit=0`, `frames_received`, `connects` 2, `epochs` 2, `stream_ends` 1, `open_failures` 3, upstream max 1 and no credentials in the output. This meets step 2's outage criteria. It closes V2-05's demo-form outage and read-timeout items; V2-05 stays partial (demo form, full acceptance pending). An earlier run with no physical outage is recorded as steady capture only. **Environment change (USER-SUPPLIED):** the maintainer installed the `caffeine` apt package. Claude saw no caffeine process afterwards; whether it runs during later steps is unverified. Step 3 instructions were tightened (docs only). Session 19's summary: **Checklist step 1 recorded** as USER-SUPPLIED OBSERVATIONS: with `YOLO_OFFLINE=true`, Ultralytics is offline and its events are disabled; `settings_sync` stays `True` (1b not performed). **Step 2 revised before its first run:** a 180 s window for a camera reboot and timed cut/restore prompts. Docs only; no camera, GPU or service was touched. Session 18's summary: **Review of `268e905` (D47), portable only:** one defect fixed. With `--sanitized-logs`, which step 4 always uses, error names the sanitizer does not recognise (such as `RemoteDisconnected`) were dropped, so criteria F and V1 could pass with real face or scene errors. F and V1 now gate on error totals counted before sanitizing. 728 portable tests pass. Step 4 is still not authorized to run, and no profile is accepted. Session 17's summary: **Step-4 criteria v2 and the guarded `step4` mode (D47), portable only:** `step4-combined-cache-off-v2` requires:
+Session 31's summary (reconciled in session 32): **The timer-based empty-scene run (`3e-timer-mxlIc1hs`) is recorded** as a successful diagnostic with zero detections: no person in any of 2,634 processed frames, no track, upstream max 1, execution met on the saved evidence except the exact userinfo count. 3E's empty-scene window is not established: no declared scene, no account file, 3E-1 not recorded as specified. The maintainer's confirmation came after the run and is recorded as retrospective. Conditional on it, this is a second non-reproduction; it does not explain U23's earlier reports or show that the scene matched them. Session 30's summary: **The 3V review is completed by evidence source** (docs only). Session 29 had committed the review (`180445d`) before the maintainer's Mac slept; nothing was redone. Each item is labelled as saved run evidence, the maintainer's report or Claude's retrospective check, and unrecorded checklist fields stay unrecorded. Execution is not fully established as predeclared: the after-run counts are the maintainer's report only, and the exact secret counts were not supplied. Viewer delivery stays verified, with its account condition from the maintainer's report of three screenshots. The saved counts give at most one person box per frame, and the preview draws only counted boxes; this is not a visual check. Session 29's summary (as corrected in session 30): **The 3V run (`3v-retry-qnBEh8ON`) is recorded** (USER-SUPPLIED; docs only). Viewer delivery (D49) is verified on the device. A viewer connected at launch + 2.0 s and stayed until the probe stopped. 279 frames were rendered and sent (about 5 per second) with no render failures, and the preview closed cleanly. One track was reported in all 814 processed frames (confirmed in 813), never two counted boxes in one frame. In three screenshots, by the maintainer's report, the one confirmed box covers the seated maintainer. Movement responsiveness was not assessed. The gaps are the exact secret checks, the after-run counts (the maintainer's statement only), and the lighting and camera position. 3V tests no empty scene. **D50:** operator instructions state the total duration, position, timed actions and finish condition before the launch command, and never need a second command under a deadline. Session 28's summary: **The first 3P attempt (`3p-preview-yRa1jXnA`) is reviewed** (USER-SUPPLIED; docs only). No viewer evidence: every request counter is 0, and no frame was sent. Numeric box evidence: one confirmed track in 2,610 of 2,611 frames at mean confidence 0.909, in the left third touching the bottom edge, plus a 5-frame track overlapping it. What the boxes covered is not recorded. The run's declared location ("outside the room, watching the Mac") conflicts with the setup stated in that session; nothing is inferred about presence or timing. **Prepared: 3V**, a short attended person-present viewer check with the existing P1 code: a 60 s probe (about 70 s with the load), copy-ready Mac and Jetson blocks with no placeholders, and a stop at launch + 30 s if no viewer connects. Its blocks were dry-run with a fake probe. No unattended empty-room run is scheduled. Session 27's summary: **The delayed-start 3P retry is recorded** (USER-SUPPLIED; docs only). It ran on 3E's boot at commit `be646c3`, with detector, capture, configuration and engine unchanged. The maintainer's wrapper gave 60 s to leave before launching the 180 s probe with `--preview --box-summary`. Execution met: `exit_b=0`, 2,640 processed, none skipped or failed, upstream max 1, stdout one JSON document, `preview.closed` true. The adapter reported no person in any frame, and `track_boxes` is empty. Conditional on the maintainer's retrospective account of staying out of view, this is a non-reproduction of the earlier person reports under this run's conditions. It is not proof that those reports were right or wrong, or that the maintainer was visible then. The scene conditions were not declared, and there is no positive control. **Preview delivery is unverified:** no request reached the server, and no frame was rendered or sent. Not supplied: `preconditions.txt`, `observations.txt`, and 3P-6's after-run and exact secret checks. 3P, U23, step 3's detection correctness and formal 3E stay PENDING. Recommended next: one complete 3P run with the viewer connected and the same delayed start. Session 26's summary: **Preview P1 implemented, portable part (D49):** `sentinel track probe --preview` serves, on 127.0.0.1:18091 only, the boxes the probe counts on the frames they came from: track ID, confidence, C/T, epoch and sequence, at most 5 frames/s. Access needs a token and the Host check, and nothing is saved. `--box-summary` adds numbers-only positions for at most 64 tracks. Retention and network buffering are bounded, and a slow or gone viewer never blocks inference. The server closes on completion, error and Ctrl-C. Detector, tracker, capture and configuration code is unchanged. 18 new tests; 758 portable tests pass. The operator blocks (3P, with separate Mac and Jetson commands) passed a full dry run with a fake device. The device run is PENDING, and its overhead is unverified. **Session 25 corrected:** caffeine was stopped before the preparation, the countdown was 195 − elapsed (return about +160–165 s, an estimate), and the credential-check result was not supplied (not "not run"). Formatting differences are now separate from evidence gaps. Session 25's summary: **The 3E run is recorded as a partially usable diagnostic** (USER-SUPPLIED; docs only). Formal 3E acceptance stays PENDING: there is no declared `preconditions.txt`, the maintainer returned early, the exact credential-check result was not supplied, and the post-hoc window holds 1,310 frames, under the 1,500 condition (as corrected in session 26). Conditional on the maintainer's retrospective account and the 60 s washout assumption, every frame in the window from launch + 60 s to + 150 s had a person box: one track alone for 78 s, then up to three. The run used a new boot, commit `d12d4d5` and unchanged source and engine. Execution met: `exit_b=0`, 2,638 processed, no failures, upstream max 1. The probe records no box positions, and no existing tool shows the counted boxes without a display, saved media or a different inference path. **Diagnostic P1 proposed (not implemented):** an operator-only live annotated preview on loopback (`track probe --preview-port`) that saves no media. Detection correctness and U23 stay PENDING. Session 24's summary: **3E empty-room control prepared** (PENDING; maintainer-run, docs only). It has copy-ready blocks: a fresh directory, a 180 s probe with the same engine and thresholds, and a visible countdown. The v1 process check is corrected (bracketed names that cannot match their own command text, and a separate `v1_procs`). Preconditions declared before the run and observations written after it are kept in separate files. The interpretation is predeclared with no acceptance threshold. The blocks were checked with `bash -n`, eight synthetic summaries, credential and invalid-JSON cases, a dummy-process test and a full dry run with a fake probe. **Session 23's overstated conclusions corrected:** the constant-delay argument is now explicitly conditional, and normal arrival spacing no longer counts as evidence against accumulated buffering. 3E no longer claims to separate H1 from H2/H3, to bound the camera delay, or to use a 25 % threshold. **Device state:** MemFree was about 0.13 GB at 19:54 UTC, so 3E-1 would stop until it is at least 1.5 GB; how to get there is the maintainer's decision. Session 23's summary (as corrected in session 24): **First 3T run reviewed** (USER-SUPPLIED; docs only). Execution, coverage and D48's device check for `track probe` are met. **Detection correctness stays PENDING:** person boxes appeared in both stated stay-out periods (136/187 and 99/210 frames) and 2 boxes in P2, against the maintainer's account of at most one person. If the account is accurate and the camera delay was constant, a time shift cannot explain the stay-out counts; a varying delay, including accumulated buffering, is not excluded. Predicted tracker outputs cannot enter the counters, and results were at most 0.12 s behind their frames. Camera-to-ingest delay is unmeasured. The cause is undetermined (U23). v1's absence is not established, because of the wrapper's misspelled process pattern. Session 22's summary: **Step 3's observations recorded as unknown** (USER-SUPPLIED): the first run stays evidence of execution and performance only, and detection correctness stays PENDING. **The track probe now has a per-second timeline** (`7a4d408`): per UTC second of ingest, processed and failed frames, frames with persons, the most persons and confirmed persons in one frame, and the track IDs seen; bounded, numbers only. **New repeatable operator check 3T (PENDING):** 15 s nobody, 30 s only the maintainer, 15 s nobody, with timed prompts recorded apart from the maintainer's own account. It also verifies on the device that `track probe` stdout parses directly as JSON. 5 new tests; 740 portable tests pass. Session 21's summary: **Checklist step 3 recorded in part** as USER-SUPPLIED MEASUREMENTS (boot `dbdbdc0c-5c27-469b-ac1e-280a2b1140c7`, commit `7dc7a04`, rebooted since step 2). The D27 guard refused without the preload (`exit_a=1`, `libcuda_not_l4t`). 60 s of tracking gave `exit_b=0`, 858 of 888 captured frames processed, no failures, upstream max 1 and no credentials in the output. **Detection correctness is PENDING:** the maintainer's observations of who was in view were not supplied, so the person counters are not evaluated, and track IDs are not counted as people. **Defect found and fixed (D48):** the model load wrote Ultralytics' and TensorRT's diagnostics to stdout, so `b.json` was not valid JSON (446 characters before the object). `sentinel track probe` and `sentinel run` now keep stdout for their JSON and send other stdout output to stderr while they run. 8 new subprocess tests; 736 portable tests pass. Device verification of the fix is PENDING. The caffeine record is corrected, and the TensorRT engine-plan warning is recorded as unresolved (U22). Session 20's summary: **Checklist step 2 recorded** as USER-SUPPLIED MEASUREMENTS: a camera power cut and restore during a 180 s capture probe gave `exit=0`, `frames_received`, `connects` 2, `epochs` 2, `stream_ends` 1, `open_failures` 3, upstream max 1 and no credentials in the output. This meets step 2's outage criteria. It closes V2-05's demo-form outage and read-timeout items; V2-05 stays partial (demo form, full acceptance pending). An earlier run with no physical outage is recorded as steady capture only. **Environment change (USER-SUPPLIED):** the maintainer installed the `caffeine` apt package. Claude saw no caffeine process afterwards; whether it runs during later steps is unverified. Step 3 instructions were tightened (docs only). Session 19's summary: **Checklist step 1 recorded** as USER-SUPPLIED OBSERVATIONS: with `YOLO_OFFLINE=true`, Ultralytics is offline and its events are disabled; `settings_sync` stays `True` (1b not performed). **Step 2 revised before its first run:** a 180 s window for a camera reboot and timed cut/restore prompts. Docs only; no camera, GPU or service was touched. Session 18's summary: **Review of `268e905` (D47), portable only:** one defect fixed. With `--sanitized-logs`, which step 4 always uses, error names the sanitizer does not recognise (such as `RemoteDisconnected`) were dropped, so criteria F and V1 could pass with real face or scene errors. F and V1 now gate on error totals counted before sanitizing. 728 portable tests pass. Step 4 is still not authorized to run, and no profile is accepted. Session 17's summary: **Step-4 criteria v2 and the guarded `step4` mode (D47), portable only:** `step4-combined-cache-off-v2` requires:
 - every sample in the steady interval ≤ 5,000,000,000 B, with the time above 5.0 GB reported;
 - a sampled run peak ≤ 5,400,000,000 B;
 - monotonic steady boundaries with teardown excluded;
@@ -48,6 +56,7 @@ Session 30's summary: **The 3V review is completed by evidence source** (docs on
 | Session 12 (Claude, 2026-10-03) | `ed26dc9`: record of the maintainer's Check 9/S1 runs at `84f15ec` (S1 did not run). `e9af7f4`: V2-05 demo-form capture adapter, tests and status record. See the session 12 log. |
 | Session 13 (Claude, 2026-10-04) | `f6f9d5b` record of the Check 9, S1 and capture runs at `e9af7f4`, S1 comparison and V2-05 evaluation (docs only) · `8836929` PTS follow-up · `cd1c201` V2-09/V2-10 demo form (D40). See the session 13 log. |
 | Session 14 (Claude, 2026-10-04) | `ea95571`: S1 evaluation and D41 adoption, D42, V2-26 demo form (portable), Ultralytics privacy item. See the session 14 log. |
+| Session 32 (Claude, 2026-10-05) | D51: the timer setup is authorized, and session 30's physical-setup question is withdrawn. `3e-timer` is reconciled as a successful diagnostic. Its gaps are classified as documentation gaps, one missing check recoverable without hardware, one unrecoverable missing measurement and one experimental gap (the account was not recorded before the counts). The stale whole-tree comparison is replaced by two justified fields. Timer-based check 3ET is prepared with 27 predeclared gates and dry-run (PENDING). Docs only, one local commit, not pushed. See the session 32 log. |
 | Session 31 (Claude, 2026-10-05) | Review of the timer-based empty-scene run `3e-timer-mxlIc1hs` (USER-SUPPLIED; the maintainer's own design). Zero person detections in 2,634 processed frames. Execution met on the saved evidence, except the exact userinfo count (not supplied). 3E's empty-scene window is not established: scene undeclared, no account file, and 3E-1 not recorded as specified. Conditional on the maintainer's report, a second non-reproduction; U23 unresolved. Docs only, one local commit, not pushed. See the session 31 log. |
 | Session 30 (Claude, 2026-10-05) | The 3V review completed by evidence source after the maintainer's Mac slept: saved run evidence, the maintainer's reports and Claude's retrospective checks kept apart; unrecorded checklist fields not backfilled. Execution is corrected to not fully established as predeclared. Viewer delivery stays verified, with its account condition attributed to the maintainer's report. No run. Docs only, one local commit, not pushed. See the session 30 log. |
 | Session 29 (Claude, 2026-10-05) | Review of the 3V run (USER-SUPPLIED). Viewer delivery is verified on the device. One track, never two counted boxes in one frame, covered the visible maintainer in three screenshots (the maintainer's report). Execution was recorded as met; session 30 corrected it. Movement was not assessed, and there is no empty-scene evidence. D50 (operator instruction format). Docs only, one local commit, not pushed. See the session 29 log. |
@@ -68,25 +77,19 @@ Session 30's summary: **The 3V review is completed by evidence source** (docs on
 | Working tree | At session 15 start (10:46 IST): HEAD `ea95571`, equal to the local `origin/v2-beta` (the maintainer pushed after session 14; no fetch ran). The tree was clean. The session-start snapshot had listed `BUILD.md` as modified (session 12's trailing blank line), but by 10:43:07 IST, before Claude's first command, `BUILD.md` matched HEAD again. No other agent process was running; the maintainer's VS Code session was. Claude did not touch `BUILD.md`. Earlier: at session 13 start: HEAD `e9af7f4`, two commits ahead of the local `origin/v2-beta` (`84f15ec`; nothing pushed since session 11). The only change was session 12's unrelated trailing blank line in `BUILD.md` (not Claude's), which stays uncommitted. |
 | Known limitation (D-1, D43) | **Pending incident writes are buffered in memory, not in a crash-safe spool.** Rule observations waiting for a failed `record()` to be retried (at most 256) are lost if the process stops abruptly; overflow is counted as lost. The status page states this beside the pending count. A durable spool belongs to the runtime/core split (guide ch. 4, V2-11). |
 | Local-only files | `AGENTS.md`, the v2 guide, the audit review and `docs/LOCAL_NOTES.md` (device-specific notes), excluded through `.git/info/exclude`; none included in session 6–11 increments. A fresh clone does not contain them, although CLAUDE.md names the guide and audit. |
-| Selected package | **Review of the timer-based empty-scene run** (session 31, docs only). Zero person detections. Execution is met on the saved evidence, except the exact userinfo count. 3E's window is not established, so formal 3E stays PENDING. U23 is unresolved. Before it: **The 3V review completed by evidence source** (session 30, docs only). Execution is not fully established as predeclared: the after-run counts are the maintainer's report only, and the exact secret counts were not supplied. Viewer delivery stays verified, its account condition by the maintainer's report. Unrecorded checklist fields stay unrecorded. Before it: **Review of the 3V run** (session 29, docs only). Viewer delivery is verified on the device. The visible maintainer was boxed in three screenshots (the maintainer's report), never with two counted boxes in one frame. Movement was not assessed, and no empty scene was tested. Before it: **Attended viewer check 3V** (session 28, docs only): prepared and dry-run. The first 3P attempt was reviewed: box numbers, no viewer evidence. Before it: **Review of the delayed-start 3P retry** (session 27, docs only): execution met; no person reported, a conditional non-reproduction; preview delivery unverified; 3P PENDING. Before it: **Preview P1** (session 26, D49): portable part done; device check 3P PENDING. Before it: **Review of the 3E run** (session 25, docs only): a partially usable diagnostic; the empty-scene window is not established, so formal 3E acceptance is PENDING; preview diagnostic P1 proposed, not implemented. Before it: **3E empty-room control** (session 24, docs only): blocks prepared and checked portably; the run is PENDING (maintainer). Before it: **Review of the first 3T run** (session 23, docs only; corrected in session 24): execution, coverage and D48 met; detection conditions not met as written, cause undetermined; detection correctness PENDING; 3E proposed. Before it: **Track-probe timeline and check 3T** (session 22, `7a4d408`): portable part done; one run reviewed in session 23. Before it: **D48 stdout/JSON separation for `track probe` and `run`** (session 21): a narrow CLI fix for the defect checklist step 3 found; portable part done, device verification PENDING. Before it: **Step-4 criteria v2 and guarded mode** (session 17, D47; reviewed and corrected in session 18): portable part done; the run is PENDING (checklist step 4). Before it: **`--scene` admission fix** (session 16, D46): a narrow amendment to D-1, done portably; no device check of its own. Before it: **D-2 loopback status page, demo form** (session 15): portable part done, device check PENDING (checklist step 5). Before it in session 15: **D-1 `sentinel run`, demo form**, portable part done (`537557c`), device run PENDING. Before that: **V2-09/V2-10 demo form** (session 13): the legacy detector + ByteTrack parity adapter. Portable part complete (D40); device check PENDING; partial at most (D23). V2-05's demo form is evaluated (session 13 log). Its outage and read-timeout checks are now met too (USER-SUPPLIED, session 20 log). It stays partial under D23. S1 (D38) ran; adopting `--cache-ram 0` is the maintainer's decision. U20 and U19/U21 instrumentation remain portable-complete only; D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. |
+| Selected package | **Timer-based empty-scene check 3ET** (session 32, docs only; D51): prepared, dry-run and PENDING (maintainer-run). `3e-timer` is reconciled as a successful diagnostic; the account recorded before the counts is the only criterion that needs a new run. Before it: **Review of the timer-based empty-scene run** (session 31, docs only). Zero person detections. Execution is met on the saved evidence, except the exact userinfo count. 3E's window is not established, so formal 3E stays PENDING. U23 is unresolved. Before it: **The 3V review completed by evidence source** (session 30, docs only). Execution is not fully established as predeclared: the after-run counts are the maintainer's report only, and the exact secret counts were not supplied. Viewer delivery stays verified, its account condition by the maintainer's report. Unrecorded checklist fields stay unrecorded. Before it: **Review of the 3V run** (session 29, docs only). Viewer delivery is verified on the device. The visible maintainer was boxed in three screenshots (the maintainer's report), never with two counted boxes in one frame. Movement was not assessed, and no empty scene was tested. Before it: **Attended viewer check 3V** (session 28, docs only): prepared and dry-run. The first 3P attempt was reviewed: box numbers, no viewer evidence. Before it: **Review of the delayed-start 3P retry** (session 27, docs only): execution met; no person reported, a conditional non-reproduction; preview delivery unverified; 3P PENDING. Before it: **Preview P1** (session 26, D49): portable part done; device check 3P PENDING. Before it: **Review of the 3E run** (session 25, docs only): a partially usable diagnostic; the empty-scene window is not established, so formal 3E acceptance is PENDING; preview diagnostic P1 proposed, not implemented. Before it: **3E empty-room control** (session 24, docs only): blocks prepared and checked portably; the run is PENDING (maintainer). Before it: **Review of the first 3T run** (session 23, docs only; corrected in session 24): execution, coverage and D48 met; detection conditions not met as written, cause undetermined; detection correctness PENDING; 3E proposed. Before it: **Track-probe timeline and check 3T** (session 22, `7a4d408`): portable part done; one run reviewed in session 23. Before it: **D48 stdout/JSON separation for `track probe` and `run`** (session 21): a narrow CLI fix for the defect checklist step 3 found; portable part done, device verification PENDING. Before it: **Step-4 criteria v2 and guarded mode** (session 17, D47; reviewed and corrected in session 18): portable part done; the run is PENDING (checklist step 4). Before it: **`--scene` admission fix** (session 16, D46): a narrow amendment to D-1, done portably; no device check of its own. Before it: **D-2 loopback status page, demo form** (session 15): portable part done, device check PENDING (checklist step 5). Before it in session 15: **D-1 `sentinel run`, demo form**, portable part done (`537557c`), device run PENDING. Before that: **V2-09/V2-10 demo form** (session 13): the legacy detector + ByteTrack parity adapter. Portable part complete (D40); device check PENDING; partial at most (D23). V2-05's demo form is evaluated (session 13 log). Its outage and read-timeout checks are now met too (USER-SUPPLIED, session 20 log). It stays partial under D23. S1 (D38) ran; adopting `--cache-ram 0` is the maintainer's decision. U20 and U19/U21 instrumentation remain portable-complete only; D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. |
 | Other branches | `origin/Yogeshvar425-patch-1` (teammate) is **not merged**: a single commit `6755796` that adds @Yogeshvar425 to `.github/CODEOWNERS` (merge base `c66ebde`). `origin/codex/github-audit-fixes-2026-09-19` is already in `master` via PR #4. |
 | Effort | Per-package estimates are in the package table (given to the maintainer on 2026-09-29). The re-estimate of optimization effort still waits for V2-01's B0 run. |
 | v1 on this device | Historically **not running** (maintainer, 2026-09-29); current state must be inspected, not inferred. This workflow never terminates existing v1 processes. |
-| Waiting on the maintainer | **The session 15 operator checklist, steps 3–5** (PENDING). Step 1, the Ultralytics setting, is done (USER-SUPPLIED, session 19); its optional 1b `yolo settings sync=False` was not performed. Step 2, the V2-05 physical outage, is done (USER-SUPPLIED, session 20). Step 3, the V2-09/V2-10 device check, is recorded in part (USER-SUPPLIED, session 21): the guard and stability criteria are met. Its observations are unknown (session 22). The timed check 3T ran once (session 23): execution was met, but its detection conditions were not met as written and the cause is undetermined (U23). Detection correctness waits on U23. The empty-room control 3E ran once after a reboot (session 25). It is partially usable as a diagnostic, but its empty-scene window is not established, so formal 3E acceptance is PENDING. The preview diagnostic P1 is implemented portably (session 26, D49). A delayed-start 3P retry ran once (session 27). Execution was met, and no person was reported in any frame: a non-reproduction, conditional on the maintainer's account. No viewer connected, so 3P stays PENDING. The first 3P attempt (reviewed in session 28) had no viewer request either. It recorded one persistent confirmed track, and what that track covered is not recorded. The Mac cannot leave the room, so the attended viewer check 3V was prepared (session 28). It ran in session 29: viewer delivery is verified on the device, and the boxes lay on the visible maintainer in three screenshots (the maintainer's report). Its execution criterion is not fully established (session 30). It tests no empty scene. The maintainer then ran their own timer-based empty-scene run (session 31). It reported zero persons in 2,634 frames, but 3E's window is not established: the scene was undeclared and there is no account file. That makes a second conditional non-reproduction, and U23 is unresolved. Next is the maintainer's decision on whether that design becomes the formal empty-scene control. If not, the question stands whether the Mac's screen can be read from a place outside the camera's view. Claude schedules no unattended empty-room run without that decision. Step 4 is the confirming combined profile with `--llama-cache-ram 0` (needs approval and predeclared criteria). Step 5 is the first end-to-end alert and the status page, which is also V2-15's Telegram device check. Then come the decisions on scene admission for D-1 and the review of D43–D45. Still open from earlier: why S1 arm b #1 was interrupted; U18's runtime policy, U19 unload, U20 real-model/demo-exception evidence, the 30-minute U21 rerun (not approved) and consent/figure labels. D36 provisionally retains b8932; beta still requires a tested compatible schema-fix descendant. E-1 reported Ollama inactive and disabled (USER-SUPPLIED). The full empty-room-clip review and the deletion of review images are not confirmed. |
+| Waiting on the maintainer | **The session 15 operator checklist, steps 3–5** (PENDING). Step 1, the Ultralytics setting, is done (USER-SUPPLIED, session 19); its optional 1b `yolo settings sync=False` was not performed. Step 2, the V2-05 physical outage, is done (USER-SUPPLIED, session 20). Step 3, the V2-09/V2-10 device check, is recorded in part (USER-SUPPLIED, session 21): the guard and stability criteria are met. Its observations are unknown (session 22). The timed check 3T ran once (session 23): execution was met, but its detection conditions were not met as written and the cause is undetermined (U23). Detection correctness waits on U23. The empty-room control 3E ran once after a reboot (session 25). It is partially usable as a diagnostic, but its empty-scene window is not established, so formal 3E acceptance is PENDING. The preview diagnostic P1 is implemented portably (session 26, D49). A delayed-start 3P retry ran once (session 27). Execution was met, and no person was reported in any frame: a non-reproduction, conditional on the maintainer's account. No viewer connected, so 3P stays PENDING. The first 3P attempt (reviewed in session 28) had no viewer request either. It recorded one persistent confirmed track, and what that track covered is not recorded. The Mac cannot leave the room, so the attended viewer check 3V was prepared (session 28). It ran in session 29: viewer delivery is verified on the device, and the boxes lay on the visible maintainer in three screenshots (the maintainer's report). Its execution criterion is not fully established (session 30). It tests no empty scene. The maintainer then ran their own timer-based empty-scene run (session 31). It reported zero persons in 2,634 frames, but 3E's window is not established: the scene was undeclared and there is no account file. That makes a second conditional non-reproduction, and U23 is unresolved. The timer design is authorized (D51, session 32), and the physical-setup question is withdrawn. 3ET, the formal current-condition check, is prepared and PENDING. Next is the maintainer's 3ET run, plus an optional no-hardware userinfo count on `3e-timer`. Step 4 is the confirming combined profile with `--llama-cache-ram 0` (needs approval and predeclared criteria). Step 5 is the first end-to-end alert and the status page, which is also V2-15's Telegram device check. Then come the decisions on scene admission for D-1 and the review of D43–D45. Still open from earlier: why S1 arm b #1 was interrupted; U18's runtime policy, U19 unload, U20 real-model/demo-exception evidence, the 30-minute U21 rerun (not approved) and consent/figure labels. D36 provisionally retains b8932; beta still requires a tested compatible schema-fix descendant. E-1 reported Ollama inactive and disabled (USER-SUPPLIED). The full empty-room-clip review and the deletion of review images are not confirmed. |
 
 ## Next concrete task
 
-1. **One decision for the maintainer, no run yet: should the delayed-departure timer design of `3e-timer-mxlIc1hs` become the formal empty-scene control (3E)?** That run (session 31) reported zero persons in 2,634 frames. 3E's window is not established, because the scene preconditions were not declared, no account file was written and 3E-1 was not recorded as specified. The design leaves the room unattended, which the session 28 decision ruled out for runs Claude schedules, so it is your call.
-   - **If yes:** Claude revises the 3E block, docs only, in D50's format:
-     - 3E-2's four scene items declared before the departure prompt;
-     - 3E-5's account written before the summary is seen;
-     - 3E-1's fields and the userinfo count recorded;
-     - 3E-1's commit comparison narrowed to the detector, tracker, capture and configuration paths, as 3P and 3V already do. D49 changed probe and CLI code, so `src_config_same_as_3t=yes` can no longer hold.
-
-     One such run could establish the window. Zero detections there would still be a non-reproduction, not an explanation of U23.
-   - **If no:** session 30's question stands: can you read the Mac's screen from a place in the room outside the camera's view, with the Mac wherever its cable allows? If yes, Claude prepares the attended in-room check described in session 29's log. If no, U23 cannot be observed with the current tools under the stated setup.
-
-   3V's movement check stays unperformed and separate. Step 4's prerequisite "step 3 passed" is not met until detection correctness is settled. D48's device check for `track probe` is done (sessions 23, 25, 27, 29 and 31); `sentinel run`'s is still step 5's `run.jsonl`.
+1. **Run 3ET (maintainer, PENDING), exactly as written in the checklist.** It is the timer-based empty-scene check under current conditions (D51, session 32). Read its "Before you launch" box first. It takes about 12 min, of which 6 min away; return the listed files. Claude then evaluates the 27 predeclared gates and interprets the result within 3ET's stated limitations.
+   - **Optional, no hardware:** the retrospective userinfo count on `3e-timer-mxlIc1hs` (block at the end of 3ET). It closes that run's last recoverable gap.
+   - A clean 3ET does not explain U23's historical reports or establish general accuracy. Whether it settles step 3's detection correctness is your decision; no predeclared rule makes it do so. Step 4's prerequisite "step 3 passed" is not met until then.
+   - Reproducing 3T's or 3E's conditions is not prepared, because no verifiable references exist. 3E as written stays PENDING.
+   - 3V's movement check stays unperformed and separate. D48's device check for `track probe` is done (sessions 23, 25, 27, 29 and 31); `sentinel run`'s is still step 5's `run.jsonl`.
 2. **Maintainer decisions before step 4:**
    - the D47 criteria (`step4-combined-cache-off-v2`) are approved for implementation (session 17). Session 18 amended F and V1 to gate on error totals (session 18 log); review that amendment. The step-4 **run** still needs the maintainer's explicit go-ahead, through checklist step 4 (4a–4f). Implementation and passing portable tests are not that go-ahead;
    - after it, if it passed, approve the separate acceptance commit (D46) that adds the step-4 profile to `RESOURCE_PROFILES`. That commit is the only way `--scene` can be admitted;
@@ -134,7 +137,7 @@ Estimates as given to the maintainer on 2026-09-29. V2-49 has since been done.
 | V2-06 | Browser/codec/timestamp spike | not started | Jetson | no | 2 | 3 | 05 |
 | V2-07 | Dataset consent, labels, split manifest | not started | Jetson (recording) | no | 1 | 3 | 03 |
 | V2-08 | Gate B record, recoverable device baseline | not started | Jetson | no | 1 | 4 | 01, 05, 06 |
-| V2-09 | TensorRT adapter and fixed buffers | partial: demo form (legacy parity adapter) portable part done (session 13); device check in part (session 21, USER-SUPPLIED: guard refusal and 60 s load/stability met; detection correctness PENDING; 3T in session 23: execution met, detection conditions not met as written, cause undetermined, U23; 3E in session 25: persons in every frame of a stated-empty post-hoc window, window not established, partial; delayed-start 3P retry in session 27: execution met, no person reported (a conditional non-reproduction), preview not viewed; first 3P attempt reviewed in session 28: one persistent confirmed track, coverage unrecorded, no viewer; 3P PENDING; attended viewer check 3V in session 29: viewer delivery verified, one track on the visible maintainer in three screenshots (the maintainer's report), never two counted boxes in one frame, movement not assessed, empty scene not tested; execution not fully established as predeclared, session 30; the maintainer's timer-based empty-scene run in session 31: zero persons in 2,634 frames, 3E window not established, a second conditional non-reproduction) | Jetson | yes: **demo form, full acceptance pending** | 2.5 | 3 | 05, 08 |
+| V2-09 | TensorRT adapter and fixed buffers | partial: demo form (legacy parity adapter) portable part done (session 13); device check in part (session 21, USER-SUPPLIED: guard refusal and 60 s load/stability met; detection correctness PENDING; 3T in session 23: execution met, detection conditions not met as written, cause undetermined, U23; 3E in session 25: persons in every frame of a stated-empty post-hoc window, window not established, partial; delayed-start 3P retry in session 27: execution met, no person reported (a conditional non-reproduction), preview not viewed; first 3P attempt reviewed in session 28: one persistent confirmed track, coverage unrecorded, no viewer; 3P PENDING; attended viewer check 3V in session 29: viewer delivery verified, one track on the visible maintainer in three screenshots (the maintainer's report), never two counted boxes in one frame, movement not assessed, empty scene not tested; execution not fully established as predeclared, session 30; the maintainer's timer-based empty-scene run in session 31: zero persons in 2,634 frames, a successful diagnostic, 3E window not established, a second conditional non-reproduction; current-condition check 3ET prepared in session 32, PENDING) | Jetson | yes: **demo form, full acceptance pending** | 2.5 | 3 | 05, 08 |
 | V2-10 | Tracker and coordinate parity | partial: demo form (tracker boundary, epoch/occlusion/resize fixtures) portable part done (session 13); device check in part (session 21, USER-SUPPLIED: tracks produced, no failures; detection correctness PENDING; 3T in session 23, 3E in session 25, the 3P attempts in sessions 27 and 28, 3V in session 29 and the timer-based empty-scene run in session 31: see V2-09 and U23) | Jetson | yes: **demo form, full acceptance pending** | 1.5 | 1.5 | 07, 09 |
 | V2-11 | Telemetry and runtime handoff contract | not started | Portable + device check | no | 1 | 0.5 | 02, 05 |
 | V2-12 | Overlay rendering vs timed fixtures | not started | Portable + device check | no | 1 | 1 | 06, 10 |
@@ -212,6 +215,124 @@ Notes on partial and in-progress rows:
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Not done: viewing it on the device over the SSH forward (checklist step 5); it stands in for, and does not replace, V2-17/V2-18 (no sessions, roles, API, media or live video).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
 
+## Session 32 log (Claude, 2026-10-05): timer-based empty-scene check 3ET prepared; 3e-timer reconciled
+
+**Scope.** The maintainer asked Claude to:
+- reconcile the checklist with the completed `3e-timer-mxlIc1hs` evidence;
+- separate documentation gaps from missing measurements and genuine experimental gaps;
+- identify exactly which remaining criterion needs another hardware run;
+- correct the stale whole-`src` comparison with an explicitly justified one;
+- if a run is needed, prepare one complete, fixed timer-based protocol with its acceptance criteria, without running it.
+
+Claude ran no camera, GPU, model or hardware check, changed no code, opened no media and did not push. The session started at `78d3581` with a clean tree.
+
+**D51. Timer-based empty-scene checks are authorized** (maintainer clarification, 2026-10-05).
+- The maintainer had already authorized the timer setup in the operator conversation, because watching the Mac from outside the camera's view is impossible.
+- This supersedes the session 28 restriction on unattended empty-room checks.
+- It also answers session 30's question: the Mac's screen cannot be read from outside the camera's view. That question is withdrawn and is not to be asked again.
+- The viewed empty-scene check proposed in sessions 29–31 is withdrawn with it.
+
+**`3e-timer-mxlIc1hs` reconciled.** It stays recorded as a **successful diagnostic with zero detections**: execution met on the saved evidence, and no person in any of 2,634 processed frames. The maintainer's confirmation that everyone stayed out was supplied after the run, in the same message as the counts. It is recorded as a retrospective account, not as a predeclared condition. Scene changes since 3V stay unknown, and no equivalence with any earlier scene is claimed. Against the formal criteria prepared below (3ET), item by item:
+
+| 3ET criterion | `3e-timer` evidence | Class | Without a new run? |
+|---|---|---|---|
+| `tracked_changes=0`, engine pin, `display_manager=inactive`, MemFree ≥ 1.5 GB | saved (`launch_memfree_bytes` 2,936,320,000) | met | — |
+| `has_timeline_and_stdout_fix`, `src_config_same_as_3t_outside_d49`, `d49_files_same_as_92bce43` | not recorded; from the recorded commit `a0a5efe`: yes, yes, yes (this session) | documentation gap | yes (git) |
+| `v1_procs=0`, `other_camera_clients=0` (3E-1's bracketed patterns) | not recorded. The wrapper's `other_workload_procs=0` has no saved definition. Saved `upstream_connections` (before 0, max 1) show no other camera connection from this host | missing measurement | **no** (run-time process state) |
+| Declarations written before the departure prompt, with the plan to stay out of view | `preconditions.txt` written 52 ms before the prompt, with `planned_empty_six_minutes=yes` | met in substance (field name differs) | — |
+| Current-condition descriptions (lighting, screens, others, scene notes) | not declared (`scene_changes_since_3v=unknown`) | descriptive in 3ET, not a gate. They cannot be added honestly now | no |
+| Launch ≥ 60 s after the prompt | 60.156 s | met | — |
+| `exit_b=0`, `frames_received`, 0 failed, upstream before 0 and max 1, one connection and epoch, no stream end, dropped 0, `probe_procs_after=0` | saved | met | — |
+| `stdout_json=valid` | line not recorded; Claude's parse of `b.json` is valid | documentation gap | done (retrospective) |
+| `userinfo_lines=0` | not supplied; Claude's shape scans found nothing | missing check result | **yes:** the files are unchanged, so the maintainer can count on them with the URL (block below); recorded as retrospective |
+| Window covers its start; ≥ 1,500 processed in it | no `summary.txt`; recomputed: True and 1,847 | documentation gap | done (retrospective) |
+| An account file written after the run | no `observations.txt`; the content was given in a message after the run | documentation gap | the content is recorded, as retrospective |
+| Account content: out of view before launch, stayed out until the timer, nobody else entered | by the retrospective confirmation: yes, yes, no | met in content, retrospectively | — |
+| `finished_shown_on_return`, `changes_noticed_on_return` | not supplied | missing account items | only from memory, so retrospective |
+| **The account recorded before the counts were seen** | no record of the order; the confirmation arrived with the counts | **experimental gap** | **no** |
+| 3E's "as in 3T" camera, lighting and objects items | not declared; the maintainer cannot verify them | not applicable to a current-condition check (below) | — |
+
+**Exactly what requires another hardware run.**
+- **One experimental criterion: the operator's account recorded before the detection counts are seen.** It protects the account from being shaped by the result, and it can only be satisfied in a new run.
+- **One missing measurement is also unrecoverable:** the v1 and other-client process counts with 3E-1's patterns. Its camera part is covered by saved counters; its v1-dashboard and llama-server part is not. It is not waived. 3ET records it.
+- **Everything else** is met by `3e-timer`, is a documentation gap now closed from git or the saved files, or can be closed without hardware (the userinfo count).
+
+**The stale comparison, corrected.** 3E-1's `src_config_same_as_3t` compared all of `src` and `config` with 3T's commit `4a70ef4`. Since D49 (`92bce43`) that is always "no", so the field no longer separates a changed detection path from unrelated changes. The replacement has two fields, each explicitly justified:
+- `src_config_same_as_3t_outside_d49`: `git diff --quiet 4a70ef4 HEAD -- src config` excluding D49's five files. This is stricter than 3P's and 3V's narrow list, because it also covers `media/clock.py`, `contracts.py`, `config.py`, `tracking/tracks.py` and every other module.
+- `d49_files_same_as_92bce43`: the five files exactly as reviewed. They are unchanged in every run since `92bce43`.
+- **Review of the five files at `92bce43`, for a run without `--preview`:**
+  - `tracking/probe.py`: `observe()` still calls `tracker.process` and then the same counting statements, moved into `_count`. Observers run only after counting and only receive the result.
+  - `tracking/box_summary.py`: an observer.
+  - `tracking/preview.py`: not loaded without `--preview`.
+  - `media/probe.py`: adds an optional `stop` event to the frame loop, which is unchanged while `stop` is `None`.
+  - `cli.py`: creates `stop` and its signal handlers only under `--preview`. Otherwise it builds the same backend, capture worker and `run_probe(…, TrackProbe(PersonTracker(backend), clock, observers), stop=None)` as at `4a70ef4`, with the box-summary observer added.
+
+  Portable tests (session 26) show the observers leave the counts unchanged. That is not a device proof.
+- **Results:** at `a0a5efe` (3e-timer) and at `78d3581`, both fields are yes.
+
+**Current-condition check versus historical reproduction.**
+- **3ET checks current conditions only.** The operator declares today's conditions in words before the run (`unknown` allowed) and claims no match with any earlier run.
+- **A reproduction of 3T's or 3E's conditions is not prepared.** It would need verifiable references for the camera position, lighting and objects then, and none exist: 3T's and 3E's scene items were undeclared or unknown, and the probe saves no images by design.
+- **3E's formal acceptance as written** requires "as in 3T" answers. It therefore stays PENDING, and it is not attainable without such references. It is not waived and not converted into 3ET.
+- **Whatever 3ET shows,** the U23 reports from 3T, 3E and the first 3P attempt stay unexplained.
+
+**Prepared: 3ET**, one fixed operator protocol in D50's format, with predeclared criteria. It is placed after 3E in the checklist and PENDING (maintainer-run).
+- It keeps everything 3E kept: the engine pin and thresholds, a 180 s probe, the 60 s washout assumption, at least 1,500 window frames, and no acceptance threshold on rates.
+- **Changes from 3E's gates,** each explicit:
+
+| 3E gate | 3ET | Why |
+|---|---|---|
+| Camera position, lighting and objects "as in 3T" = yes | not asked; today's conditions described, `unknown` allowed | The maintainer cannot verify an earlier scene (session 32); historical reproduction is a separate, unprepared track |
+| `nobody_in_view_now=yes` before the run | `plan_out_of_view_six_minutes=yes` before the run, plus `out_of_view_before_launch=yes` in the account | The launch terminal is at the Mac, in view (3V's declaration); the 60 s departure delay replaces launching from outside the view (D51) |
+| `src_config_same_as_3t` (whole tree) | `src_config_same_as_3t_outside_d49` and `d49_files_same_as_92bce43` | Justified above |
+| Account: `lighting_or_scene_changed=no` | `changes_noticed_on_return` must not be yes; `unknown` allowed | The operator is absent by design and cannot attest to the absence period; stated as a limitation |
+| Account: `camera_moved_or_rebooted=no` | machine-checked: one connection and epoch, no stream end. Movement would need someone in view (`anyone_else_entered_view=no`) | A reboot shows in the capture counters |
+| — | added: declarations written before the prompt (file time); the account written after the run and hashed before any count is shown; `probe_procs_after=0`; upstream before 0; a 240 s outer bound with a 5 s kill; `finished_shown_on_return=yes` | Make the order and the bounds machine-checkable |
+
+**Checks of the blocks (portable; no camera, GPU or model).**
+- `bash -n` passed on every block, and on the optional retrospective userinfo block.
+- **Full dry run** in the session scratchpad. Only the run directory and the probe command were substituted; the probe was a fake that prints a synthetic summary, and a scripted editor stood in for the operator.
+  - 3ET-1 at `78d3581` gave every expected value: `src_config_same_as_3t_outside_d49=yes`, `d49_files_same_as_92bce43=yes`, the engine pin, `v1_procs=0` and `other_camera_clients=0`.
+  - 3ET-4 waited 60.17 s, ran the probe and printed only `FINISHED: exit_b=0 probe_procs_after=0`.
+  - 3ET-6 recorded the account's hash before any count and printed all 27 gates as met, with `ESTABLISHED: yes`. The URL was unset afterwards.
+- **Edge and negative cases on copies (12).** Results:
+
+| Case | Result |
+|---|---|
+| Persons in the window | Counts, seconds, pattern and the track's box are reported. Establishment does not depend on the count |
+| An all-`unknown` account | 4 O gates not met |
+| Declarations edited after the departure prompt | D gate not met |
+| The dummy userinfo planted in `b.err` | `userinfo_lines=1`, not met |
+| Text before the JSON | `stdout_json=INVALID`, then a stop |
+| URL not set in the shell | `userinfo_check=not_run`, not met |
+| A refused probe | `STATUS refused …` |
+| 3ET-6 without an account | Stop; no hash and no count |
+| 3ET-5 before the run finished | Stop |
+| 3ET-4 in a used directory, or without the URL | Stop |
+| A hung probe, in a copy with shortened timings | `exit_b=124`, `probe_procs_after=0`, FINISHED |
+
+- The retrospective userinfo block found the planted string in a copy and wrote nothing.
+- All scratch files stay in the session scratchpad. Nothing was written under `~/sentinel-runs`.
+
+**Next smallest necessary step (the maintainer's):**
+- **The run:** 3ET, when convenient, exactly as written in the checklist.
+- **Optional, no hardware:** the retrospective userinfo count on `3e-timer`, to close that run's last recoverable gap.
+
+Claude then reviews the returned files against 3ET's predeclared criteria.
+
+### Session 32 verification: exact commands and results
+
+- `git status --short --branch` → `## v2-beta...origin/v2-beta [ahead 21]`, clean; `git diff --stat` → empty; HEAD `78d3581`.
+- `git diff 4a70ef4 HEAD -- src/sentinel/tracking/probe.py src/sentinel/media/probe.py` and the `cli.py` diff → as reviewed above; `sed -n 310,392p src/sentinel/cli.py` (read-only).
+- `git diff --quiet 92bce43 HEAD -- src config` → exit 0. `git log 4a70ef4..HEAD -- src config` → `92bce43` only.
+- `git diff --quiet 4a70ef4 HEAD -- src config` with D49's five files excluded → exit 0.
+- The narrow 3P/3V comparison against `4a70ef4`, `d12d4d5`, `be646c3`, `25eff73` and `a0a5efe` → yes for each.
+- `command -v timeout` → `/usr/bin/timeout` (GNU coreutils 9.4).
+- `bash -n` on the six blocks and the retrospective block → no errors.
+- The dry run and negative cases → as above.
+- `git diff --check` → no output.
+- **Not run:** any camera, GPU, model or hardware check; the portable suite (docs-only change); CI. No media was opened.
+
 ## Session 31 log (Claude, 2026-10-05): review of the timer-based empty-scene run
 
 **Scope.** The maintainer asked Claude to:
@@ -229,7 +350,7 @@ Claude ran no camera, GPU, model or hardware check. It changed no code, threshol
 - it used a 240 s outer timeout with a 5 s kill grace;
 - the maintainer reports a six-minute phone timer for their return.
 
-So 3E's predeclared interpretation (session 24) is the applicable one. The session 28 decision schedules no unattended empty-room runs; this run was the maintainer's own.
+So 3E's predeclared interpretation (session 24) is the applicable one. The session 28 decision schedules no unattended empty-room runs; this run was the maintainer's own. (Superseded in session 32: the maintainer had authorized the timer setup, D51.)
 
 **Saved run evidence (USER-SUPPLIED MEASUREMENTS; `~/sentinel-runs/d1-checklist/3e-timer-mxlIc1hs/`).** Written during the run; modification times 14:36:53–14:41:00 IST.
 
@@ -329,7 +450,7 @@ Every result in the maintainer's message reproduces exactly from these files. Th
   - narrows 3E-1's commit comparison to the detector, tracker, capture and configuration paths, as 3P and 3V do, because D49 changed probe and CLI code.
 
   One such run could establish the window that this run could not. Zero detections there would still be a non-reproduction, not an explanation of U23.
-- **If no,** session 30's question still stands: can the Mac's screen be read from a place in the room outside the camera's view?
+- **If no,** session 30's question still stands: can the Mac's screen be read from a place in the room outside the camera's view? (Withdrawn in session 32: the answer is no, and the timer design is authorized, D51. 3ET is the revised block.)
 
 ### Session 31 verification: exact commands and results
 
@@ -429,7 +550,7 @@ So no frame the preview showed could have carried two boxes. This bounds how man
 - **The empty-scene discrepancy (U23):** untested by 3V. The person reports in 3T, 3E and the first 3P attempt stay unexplained, and the delayed-start retry stays a conditional non-reproduction. Step 3's detection correctness, 3P's empty-scene purpose and formal 3E stay PENDING.
 - The preview's overhead is unmeasured, and this run's timings are not a baseline.
 
-**Next smallest necessary step:** unchanged from session 29. The maintainer answers one question: can the Mac's screen be read from a place in the room outside the camera's view, with the Mac wherever its cable allows? No run is scheduled until then.
+**Next smallest necessary step:** unchanged from session 29. The maintainer answers one question: can the Mac's screen be read from a place in the room outside the camera's view, with the Mac wherever its cable allows? No run is scheduled until then. (Withdrawn in session 32: the answer is no, and the timer design is authorized, D51.)
 
 ### Session 30 verification: exact commands and results
 
@@ -3274,7 +3395,7 @@ D14–D21 are implementation decisions made in session 2 within the guide's rule
   - predicted tracker outputs cannot enter the counters;
   - nothing after ingest is older than 0.12 s.
 
-  The candidates are H1 (non-person detections in the scene), H2 (the maintainer's image reached the camera), H3 (duplicate boxes, P2 only) and H4 (a multi-second camera delay; under the account, a constant one cannot explain the stay-out counts alone). The empty-room control 3E (prepared in session 24) tests whether the adapter reports persons in an established empty scene under 3T's conditions. Persons there would be evidence of erroneous person reports, subject to the unresolved stale-video and camera-delay uncertainty. Zero would mean the problem was not reproduced, not that H2 holds. Camera-to-ingest delay (U3) stays unmeasured; at least one 0.32 s gap in delivery was seen (a stall, if the camera's PTS reflects capture timing). (Corrected in session 24; session 23 had said 3E separates H1 from H2/H3.) 3E ran once (session 25). The maintainer states, retrospectively, that the scene was unchanged and nobody was in view before their early return. Every one of the 1,310 frames in a post-hoc window from launch + 60 s to + 150 s had a person box: one track alone for 78 s, then up to three. The window is not established: no declared preconditions, an early return and fewer than 1,500 frames. So this is partial evidence of erroneous person reports, subject to the stale-video and camera-delay uncertainty. The probe records no box positions by default. The preview diagnostic P1 (`--preview`, `--box-summary`; session 26, D49) is implemented to locate them. A delayed-start 3P retry (session 27) ran on 3E's boot, with a 60 s departure period before the launch and undeclared scene conditions. It reported no person in any of 2,640 frames. Conditional on the maintainer's account, that is a non-reproduction under that run's conditions, with no positive control, and not evidence about 3T or 3E. No viewer connected, so 3P is still PENDING. The first 3P attempt (reviewed in session 28) declared nobody in view, but its declared location conflicts with the setup stated in session 28. It recorded one confirmed track in 2,610 of 2,611 frames, in the left third touching the bottom edge, and what that track covered is not recorded. The attended viewer check 3V (prepared in session 28, run in session 29) verified viewer delivery. With the maintainer seated and visible (their report), one track was reported in every frame, never two counted boxes in one frame (saved counts; not a visual check), and in three screenshots it covered the maintainer (their report). Its mean box overlaps the first 3P attempt's track (IoU 0.64 of the mean boxes, if the camera was unchanged, which was not declared). That does not show what the earlier track covered, because the seat was occupied throughout 3V. 3V tests no empty scene. The maintainer's timer-based empty-scene run (session 31) had a 60 s departure delay, like the 3P retry, and reported no person in any of 2,634 frames. Its scene conditions were not declared and 3E's window is not established. Conditional on the maintainer's report, it is a second non-reproduction under undeclared conditions. It does not explain the earlier reports or show that the scene matched them. Until U23 is settled, the demo's occupancy and zone counts from this adapter carry no accuracy claim.
+  The candidates are H1 (non-person detections in the scene), H2 (the maintainer's image reached the camera), H3 (duplicate boxes, P2 only) and H4 (a multi-second camera delay; under the account, a constant one cannot explain the stay-out counts alone). The empty-room control 3E (prepared in session 24) tests whether the adapter reports persons in an established empty scene under 3T's conditions. Persons there would be evidence of erroneous person reports, subject to the unresolved stale-video and camera-delay uncertainty. Zero would mean the problem was not reproduced, not that H2 holds. Camera-to-ingest delay (U3) stays unmeasured; at least one 0.32 s gap in delivery was seen (a stall, if the camera's PTS reflects capture timing). (Corrected in session 24; session 23 had said 3E separates H1 from H2/H3.) 3E ran once (session 25). The maintainer states, retrospectively, that the scene was unchanged and nobody was in view before their early return. Every one of the 1,310 frames in a post-hoc window from launch + 60 s to + 150 s had a person box: one track alone for 78 s, then up to three. The window is not established: no declared preconditions, an early return and fewer than 1,500 frames. So this is partial evidence of erroneous person reports, subject to the stale-video and camera-delay uncertainty. The probe records no box positions by default. The preview diagnostic P1 (`--preview`, `--box-summary`; session 26, D49) is implemented to locate them. A delayed-start 3P retry (session 27) ran on 3E's boot, with a 60 s departure period before the launch and undeclared scene conditions. It reported no person in any of 2,640 frames. Conditional on the maintainer's account, that is a non-reproduction under that run's conditions, with no positive control, and not evidence about 3T or 3E. No viewer connected, so 3P is still PENDING. The first 3P attempt (reviewed in session 28) declared nobody in view, but its declared location conflicts with the setup stated in session 28. It recorded one confirmed track in 2,610 of 2,611 frames, in the left third touching the bottom edge, and what that track covered is not recorded. The attended viewer check 3V (prepared in session 28, run in session 29) verified viewer delivery. With the maintainer seated and visible (their report), one track was reported in every frame, never two counted boxes in one frame (saved counts; not a visual check), and in three screenshots it covered the maintainer (their report). Its mean box overlaps the first 3P attempt's track (IoU 0.64 of the mean boxes, if the camera was unchanged, which was not declared). That does not show what the earlier track covered, because the seat was occupied throughout 3V. 3V tests no empty scene. The maintainer's timer-based empty-scene run (session 31) had a 60 s departure delay, like the 3P retry, and reported no person in any of 2,634 frames. Its scene conditions were not declared and 3E's window is not established. Conditional on the maintainer's report, it is a second non-reproduction under undeclared conditions. It does not explain the earlier reports or show that the scene matched them. 3ET, the formal current-condition timer check (session 32, D51), is PENDING. Even a clean 3ET cannot explain these historical reports, and reproducing their conditions is not prepared, because no verifiable references exist. Until U23 is settled, the demo's occupancy and zone counts from this adapter carry no accuracy claim.
 
 ## V2-01 inventory so far
 
@@ -3428,7 +3549,7 @@ No v1 code was migrated in this slice.
 
 Checks 1 (`nvpmodel` only), 3, 5 and 6 were run by Claude in session 3 (inventory above). Check 4 was merged into 3b. Check 8 was run by the maintainer on 2026-10-03 (session 5 log). Bounded Check 9 smokes ran on the previous boot (session 10 log) and on the current boot at `84f15ec` and `e9af7f4`. S1 ran at `e9af7f4`, and the V2-05 steady capture ran on the camera (session 13 log). These are historical conditions, not a verification of the current service state. Session 8 superseded the old Check 8/9 service-stop, cache-fill, failure-seeking, server-launch and raw-journal recipes; none is authorized. **Session 15 replaces the separate V2-05 outage and V2-09/V2-10 blocks with one numbered checklist (below).** It covers the Ultralytics setting, the outage check, the detector check, the confirming profile (`--llama-cache-ram 0`, still subject to the maintainer's approval) and the first end-to-end alert with the status page. Checks 2 and 7 remain separately PENDING. New operator results need USER-SUPPLIED MEASUREMENT attribution and their conditions, including whether D37's cache drop was used.
 
-### Operator checklist (session 15): steps 1–2 done (sessions 19–20, USER-SUPPLIED); step 3 recorded in part (session 21); 3T run once (session 23; detection correctness PENDING); 3E prepared (session 24) and run once (session 25; partially usable, formal acceptance PENDING); 3P prepared (session 26) and attempted twice (sessions 27–28; no viewer either time); 3V prepared (session 28) and run once (session 29; viewer delivery verified, movement not assessed; execution not fully established, session 30); the maintainer's timer-based empty-scene run (session 31; zero persons, 3E window not established); 3E, 3P, 4 and 5 PENDING
+### Operator checklist (session 15): steps 1–2 done (sessions 19–20, USER-SUPPLIED); step 3 recorded in part (session 21); 3T run once (session 23; detection correctness PENDING); 3E prepared (session 24) and run once (session 25; partially usable, formal acceptance PENDING); 3P prepared (session 26) and attempted twice (sessions 27–28; no viewer either time); 3V prepared (session 28) and run once (session 29; viewer delivery verified, movement not assessed; execution not fully established, session 30); the maintainer's timer-based empty-scene run (session 31; a successful diagnostic with zero persons; 3E window not established); 3ET prepared (session 32, D51); 3E, 3ET, 3P, 4 and 5 PENDING
 
 Claude ran none of these steps. Run them in order; each step names its prerequisites, and later steps depend on earlier ones. Results are USER-SUPPLIED MEASUREMENTS or observations; record the real boot ID and commit from each step's `provenance.txt`, never the commit this list was written at.
 
@@ -3732,7 +3853,7 @@ After a `STOP`, later blocks fail without writing, because `/nonexistent-stop` d
   - **Cause undetermined (U23).** Detection correctness stays PENDING. v1's absence is not established: the wrapper's pattern `[s]surveillance4_1` cannot match.
   - Details, the demonstrated points, the hypotheses and the proposed criteria are in the session 23 log.
 
-**3E. Empty-room control (repeatable; about 4 min; GPU; a functional check, not a measurement, so no D37 drop). Proposed in session 23, prepared in session 24; run once in session 25 (a partially usable diagnostic; empty-scene window not established). A maintainer-designed timer variant ran in session 31 (zero persons; window not established; recorded at the end of this step); PENDING.**
+**3E. Empty-room control (repeatable; about 4 min; GPU; a functional check, not a measurement, so no D37 drop). Proposed in session 23, prepared in session 24; run once in session 25 (a partially usable diagnostic; empty-scene window not established). A maintainer-designed timer variant ran in session 31 (a successful diagnostic with zero persons; window not established; recorded at the end of this step). As written, 3E reproduces 3T's conditions and stays PENDING; it is not attainable without verifiable references (session 32). The current-condition check is 3ET, below.**
 - *Purpose:* test whether the legacy adapter reports persons in an established empty scene under 3T's conditions (U23). It uses the same engine (SHA-256 pin), thresholds, configuration, camera position and scene. The probe runs 180 s and saves numbers only, no images.
 - *What it cannot show:* the camera-to-ingest delay, detection accuracy, or whether the maintainer was visible during 3T.
 - *Prerequisites:*
@@ -3897,12 +4018,263 @@ After a `STOP`, later blocks fail without writing, because `/nonexistent-stop` d
   - Conditions: boot `4f94a436…` (3V's boot), commit `a0a5efe`, `tracked_changes=0`, engine pin matched, headless, launch MemFree 2,936,320,000 B. A 60 s departure delay before launch, `--seconds 180 --box-summary`, no preview, 240 s outer timeout. Declared before the departure: `scene_changes_since_3v=unknown`, `planned_empty_six_minutes=yes`, `preview_enabled=no`.
   - Execution: `exit_b=0`; 2,634 processed, 0 skipped, 0 failed; upstream max 1; timeline dropped 0; `probe_procs_after=0`, `preview_port_listeners_after=0` (saved). Stdout is one JSON document (Claude's retrospective parse). The exact userinfo count was not supplied.
   - Persons: 0 frames with persons, max 0, no track, in the whole run and in the window from launch + 60 s (1,847 frames; Claude's retrospective computation).
+  - **A successful diagnostic with zero detections** (session 32). The account is retrospective.
   - **Window not established:**
     - the four scene items were not declared;
     - there is no `observations.txt`, only the maintainer's report after the run that everyone stayed out of view from within the first 60 s until a six-minute timer rang;
     - 3E-1's fields were not recorded as specified, and its `src_config_same_as_3t=yes` cannot hold after D49.
 
     A conditional non-reproduction; see the session 31 log.
+
+**3ET. Timer-based empty-scene check, current conditions (D51; repeatable; about 12 min in all, of which 6 min away; GPU; a functional check, not a measurement, so no D37 drop). Prepared in session 32; PENDING (maintainer-run). It replaces nothing: 3E as written, a reproduction of 3T's conditions, stays PENDING and is not attainable without verifiable references (session 32 log).**
+- *Purpose:* test whether the legacy adapter reports persons in an empty scene under **today's declared conditions**. It uses the same engine (SHA-256 pin), thresholds, configuration and capture path as 3T and 3E, and a 180 s probe that saves numbers only. Person positions come from `--box-summary`; there is no preview.
+- *What it cannot show (limitations, predeclared):*
+  - **A clean result cannot explain U23's historical reports** in 3T, 3E or the first 3P attempt. It claims no equivalence with their scenes.
+  - **It does not establish general detector accuracy:** one run gives counts, not accuracy, in one scene, lighting and time, with no movement.
+  - It does not measure the camera-to-ingest delay. The 60 s washout stays an assumption.
+  - It has no positive control of its own. 3V is a separate person-present run.
+  - The operator is away by design, so changes during the absence are known only as far as they are noticed on return.
+- **Before you launch** (D50). Read this box before 3ET-1:
+
+  | | |
+  |---|---|
+  | Total | About 12 min: 3–4 min of preparation at the Mac, 6 min away, then 2–3 min for 3ET-5 and 3ET-6 |
+  | Position | At the Mac (in the camera's view) for 3ET-1 to 3ET-4. Away from the camera's view from the prompt until the phone timer rings, out of the room if possible with the door closed. Back at the Mac for 3ET-5 and 3ET-6 |
+  | Timed actions | **t = 0**, when 3ET-4 beeps and prints `NOW`: start a six-minute phone timer and leave. **By t = 60 s:** be out of view; the probe starts at t = 60 s whatever happens. **Until the timer rings (about t = 360 s):** stay out. The probe ends by itself at about t = 250 s, and at the latest at about t = 306 s (outer bound) |
+  | Finish | Return when the timer rings. The screen shows `FINISHED: exit_b=… probe_procs_after=…` and no detection counts. Run 3ET-5 and save your account **before** anything shows counts, then run 3ET-6. Do not open `b.json` before 3ET-5 is saved |
+  | Nothing under a deadline | After pasting 3ET-4 you type nothing until you are back. Do not press Ctrl-C in 3ET-4 |
+
+  Before 3ET-1, ask anyone else at home to stay out of the room (or the camera's view) for about 7 minutes, and keep pets out.
+- *Prerequisites:*
+  - headless, MemFree ≥ 1,500,000,000 B, and no v1, llama-server or other camera client (3ET-1 records these);
+  - no tracked changes;
+  - one Jetson session in tmux, so a dropped SSH connection does not stop the run. From the Mac: `ssh -t villain8001@192.168.55.1 tmux new -A -s 3et`. All 3ET blocks run in this one shell.
+- *3ET-1. JETSON: fresh directory and machine-recorded provenance (paste as one block):*
+  ```bash
+  cd /home/villain8001/sentinel-surveillance && set -o pipefail
+  STEP=3et-timer-$(date -u +%Y%m%dT%H%M%SZ); D=~/sentinel-runs/d1-checklist/$STEP
+  if [ -e "$D" ]; then echo "STOP: $D already exists; do not continue"; D=/nonexistent-stop; else
+    mkdir -p -m 700 "$D"
+    { echo "utc=$(date -u +%FT%TZ)"; echo "boot_id=$(cat /proc/sys/kernel/random/boot_id)"; echo "boot_started=$(uptime -s)"
+      echo "commit=$(git rev-parse HEAD)"; echo "tracked_changes=$(git status --porcelain --untracked-files=no | wc -l)"
+      echo "has_timeline_and_stdout_fix=$(git merge-base --is-ancestor 7a4d408 HEAD && echo yes || echo no)"
+      echo "src_config_same_as_3t_outside_d49=$(git diff --quiet 4a70ef4 HEAD -- src config ':(exclude)src/sentinel/cli.py' ':(exclude)src/sentinel/media/probe.py' ':(exclude)src/sentinel/tracking/probe.py' ':(exclude)src/sentinel/tracking/preview.py' ':(exclude)src/sentinel/tracking/box_summary.py' && echo yes || echo no)"
+      echo "d49_files_same_as_92bce43=$(git diff --quiet 92bce43 HEAD -- src/sentinel/cli.py src/sentinel/media/probe.py src/sentinel/tracking/probe.py src/sentinel/tracking/preview.py src/sentinel/tracking/box_summary.py && echo yes || echo no)"
+      echo "engine_sha256=$(sha256sum ~/yolov8n.engine | cut -c1-64)"
+      echo "display_manager=$(systemctl is-active display-manager)"
+      echo "v1_procs=$(pgrep -fc '[s]urveillance4_1|[d]ashboard(_1)?\.py')"
+      echo "other_camera_clients=$(pgrep -fc '[s]urveillance4_1|[l]lama-server|[f]fmpeg|[f]fprobe|[s]entinel\.cli')"
+      echo "caffeine_procs=$(pgrep -fc '[c]affeine')"
+      echo "memfree_bytes=$(awk '/^MemFree:/{printf "%d", $2*1024}' /proc/meminfo)"; } | tee "$D/provenance.txt"
+  fi
+  ```
+  - Expected:
+    - `tracked_changes=0`, `has_timeline_and_stdout_fix=yes`, `src_config_same_as_3t_outside_d49=yes`, `d49_files_same_as_92bce43=yes`;
+    - `engine_sha256=08370639f961d2c67148c19562718ef80527c7085e88d2d923176180f1b98637`;
+    - `display_manager=inactive`, `v1_procs=0`, `other_camera_clients=0`, `memfree_bytes` ≥ 1500000000.
+  - The two comparison fields are justified in the session 32 log.
+  - Stop on `STOP` or any other value. A non-zero process count can come from a shell whose own command text holds a plain name; list the processes with `pgrep -fa` before deciding.
+- *3ET-2. JETSON: today's conditions, declared before the run (paste, then edit, save and close).* Describe what is true now, in words. Write `unknown` wherever you are unsure. Do not compare with any earlier run. `plan_out_of_view_six_minutes` is the one item that must be `yes` for the run to count:
+  ```bash
+  [ -e "$D/preconditions.txt" ] || printf '%s\n' 'check_type=current_conditions   # fixed: no claim that the scene matches any earlier run' \
+    'plan_out_of_view_six_minutes=unknown   # yes only if you will leave within the 60 s countdown and stay out until the timer rings' \
+    'operator_wait_location=   # in words, e.g. outside the room with the door closed' \
+    'others_who_could_enter=   # in words, e.g. nobody else at home / others told to stay out / unknown' \
+    'pets_could_enter_view=unknown   # yes / no / unknown' \
+    'lighting_now=   # in words: daylight, curtains, lamps on or off' \
+    'screens_in_view_now=   # in words: which screens the camera can see, if any; or unknown' \
+    'scene_notes_now=   # in words: anything you know was moved, covered or added today; or unknown' 'notes=' > "$D/preconditions.txt"
+  ${EDITOR:-nano} "$D/preconditions.txt"
+  ```
+- *3ET-3. JETSON: hidden camera URL (paste this line alone, then the URL, then Enter):*
+  ```bash
+  read -rsp 'Camera URL (hidden): ' SENTINEL_RTSP_URL; echo; export SENTINEL_RTSP_URL; [ -n "$SENTINEL_RTSP_URL" ] && echo "url set" || echo "URL EMPTY: stop"
+  ```
+- *3ET-4. JETSON: the timed run (paste as one block, then leave at the prompt).* It is the only timed block. It writes the departure prompt, launch and end times to `marks.txt`, bounds the probe at 240 s plus a 5 s kill, and prints no detection count:
+  ```bash
+  cd /home/villain8001/sentinel-surveillance
+  if [ ! -d "$D" ] || [ -e "$D/marks.txt" ] || [ ! -s "$D/preconditions.txt" ] || [ -z "$SENTINEL_RTSP_URL" ]; then echo "STOP: run 3ET-1 to 3ET-3 in this shell first"; else
+    echo "departure_prompt_utc=$(date -u +%FT%T.%3NZ)" > "$D/marks.txt"
+    printf '\a\n>>> NOW: start your six-minute phone timer and leave the camera view. Come back only when it rings. <<<\n'
+    sleep 60 & W=$!; S=$SECONDS
+    while kill -0 "$W" 2>/dev/null; do printf '\r[departure] the probe starts in %2d s; leave now   ' "$((60 - SECONDS + S))"; sleep 1; done
+    echo; echo "launch_utc=$(date -u +%FT%T.%3NZ)" >> "$D/marks.txt"; echo "[probe] running; it stops by itself after about 3 min"
+    timeout -k 5 240 env LD_PRELOAD=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1 PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli \
+      track probe config/default.yaml --engine ~/yolov8n.engine --seconds 180 --box-summary >"$D/b.json" 2>"$D/b.err"
+    echo "exit_b=$?" >> "$D/provenance.txt"; echo "end_utc=$(date -u +%FT%T.%3NZ)" >> "$D/marks.txt"
+    echo "probe_procs_after=$(pgrep -fc '[s]entinel\.cli track probe')" >> "$D/provenance.txt"
+    echo "FINISHED: $(tail -n 2 "$D/provenance.txt" | tr '\n' ' ')(no detection counts are shown). Next: 3ET-5."
+  fi
+  ```
+  - `exit_b`: 0 normally; 124 or 137 if the outer bound stopped the probe; 1 for a refusal. The refusal label is in `tail -n 3 "$D/b.err"`, for example `memfree_below_minimum`.
+  - If you come back and `FINISHED` is not on the screen, the run is still going and you are now in view. Wait for `FINISHED`, then write `finished_shown_on_return=no` in 3ET-5. The window will not count.
+- *3ET-5. JETSON: your account, written on return, before any count is shown (paste, then edit, save and close).* Words only, `unknown` wherever unsure:
+  ```bash
+  if ! grep -q '^end_utc=' "$D/marks.txt" 2>/dev/null; then echo "STOP: 3ET-4 has not finished in this shell"; else
+    [ -e "$D/observations.txt" ] || printf '%s\n' 'timer_started_at_prompt=unknown   # yes / no / unknown' \
+      'out_of_view_before_launch=unknown   # out of the camera view before the 60 s countdown ended: yes / no / unknown' \
+      'left_room=unknown   # yes / no / unknown' \
+      'stayed_out_until_timer=unknown   # yes / no / unknown' \
+      'anyone_else_entered_view=unknown   # anyone, or a pet, as far as you know: yes / no / unknown' \
+      'finished_shown_on_return=unknown   # FINISHED was on the screen when you came back: yes / no / unknown' \
+      'changes_noticed_on_return=unknown   # lighting, objects, screens or camera: yes / no / unknown; describe in notes' 'notes=' > "$D/observations.txt"
+    ${EDITOR:-nano} "$D/observations.txt"
+  fi
+  ```
+- *3ET-6. JETSON: lock the account, run the checks, then show the summary (paste as one block, once).* It refuses to show counts until 3ET-5's file exists. It records that file's SHA-256 and the start time before printing any count. It runs the stdout and userinfo checks (numbers only, never the URL), prints the counts, the window and `track_boxes`, and evaluates the predeclared gates:
+  ```bash
+  if [ ! -s "$D/observations.txt" ] || ! grep -q '^end_utc=' "$D/marks.txt" 2>/dev/null; then echo "STOP: finish 3ET-4 and write 3ET-5's account first (no counts shown)"; else
+    { echo "observations_sha256=$(sha256sum "$D/observations.txt" | cut -c1-64)"; echo "summary_started_utc=$(date -u +%FT%T.%3NZ)"
+      python3 -m json.tool "$D/b.json" >/dev/null 2>&1 && echo "stdout_json=valid" || echo "stdout_json=INVALID"
+      U="${SENTINEL_RTSP_URL#*://}"; U="${U%%@*}"
+      if [ -n "$SENTINEL_RTSP_URL" ] && [ -n "$U" ]; then F="$D/b.json $D/b.err $D/marks.txt $D/preconditions.txt $D/observations.txt"
+        echo "userinfo_lines=$(cat $F | grep -cF -- "$U")"; echo "userinfo_scanned_lines=$(cat $F | wc -l)"
+      else echo "userinfo_check=not_run (URL not set in this shell)"; fi; } | tee -a "$D/provenance.txt"
+    unset U F SENTINEL_RTSP_URL
+    python3 -u -c 'if 1:
+        import json, os, sys
+        from datetime import datetime, timedelta, timezone
+        d = sys.argv[1]
+        t = lambda s: datetime.fromisoformat(s.replace("Z", "+00:00"))
+        def kv(name):
+            out = {}
+            for line in open(d + "/" + name):
+                line = line.split("#")[0].strip()
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    out[k.strip()] = v.strip()
+            return out
+        mt = lambda name: datetime.fromtimestamp(os.stat(d + "/" + name).st_mtime, timezone.utc)
+        p, pre, obs, m = kv("provenance.txt"), kv("preconditions.txt"), kv("observations.txt"), kv("marks.txt")
+        print("ACCOUNT LOCKED: observations_sha256", p.get("observations_sha256", "?")[:16], "| written", mt("observations.txt").strftime("%H:%M:%S"), "UTC")
+        try:
+            r = json.load(open(d + "/b.json"))
+        except ValueError:
+            sys.exit("b.json is not one JSON document: stop and report")
+        if r.get("status") in ("refused", "interrupted"):
+            sys.exit("STATUS %s %s" % (r.get("status"), r.get("reason")))
+        tr, f, u, w, bx = r["tracking"], r["frames"], r["upstream_connections"], r["worker"], r["track_boxes"]
+        dep, la, en = t(m["departure_prompt_utc"]), t(m["launch_utc"]), t(m["end_utc"])
+        print("status", r["status"], "| exit_b", p.get("exit_b"), "| captured", f["captured"], "replaced", f["replaced"], "| processed", tr["processed"],
+              "skipped", tr["skipped"], "failed", tr["failed"], "| failures", tr["failures"], "error_types", tr["error_types"])
+        print("upstream before", u.get("before"), "max", u.get("max"), "| connects", w.get("connects"), "epochs", r["epochs"], "stream_ends", w.get("stream_ends"),
+              "| load_s", r["load"]["seconds"], "| timeline dropped", r["timeline"]["dropped_frames"])
+        print("launch at departure + %.1f s; end at launch + %.1f s" % ((la - dep).total_seconds(), (en - la).total_seconds()))
+        print("persons, whole run: frames_with_persons", r["persons"]["frames_with_persons"], "max_per_frame", r["persons"]["max_per_frame"],
+              "track_ids", r["persons"]["track_ids"], "confirmed", r["persons"]["confirmed_track_ids"])
+        secs = {t(e["utc"]): e for e in r["timeline"]["seconds"]}
+        if not secs:
+            sys.exit("NO TIMELINE SECONDS: no frame was processed")
+        one = timedelta(seconds=1)
+        start = la + 60 * one
+        first = start.replace(microsecond=0) + (one if start.microsecond else timedelta(0))
+        last = max(secs)
+        window = [first + i * one for i in range(int((last - first) / one) + 1)] if last >= first else []
+        def tally(name, keys):
+            es = [secs[k] for k in keys if k in secs]
+            proc, withp = sum(e["processed"] for e in es), sum(e["frames_with_persons"] for e in es)
+            print(name + ":", "seconds %d/%d" % (len(es), len(keys)), "| processed", proc, "failed", sum(e["failed"] for e in es),
+                  "| frames_with_persons", withp, "(" + ("%.1f%%" % (100.0 * withp / proc) if proc else "n/a") + " of processed)",
+                  "| seconds_with_persons", sum(1 for e in es if e["frames_with_persons"]),
+                  "| max_persons", max((e["max_persons"] for e in es), default=0), "max_confirmed", max((e["max_confirmed"] for e in es), default=0),
+                  "| distinct_track_ids", len({tuple(i) for e in es for i in e["track_ids"]}))
+            return proc
+        tally("washout_not_counted", sorted(k for k in secs if k < first))
+        print("window", first.strftime("%H:%M:%S"), "to", (last + one).strftime("%H:%M:%S"), "UTC, from launch + 60 s (washout assumption)")
+        wproc = tally("window", window)
+        code = lambda k: "-" if k not in secs else "x" if not secs[k]["processed"] else str(min(secs[k]["max_persons"], 9)) if secs[k]["frames_with_persons"] else "."
+        pat = "".join(code(k) for k in window)
+        print("pattern, one character per window second (. none, digit = most persons in one frame, - no frame, x only failed frames):")
+        for i in range(0, len(pat), 60):
+            print("  +%03ds %s" % (i, pat[i:i + 60]))
+        print("track_boxes (normalized, x from the left, y from the top):", len(bx["tracks"]), "of at most", bx["max_tracks"],
+              "| observations_not_summarized", bx["observations_not_summarized"])
+        for tb in bx["tracks"]:
+            c = tb["confidence"]
+            print("  track %d:%d frames %d confirmed %d conf %.3f-%.3f mean %.3f | %s-%s UTC | mean %s union %s" % (tb["track"][0], tb["track"][1],
+                  tb["frames"], tb["confirmed_frames"], c["min"], c["max"], c["mean"], tb["first_utc"][11:23], tb["last_utc"][11:23], tb["box_mean"], tb["box_union"]))
+        pin = "08370639f961d2c67148c19562718ef80527c7085e88d2d923176180f1b98637"
+        memfree = p.get("memfree_bytes", "")
+        gates = [
+            ("P tracked_changes=0", p.get("tracked_changes") == "0"),
+            ("P has_timeline_and_stdout_fix=yes", p.get("has_timeline_and_stdout_fix") == "yes"),
+            ("P src_config_same_as_3t_outside_d49=yes", p.get("src_config_same_as_3t_outside_d49") == "yes"),
+            ("P d49_files_same_as_92bce43=yes", p.get("d49_files_same_as_92bce43") == "yes"),
+            ("P engine_sha256 equals the pin", p.get("engine_sha256") == pin),
+            ("P display_manager=inactive", p.get("display_manager") == "inactive"),
+            ("P v1_procs=0 and other_camera_clients=0", p.get("v1_procs") == "0" and p.get("other_camera_clients") == "0"),
+            ("P memfree_bytes >= 1500000000", memfree.isdigit() and int(memfree) >= 1500000000),
+            ("D preconditions.txt last written before the departure prompt", mt("preconditions.txt") < dep),
+            ("D plan_out_of_view_six_minutes=yes", pre.get("plan_out_of_view_six_minutes") == "yes"),
+            ("T launch at least 60 s after the departure prompt", la - dep >= 60 * one),
+            ("E exit_b=0 and status frames_received", p.get("exit_b") == "0" and r["status"] == "frames_received"),
+            ("E failed 0, no failures or error types", tr["failed"] == 0 and not tr["failures"] and not tr["error_types"]),
+            ("E upstream before 0 and max 1", u.get("before") == 0 and u.get("max") == 1),
+            ("E one connection and epoch, no stream end", w.get("connects") == 1 and r["epochs"] == 1 and w.get("stream_ends") == 0),
+            ("E timeline dropped 0", r["timeline"]["dropped_frames"] == 0),
+            ("E stdout_json=valid", p.get("stdout_json") == "valid"),
+            ("E userinfo_lines=0", p.get("userinfo_lines") == "0"),
+            ("E probe_procs_after=0", p.get("probe_procs_after") == "0"),
+            ("W window covers its start", min(secs) <= first),
+            ("W window processed >= 1500", wproc >= 1500),
+            ("O account written after end_utc and before this summary", en < mt("observations.txt") <= t(p.get("summary_started_utc", "1970-01-01T00:00:00Z"))),
+            ("O out_of_view_before_launch=yes", obs.get("out_of_view_before_launch") == "yes"),
+            ("O stayed_out_until_timer=yes", obs.get("stayed_out_until_timer") == "yes"),
+            ("O anyone_else_entered_view=no", obs.get("anyone_else_entered_view") == "no"),
+            ("O finished_shown_on_return=yes", obs.get("finished_shown_on_return") == "yes"),
+            ("O changes_noticed_on_return is not yes", obs.get("changes_noticed_on_return") != "yes"),
+        ]
+        print("predeclared gates (P provenance, D declaration, T timing, E execution, W window, O account):")
+        for name, ok in gates:
+            print("  %-62s %s" % (name, "met" if ok else "NOT MET"))
+        bad = [name for name, ok in gates if not ok]
+        print("current-condition empty-scene window ESTABLISHED:", "yes" if not bad else "no (%d not met)" % len(bad))
+        print("NOTE: counts, not accuracy; no claim about earlier scenes or U23; Claude interprets the returned files against the predeclared criteria")
+    ' "$D" 2>&1 | tee "$D/summary.txt"
+  fi
+  ```
+- *Stop if:*
+  - 3ET-1 fails its expectations, or `URL EMPTY` appears;
+  - `exit_b` is not 0, `stdout_json=INVALID`, `failed` > 0, or `probe_procs_after` > 0;
+  - `userinfo_lines` > 0: share only the counts, not `b.json` or `b.err`;
+  - `REFUSED memfree_below_minimum`: record it; a reboot is the maintainer's decision.
+
+  Then return the files anyway; a stopped run is recorded, not repeated silently.
+- *Artifacts:* return `provenance.txt`, `preconditions.txt`, `marks.txt`, `observations.txt`, `summary.txt`, and `b.json` if `userinfo_lines=0`. `b.err` stays local.
+- *Acceptance criteria (predeclared; all 27 gates in 3ET-6 must be met for an established current-condition empty-scene window):*
+  - **P provenance:** 3ET-1's expected values.
+  - **D declaration:** `preconditions.txt` last written before `departure_prompt_utc`, with `plan_out_of_view_six_minutes=yes`. The descriptive items do not gate.
+  - **T timing:** launch at least 60 s after the prompt.
+  - **E execution:**
+    - `exit_b=0` and `frames_received`;
+    - 0 failed, with no failures or error types;
+    - upstream before 0 and max 1;
+    - one connection and epoch, with no stream end;
+    - timeline dropped 0;
+    - `stdout_json=valid`, `userinfo_lines=0` and `probe_procs_after=0`.
+  - **W window:** from launch + 60 s (the washout assumption), covering its start, with at least 1,500 processed frames.
+  - **O account:**
+    - written after `end_utc` and before the summary started, with its hash recorded first;
+    - `out_of_view_before_launch=yes`, `stayed_out_until_timer=yes`, `anyone_else_entered_view=no` and `finished_shown_on_return=yes`;
+    - `changes_noticed_on_return` not `yes`.
+
+  Claude re-checks every gate from the returned files. The hash shows whether the account changed after the summary.
+- *Interpretation (Claude, after the files are returned; predeclared; no acceptance threshold):*
+  - **Established window, zero persons:** under the declared current conditions, the adapter reported no person in an empty scene for the window's frames. Nothing more: see the limitations above. Whether this settles step 3's detection correctness is the maintainer's decision; no predeclared rule makes it do so.
+  - **Established window, persons reported:** evidence of erroneous person reports under current conditions. It is subject to the stale-video uncertainty, since video delayed by more than 60 s would fall inside the window. If `left_room=no`, a reflection or partial view of the operator is not excluded. Claude reports:
+    - the counts and rate;
+    - the seconds with persons, the most persons and the distinct track IDs;
+    - the temporal pattern;
+    - `track_boxes` positions.
+
+    None of these is a rate threshold.
+  - **Not established:** the counts are reported and the failed gates named, but not used as empty-scene evidence.
+- *Optional, no hardware: the retrospective userinfo count for `3e-timer-mxlIc1hs`.* It closes that run's last recoverable gap. It prints counts only and writes nothing into the run directory. Paste it, then the URL and Enter, and report the printed line. It is recorded as a retrospective check, not as part of that run:
+  ```bash
+  D=~/sentinel-runs/d1-checklist/3e-timer-mxlIc1hs; read -rsp 'Camera URL (hidden): ' X; echo; U="${X#*://}"; U="${U%%@*}"; unset X
+  if [ -n "$U" ]; then F="$D/b.json $D/b.err $D/marks.txt $D/provenance.txt $D/preconditions.txt"
+    echo "retro_userinfo_lines=$(cat $F | grep -cF -- "$U") scanned_lines=$(cat $F | wc -l) checked_utc=$(date -u +%FT%TZ)"; else echo "URL EMPTY: nothing checked"; fi; unset U F
+  ```
 
 **3P. Operator-only live preview (D49; P1 from session 25; diagnostic, not a measurement, so no D37 drop; GPU; about 10 min in all, of which 3P-4 runs about 195 s). Prepared in session 26; two attempts, neither viewed (sessions 27 and 28, recorded at the end of this step). With a viewer it needs the Mac outside the view, which the stated setup rules out (session 28), so 3V is the attended alternative. 3V verified viewer delivery (session 29); 3P's empty-scene purpose stays PENDING.**
 - *Purpose:* see where the boxes the track probe counts are (U23): on the frames they came from, with track ID, confidence and C/T, while you stay outside the camera's view. `--box-summary` also records each track's box positions as numbers.
