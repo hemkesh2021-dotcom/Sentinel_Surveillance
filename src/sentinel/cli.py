@@ -183,6 +183,11 @@ def main(
         "--box-summary", action="store_true",
         help="add track_boxes to the JSON: numbers-only box statistics per track, at most 64 tracks",
     )
+    track_probe.add_argument(
+        "--multi-person-frames", action="store_true",
+        help="add multi_person_frames to the JSON: numbers-only records of frames with two or more persons "
+        "(frame identity, times, track IDs, boxes, confidences, pairwise overlap), at most 64 records",
+    )
     run = commands.add_parser(
         "run",
         help="run the demo runtime (D-1): camera (SENTINEL_RTSP_URL) -> detector/tracker -> rules -> "
@@ -228,8 +233,8 @@ def main(
         with _json_stdout() as out:
             return _track_probe(
                 config, args.seconds, args.engine, round(args.min_free_gb * GB), capture_source, tracker_backend,
-                meminfo, out, preview=args.preview, box_summary=args.box_summary, preview_port=preview_port,
-                preview_render=preview_render,
+                meminfo, out, preview=args.preview, box_summary=args.box_summary,
+                multi_person_frames=args.multi_person_frames, preview_port=preview_port, preview_render=preview_render,
             )
     if args.command == "run":
         devices = devices or Devices(
@@ -299,6 +304,7 @@ def _track_probe(
     *,
     preview: bool = False,
     box_summary: bool = False,
+    multi_person_frames: bool = False,
     preview_port: int | None = None,
     preview_render: Callable[[Any], bytes] | None = None,
 ) -> int:
@@ -330,6 +336,12 @@ def _track_probe(
 
         boxes = BoxSummary()
         observers.append(boxes.observe)
+    multi = None
+    if multi_person_frames:
+        from .tracking.multi_person import MultiPersonFrames
+
+        multi = MultiPersonFrames()
+        observers.append(multi.observe)
     server = None
     stop: threading.Event | None = None
     handlers: dict[int, Any] = {}
@@ -390,6 +402,8 @@ def _track_probe(
     summary["settings"] = capture.model_dump()
     if boxes is not None:
         summary.update(boxes.summary())
+    if multi is not None:
+        summary.update(multi.summary())
     if server is not None:
         summary["preview"] = {**server.summary(), "ended_by": "signal" if interrupted else "duration"}
     print(json.dumps(summary, indent=2), file=out, flush=True)
