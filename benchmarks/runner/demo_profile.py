@@ -29,6 +29,13 @@ in CSV and None when loaded. Samples stream to disk every 0.2 seconds without
 an in-memory history. Torch allocator events are a separate process-only view,
 not total GPU/device usage or proof that process exit reclaimed memory.
 
+MA1 (--memory-attribution, opt-in diagnostic, D55; only with --post-load-release)
+adds the workload's own allocator and garbage-collector counters (relayed
+``memattr_process`` events) and, every --maps-interval-s seconds, the
+workload's /proc/<pid>/smaps summed into fixed mapping categories
+(``memattr_maps`` events: numbers only, never a path or memory contents). The
+summary writes memattr.json. An MA1 run is never eligible, accepted or admitted.
+
 Run from a plain SSH session on the Jetson, headless (decision D29), with
 VS Code and Claude Code closed; see docs/IMPLEMENTATION_STATUS.md, check 8.
 Standard library only; run with the system Python 3. Nothing here reads camera
@@ -56,6 +63,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -132,6 +140,38 @@ PLR_CANNOT_ESTABLISH = (
     "model accuracy or scene accuracy",
     "other boots, other inputs or other flags",
 )
+# MA1 (opt-in diagnostic, D55): attribution of the workload process's memory; never a criterion or eligibility.
+MA1_LABEL = "ma1-memory-attribution"
+MAPS_INTERVAL_S = 5.0
+MAPS_INTERVAL_RANGE_S = (2.0, 60.0)
+MAPS_READ_LIMIT_BYTES = 32 << 20  # a larger smaps is not parsed (unavailable, too_large)
+GLIBC_HEAP_MAX_BYTES = 64 << 20  # glibc's HEAP_MAX_SIZE on 64-bit: each non-main arena heap is aligned to it
+MAPS_CATEGORIES = ("heap", "stack", "arena_like", "anon_other", "anon_noaccess", "file", "device", "shmem_like",
+                   "special")
+SMAPS_FIELDS = {"Rss": "rss_bytes", "Pss": "pss_bytes", "Private_Dirty": "private_dirty_bytes",
+                "Anonymous": "anonymous_bytes", "Swap": "swap_bytes"}
+SMAPS_HEADER = re.compile(r"([0-9a-f]+)-([0-9a-f]+) ([r-][w-][x-][ps]) [0-9a-f]+ [0-9a-f]+:[0-9a-f]+ \d+ *(.*)")
+SHMEM_PREFIXES = ("/memfd:", "/dev/shm/", "/SYSV", "/dev/zero")
+MALLINFO2_REPORTED = ("arena", "ordblks", "smblks", "hblks", "hblkhd", "fsmblks", "uordblks", "fordblks", "keepcost")
+MEMATTR_EVENTS = frozenset({"memattr_process", "memattr_config"})
+QUIET_EVENTS = frozenset({"memattr_process", "memattr_maps"})  # MA1's periodic readings: events.jsonl only
+MEMATTR_FULL_GC_PER_SAMPLE = 16  # demo_workload's bound; a longer list is cut to it
+MEMATTR_STATUSES = frozenset({"observed", "partial", "unavailable", "unsupported"})
+MA1_STEP_BYTES = 1 << 20  # a workload RSS increase between consecutive memory.csv samples listed as a step
+MA1_MAX_STEPS = 128
+MA1_MAX_FULL_GC = 512
+MA1_CANNOT_ESTABLISH = (
+    "which code or object allocated the memory: the counters are process totals and mapping categories",
+    "whether growth is a leak or bounded beyond the recorded interval",
+    "GPU (NvMap) or other driver memory: it is outside the allocator counters, and what smaps shows for device "
+    "mappings depends on the driver",
+    "the device-wide residual outside the workload process (kernel and driver allocations)",
+    "that a full collection caused a step that followed it: time proximity is not cause",
+    "that the instrumentation left timing unchanged: its own costs are recorded, and latencies can only be "
+    "compared descriptively with the uninstrumented PLR run",
+    "any step-4 or PLR result, eligibility, acceptance or admission",
+    "other boots, inputs or flags",
+)
 COMPONENTS = (  # (key, load phase, settle phase, event carrying the load time)
     ("scene", "llama_load", "llama_settle", "llama_ready"),
     ("detector", "detector_load", "detector_settle", "detector_loaded"),
@@ -191,6 +231,103 @@ def read_swap_counters() -> dict[str, int]:
             if key in ("pswpin", "pswpout"):
                 counters[key] = int(value)
     return counters
+
+
+def _mapping_category(vmas: list[dict[str, object]], index: int) -> str:
+    """One mapping's category from its path, permissions and layout; the path is used here and never kept.
+
+    ``arena_like`` is a heuristic for glibc's non-main arena heaps, each reserved as one 64 MiB-aligned block
+    whose used part is rw-p and whose remainder stays no-access (---p): an anonymous rw-p mapping that is
+    followed directly by an anonymous ---p mapping ending on a 64 MiB boundary, with that block's start inside
+    it, or (a fully grown heap) one at least 64 MiB long that ends on a boundary. The kernel can merge a heap's
+    used part with an anonymous neighbour just below it (seen on this device): that neighbour's pages are then
+    counted here too. A large mmapped chunk that ends on a boundary can match by chance, and a heap whose
+    remainder merged with another no-access mapping does not match.
+    """
+    vma = vmas[index]
+    path = vma["path"]
+    if path == "[heap]":
+        return "heap"
+    if path == "[stack]":
+        return "stack"
+    if path.startswith("["):
+        return "special"
+    if path.startswith(SHMEM_PREFIXES):
+        return "shmem_like"
+    if path.startswith("/dev/"):
+        return "device"
+    if path:
+        return "file"
+    if vma["perms"][:3] == "---":
+        return "anon_noaccess"
+    if vma["perms"] == "rw-p":
+        start, end = vma["start"], vma["end"]
+        if end % GLIBC_HEAP_MAX_BYTES == 0 and end - start >= GLIBC_HEAP_MAX_BYTES:
+            return "arena_like"
+        following = vmas[index + 1] if index + 1 < len(vmas) else None
+        if (following is not None and not following["path"] and following["perms"] == "---p"
+                and following["start"] == end and following["end"] % GLIBC_HEAP_MAX_BYTES == 0
+                and start <= following["end"] - GLIBC_HEAP_MAX_BYTES < end):
+            return "arena_like"
+    return "anon_other"
+
+
+def parse_smaps(text: str) -> dict[str, object]:
+    """/proc/<pid>/smaps summed by category: mapping count, virtual size and the SMAPS_FIELDS, in bytes.
+
+    A category's field is None (unavailable, never zero) when any of its mappings lacks that line or has an
+    unparseable value. Raises ValueError when the text holds no mapping (a zombie or an empty read).
+    """
+    vmas: list[dict[str, object]] = []
+    for line in text.splitlines():
+        if line and line[0] in "0123456789abcdef":  # field lines start with an upper-case name
+            header = SMAPS_HEADER.fullmatch(line)
+            if header is None:
+                raise ValueError("unparsed mapping line")
+            vmas.append({"start": int(header[1], 16), "end": int(header[2], 16), "perms": header[3],
+                         "path": header[4], "fields": {}})
+        elif vmas:
+            name, _, rest = line.partition(":")
+            key = SMAPS_FIELDS.get(name)
+            if key is not None:
+                parts = rest.split()
+                vmas[-1]["fields"][key] = (int(parts[0]) * 1024 if len(parts) == 2 and parts[1] == "kB"
+                                           and parts[0].isdigit() else None)
+    if not vmas:
+        raise ValueError("no mappings")
+    categories = {name: {"vmas": 0, "size_bytes": 0, **dict.fromkeys(SMAPS_FIELDS.values(), 0)}
+                  for name in MAPS_CATEGORIES}
+    for index, vma in enumerate(vmas):
+        total = categories[_mapping_category(vmas, index)]
+        total["vmas"] += 1
+        total["size_bytes"] += vma["end"] - vma["start"]
+        for key in SMAPS_FIELDS.values():
+            value = vma["fields"].get(key)
+            total[key] = None if value is None or total[key] is None else total[key] + value
+    return {"vmas": len(vmas), "categories": categories}
+
+
+def read_maps_aggregate(pid: int, *, opener=open, clock=time.perf_counter) -> dict[str, object]:
+    """MA1: one bounded read of /proc/<pid>/smaps, aggregated; status, reason and its own cost, numbers only."""
+    started = clock()
+    try:
+        with opener(f"/proc/{pid}/smaps", "rb") as handle:
+            data = handle.read(MAPS_READ_LIMIT_BYTES + 1)
+    except OSError as exc:
+        return {"status": "unavailable", "reason": "read_failed",
+                "error": errno.errorcode.get(exc.errno or 0, type(exc).__name__),
+                "read_ms": round((clock() - started) * 1000, 3)}
+    read_ms = round((clock() - started) * 1000, 3)
+    if len(data) > MAPS_READ_LIMIT_BYTES:
+        return {"status": "unavailable", "reason": "too_large", "bytes_read": len(data), "read_ms": read_ms}
+    parsing = clock()
+    try:
+        aggregate = parse_smaps(data.decode("utf-8", "replace"))
+    except ValueError:
+        return {"status": "unavailable", "reason": "unparsed" if data.strip() else "no_mappings",
+                "bytes_read": len(data), "read_ms": read_ms}
+    return {"status": "observed", "bytes_read": len(data), "read_ms": read_ms,
+            "parse_ms": round((clock() - parsing) * 1000, 3), **aggregate}
 
 
 def scan_processes() -> list[tuple[int, str, str, list[str]]]:
@@ -284,6 +421,8 @@ def preconditions(args: argparse.Namespace) -> tuple[list[str], dict[str, object
         problems.append("--post-load-release needs the detector and face models; do not pass --scene-only")
     if getattr(args, "post_load_release", False) and getattr(args, "mr1_release_check", False):
         problems.append("--mr1-release-check and --post-load-release are separate procedures; pass one")
+    if getattr(args, "memory_attribution", False) and not getattr(args, "post_load_release", False):
+        problems.append("--memory-attribution (MA1) is defined only with --post-load-release")
     for label, path in required.items():
         if not Path(path).exists():
             problems.append(f"missing {label}: {path}")
@@ -359,6 +498,8 @@ def provenance(args: argparse.Namespace, context: dict[str, object], run_id: str
                if getattr(args, "mr1_release_check", False) else {}),
             **({"post_load_release": True, "release_settle_s": args.mr1_release_settle_s}
                if getattr(args, "post_load_release", False) else {}),
+            **({"memory_attribution": True, "maps_interval_s": args.maps_interval_s}
+               if getattr(args, "memory_attribution", False) else {}),
         },
         **({"mr1_note": "MR1 release check: loads and settles, each model's file cache released after its settle, "
                         "bounded smoke checks and unload. Not a resource profile, step-4 evidence or a sustained-memory test."}
@@ -367,6 +508,10 @@ def provenance(args: argparse.Namespace, context: dict[str, object], run_id: str
                         "settle, then the full warm-up and steady phases. Judged by D47's criteria under "
                         f"{step4_criteria.PLR_CRITERIA_ID}; never D47's step-4 result, accepted or admissible."}
            if getattr(args, "post_load_release", False) else {}),
+        **({"ma1_note": "MA1 (D55): an instrumented diagnostic run of the PLR procedure with the workload's own "
+                        "allocator and garbage-collector counters and its mapping categories. Never eligible, accepted "
+                        "or admissible."}
+           if getattr(args, "memory_attribution", False) else {}),
     }
 
 
@@ -640,6 +785,8 @@ class Events:
         with self._lock:
             self._handle.write(json.dumps(record) + "\n")
             self._handle.flush()
+        if name in QUIET_EVENTS:  # recorded above; not echoed, so the console (and a caller's capture) stays small
+            return
         detail = " ".join(f"{k}={v}" for k, v in fields.items() if k not in ("libcuda", "buffers"))
         print(f"[{time.monotonic() - self._started:7.1f} s] {source}: {name} {detail}"[:220], flush=True)
 
@@ -736,6 +883,42 @@ class Tegrastats(threading.Thread):
             except subprocess.TimeoutExpired:
                 self.proc.kill()
         self.join(timeout=5)
+
+
+class MapsSampler(threading.Thread):
+    """MA1 (opt-in): the workload's mappings by category every ``interval_s``, as ``memattr_maps`` events.
+
+    Each read walks the workload's page tables under its mmap lock (as the 1 Hz smaps_rollup read does), so
+    the interval bounds the added cost; each event records its own read and parse time. No history is kept.
+    """
+
+    def __init__(self, pid: Callable[[], int | None], phase: Callable[[], str], emit, *,
+                 interval_s: float = MAPS_INTERVAL_S, read=read_maps_aggregate, clock=time.monotonic) -> None:
+        super().__init__(name="memattr-maps", daemon=True)
+        self._pid, self._phase, self._emit, self._read, self._clock = pid, phase, emit, read, clock
+        self.interval_s = interval_s
+        self._next_sample = 0.0
+        self._halt = threading.Event()
+
+    def sample(self) -> bool:
+        now = self._clock()
+        if self._halt.is_set() or now < self._next_sample:
+            return False
+        self._next_sample = now + self.interval_s
+        pid = self._pid()
+        record = self._read(pid) if pid else {"status": "unavailable", "reason": "no_process"}
+        self._emit("orchestrator", "memattr_maps", t_mono=round(now, 3), phase=self._phase(), **record)
+        return True
+
+    def run(self) -> None:
+        while not self._halt.is_set():
+            self.sample()
+            self._halt.wait(max(0.0, self._next_sample - self._clock()))
+
+    def stop(self) -> None:
+        self._halt.set()
+        if self.ident is not None:
+            self.join(timeout=5)
 
 
 # ------------------------------------------------------------------ components
@@ -842,10 +1025,12 @@ def start_workload(args: argparse.Namespace, run_dir: Path) -> subprocess.Popen:
         argv.append("--scene-only")
     releasing = [flag for flag, on in (("--mr1-release-check", getattr(args, "mr1_release_check", False)),
                                        ("--post-load-release", getattr(args, "post_load_release", False))) if on]
+    attribution = ["--memory-attribution"] if getattr(args, "memory_attribution", False) else []  # MA1: counters only
     if releasing:  # MR1 or PLR: the workload waits on stdin at each checkpoint
-        argv += releasing
+        argv += releasing + attribution
         return subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                 bufsize=1, env=env, cwd=run_dir)
+    argv += attribution
     # cwd is the run directory so no library can leave files in the repository.
     return subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env, cwd=run_dir)
 
@@ -900,6 +1085,61 @@ def sanitize_diagnostic(value, depth: int = 0):
     return None
 
 
+def _count(value) -> int | None:
+    return value if type(value) is int and 0 <= value < 1 << 63 else None
+
+
+def _measure(value) -> float | None:
+    return float(value) if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
+
+
+def _triple(value, item) -> list | None:
+    return [item(v) for v in value] if isinstance(value, list) and len(value) == 3 else None
+
+
+def sanitize_memattr(record: dict) -> dict | None:
+    """MA1's workload events reduced to fixed keys, bounded non-negative numbers and fixed labels; else None."""
+    name = record.get("event")
+    phase = record.get("phase")
+    if name == "memattr_config":
+        version = record.get("glibc_version")
+        python = record.get("python")
+        thresholds = _triple(record.get("gc_thresholds"), _count)
+        return {"interval_s": _measure(record.get("interval_s")),
+                "full_gc_per_sample": _count(record.get("full_gc_per_sample")),
+                "mallinfo2": record.get("mallinfo2") if type(record.get("mallinfo2")) is bool else None,
+                "glibc_version": version if isinstance(version, str) and re.fullmatch(r"\d+\.\d+(?:\.\d+)?", version)
+                else None,
+                "python": python if isinstance(python, str) and re.fullmatch(r"\d+\.\d+\.\d+", python) else None,
+                "gc_thresholds": thresholds, "gc_enabled": record.get("gc_enabled")
+                if type(record.get("gc_enabled")) is bool else None, "gc_frozen": _count(record.get("gc_frozen"))}
+    if name != "memattr_process":
+        return None
+    malloc = record.get("malloc")
+    full = record.get("gc_full")
+    error = record.get("malloc_error")
+    return {
+        "t_mono": _measure(record.get("t_mono")),
+        "phase": phase if phase in PHASES_IN_ORDER else None,
+        **{key: record.get(key) if record.get(key) in MEMATTR_STATUSES else "unavailable"
+           for key in ("status", "malloc_status")},
+        "malloc_error": error if isinstance(error, str) and re.fullmatch(r"[A-Za-z]{1,40}(?:Error|Exception)", error)
+        else None,
+        "malloc": {key: _count(malloc.get(key)) for key in MALLINFO2_REPORTED} if isinstance(malloc, dict) else None,
+        "malloc_call_us": _measure(record.get("malloc_call_us")),
+        "pymalloc_blocks": _count(record.get("pymalloc_blocks")),
+        "gc_enabled": record.get("gc_enabled") if type(record.get("gc_enabled")) is bool else None,
+        **{key: _triple(record.get(key), _count)
+           for key in ("gc_counts", "gc_collections", "gc_collected", "gc_uncollectable")},
+        "gc_seconds": _triple(record.get("gc_seconds"), _measure),
+        "gc_full": [[_measure(item[0]), _measure(item[1]), _count(item[2]), _count(item[3])]
+                    for item in full[:MEMATTR_FULL_GC_PER_SAMPLE] if isinstance(item, list) and len(item) == 4]
+        if isinstance(full, list) else None,
+        "gc_full_dropped": _count(record.get("gc_full_dropped")),
+        "sample_us": _measure(record.get("sample_us")),
+    }
+
+
 def pump_workload(proc: subprocess.Popen, run_dir: Path, events: Events, set_phase, *, sanitized: bool = False,
                   on_checkpoint=None) -> None:
     """Relay the workload's events. ``on_checkpoint`` (MR1 only) handles ``mr1_checkpoint`` and ``mr1_smoke``."""
@@ -920,6 +1160,9 @@ def pump_workload(proc: subprocess.Popen, run_dir: Path, events: Events, set_pha
                     continue
                 if mr1 and isinstance(record, dict) and record.get("event") == "mr1_smoke":
                     events.add("workload", "mr1_smoke", **sanitize_mr1_smoke(record))
+                    continue
+                if isinstance(record, dict) and record.get("event") in MEMATTR_EVENTS:  # MA1, in either mode
+                    events.add("workload", record["event"], **sanitize_memattr(record))
                     continue
                 if sanitized:
                     if not isinstance(record, dict) or record.get("event") not in {
@@ -982,6 +1225,7 @@ def run(args: argparse.Namespace) -> int:
 
     events = Events(run_dir / "events.jsonl", time.monotonic())
     procs: dict[str, subprocess.Popen | None] = {"llama": None, "work": None}
+    maps: MapsSampler | None = None  # MA1 only
 
     def on_floor() -> None:
         events.add("orchestrator", "memory_floor", floor_bytes=MEMORY_FLOOR_BYTES)
@@ -1049,6 +1293,10 @@ def run(args: argparse.Namespace) -> int:
 
         procs["work"] = start_workload(args, run_dir)
         sampler.pids["work"] = procs["work"].pid
+        if getattr(args, "memory_attribution", False):  # MA1: the workload's mappings, read-only, numbers only
+            maps = MapsSampler(lambda: sampler.pids.get("work"), lambda: sampler.phase, events.add,
+                               interval_s=args.maps_interval_s)
+            maps.start()
         pump = threading.Thread(
             target=pump_workload, args=(procs["work"], run_dir, events, set_phase),
             kwargs={"sanitized": args.sanitized_logs, **({"on_checkpoint": on_checkpoint} if on_checkpoint else {})},
@@ -1059,6 +1307,8 @@ def run(args: argparse.Namespace) -> int:
             returncode = procs["work"].wait(timeout=workload_budget(args))
         except subprocess.TimeoutExpired:
             raise RunAborted("the workload exceeded its time budget") from None
+        if maps is not None:  # never read a pid after its process has exited
+            maps.stop()
         pump.join(timeout=10)
         events.add("orchestrator", "workload_exit", returncode=returncode)
         if sampler.floor_hit:
@@ -1080,6 +1330,8 @@ def run(args: argparse.Namespace) -> int:
         events.add("orchestrator", "stop_boundary", reason="interrupted",
                    boundary_t_mono=round(stop_mark.get("t", time.monotonic()), 3))
     finally:
+        if maps is not None:
+            maps.stop()
         stop_process(procs["work"], "workload", events)
         stop_process(procs["llama"], "llama-server", events)
         if llama_log is not None:
@@ -1349,6 +1601,187 @@ def plr_lines(report: dict[str, object]) -> list[str]:
                      f"  {name}: MemFree min {gb(window['mem_free_min_bytes'])}; Cached first "
                      f"{gb(window['cached_first_bytes'])}, last {gb(window['cached_last_bytes'])}")
     lines.append("  Cannot establish: " + "; ".join(report["cannot_establish"]) + ".")
+    return lines
+
+
+def load_memattr_events(path: Path) -> list[dict[str, object]]:
+    found = []
+    try:
+        with open(path) as handle:
+            for line in handle:
+                if line.strip():
+                    record = json.loads(line)
+                    if record.get("event") in ("memattr_process", "memattr_config", "memattr_maps"):
+                        found.append(record)
+    except OSError:
+        pass
+    return found
+
+
+def _first_last(values: list) -> dict[str, object]:
+    """First, last, change, minimum and maximum of the available values; all None when there are none."""
+    present = [v for v in values if v is not None]
+    if not present:
+        return {"n": 0, "first": None, "last": None, "delta": None, "min": None, "max": None}
+    return {"n": len(present), "first": present[0], "last": present[-1], "delta": present[-1] - present[0],
+            "min": min(present), "max": max(present)}
+
+
+def _between(records: list[dict[str, object]], window: tuple[float, float]) -> list[dict[str, object]]:
+    return [r for r in records if type(r.get("t_mono")) in (int, float) and window[0] <= r["t_mono"] <= window[1]]
+
+
+def _bracket(records: list[dict[str, object]], before: float, after: float):
+    """The last record at or before ``before`` and the first at or after ``after``, or None."""
+    earlier = [r for r in records if r["t_mono"] <= before]
+    later = [r for r in records if r["t_mono"] >= after]
+    return (earlier[-1], later[0]) if earlier and later else None
+
+
+def _memattr_window(rows, process, maps, window) -> dict[str, object]:
+    rows = [r for r in rows if window[0] <= r["t"] <= window[1]]
+    process = _between(process, window)
+    maps = _between(maps, window)
+    malloc = [p for p in process if p.get("malloc_status") == "observed" and isinstance(p.get("malloc"), dict)]
+    collections = [p["gc_collections"] for p in process if isinstance(p.get("gc_collections"), list)
+                   and None not in p["gc_collections"]]
+    observed_maps = [m for m in maps if m.get("status") == "observed" and isinstance(m.get("categories"), dict)]
+    return {
+        "seconds": round(window[1] - window[0], 3),
+        "process_memory_csv": {key: _first_last([r.get(key) for r in rows])
+                               for key in ("work_rss", "work_pss", "anon_pages", "llama_rss")},
+        "process_events": len(process),
+        "malloc_observed": len(malloc),
+        "malloc": {key: _first_last([p["malloc"].get(key) for p in malloc]) for key in MALLINFO2_REPORTED},
+        "pymalloc_blocks": _first_last([p.get("pymalloc_blocks") for p in process]),
+        "gc_collections_by_generation": {f"gen{g}": collections[-1][g] - collections[0][g] for g in range(3)}
+        if collections else None,
+        "full_gc_listed": sum(1 for p in process for item in (p.get("gc_full") or [])
+                              if item[0] is not None and window[0] <= item[0] <= window[1]),
+        "maps_events": len(maps),
+        "maps_observed": len(observed_maps),
+        "maps": {name: {key: _first_last([(m["categories"].get(name) or {}).get(key) for m in observed_maps])
+                        for key in ("rss_bytes", "private_dirty_bytes", "anonymous_bytes")}
+                 for name in MAPS_CATEGORIES},
+    }
+
+
+def memattr_report(run_dir: Path, status: str, samples: list[dict[str, object]],
+                   warmup: tuple[float, float] | None, steady: tuple[float, float] | None) -> dict[str, object]:
+    """MA1's record: per-window changes in each source, the workload's RSS steps with their nearest full
+    collection and the bracketing readings, the instrumentation's own cost and what it cannot establish.
+
+    Descriptive only; it judges nothing. ``steady`` is the monotonic steady interval (None when unavailable)."""
+    events = load_memattr_events(Path(run_dir) / "events.jsonl")
+    config = next((e for e in events if e["event"] == "memattr_config"), None)
+    process = [e for e in events if e["event"] == "memattr_process" and type(e.get("t_mono")) in (int, float)]
+    maps = [e for e in events if e["event"] == "memattr_maps" and type(e.get("t_mono")) in (int, float)]
+    observed_maps = [m for m in maps if m.get("status") == "observed" and isinstance(m.get("categories"), dict)]
+    malloc = [p for p in process if p.get("malloc_status") == "observed" and isinstance(p.get("malloc"), dict)]
+    full = sorted(item[:2] for p in process for item in (p.get("gc_full") or []) if item[0] is not None)
+    reasons: dict[str, int] = {}
+    for m in maps:
+        if m.get("status") != "observed":
+            reasons[str(m.get("reason"))] = reasons.get(str(m.get("reason")), 0) + 1
+    windows = {name: _memattr_window(samples, process, maps, window)
+               for name, window in (("warmup", warmup), ("steady", steady)) if window}
+    span = (warmup or steady or (0.0, 0.0))[0], (steady or warmup or (0.0, 0.0))[1]
+    rows = [r for r in samples if span[0] <= r["t"] <= span[1] and r.get("work_rss") is not None]
+    steps = []
+    for a, b in zip(rows, rows[1:]):
+        if b["work_rss"] - a["work_rss"] < MA1_STEP_BYTES:
+            continue
+        nearest = min((b["t"] - start for start, _ in full), key=abs, default=None)
+        bracket_maps = _bracket(observed_maps, a["t"], b["t"])
+        bracket_malloc = _bracket(malloc, a["t"], b["t"])
+        steps.append({
+            "t_mono": b["t"], "rss_delta_bytes": b["work_rss"] - a["work_rss"],
+            "anon_pages_delta_bytes": (b["anon_pages"] - a["anon_pages"]
+                                       if a.get("anon_pages") is not None and b.get("anon_pages") is not None else None),
+            "nearest_full_gc_offset_s": round(nearest, 3) if nearest is not None else None,
+            "maps_bracket": None if bracket_maps is None else {
+                "t0": bracket_maps[0]["t_mono"], "t1": bracket_maps[1]["t_mono"],
+                "rss_delta_bytes": {name: _delta((bracket_maps[0]["categories"].get(name) or {}).get("rss_bytes"),
+                                                 (bracket_maps[1]["categories"].get(name) or {}).get("rss_bytes"))
+                                    for name in MAPS_CATEGORIES}},
+            "malloc_bracket": None if bracket_malloc is None else {
+                "t0": bracket_malloc[0]["t_mono"], "t1": bracket_malloc[1]["t_mono"],
+                "delta": {key: _delta(bracket_malloc[0]["malloc"].get(key), bracket_malloc[1]["malloc"].get(key))
+                          for key in MALLINFO2_REPORTED},
+                "pymalloc_blocks_delta": _delta(bracket_malloc[0].get("pymalloc_blocks"),
+                                                bracket_malloc[1].get("pymalloc_blocks"))},
+        })
+
+    def cost(values: list) -> dict[str, object]:
+        present = [v for v in values if v is not None]
+        return {"n": len(present), "p50": nearest_rank(present, 0.5), "max": max(present, default=None)}
+
+    return {
+        "label": MA1_LABEL,
+        "scope": "instrumented diagnostic of the PLR procedure: the workload process's allocator and collector "
+                 "counters and its mapping categories; descriptive only, never a criterion, eligibility, "
+                 "acceptance or admission",
+        "profile_status": _status_label(status),
+        "config": {k: v for k, v in (config or {}).items() if k not in ("event", "source", "utc", "t_mono")} or None,
+        "sources": {
+            "process": {"events": len(process), "malloc_observed": len(malloc),
+                        "malloc_unsupported": sum(1 for p in process if p.get("malloc_status") == "unsupported"),
+                        "pymalloc_observed": sum(1 for p in process if p.get("pymalloc_blocks") is not None),
+                        "full_gc_dropped": _present_max(p.get("gc_full_dropped") for p in process)},
+            "maps": {"events": len(maps), "observed": len(observed_maps), "unavailable_by_reason": reasons},
+        },
+        "windows": windows,
+        "steps": {"threshold_bytes": MA1_STEP_BYTES, "count": len(steps), "listed": steps[:MA1_MAX_STEPS]},
+        "full_gc": {"count": len(full), "listed": full[:MA1_MAX_FULL_GC]},
+        "cost": {"malloc_call_us": cost([p.get("malloc_call_us") for p in process]),
+                 "process_sample_us": cost([p.get("sample_us") for p in process]),
+                 "maps_read_ms": cost([m.get("read_ms") for m in maps]),
+                 "maps_parse_ms": cost([m.get("parse_ms") for m in maps]),
+                 "maps_bytes_read_max": _present_max(m.get("bytes_read") for m in maps),
+                 "maps_vmas_max": _present_max(m.get("vmas") for m in observed_maps)},
+        "basis": "process counters from the workload itself (glibc mallinfo2, CPython pymalloc blocks, gc.callbacks); "
+                 "mapping categories from its /proc/<pid>/smaps read by the profiler; RSS steps from memory.csv",
+        "cannot_establish": list(MA1_CANNOT_ESTABLISH),
+    }
+
+
+def _delta(first, last):
+    return last - first if first is not None and last is not None else None
+
+
+def _present_max(values) -> int | float | None:
+    return max((v for v in values if v is not None), default=None)  # None when nothing was recorded, never 0
+
+
+def memattr_lines(report: dict[str, object]) -> list[str]:
+    sources = report["sources"]
+    lines = ["", "MA1 memory attribution (instrumented diagnostic, D55; descriptive, never a criterion or eligibility):",
+             f"  sources: process events {sources['process']['events']} (mallinfo2 observed "
+             f"{sources['process']['malloc_observed']}, unsupported {sources['process']['malloc_unsupported']}; "
+             f"pymalloc observed {sources['process']['pymalloc_observed']}); maps reads {sources['maps']['events']} "
+             f"(observed {sources['maps']['observed']}, unavailable {sources['maps']['unavailable_by_reason'] or 0})"]
+    for name, window in report["windows"].items():
+        malloc, csv_side = window["malloc"], window["process_memory_csv"]
+        lines.append(f"  {name} ({window['seconds']} s): workload RSS {gb(csv_side['work_rss']['delta'], True)}, "
+                     f"AnonPages {gb(csv_side['anon_pages']['delta'], True)}; mallinfo2 arena "
+                     f"{gb(malloc['arena']['delta'], True)}, in use {gb(malloc['uordblks']['delta'], True)}, free "
+                     f"{gb(malloc['fordblks']['delta'], True)}, mmapped {gb(malloc['hblkhd']['delta'], True)}; "
+                     f"pymalloc blocks {window['pymalloc_blocks']['delta']}; collections by generation "
+                     f"{window['gc_collections_by_generation']}")
+        moved = {category: values["rss_bytes"]["delta"] for category, values in window["maps"].items()
+                 if values["rss_bytes"]["delta"]}
+        lines.append("    mapping RSS changes: " + (", ".join(f"{k} {gb(v, True)}" for k, v in moved.items())
+                                                    if moved else "none recorded"))
+    cost = report["cost"]
+    lines += [f"  RSS steps of at least {report['steps']['threshold_bytes']:,} B: {report['steps']['count']}; "
+              f"full collections recorded: {report['full_gc']['count']} (each step's nearest one and bracketing "
+              "readings are in memattr.json)",
+              f"  instrumentation cost: mallinfo2 call p50/max {cost['malloc_call_us']['p50']}/"
+              f"{cost['malloc_call_us']['max']} us; smaps read p50/max {cost['maps_read_ms']['p50']}/"
+              f"{cost['maps_read_ms']['max']} ms, parse p50/max {cost['maps_parse_ms']['p50']}/"
+              f"{cost['maps_parse_ms']['max']} ms; largest read {cost['maps_bytes_read_max']} B, "
+              f"{cost['maps_vmas_max']} mappings",
+              "  Cannot establish: " + "; ".join(report["cannot_establish"]) + "."]
     return lines
 
 
@@ -1716,9 +2149,22 @@ def summarize(run_dir: Path) -> str:
             profile["criteria_id"] = step4_criteria.PLR_CRITERIA_ID
             profile["post_load_release"] = "plr.json"
             lines += plr_lines(report)
+            instrumented = bool((manifest.get("parameters") or {}).get("memory_attribution"))
+            if instrumented:  # MA1: the same criteria, read descriptively; an instrumented run is never eligible
+                warm_rows = in_phases("warmup")
+                attribution = memattr_report(
+                    run_dir, status, samples, (warm_rows[0]["t"], warm_rows[-1]["t"]) if warm_rows else None,
+                    (interval["start_t_mono"], interval["end_t_mono"])
+                    if interval["status"] != step4_criteria.UNAVAILABLE else None)
+                (run_dir / "memattr.json").write_text(json.dumps(attribution, indent=2) + "\n")
+                profile["memory_attribution"] = "memattr.json"
+                profile["instrumentation"] = ("MA1 memory attribution (D55): an instrumented diagnostic; its criteria "
+                                              "are descriptive only, never eligibility, acceptance or admission")
+                lines += memattr_lines(attribution)
             lines += ["", f"Step-4 criteria decidable from this run ({step4_criteria.PLR_CRITERIA_ID}: D47's rules and "
                       "thresholds under the PLR identity; demo profile, not the 1080p beta gates; never acceptance "
-                      "or admission):"]
+                      "or admission" + ("; instrumented MA1 run: descriptive only, never eligible" if instrumented
+                                        else "") + "):"]
         else:
             lines += ["", f"Step-4 criteria decidable from this run ({step4_criteria.CRITERIA_ID}; demo profile, "
                       "not the 1080p beta gates; never acceptance):"]
@@ -1736,6 +2182,14 @@ def cache_ram_mib(text: str) -> int:
     value = int(text)
     if value < 0:
         raise argparse.ArgumentTypeError("use 0 (disabled) or a positive MiB limit; 'no limit' is not offered")
+    return value
+
+
+def maps_interval(text: str) -> float:
+    value = float(text)
+    low, high = MAPS_INTERVAL_RANGE_S
+    if not (math.isfinite(value) and low <= value <= high):
+        raise argparse.ArgumentTypeError(f"use {low:g} to {high:g} seconds")
     return value
 
 
@@ -1772,6 +2226,13 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--mr1-release-settle-s", "--release-settle-s", dest="mr1_release_settle_s", type=float,
                         default=MR1_RELEASE_SETTLE_S,
                         help="MR1 and PLR: seconds between the release calls and the after sample")
+    parser.add_argument("--memory-attribution", action="store_true",
+                        help="MA1 (opt-in diagnostic, D55; only with --post-load-release): the workload's allocator "
+                             "and garbage-collector counters at 1 Hz and its mapping categories every "
+                             "--maps-interval-s; numbers only; never eligibility, acceptance or admission")
+    parser.add_argument("--maps-interval-s", type=maps_interval, default=MAPS_INTERVAL_S,
+                        help=f"MA1: seconds between reads of the workload's smaps (default {MAPS_INTERVAL_S:g}, "
+                             f"{MAPS_INTERVAL_RANGE_S[0]:g}-{MAPS_INTERVAL_RANGE_S[1]:g})")
     parser.add_argument("--sanitized-logs", action="store_true",
                         help="discard raw server/workload output; retain fixed numeric/placement diagnostics only")
     parser.add_argument("--allow-desktop", action="store_true", help="measure with a desktop session running")

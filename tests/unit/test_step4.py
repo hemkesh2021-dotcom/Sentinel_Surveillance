@@ -503,6 +503,7 @@ class Backend:
         self.child_plan = {}
         self.mr1_report = None  # MR1: the profiler's mr1.json, written with the other files when set
         self.plr_report = None  # step-4 PLR: the profiler's plr.json, likewise
+        self.memattr_report = None  # MA1: the profiler's memattr.json, likewise
         self.sleeps = []
 
     def clock(self):
@@ -587,6 +588,8 @@ class Backend:
             (run / "mr1.json").write_text(json.dumps(self.mr1_report))
         if self.plr_report is not None:
             (run / "plr.json").write_text(json.dumps(self.plr_report))
+        if self.memattr_report is not None:
+            (run / "memattr.json").write_text(json.dumps(self.memattr_report))
 
 
 def identity_tree(tmp_path: Path) -> dict[str, Path]:
@@ -1274,6 +1277,155 @@ def test_the_step4plr_cli_exit_status_reflects_eligibility_and_needs_its_own_con
     assert "step4plr_operator_prerequisites_unconfirmed" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         op.main(["--execute-workload", "step4", "--confirm-step4plr-prerequisites"], backend=Backend())
+
+
+# ---------------------------------------------------------------- MA1 (D55): the instrumented PLR diagnostic
+
+
+def fake_memattr_report(runners, tmp_path, *, malloc=True, maps=True) -> dict:
+    """The profiler's own memattr.json, built by its function from a few synthetic events."""
+    profile = runners.profile
+    run = tmp_path / "memattr-source"
+    run.mkdir(exist_ok=True)
+    events = [{"t_mono": 9.0, "event": "memattr_config", "python": "3.10.14"}]
+    for t in (110.0, 190.0):
+        events.append({"t_mono": t, "event": "memattr_process", "malloc_status": "observed" if malloc else "unsupported",
+                       "malloc": dict.fromkeys(profile.MALLINFO2_REPORTED, int(t)) if malloc else None,
+                       "pymalloc_blocks": 5, "gc_collections": [1, 1, 1], "gc_full": [[150.0, 2.0, 1, 0]]})
+        events.append({"t_mono": t, "event": "memattr_maps", "status": "observed" if maps else "unavailable",
+                       "reason": None if maps else "read_failed", "read_ms": 3.0, "vmas": 9,
+                       **({"categories": {name: {"rss_bytes": int(t), "private_dirty_bytes": 0, "anonymous_bytes": 0}
+                                          for name in profile.MAPS_CATEGORIES}} if maps else {})})
+    (run / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    samples = [{"t": t, "work_rss": 2_000_000_000, "anon_pages": 1, "work_pss": 1, "llama_rss": 1}
+               for t in (100.0, 150.0, 200.0)]
+    report = profile.memattr_report(run, "complete", samples, None, (100.0, 200.0))
+    report["config"] = {**(report["config"] or {}), "note": "/home/someone/private-name"}  # never relayed
+    return report
+
+
+def run_ma1(runners, tmp_path, prep, backend=None, *, record=True, **overrides):
+    op = runners.operator
+    output = private_dir(tmp_path, "ma1")
+    backend = backend or Backend()
+    backend.output = output
+    backend.identity_hashes = {label: entry["sha256"] for label, entry in prep.identity["files"].items()}
+    backend.plr_report = backend.plr_report or fake_plr_report(runners, tmp_path)
+    if record and backend.memattr_report is None:
+        backend.memattr_report = fake_memattr_report(runners, tmp_path)
+    kwargs = dict(check9_report=prep.check9_path, identity_report=prep.identity_path, clip=prep.files["clip"],
+                  confirm_ma1=True, dropped_caches=True, identity_files_fn=lambda clip: prep.files)
+    kwargs.update(overrides)
+    return op.execute("ma1", backend, output, **kwargs), backend
+
+
+def test_the_ma1_child_is_the_plr_command_plus_the_attribution_flags_only(runners, tmp_path) -> None:
+    op = runners.operator
+    prep = prepare(runners, tmp_path)
+    result, backend = run_ma1(runners, tmp_path, prep)
+    (child,) = [c for c in backend.children if "demo_profile.py" in " ".join(c.argv)]
+    plr = op.step4plr_argv(backend.output, prep.files["clip"])
+    assert child.argv == [*plr, "--memory-attribution", "--maps-interval-s", "5.0"]
+    assert result["ma1"]["deadline_s"] == op.STEP4_DEADLINE_S == 1200.0
+    assert [(m[0].split()[:2], m[2]) for m in backend.markers] == [(["ma1", "start"], "sentinel-ma1"),
+                                                                   (["ma1", "end"], "sentinel-ma1")]
+    args = runners.profile.parse_args(child.argv[2:])  # models, rates, warm-up, duration and guard inputs unchanged
+    step4 = runners.profile.parse_args(op.step4_argv(backend.output, prep.files["clip"])[2:])
+    assert (args.warmup_s, args.steady_s, args.face_hz, args.scene_interval_s, args.fps, args.llama_cache_ram,
+            args.min_free_gb, args.settle_s, args.baseline_s, args.evict) == (
+        step4.warmup_s, step4.steady_s, step4.face_hz, step4.scene_interval_s, step4.fps, step4.llama_cache_ram,
+        step4.min_free_gb, step4.settle_s, step4.baseline_s, step4.evict)
+    assert runners.profile.workload_budget(args) == runners.profile.workload_budget(
+        runners.profile.parse_args(plr[2:]))
+
+
+def test_a_completed_ma1_run_is_never_eligible_and_its_criteria_are_reference_only(runners, tmp_path) -> None:
+    prep = prepare(runners, tmp_path)
+    result, _ = run_ma1(runners, tmp_path, prep)
+    section = result["ma1"]
+    assert section["status"] == "completed" and section["acceptance"].startswith("never: instrumented diagnostic")
+    assert "criteria" not in section and "status_detail" not in section
+    assert section["reference_criteria"]["M3_trend_swap"]["status"] == "pass"
+    assert all(set(item) == {"status", "value"} for item in section["reference_criteria"].values())
+    assert "never eligible" in section["reference_note"]
+    reading = section["interpretation"]
+    assert reading["execution_valid"] is True and reading["attribution_recorded"] is True
+    assert reading["eligible_for_maintainer_review"] is False and reading["acceptance"] == "none"
+    excerpt = section["attribution"]
+    assert excerpt["status"] == "recorded" and excerpt["label"] == "ma1-memory-attribution"
+    assert excerpt["windows"]["steady"]["malloc"]["arena"]["delta"] == 80 and excerpt["full_gc_count"] == 2
+    assert "steps" not in excerpt and '"listed"' not in json.dumps(excerpt) and '"note"' not in json.dumps(excerpt)
+    text = json.dumps(result)
+    assert "/home/someone" not in text and "private-name" not in text
+    assert result["step4"]["status"] == "PENDING" and "step4plr" not in result
+
+
+@pytest.mark.parametrize("case", ["m3_fails", "no_record", "maps_unavailable", "malloc_unsupported", "cleanup"])
+def test_ma1_execution_and_recording_never_depend_on_the_memory_readings(runners, tmp_path, case) -> None:
+    prep = prepare(runners, tmp_path)
+    backend = Backend()
+    if case == "m3_fails":
+        backend.profile["steady_trend"]["used"]["slope_bytes_per_min"] = 11_886_599
+    elif case == "maps_unavailable":
+        backend.memattr_report = fake_memattr_report(runners, tmp_path, maps=False)
+    elif case == "malloc_unsupported":
+        backend.memattr_report = fake_memattr_report(runners, tmp_path, malloc=False)
+    elif case == "cleanup":
+        backend.child_plan = {"stubborn": True}
+    result, _ = run_ma1(runners, tmp_path, prep, backend=backend, record=case != "no_record")
+    reading = result["ma1"]["interpretation"]
+    expected = {"m3_fails": (True, True), "no_record": (True, False), "maps_unavailable": (True, False),
+                "malloc_unsupported": (True, False), "cleanup": (False, True)}[case]
+    assert (reading["execution_valid"], reading["attribution_recorded"]) == expected
+    if case == "m3_fails":  # a failing reference criterion is descriptive only
+        assert result["ma1"]["reference_criteria"]["M3_trend_swap"]["status"] == "fail"
+    if case == "no_record":
+        assert result["ma1"]["attribution"] == {"status": "unavailable"}
+    assert reading["eligible_for_maintainer_review"] is False
+
+
+@pytest.mark.parametrize(("overrides", "refusal"), [
+    ({"confirm_ma1": False, "confirm_step4plr": True}, "ma1_operator_prerequisites_unconfirmed"),
+    ({"dropped_caches": False}, "ma1_cache_drop_not_declared"),
+    ({"explicit_check9": False}, "ma1_requires_explicit_check9_report"),
+    ({"clip": None}, "ma1_clip_required"),
+    ({"identity_report": None}, "step4_identity_report_required"),
+])
+def test_ma1_refuses_before_any_process_when_a_step4_prerequisite_fails(runners, tmp_path, overrides, refusal) -> None:
+    prep = prepare(runners, tmp_path)
+    result, backend = run_ma1(runners, tmp_path, prep, **overrides)
+    assert result["ma1"]["status"] == "refused" and refusal in result["ma1"]["refusals"]
+    assert not [c for c in backend.children if "demo_profile.py" in " ".join(c.argv) or "logger" in c.argv[0]]
+
+
+def test_the_ma1_cli_exit_reflects_execution_and_recording_and_needs_its_own_confirmation(
+    runners, tmp_path, monkeypatch, capsys,
+) -> None:
+    op = runners.operator
+    monkeypatch.setattr(op, "OUTPUT_ROOT", tmp_path)
+    prep = prepare(runners, tmp_path)
+    monkeypatch.setattr(op, "identity_files", lambda clip: prep.files)
+
+    def backend(record=True):
+        b = Backend()
+        b.identity_hashes = {label: entry["sha256"] for label, entry in prep.identity["files"].items()}
+        b.plr_report = fake_plr_report(runners, tmp_path)
+        b.memattr_report = fake_memattr_report(runners, tmp_path) if record else None
+        b.profile["steady_trend"]["used"]["slope_bytes_per_min"] = 11_886_599  # M3 fails: still exit 0
+        return b
+
+    common = ["--execute-workload", "ma1", "--check9-report", str(prep.check9_path), "--identity-report",
+              str(prep.identity_path), "--step4-clip", str(prep.files["clip"]), "--operator-dropped-caches"]
+    assert op.main([*common, "--confirm-ma1-prerequisites"], backend=backend()) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["ma1"]["interpretation"]["eligible_for_maintainer_review"] is False
+    assert op.main([*common, "--confirm-ma1-prerequisites"], backend=backend(record=False)) == 1
+    capsys.readouterr()
+    assert op.main(common, backend=backend()) == 1
+    assert "ma1_operator_prerequisites_unconfirmed" in capsys.readouterr().out
+    for wrong in (["--confirm-step4plr-prerequisites"], ["--execute-workload", "step4plr", "--confirm-ma1-prerequisites"]):
+        with pytest.raises(SystemExit):  # each confirmation belongs to its own mode
+            op.main([*common, *wrong] if wrong[0].startswith("--confirm") else wrong, backend=Backend())
 
 
 # ---------------------------------------------------------------- startup identity checks

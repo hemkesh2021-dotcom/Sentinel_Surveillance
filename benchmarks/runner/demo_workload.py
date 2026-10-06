@@ -35,6 +35,15 @@ runs no warm-up or steady phase.
 and acknowledgements after the detector's and the face model's settles, then
 runs the default warm-up and steady phases unchanged; no smoke checks.
 
+``--memory-attribution`` (MA1, opt-in diagnostic, D55) adds a 1 Hz
+``memattr_process`` event about this process only: glibc's ``mallinfo2()``
+totals, CPython's allocated pymalloc block count, and garbage-collection counts
+by generation, with each full (generation-2) collection's start time. It
+reads counters and registers a ``gc.callbacks`` entry; it never collects,
+freezes, disables or retunes the collector, trims or reconfigures the
+allocator, or changes any rate or phase. Unsupported or failed readings are
+None, never zero.
+
 Structured results go to stdout as ``@@EVENT <json>`` lines. Model output text
 is never written anywhere: the footage is private. Only counts and timings are.
 After every scene request a ``scene_progress`` event carries cumulative
@@ -56,6 +65,7 @@ from __future__ import annotations
 import argparse
 import base64
 import ctypes
+import gc
 import hashlib
 import json
 import math
@@ -106,6 +116,12 @@ PROGRESS_REJECTIONS = (
     "unsupported_completion",
 )
 PROGRESS_ERRORS = ("http", "timeout", "other")
+# MA1 (opt-in, D55): this process's allocator and garbage-collector counters, streamed at 1 Hz.
+MEMATTR_INTERVAL_S = 1.0
+MEMATTR_FULL_GC_PER_SAMPLE = 16  # full collections listed per sample; more are counted in gc_full_dropped
+MALLINFO2_FIELDS = ("arena", "ordblks", "smblks", "hblks", "hblkhd", "usmblks", "fsmblks", "uordblks", "fordblks",
+                    "keepcost")  # glibc's struct mallinfo2, in order (all size_t)
+MALLINFO2_REPORTED = tuple(name for name in MALLINFO2_FIELDS if name != "usmblks")  # glibc always sets usmblks to 0
 SCENE_SYSTEM = (
     "You are the scene-analysis component of a home security camera. "
     "Reply with exactly one JSON object and nothing else."
@@ -184,6 +200,184 @@ class AllocatorSampler(threading.Thread):
         self._halt.set()
         if self.ident is not None:
             self.join(timeout=5)
+
+
+class _Mallinfo2(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_size_t) for name in MALLINFO2_FIELDS]
+
+
+def glibc_mallinfo2(load: Callable = ctypes.CDLL) -> Callable[[], dict[str, int]] | None:
+    """glibc's mallinfo2() (2.33 and later) as a reader of MALLINFO2_REPORTED, or None when unsupported.
+
+    glibc sums every arena (main and per-thread) under each arena's lock: ``arena`` is the bytes the arenas
+    obtained from the system (brk and arena heaps), ``uordblks`` the bytes in use in them and ``fordblks`` the
+    free bytes they keep (``uordblks + fordblks == arena``); ``hblks``/``hblkhd`` count the chunks served by
+    their own mmap; ``keepcost`` is the main arena's trimmable top. Memory that other allocators take straight
+    from the kernel (CPython's pymalloc arenas, GPU driver mappings, any library's own allocator) is not in it.
+    """
+    try:
+        function = load(None).mallinfo2
+    except (OSError, AttributeError):
+        return None
+    function.restype = _Mallinfo2
+    function.argtypes = []
+
+    def read() -> dict[str, int]:
+        info = function()
+        return {name: int(getattr(info, name)) for name in MALLINFO2_REPORTED}
+
+    return read
+
+
+def glibc_version(load: Callable = ctypes.CDLL) -> str | None:
+    try:
+        function = load(None).gnu_get_libc_version
+    except (OSError, AttributeError):
+        return None
+    function.restype = ctypes.c_char_p
+    value = function()
+    return value.decode("ascii", "replace") if value else None
+
+
+class GcRecorder:
+    """Every garbage collection, counted by generation through ``gc.callbacks``; full ones also timed.
+
+    The callback runs inside the collector, in whichever thread triggered it, with the GIL held. It only reads
+    the clock and updates counters: no lock (a lock here could deadlock against a thread collecting while it
+    holds it), and it never collects, freezes, disables or changes thresholds. Full (generation-2) collections
+    since the last drain are kept as [start t_mono, duration ms, collected, uncollectable], at most ``limit``;
+    the rest are counted in ``full_dropped``. Values a callback did not supply stay None.
+    """
+
+    def __init__(self, *, clock: Callable[[], float] = time.monotonic, module=gc,
+                 limit: int = MEMATTR_FULL_GC_PER_SAMPLE) -> None:
+        self._clock, self._gc, self._limit = clock, module, limit
+        self.collections = [0, 0, 0]
+        self.seconds = [0.0, 0.0, 0.0]
+        self.collected = [0, 0, 0]
+        self.uncollectable = [0, 0, 0]
+        self.full_dropped = 0
+        self._full: list[list[float | int | None]] = []
+        self._started: float | None = None
+
+    def __call__(self, phase: str, info: Mapping[str, object]) -> None:
+        now = self._clock()
+        if phase == "start":
+            self._started = now
+            return
+        generation = info.get("generation")
+        if phase != "stop" or generation not in (0, 1, 2):
+            return
+        started, self._started = self._started, None
+        duration = now - started if started is not None else None
+        counts = [info.get(key) if type(info.get(key)) is int else None for key in ("collected", "uncollectable")]
+        self.collections[generation] += 1
+        self.seconds[generation] += duration or 0.0
+        self.collected[generation] += counts[0] or 0
+        self.uncollectable[generation] += counts[1] or 0
+        if generation == 2:
+            if len(self._full) < self._limit:
+                self._full.append([None if started is None else round(started, 3),
+                                   None if duration is None else round(duration * 1000, 3), *counts])
+            else:
+                self.full_dropped += 1
+
+    def install(self) -> None:
+        if self not in self._gc.callbacks:
+            self._gc.callbacks.append(self)
+
+    def remove(self) -> None:
+        while self in self._gc.callbacks:
+            self._gc.callbacks.remove(self)
+
+    def drain(self) -> list[list[float | int | None]]:
+        """Full collections since the last drain; a callback that runs meanwhile lands in one list or the other."""
+        full, self._full = self._full, []
+        return full
+
+
+class ProcessMemorySampler(threading.Thread):
+    """MA1 (opt-in): this process's allocator and collector counters at 1 Hz, streamed without history."""
+
+    def __init__(
+        self,
+        phase: Callable[[], str],
+        *,
+        mallinfo: Callable[[], dict[str, int]] | None = None,
+        blocks: Callable[[], int] = sys.getallocatedblocks,
+        recorder: GcRecorder | None = None,
+        module=gc,
+        clock: Callable[[], float] = time.monotonic,
+        emit: Callable[..., None] = event,
+        libc_version: str | None = None,
+    ) -> None:
+        super().__init__(name="memattr-sampler", daemon=True)
+        self._phase, self._mallinfo, self._blocks = phase, mallinfo, blocks
+        self._gc = module
+        self._recorder = recorder or GcRecorder(clock=clock, module=module)
+        self._clock, self._emit, self._libc_version = clock, emit, libc_version
+        self._next_sample = 0.0
+        self._halt = threading.Event()
+
+    def start(self) -> None:
+        self._recorder.install()
+        self._emit(
+            "memattr_config", interval_s=MEMATTR_INTERVAL_S, full_gc_per_sample=MEMATTR_FULL_GC_PER_SAMPLE,
+            mallinfo2=self._mallinfo is not None, glibc_version=self._libc_version,
+            python=".".join(str(part) for part in sys.version_info[:3]),
+            gc_thresholds=list(self._gc.get_threshold()), gc_enabled=self._gc.isenabled(),
+            gc_frozen=self._gc.get_freeze_count(),
+        )
+        super().start()
+
+    def sample(self) -> bool:
+        now = self._clock()
+        if self._halt.is_set() or now < self._next_sample:
+            return False
+        self._next_sample = now + MEMATTR_INTERVAL_S
+        began = time.perf_counter()
+        malloc = call_us = error = None
+        if self._mallinfo is None:
+            malloc_status = "unsupported"
+        else:
+            try:
+                started = time.perf_counter()
+                values = self._mallinfo()
+                call_us = round((time.perf_counter() - started) * 1e6, 1)
+                malloc = {name: values.get(name) if type(values.get(name)) is int and values.get(name) >= 0 else None
+                          for name in MALLINFO2_REPORTED}
+                malloc_status = "observed" if None not in malloc.values() else "unavailable"
+            except Exception as exc:  # noqa: BLE001 - recorded by class, never raised
+                malloc, malloc_status, error = None, "unavailable", type(exc).__name__
+        try:
+            blocks = self._blocks()
+            blocks = blocks if type(blocks) is int and blocks >= 0 else None
+        except Exception:  # noqa: BLE001 - unavailable, never zero
+            blocks = None
+        recorder = self._recorder
+        observed = (malloc_status == "observed", blocks is not None)
+        self._emit(
+            "memattr_process", t_mono=round(now, 3), phase=self._phase(),
+            status="observed" if all(observed) else "partial" if any(observed) else "unavailable",
+            malloc_status=malloc_status, malloc_error=error, malloc=malloc, malloc_call_us=call_us,
+            pymalloc_blocks=blocks, gc_enabled=self._gc.isenabled(), gc_counts=list(self._gc.get_count()),
+            gc_collections=list(recorder.collections), gc_seconds=[round(s, 6) for s in recorder.seconds],
+            gc_collected=list(recorder.collected), gc_uncollectable=list(recorder.uncollectable),
+            gc_full=recorder.drain(), gc_full_dropped=recorder.full_dropped,
+            sample_us=round((time.perf_counter() - began) * 1e6, 1),
+        )
+        return True
+
+    def run(self) -> None:
+        while not self._halt.is_set():
+            self.sample()
+            self._halt.wait(max(0.0, self._next_sample - self._clock()))
+
+    def stop(self) -> None:
+        self._halt.set()
+        if self.ident is not None:
+            self.join(timeout=5)
+        self._recorder.remove()
 
 
 def percentiles(values: list[float]) -> dict[str, float | int | None]:
@@ -794,9 +988,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--post-load-release", action="store_true",
                         help="step-4 PLR: pause after each settle for the orchestrator's cache release, then the "
                              "default warm-up and steady phases")
+    parser.add_argument("--memory-attribution", action="store_true",
+                        help="MA1 (opt-in diagnostic): emit this process's allocator and garbage-collector counters "
+                             "at 1 Hz; changes no rate, phase, collector or allocator setting")
     args = parser.parse_args(argv)
     if args.mr1_release_check and args.post_load_release:
         parser.error("--mr1-release-check and --post-load-release are separate procedures; pass one")
+    if args.memory_attribution and (args.scene_only or args.mr1_release_check):
+        parser.error("--memory-attribution observes the combined warm-up and steady phases; "
+                     "not with --scene-only or --mr1-release-check")
     if args.scene_only:
         if args.clip:
             parser.error("--scene-only uses its own synthetic images; --clip is not allowed")
@@ -816,6 +1016,11 @@ def main(argv: list[str] | None = None) -> int:
     model = load_detector(args.engine)
     allocator = AllocatorSampler(torch_allocator_stats)
     allocator.start()
+    memattr = None
+    if args.memory_attribution:  # MA1: reads counters only; phases follow the allocator sampler's
+        memattr = ProcessMemorySampler(lambda: allocator.phase, mallinfo=glibc_mallinfo2(),
+                                       libc_version=glibc_version())
+        memattr.start()
     try:
         event("phase", name="detector_settle")
         time.sleep(args.settle_s)
@@ -837,6 +1042,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             run_workload(model, deepface, args, Stats(), allocator)
     finally:
+        if memattr is not None:
+            memattr.stop()
         allocator.stop()
     return 0
 
