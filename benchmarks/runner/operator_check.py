@@ -78,6 +78,21 @@ THP_LABELS = ATTRIBUTION_LABELS | {profile.THP_LABEL, *profile.THP_OUTCOMES, *pr
                                    *profile.THP_RSS_LABELS, *profile.THP_CHOICE_LABELS, *profile.THP_SETTING_KEYS,
                                    "y", "m", "n"}
 THP_EXCERPT_KEYS = ("label", "profile_status", "sources", "windows", "full_scans", "cost")
+# MA1-WTD (opt-in diagnostic, D57): MA1-THP's procedure and readings unchanged, with transparent huge pages disabled in
+# the workload process alone by its own prctl before any model library. The exit status needs the intervention
+# verified; its reading (supported, contrary or inconclusive) is descriptive and never sets it.
+MA1WTD_MARKER_TAG = "sentinel-ma1wtd"
+MA1WTD_SCOPE = ("MA1-WTD diagnostic: the MA1-THP procedure (D56) unchanged, with transparent huge pages disabled in the "
+                "workload process alone by its own prctl before any model library (D57); an instrumented run, never a "
+                "step-4 or PLR result; no system-wide THP setting is written")
+MA1WTD_REFERENCE_NOTE = ("D47's criteria under the PLR identity, for descriptive comparison with the PLR, MA1 and MA1-THP "
+                         "runs only (across runs and times: confounded); the intervention also removes fault-time huge "
+                         "pages in the workload, so no latency or memory difference is attributed to khugepaged; an "
+                         "instrumented run is never eligible, accepted or admissible")
+WTD_LABELS = THP_LABELS | {profile.WTD_LABEL, *profile.WTD_OUTCOMES, *profile.WTD_REASONS, *profile.NET_STEP_CLASSES,
+                           *profile.WTD_STARTUP_REASONS, *profile.WTD_CHECKPOINTS, *profile.WTD_MODEL_MODULES,
+                           *profile.MAPS_CATEGORIES, "complete_pass_in_steady", "not_observed"}
+WTD_EXCERPT_KEYS = ("label", "profile_status", "intervention", "clip_loops", "performance", "baseline")
 STEP4_RUN_INPUT_KEYS = ("guard_completed", "cleanup_clear", "check9_ok", "drop_declared", "profile_complete",
                         "headless", "no_dev_tools", "no_tracked_changes")  # step4_run_inputs(), in order
 JOURNAL_LOSS = re.compile(r"missed|suppress|rate.?limit|is full|truncat|corrupt", re.IGNORECASE)
@@ -262,6 +277,11 @@ class SystemBackend:
     @staticmethod
     def boot_id() -> str:
         return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+
+    @staticmethod
+    def thp_enabled() -> int | None:
+        """D57: this process's THP_enabled, which the profiler, llama-server and the workload would inherit."""
+        return profile.read_thp_enabled("self")
 
     def sample(self) -> dict:
         stamp = self.clock()
@@ -889,7 +909,8 @@ def _profiler_files(output: Path) -> tuple[dict | None, dict | None]:
 def execute(mode: str | None, backend, output: Path, *, check9_report=None, confirm_u21=False,
             s1_arm=None, confirm_s1=False, dropped_caches=False, interrupted=lambda: False,
             identity_report=None, clip=None, confirm_step4=False, explicit_check9=True, identity_files_fn=None,
-            confirm_mr1=False, confirm_step4plr=False, confirm_ma1=False, confirm_ma1thp=False) -> dict:
+            confirm_mr1=False, confirm_step4plr=False, confirm_ma1=False, confirm_ma1thp=False,
+            confirm_ma1wtd=False) -> dict:
     runner = ProcessRunner(backend, interrupted)
     report = {"schema_version": 1, "mode": mode or "inspection",
               "hardware_acceptance": "PENDING", "check9": {"status": "PENDING", "u18_acceptance": "PENDING",
@@ -906,6 +927,8 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
         report["ma1"] = {"status": "PENDING", "scope": MA1_SCOPE, "acceptance": MA1_ACCEPTANCE}
     if mode == "ma1thp":
         report["ma1thp"] = {"status": "PENDING", "scope": MA1THP_SCOPE, "acceptance": MA1_ACCEPTANCE}
+    if mode == "ma1wtd":
+        report["ma1wtd"] = {"status": "PENDING", "scope": MA1WTD_SCOPE, "acceptance": MA1_ACCEPTANCE}
     try:
         current = inspection(backend, runner)
         report["inspection"] = current
@@ -913,7 +936,7 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
         if mode is None:
             return report
         refusal = current["workload_refusals"]
-        if mode in ("u21", "s1", "step4", "mr1", "step4plr", "ma1", "ma1thp"):
+        if mode in ("u21", "s1", "step4", "mr1", "step4plr", "ma1", "ma1thp", "ma1wtd"):
             problem = check9_prerequisite(check9_report, current)
             if problem:
                 refusal.append(problem)
@@ -921,11 +944,11 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
         if mode == "u21" and not confirm_u21:
             refusal.append("u21_operator_prerequisites_unconfirmed")
         identity = None
-        if mode in ("step4", "step4plr", "ma1", "ma1thp"):  # step 4's admission, each with its own confirmation
+        if mode in ("step4", "step4plr", "ma1", "ma1thp", "ma1wtd"):  # step 4's admission, each with its own confirmation
             if not explicit_check9:
                 refusal.append(f"{mode}_requires_explicit_check9_report")
             if not {"step4": confirm_step4, "step4plr": confirm_step4plr, "ma1": confirm_ma1,
-                    "ma1thp": confirm_ma1thp}[mode]:
+                    "ma1thp": confirm_ma1thp, "ma1wtd": confirm_ma1wtd}[mode]:
                 refusal.append(f"{mode}_operator_prerequisites_unconfirmed")
             if not dropped_caches:
                 refusal.append(f"{mode}_cache_drop_not_declared")
@@ -937,6 +960,11 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
                 if problem:
                     refusal.append(problem)
             report[mode]["identity_report_dir"] = identity_report.parent.name if identity_report else None
+        if mode == "ma1wtd":  # D57: everything this process starts inherits its flag, so it must not be disabled here
+            own = backend.thp_enabled()
+            report["ma1wtd"]["operator_thp_enabled"] = own
+            if own != 1:
+                refusal.append("ma1wtd_operator_thp_enabled_not_1")
         if mode == "mr1":
             if not explicit_check9:
                 refusal.append("mr1_requires_explicit_check9_report")
@@ -1020,6 +1048,9 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
             elif mode == "ma1thp":
                 run_ma1(report["ma1thp"], runner, backend, guard, output, clip, identity, dropped_caches, interrupted,
                         thp=True)
+            elif mode == "ma1wtd":
+                run_ma1(report["ma1wtd"], runner, backend, guard, output, clip, identity, dropped_caches, interrupted,
+                        thp=True, wtd=True)
             else:
                 cache_ram = S1_ARMS[s1_arm]
                 child = runner.run([
@@ -1100,6 +1131,11 @@ def ma1_argv(output: Path, clip: Path) -> list[str]:
 def ma1thp_argv(output: Path, clip: Path) -> list[str]:
     """MA1's command unchanged, plus the read-only THP observation (D56); the smaps interval stays MA1's."""
     return [*ma1_argv(output, clip), "--thp-observation"]
+
+
+def ma1wtd_argv(output: Path, clip: Path) -> list[str]:
+    """MA1-THP's command unchanged, plus the workload's own THP disable (D57)."""
+    return [*ma1thp_argv(output, clip), "--workload-thp-disable"]
 
 
 def _with_guard_peak(prof: dict | None, guard) -> dict | None:
@@ -1248,13 +1284,55 @@ def ma1thp_interpretation(reading: dict, thp: dict) -> dict:
                    "khugepaged hypothesis stays unconfirmed"}
 
 
+def wtd_excerpt(output: Path) -> dict:
+    """The profiler's wtd.json, cut to its intervention checks, clip reopens, growth and opportunity counts, latency
+    and throughput and reading, as numbers and fixed labels. The per-step list stays in the private wtd.json."""
+    paths = list(output.glob("demo-profile-*/wtd.json"))
+    if len(paths) != 1:
+        return {"status": "unavailable"}
+    try:
+        with paths[0].open("rb") as handle:
+            data = handle.read(OUTPUT_LIMIT + 1)
+        if len(data) > OUTPUT_LIMIT:
+            return {"status": "unavailable"}
+        report = json.loads(data)
+    except (OSError, ValueError):
+        return {"status": "unavailable"}
+    if not isinstance(report, dict):
+        return {"status": "unavailable"}
+    kept = {key: report.get(key) for key in WTD_EXCERPT_KEYS}
+    growth = report.get("growth") if isinstance(report.get("growth"), dict) else None
+    if growth is not None:
+        steps = growth.get("net_steps") if isinstance(growth.get("net_steps"), dict) else {}
+        kept["growth"] = {"net_steps": {key: value for key, value in steps.items() if key not in ("listed", "rule")},
+                          **{key: growth.get(key) for key in ("window", "residency", "opportunity", "maps_observed")}}
+    else:
+        kept["growth"] = None
+    outcome = report.get("outcome") if isinstance(report.get("outcome"), dict) else {}
+    kept["outcome"] = {key: outcome.get(key) for key in ("label", "reason")}
+    return {"status": "recorded", **_mr1_value(kept, labels=WTD_LABELS)}
+
+
+def ma1wtd_interpretation(reading: dict, wtd: dict) -> dict:
+    """MA1-WTD's predeclared reading (session 43): MA1-THP's, plus whether the intervention was verified. The D57
+    reading itself is descriptive: it never sets eligibility or the exit status."""
+    intervention = wtd.get("intervention") if isinstance(wtd.get("intervention"), dict) else {}
+    outcome = wtd.get("outcome") if isinstance(wtd.get("outcome"), dict) else {}
+    return {**reading, "intervention_verified": wtd.get("status") == "recorded" and intervention.get("verified") is True,
+            "wtd_reading": {"label": outcome.get("label", "unavailable"), "reason": outcome.get("reason")},
+            "wtd": "descriptive (wtd.json, predeclared rule D57); never a criterion, eligibility or exit status; a "
+                   "non-reproduction is not a fix, and the khugepaged hypothesis stays unconfirmed"}
+
+
 def run_ma1(section: dict, runner, backend, guard, output: Path, clip: Path, identity: dict,
-            dropped_caches: bool, interrupted, *, thp: bool = False) -> None:
+            dropped_caches: bool, interrupted, *, thp: bool = False, wtd: bool = False) -> None:
     """MA1 under step 4's deadline, guard, cleanup, post-run wait and journal evidence, with its own marker tag.
 
-    ``thp`` runs MA1-THP (D56): MA1's command plus --thp-observation, its own marker tag and its THP excerpt."""
-    argv = ma1thp_argv(output, clip) if thp else ma1_argv(output, clip)
-    tag, prefix = (MA1THP_MARKER_TAG, "ma1thp") if thp else (MA1_MARKER_TAG, "ma1")
+    ``thp`` runs MA1-THP (D56): MA1's command plus --thp-observation, its own marker tag and its THP excerpt.
+    ``wtd`` (with ``thp``) runs MA1-WTD (D57): MA1-THP's command plus --workload-thp-disable and its own excerpt."""
+    argv = ma1wtd_argv(output, clip) if wtd else ma1thp_argv(output, clip) if thp else ma1_argv(output, clip)
+    tag, prefix = ((MA1WTD_MARKER_TAG, "ma1wtd") if wtd else (MA1THP_MARKER_TAG, "ma1thp") if thp
+                   else (MA1_MARKER_TAG, "ma1"))
     child, waited, manifest, prof, kernel = guarded_child_with_kernel_evidence(
         section, runner, backend, guard, output, argv, STEP4_DEADLINE_S, tag, prefix, interrupted)
     identity_check = identity_end_check(identity, manifest)
@@ -1270,9 +1348,13 @@ def run_ma1(section: dict, runner, backend, guard, output: Path, clip: Path, ide
         observed = thp_excerpt(output)
         section["thp"] = observed
         reading = ma1thp_interpretation(reading, observed)
+    if wtd:
+        disabled = wtd_excerpt(output)
+        section["wtd"] = disabled
+        reading = ma1wtd_interpretation(reading, disabled)
     section.update(post_run_wait_s=waited, kernel=kernel, identity=identity_check, release_check=releases,
                    attribution=attribution, run_inputs=run,
-                   reference_note=MA1THP_REFERENCE_NOTE if thp else MA1_REFERENCE_NOTE,
+                   reference_note=MA1WTD_REFERENCE_NOTE if wtd else MA1THP_REFERENCE_NOTE if thp else MA1_REFERENCE_NOTE,
                    reference_criteria={name: {"status": item["status"], "value": item["value"]}
                                        for name, item in reference["criteria"].items()},
                    interpretation=reading)
@@ -1361,7 +1443,7 @@ def _sha256_arg(text: str) -> str:
 def main(argv: list[str] | None = None, *, backend=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--execute-workload", choices=("check9", "u21", "s1", "step4", "mr1", "step4plr", "ma1",
-                                                        "ma1thp"),
+                                                        "ma1thp", "ma1wtd"),
                         help="explicitly execute only this guarded diagnostic; default is read-only")
     reports = parser.add_mutually_exclusive_group()
     reports.add_argument("--check9-report", type=Path, help="successful same-boot/revision bounded Check 9 report")
@@ -1397,6 +1479,9 @@ def main(argv: list[str] | None = None, *, backend=None) -> int:
     parser.add_argument("--confirm-ma1thp-prerequisites", action="store_true",
                         help="operator confirms the MA1-THP diagnostic approval (D56), headless preparation, the "
                              "identity snapshot, the cache drop and the same-boot Check 9")
+    parser.add_argument("--confirm-ma1wtd-prerequisites", action="store_true",
+                        help="operator confirms the MA1-WTD diagnostic approval (D57), headless preparation, the "
+                             "identity snapshot, the cache drop, the same-boot Check 9 and unchanged THP settings")
     args = parser.parse_args(argv)
     if args.confirm_step4plr_prerequisites and args.execute_workload != "step4plr":
         parser.error("--confirm-step4plr-prerequisites is only for --execute-workload step4plr")
@@ -1404,6 +1489,8 @@ def main(argv: list[str] | None = None, *, backend=None) -> int:
         parser.error("--confirm-ma1-prerequisites is only for --execute-workload ma1")
     if args.confirm_ma1thp_prerequisites and args.execute_workload != "ma1thp":
         parser.error("--confirm-ma1thp-prerequisites is only for --execute-workload ma1thp")
+    if args.confirm_ma1wtd_prerequisites and args.execute_workload != "ma1wtd":
+        parser.error("--confirm-ma1wtd-prerequisites is only for --execute-workload ma1wtd")
     if args.mr1_clip is not None and args.execute_workload != "mr1":
         parser.error("--mr1-clip is only for --execute-workload mr1")
     if args.step4_identity and (args.execute_workload or not args.step4_clip or not args.step4_clip_sha256):
@@ -1435,7 +1522,8 @@ def main(argv: list[str] | None = None, *, backend=None) -> int:
                          explicit_check9=not args.latest_check9_report, confirm_mr1=args.confirm_mr1_prerequisites,
                          confirm_step4plr=args.confirm_step4plr_prerequisites,
                          confirm_ma1=args.confirm_ma1_prerequisites,
-                         confirm_ma1thp=args.confirm_ma1thp_prerequisites)
+                         confirm_ma1thp=args.confirm_ma1thp_prerequisites,
+                         confirm_ma1wtd=args.confirm_ma1wtd_prerequisites)
     report["result_file"] = str(output / "result.json")
     report["finished_utc"] = profile.utc_now()
     report["metric"] = "MemTotal - MemAvailable, integer bytes; kB x1024; time.monotonic within boot"
@@ -1464,6 +1552,10 @@ def main(argv: list[str] | None = None, *, backend=None) -> int:
         reading = report["ma1thp"].get("interpretation") or {}
         return 0 if (reading.get("execution_valid") and reading.get("attribution_recorded")
                      and reading.get("thp_recorded")) else 1
+    if args.execute_workload == "ma1wtd":  # likewise, plus the intervention verified; the D57 reading never sets it
+        reading = report["ma1wtd"].get("interpretation") or {}
+        return 0 if (reading.get("execution_valid") and reading.get("attribution_recorded")
+                     and reading.get("thp_recorded") and reading.get("intervention_verified")) else 1
     if args.execute_workload == "mr1":  # memory outcomes are descriptive and never set the exit status
         reading = report["mr1"].get("interpretation") or {}
         return 0 if reading.get("execution_valid") and reading.get("functional_smoke") == "pass" else 1

@@ -44,6 +44,17 @@ monotonic read time and cost); and the kernel identity, page sizes and THP
 settings before and after the run. The summary writes thp.json with the
 predeclared reading (session 42). It never sets or tunes a THP setting.
 
+MA1-WTD (--workload-thp-disable, opt-in, D57; only with --thp-observation)
+passes --thp-disable to the workload, which disables transparent huge pages
+for its own process with prctl before any model library and stops unless that
+is verified. This profiler checks THP_enabled read-only at four points: itself
+before anything starts, itself and llama-server before the workload starts,
+all three when the workload reports its check, and again at the steady end.
+The summary writes wtd.json: the intervention's verification, the D57 net-step
+rule, the heap's residency, khugepaged's activity, latency and throughput, and
+the predeclared reading (session 43). --net-steps RUN_DIR prints the same
+measures for any saved run without writing anything.
+
 Run from a plain SSH session on the Jetson, headless (decision D29), with
 VS Code and Claude Code closed; see docs/IMPLEMENTATION_STATUS.md, check 8.
 Standard library only; run with the system Python 3. Nothing here reads camera
@@ -253,6 +264,72 @@ THP_CANNOT_ESTABLISH = (
     "any timer or scan-cadence explanation: intervals between readings are reported descriptively",
     "that a run without steps, or with unsupported steps, removes the growth: a non-reproduction is not a fix",
     "any step-4 or PLR result, eligibility, acceptance or admission",
+    "other boots, inputs, flags or THP settings",
+)
+# MA1-WTD (opt-in diagnostic, D57; only with --thp-observation): MA1-THP with transparent huge pages disabled in the
+# workload process alone, by its own prctl before any model library (demo_workload --thp-disable). The profiler and
+# llama-server keep the system setting, read at four checkpoints; nothing system-wide is written. The summary writes
+# wtd.json with the predeclared reading (session 43).
+WTD_LABEL = "ma1wtd-workload-thp-disable"
+WTD_STATUS_LIMIT_BYTES = 16 << 10  # /proc/<pid>/status is about 1.5 KB
+WTD_MODEL_MODULES = ("numpy", "cv2", "torch", "ultralytics", "tensorflow", "keras", "deepface")  # demo_workload's
+WTD_CHECKPOINTS = ("before_launch", "llama_ready", "workload_verified", "steady_end")
+WTD_EXPECTED = {  # THP_enabled each process must show at each checkpoint (a process not listed is not read there)
+    "before_launch": {"profiler": 1},
+    "llama_ready": {"profiler": 1, "llama": 1},
+    "workload_verified": {"profiler": 1, "llama": 1, "workload": 0},
+    "steady_end": {"profiler": 1, "llama": 1, "workload": 0},
+}
+WTD_STARTUP_REASONS = ("model_modules_loaded", "prctl_unavailable", "set_failed", "get_mismatch", "status_unavailable",
+                       "status_mismatch", "anon_huge_pages_unavailable")
+NET_STEP_WINDOW_ROWS = 5  # 1.0 s of 0.2 s rows on each side of a rise
+NET_STEP_LOOP_WINDOW_S = 1.0  # a net step this close to a recorded clip reopen is loop-coincident
+NET_STEP_CLASSES = ("net_step", "rebound", "transient", "unresolved")
+NET_STEP_RULE = (
+    "a candidate is a workload RSS rise of at least 1 MiB between consecutive memory.csv rows (MA1's step), both rows "
+    "inside the window; its net change is the lowest workload RSS in the 5 rows (1.0 s) starting at its second row "
+    "minus the highest in the 5 rows ending at its first row. net_step: a net change of at least 1 MiB, which is its "
+    "size; rebound: less, with a single-row fall of at least 1 MiB between two of those 5 earlier rows; transient: "
+    "less otherwise; unresolved: one of the 10 rows missing or without a workload RSS value. A net step whose second "
+    "row lies within 1.0 s of a recorded clip reopen (MA1-WTD records them) is loop-coincident: reported, never growth. "
+    "Descriptive; it replaces no earlier classification or reading"
+)
+WTD_ANON_CATEGORIES = ("heap", "stack", "arena_like", "anon_other")  # the workload's anonymous mapping categories
+WTD_BASELINE = {  # the MA1-THP run (ma1thp-20261006T182619Z, session 43 record): comparison constants only
+    "run": "ma1thp-20261006T182619Z",
+    "steady_heap_rss_rise_bytes": 115_912_704,  # heap Rss, first to last steady smaps reading
+    "first_steady_heap_nonresident_bytes": 117_481_472,  # heap size minus Rss at the first steady smaps reading
+}
+WTD_OUTCOMES = ("supported", "contrary", "inconclusive")
+WTD_REASONS = (
+    "thp_settings_changed", "intervention_not_verified", "process_maps_unavailable", "clip_loops_unrecorded",
+    "net_growth_without_workload_huge_pages", "net_step_category_unavailable", "net_steps_unresolved",
+    "no_comparable_opportunity",
+)
+WTD_RULE = (
+    "over the steady interval, the first that applies: inconclusive (thp_settings_changed) when a THP setting read "
+    "before and after the run differs; inconclusive (intervention_not_verified) unless the workload's own check, all "
+    "four scope checkpoints and the effect check passed; inconclusive (process_maps_unavailable) without an observed "
+    "steady smaps reading; inconclusive (clip_loops_unrecorded) with a net step in an anonymous workload mapping "
+    "category (heap, stack, arena_like, anon_other) when the clip reopen times were not all recorded; contrary "
+    "(net_growth_without_workload_huge_pages) with such a net step that is not loop-coincident; inconclusive "
+    "(net_step_category_unavailable) with a net step, not loop-coincident, whose category could not be read; "
+    "inconclusive (net_steps_unresolved) with an unresolved candidate; inconclusive (no_comparable_opportunity) unless "
+    "the heap's non-resident bytes at the first steady smaps reading were at least the baseline's steady heap Rss rise "
+    "(115,912,704 B) and khugepaged was active in steady (a counted collapse or a full-scan increment); supported "
+    "otherwise. Rebounds, transients, loop-coincident net steps and file or device steps are reported, never counted "
+    "as growth"
+)
+WTD_CANNOT_ESTABLISH = (
+    "that khugepaged's scan reached the workload's address space in this run: it skips a process with THP disabled, so "
+    "its position there is unobservable; the opportunity measures are preconditions, not that event",
+    "that collapse caused the baseline's steps: the intervention also removes fault-time huge pages, and a supported "
+    "reading is consistency with the khugepaged hypothesis, not a trace",
+    "that a run without net growth removes the growth elsewhere or later: a non-reproduction is not a fix",
+    "that latency, throughput or memory differences come from khugepaged: fault-time huge pages change too, and the "
+    "comparison with earlier runs is across runs, times and conditions (confounded)",
+    "which pages a net step wrote or which code wrote them",
+    "any THP policy for the runtime, step 4 or PLR result, eligibility, acceptance or admission",
     "other boots, inputs, flags or THP settings",
 )
 COMPONENTS = (  # (key, load phase, settle phase, event carrying the load time)
@@ -543,6 +620,25 @@ def thp_settings_changes(before: object, after: object) -> tuple[list[str], list
     return changed, unverified
 
 
+def read_thp_enabled(pid: int | str, *, opener=open) -> int | None:
+    """D57: ``THP_enabled`` (0 or 1) from /proc/<pid>/status, read-only; None when unreadable or unparsed, never 1."""
+    data = _read_bounded(Path(f"/proc/{pid}/status"), WTD_STATUS_LIMIT_BYTES, opener)
+    for line in (data.decode("ascii", "replace").splitlines() if data is not None else ()):
+        name, _, value = line.partition(":")
+        if name == "THP_enabled":
+            return int(value.strip()) if value.strip() in ("0", "1") else None
+    return None
+
+
+def wtd_scope(checkpoint: str, pids: dict[str, int | None], *, read=read_thp_enabled, clock=time.monotonic) -> dict:
+    """D57: the THP_enabled of each process WTD_EXPECTED lists for ``checkpoint``; ``ok`` only when every one was read
+    and matches. A process without a pid or an unreadable status is None, never as expected."""
+    expected = WTD_EXPECTED[checkpoint]
+    values = {name: read(pids[name]) if pids.get(name) else None for name in expected}
+    return {"checkpoint": checkpoint, "t_mono": round(clock(), 3), "thp_enabled": values, "expected": dict(expected),
+            "ok": all(values[name] == want for name, want in expected.items())}
+
+
 def scan_processes() -> list[tuple[int, str, str, list[str]]]:
     """(pid, comm, exe, argv) of visible processes. argv is matched, never printed."""
     found = []
@@ -638,6 +734,9 @@ def preconditions(args: argparse.Namespace) -> tuple[list[str], dict[str, object
         problems.append("--memory-attribution (MA1) is defined only with --post-load-release")
     if getattr(args, "thp_observation", False) and not getattr(args, "memory_attribution", False):
         problems.append("--thp-observation extends MA1's readings; it is defined only with --memory-attribution")
+    if getattr(args, "workload_thp_disable", False) and not getattr(args, "thp_observation", False):
+        problems.append("--workload-thp-disable (MA1-WTD, D57) is defined only with --thp-observation, whose readings "
+                        "verify it")
     for label, path in required.items():
         if not Path(path).exists():
             problems.append(f"missing {label}: {path}")
@@ -716,6 +815,7 @@ def provenance(args: argparse.Namespace, context: dict[str, object], run_id: str
             **({"memory_attribution": True, "maps_interval_s": args.maps_interval_s}
                if getattr(args, "memory_attribution", False) else {}),
             **({"thp_observation": True} if getattr(args, "thp_observation", False) else {}),
+            **({"workload_thp_disable": True} if getattr(args, "workload_thp_disable", False) else {}),
         },
         **({"mr1_note": "MR1 release check: loads and settles, each model's file cache released after its settle, "
                         "bounded smoke checks and unload. Not a resource profile, step-4 evidence or a sustained-memory test."}
@@ -732,6 +832,10 @@ def provenance(args: argparse.Namespace, context: dict[str, object], run_id: str
                         "nothing is set or tuned. Never eligible, accepted or admissible.",
             "thp_settings": {"before": thp_settings_snapshot()}}
            if getattr(args, "thp_observation", False) else {}),
+        **({"wtd_note": "MA1-WTD (D57): MA1-THP with transparent huge pages disabled in the workload process alone, by "
+                        "its own prctl before any model library; the profiler and llama-server keep the system "
+                        "setting. Never eligible, accepted or admissible."}
+           if getattr(args, "workload_thp_disable", False) else {}),
     }
 
 
@@ -1253,6 +1357,8 @@ def start_workload(args: argparse.Namespace, run_dir: Path) -> subprocess.Popen:
     releasing = [flag for flag, on in (("--mr1-release-check", getattr(args, "mr1_release_check", False)),
                                        ("--post-load-release", getattr(args, "post_load_release", False))) if on]
     attribution = ["--memory-attribution"] if getattr(args, "memory_attribution", False) else []  # MA1: counters only
+    if getattr(args, "workload_thp_disable", False):  # MA1-WTD (D57): the workload's own prctl, that process only
+        attribution.append("--thp-disable")
     if releasing:  # MR1 or PLR: the workload waits on stdin at each checkpoint
         argv += releasing + attribution
         return subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -1279,7 +1385,7 @@ def sanitize_diagnostic(value, depth: int = 0):
         "server_error", "unsupported_completion", "requests", "http", "prompt_tokens", "completion_tokens",
         "synthetic_images_issued", "edge", "boundary_t_mono", "unique_fps", "windows", "window_s", "count",
         "min_fps", "max_fps", "schedule_age_ms", "decode_to_result_age_ms", "attempts", "client_timeouts",
-        "http_errors", "transport_errors", "request_sha256", "error_count",
+        "http_errors", "transport_errors", "request_sha256", "error_count", "clip_loop_t_mono",
     }
     strings = {
         *PHASES_IN_ORDER, "phase", "cuda_driver", "detector_loaded", "face_loaded",
@@ -1367,9 +1473,33 @@ def sanitize_memattr(record: dict) -> dict | None:
     }
 
 
+def sanitize_thp_disable(record: dict) -> dict:
+    """D57's ``thp_disable`` event reduced to fixed keys, bounded numbers and fixed labels; anything else is None."""
+    loaded = record.get("model_modules_loaded")
+    error, reason = record.get("set_errno"), record.get("reason")
+
+    def small(value):
+        return value if type(value) is int and -(1 << 31) <= value < 1 << 31 else None
+
+    return {
+        "t_mono": _measure(record.get("t_mono")),
+        "requested": record.get("requested") is True,
+        "model_modules_loaded": [name for name in loaded if name in WTD_MODEL_MODULES][:len(WTD_MODEL_MODULES)]
+        if isinstance(loaded, list) else None,
+        "set_rc": small(record.get("set_rc")),
+        "set_errno": error if isinstance(error, str) and re.fullmatch(r"E[A-Z0-9]{1,15}", error) else None,
+        "get_value": small(record.get("get_value")),
+        "thp_enabled": record.get("thp_enabled") if record.get("thp_enabled") in (0, 1) else None,
+        "anon_huge_pages_bytes": _count(record.get("anon_huge_pages_bytes")),
+        "verified": record.get("verified") is True,
+        "reason": reason if reason in WTD_STARTUP_REASONS else None,
+    }
+
+
 def pump_workload(proc: subprocess.Popen, run_dir: Path, events: Events, set_phase, *, sanitized: bool = False,
-                  on_checkpoint=None) -> None:
-    """Relay the workload's events. ``on_checkpoint`` (MR1 only) handles ``mr1_checkpoint`` and ``mr1_smoke``."""
+                  on_checkpoint=None, on_wtd=None) -> None:
+    """Relay the workload's events. ``on_checkpoint`` (MR1 only) handles ``mr1_checkpoint`` and ``mr1_smoke``;
+    ``on_wtd`` (MA1-WTD only) is called after the ``thp_disable`` event and after the steady end boundary."""
     mr1 = on_checkpoint is not None
     with open(run_dir / "workload.log", "w") as log:
         while line := proc.stdout.readline(65_536):
@@ -1391,6 +1521,12 @@ def pump_workload(proc: subprocess.Popen, run_dir: Path, events: Events, set_pha
                 if isinstance(record, dict) and record.get("event") in MEMATTR_EVENTS:  # MA1, in either mode
                     events.add("workload", record["event"], **sanitize_memattr(record))
                     continue
+                if isinstance(record, dict) and record.get("event") == "thp_disable":  # MA1-WTD, in either mode
+                    clean = sanitize_thp_disable(record)
+                    events.add("workload", "thp_disable", **clean)
+                    if on_wtd is not None:
+                        on_wtd("workload_verified")
+                    continue
                 if sanitized:
                     if not isinstance(record, dict) or record.get("event") not in {
                         "phase", "cuda_driver", "detector_loaded", "face_loaded", "torch_allocator", "workload_stats",
@@ -1405,6 +1541,8 @@ def pump_workload(proc: subprocess.Popen, run_dir: Path, events: Events, set_pha
                     set_phase(str(record.get("name")), source="workload")
                 else:
                     events.add("workload", name, **record)
+                    if on_wtd is not None and name == "steady_boundary" and record.get("edge") == "end":
+                        on_wtd("steady_end")  # the workload is still running: it emits workload_stats next
             else:
                 if not sanitized:
                     log.write(line)
@@ -1462,12 +1600,20 @@ def run(args: argparse.Namespace) -> int:
                 proc.terminate()
 
     thp = bool(getattr(args, "thp_observation", False))
+    wtd = bool(getattr(args, "workload_thp_disable", False))  # MA1-WTD (D57)
     sampler = Sampler(run_dir / "memory.csv", on_floor, thp=thp)
     tegrastats = Tegrastats(run_dir / "tegrastats.log", sampler)
 
     def set_phase(name: str, source: str = "orchestrator") -> None:
         sampler.phase = name
         events.add(source, "phase", name=name)
+
+    def wtd_checkpoint(checkpoint: str) -> dict:
+        """D57: read and record THP_enabled for the processes this checkpoint expects (read-only)."""
+        record = wtd_scope(checkpoint, {"profiler": os.getpid(), "llama": sampler.pids.get("llama"),
+                                        "workload": sampler.pids.get("work")})
+        events.add("orchestrator", "wtd_scope", **record)
+        return record
 
     stop_mark: dict[str, float] = {}
 
@@ -1482,6 +1628,9 @@ def run(args: argparse.Namespace) -> int:
     sampler.start()
     tegrastats.start()
     try:
+        if wtd and not wtd_checkpoint("before_launch")["ok"]:  # inherited by llama-server and the workload if not 1
+            raise RunAborted("this profiler's own THP_enabled is not 1 (D57): llama-server would inherit it; stop "
+                             "before starting any component")
         set_phase("baseline")
         time.sleep(args.baseline_s)
         if args.evict:
@@ -1512,6 +1661,8 @@ def run(args: argparse.Namespace) -> int:
         events.add("orchestrator", "llama_cmdline", **cmdline_evidence(procs["llama"].pid))
         if not check["ok"]:
             raise RunAborted("llama-server is not fully on the GPU with L4T's libcuda (decision D27)")
+        if wtd and not wtd_checkpoint("llama_ready")["ok"]:
+            raise RunAborted("llama-server's or this profiler's THP_enabled is not 1 (D57); the workload was not started")
         set_phase("llama_settle")
         time.sleep(args.settle_s)
         on_checkpoint = None
@@ -1529,7 +1680,8 @@ def run(args: argparse.Namespace) -> int:
             maps.start()
         pump = threading.Thread(
             target=pump_workload, args=(procs["work"], run_dir, events, set_phase),
-            kwargs={"sanitized": args.sanitized_logs, **({"on_checkpoint": on_checkpoint} if on_checkpoint else {})},
+            kwargs={"sanitized": args.sanitized_logs, **({"on_checkpoint": on_checkpoint} if on_checkpoint else {}),
+                    **({"on_wtd": wtd_checkpoint} if wtd else {})},
             daemon=True,
         )
         pump.start()
@@ -2252,6 +2404,274 @@ def thp_lines(report: dict[str, object]) -> list[str]:
     return lines
 
 
+def net_steps(rows: list[dict[str, object]], window: tuple[float, float], *, key: str = "work_rss",
+              threshold: int = MA1_STEP_BYTES, k: int = NET_STEP_WINDOW_ROWS) -> list[dict[str, object]]:
+    """NET_STEP_RULE (D57) over consecutive memory.csv rows: each candidate rise inside ``window`` with its levels
+    before and after, its net change and its class. The windows may reach past ``window``. Descriptive only."""
+    found = []
+    for index in range(1, len(rows)):
+        first, second = rows[index - 1], rows[index]
+        rise = _delta(first.get(key), second.get(key))
+        if rise is None or rise < threshold or not (window[0] <= first["t"] and second["t"] <= window[1]):
+            continue
+        before = [r.get(key) for r in rows[index - k:index]] if index >= k else []
+        after = [r.get(key) for r in rows[index:index + k]] if index + k <= len(rows) else []
+        item: dict[str, object] = {"t_mono": second["t"], "t_first": first["t"], "rise_bytes": rise, "pre_level": None,
+                                   "post_level": None, "net_bytes": None}
+        if len(before) < k or len(after) < k or None in before or None in after:
+            item["class"] = "unresolved"
+        else:
+            item.update(pre_level=max(before), post_level=min(after))
+            item["net_bytes"] = item["post_level"] - item["pre_level"]
+            fell = any(b - a <= -threshold for a, b in zip(before, before[1:]))
+            item["class"] = "net_step" if item["net_bytes"] >= threshold else "rebound" if fell else "transient"
+        found.append(item)
+    return found
+
+
+def growth_evidence(rows: list[dict[str, object]], maps: list[dict[str, object]], steady: tuple[float, float],
+                    loops: list[float] | None = None) -> dict[str, object]:
+    """D57's growth and opportunity measures over the steady interval: NET_STEP_RULE's candidates with each one's
+    mapping category, collapse coincidence and closeness to a clip reopen (``loops``; None when not recorded), the
+    heap's residency, and khugepaged's activity (device-wide)."""
+    times = [r["t"] for r in rows]
+    steady_rows = [r for r in rows if steady[0] <= r["t"] <= steady[1]]
+    steady_maps = _between(maps, steady)
+    listed = []
+    for item in net_steps(rows, steady):
+        index = bisect.bisect_left(times, item["t_mono"])
+        low, high = rows[max(index - 2, 0)], rows[min(index + 1, len(rows) - 1)]  # D56's counter bracket
+        evidence = _maps_step_evidence(maps, rows, times, item["t_first"], item["t_mono"])
+        category = evidence["step_category"]
+        listed.append({**item, "category": category,
+                       "anonymous": None if category is None else category in WTD_ANON_CATEGORIES,
+                       "loop_coincident": None if loops is None else any(
+                           abs(item["t_mono"] - t) <= NET_STEP_LOOP_WINDOW_S for t in loops),
+                       "maps_bracket": None if evidence["t0"] is None else {"t0": evidence["t0"], "t1": evidence["t1"]},
+                       "collapse_counted": _collapse_signal({key: _delta(low.get(key), high.get(key))
+                                                            for key in THP_COLLAPSE_KEYS})})
+    stepped = [s for s in listed if s["class"] == "net_step"]
+    growth = [s for s in stepped if s["loop_coincident"] is not True]  # what the reading counts
+
+    def heap(reading: dict[str, object] | None, field: str):
+        return ((((reading or {}).get("categories") or {}).get("heap")) or {}).get(field)
+
+    first_map = steady_maps[0] if steady_maps else None
+    size, rss = heap(first_map, "size_bytes"), heap(first_map, "rss_bytes")
+    headroom = size - rss if size is not None and rss is not None else None
+    collapse = {key: _timed_first_last(steady_rows, lambda r, key=key: r.get(key), "t")["delta"]
+                for key in (*THP_COLLAPSE_KEYS, "khugepaged_full_scans")}
+    scans = [b["t"] for a, b in zip(steady_rows, steady_rows[1:])
+             if (_delta(a.get("khugepaged_full_scans"), b.get("khugepaged_full_scans")) or 0) > 0]
+    collapsed = None if all(collapse[key] is None for key in THP_COLLAPSE_KEYS) else any(
+        (collapse[key] or 0) > 0 for key in THP_COLLAPSE_KEYS)
+    active = None if collapsed is None and collapse["khugepaged_full_scans"] is None else bool(
+        collapsed or (collapse["khugepaged_full_scans"] or 0) > 0)
+    required = WTD_BASELINE["steady_heap_rss_rise_bytes"]
+    return {
+        "window": {"start": steady[0], "end": steady[1]},
+        "net_steps": {
+            "rule": NET_STEP_RULE, "threshold_bytes": MA1_STEP_BYTES, "window_rows": NET_STEP_WINDOW_ROWS,
+            "loop_window_s": NET_STEP_LOOP_WINDOW_S, "loops_recorded": None if loops is None else len(loops),
+            "candidates": len(listed), "by_class": {name: sum(1 for s in listed if s["class"] == name)
+                                                    for name in NET_STEP_CLASSES},
+            "net_bytes": sum(s["net_bytes"] for s in stepped),
+            "rise_bytes_by_class": {name: sum(s["rise_bytes"] for s in listed if s["class"] == name)
+                                    for name in NET_STEP_CLASSES},
+            "loop_coincident": sum(1 for s in stepped if s["loop_coincident"] is True),
+            "loop_coincident_bytes": sum(s["net_bytes"] for s in stepped if s["loop_coincident"] is True),
+            "by_category": {name: sum(1 for s in growth if s["category"] == name) for name in MAPS_CATEGORIES},
+            "anonymous": sum(1 for s in growth if s["anonymous"] is True),
+            "anonymous_bytes": sum(s["net_bytes"] for s in growth if s["anonymous"] is True),
+            "category_unavailable": sum(1 for s in growth if s["category"] is None),
+            "with_counted_collapse": sum(1 for s in growth if s["collapse_counted"] is True),
+            "listed": listed[:THP_MAX_STEPS],
+        },
+        "residency": {
+            "workload_rss": _timed_first_last(steady_rows, lambda r: r.get("work_rss"), "t"),
+            "heap_rss": _timed_first_last(steady_maps, lambda m: heap(m, "rss_bytes"), "t_mono"),
+            "heap_size": _timed_first_last(steady_maps, lambda m: heap(m, "size_bytes"), "t_mono"),
+            "heap_anon_huge_pages": _timed_first_last(steady_maps, lambda m: heap(m, "anon_huge_pages_bytes"), "t_mono"),
+        },
+        "opportunity": {
+            "heap_nonresident_at_first_steady_reading_bytes": headroom,
+            "first_steady_reading_t_mono": first_map["t_mono"] if first_map else None,
+            "required_headroom_bytes": required,
+            "headroom_met": None if headroom is None else headroom >= required,
+            "steady_collapse_deltas": collapse,
+            "full_scan_increments": scans[:THP_MAX_FULL_SCANS],
+            "khugepaged_active": active,
+            "scan_coverage": "complete_pass_in_steady" if len(scans) >= 2 else "not_observed",
+            "comparable": bool(headroom is not None and headroom >= required and active),
+        },
+        "maps_observed": len(steady_maps),
+    }
+
+
+def _workload_huge_pages(reading: dict[str, object]) -> int | None:
+    """The workload's AnonHugePages over all categories of one smaps reading; None when any category lacks it."""
+    values = [(reading["categories"].get(name) or {}).get("anon_huge_pages_bytes") for name in MAPS_CATEGORIES]
+    return None if None in values else sum(values)
+
+
+def wtd_report(run_dir: Path, status: str, samples: list[dict[str, object]], manifest: dict[str, object],
+               steady: tuple[float, float] | None, stats: dict[str, object] | None) -> dict[str, object]:
+    """MA1-WTD's record (D57): the intervention's verification (the workload's own check, the scope checkpoints and
+    the effect on its huge pages), the growth and opportunity measures, latency and throughput, and the predeclared
+    reading (WTD_RULE). Descriptive only."""
+    events = []
+    try:
+        with open(Path(run_dir) / "events.jsonl") as handle:
+            for line in handle:
+                if line.strip():
+                    record = json.loads(line)
+                    if record.get("event") in ("thp_disable", "wtd_scope", "memattr_maps", "phase"):
+                        events.append(record)
+    except OSError:
+        pass
+    maps = [m for m in events if m["event"] == "memattr_maps" and m.get("status") == "observed"
+            and isinstance(m.get("categories"), dict) and type(m.get("t_mono")) in (int, float)]
+    startup = next((e for e in events if e["event"] == "thp_disable"), None)
+    loads = [e["t_mono"] for e in events if e["event"] == "phase" and e.get("name") == "detector_load"]
+    scope = {name: next((e for e in events if e["event"] == "wtd_scope" and e.get("checkpoint") == name), None)
+             for name in WTD_CHECKPOINTS}
+    started = startup.get("t_mono") if startup else None
+    effect_maps = [m for m in maps if started is not None and m["t_mono"] > started]
+    totals = [(m["t_mono"], _workload_huge_pages(m)) for m in effect_maps]
+    reference = startup.get("anon_huge_pages_bytes") if startup else None
+    in_steady = [value for t, value in totals if steady and steady[0] <= t <= steady[1]]
+    effect_ok = bool(reference is not None and in_steady and all(value is not None for _, value in totals)
+                     and all(value <= reference for _, value in totals))
+    before_load = None if started is None or not loads else started < loads[0]
+    startup_ok = bool(startup and startup.get("verified") is True and before_load is True)
+    scope_ok = all(item is not None and item.get("ok") is True for item in scope.values())
+    verified = startup_ok and scope_ok and effect_ok
+    settings = manifest.get("thp_settings") if isinstance(manifest.get("thp_settings"), dict) else {}
+    changed, _ = thp_settings_changes(settings.get("before"), settings.get("after"))
+    loop_times = (stats or {}).get("clip_loop_t_mono")
+    loop_times = ([t for t in loop_times if type(t) in (int, float)] if isinstance(loop_times, list) else None)
+    loops_complete = loop_times is not None and (stats or {}).get("clip_loops") == len(loop_times)
+    growth = growth_evidence(list(samples), maps, steady, loop_times) if steady else None
+    counts = growth["net_steps"] if growth else {}
+    if changed:
+        outcome, reason = "inconclusive", "thp_settings_changed"
+    elif not verified:
+        outcome, reason = "inconclusive", "intervention_not_verified"
+    elif growth is None or not growth["maps_observed"]:
+        outcome, reason = "inconclusive", "process_maps_unavailable"
+    elif counts["anonymous"] and not loops_complete:
+        outcome, reason = "inconclusive", "clip_loops_unrecorded"
+    elif counts["anonymous"]:
+        outcome, reason = "contrary", "net_growth_without_workload_huge_pages"
+    elif counts["category_unavailable"]:
+        outcome, reason = "inconclusive", "net_step_category_unavailable"
+    elif counts["by_class"]["unresolved"]:
+        outcome, reason = "inconclusive", "net_steps_unresolved"
+    elif not growth["opportunity"]["comparable"]:
+        outcome, reason = "inconclusive", "no_comparable_opportunity"
+    else:
+        outcome, reason = "supported", None
+    detector, face, scene = ((stats or {}).get(key) or {} for key in ("detector", "face", "scene"))
+    return {
+        "label": WTD_LABEL,
+        "scope": "MA1-THP with transparent huge pages disabled in the workload process alone (its own prctl before any "
+                 "model library); descriptive only, never a criterion, eligibility, acceptance or admission; the "
+                 "khugepaged hypothesis stays unconfirmed whatever it reads",
+        "profile_status": _status_label(status),
+        "intervention": {
+            "startup": {**{k: v for k, v in (startup or {}).items() if k not in ("event", "source", "utc")},
+                        "before_model_load": before_load} if startup else None,
+            "startup_verified": startup_ok,
+            "scope": scope,
+            "scope_verified": scope_ok,
+            "effect": {"reference_bytes": reference, "readings": len(totals), "steady_readings": len(in_steady),
+                       "max_bytes": _present_max(value for _, value in totals),
+                       "last_bytes": totals[-1][1] if totals else None, "verified": effect_ok},
+            "verified": verified,
+        },
+        "clip_loops": {"count": (stats or {}).get("clip_loops"), "times_recorded": None if loop_times is None
+                       else len(loop_times), "complete": loops_complete},
+        "growth": growth,
+        "performance": {  # the intervention also changes fault-time huge pages: reported, compared descriptively only
+            "detector": {key: detector.get(key) for key in ("processed_fps", "unique_fps", "windows", "latency_ms",
+                                                            "schedule_age_ms")},
+            "face": {key: face.get(key) for key in ("runs", "achieved_hz", "latency_ms", "error_count")},
+            "scene": {key: scene.get(key) for key in ("completed", "latency_ms", "over_d16_timeout")},
+        },
+        "baseline": dict(WTD_BASELINE),
+        "outcome": {"label": outcome, "reason": reason, "rule": WTD_RULE},
+        "cannot_establish": list(WTD_CANNOT_ESTABLISH),
+    }
+
+
+def wtd_lines(report: dict[str, object]) -> list[str]:
+    intervention, growth = report["intervention"], report["growth"]
+    startup = intervention["startup"] or {}
+    effect = intervention["effect"]
+    lines = ["", "Workload THP disable (MA1-WTD, D57; the workload process alone; descriptive, never a criterion or "
+                 "eligibility):",
+             f"  workload check: verified {startup.get('verified')} (set rc {startup.get('set_rc')}, "
+             f"PR_GET_THP_DISABLE {startup.get('get_value')}, THP_enabled {startup.get('thp_enabled')}, model modules "
+             f"loaded {startup.get('model_modules_loaded')}, before the detector load {startup.get('before_model_load')}, "
+             f"AnonHugePages then {startup.get('anon_huge_pages_bytes')} B" + (f", reason {startup.get('reason')}"
+                                                                            if startup.get("reason") else "") + ")",
+             "  scope (THP_enabled; profiler and llama-server expected 1, workload 0): " + "; ".join(
+                 f"{name} {'ok' if (item or {}).get('ok') else 'NOT VERIFIED'} {(item or {}).get('thp_enabled')}"
+                 for name, item in intervention["scope"].items()),
+             f"  effect: workload AnonHugePages after the check, {effect['readings']} readings ({effect['steady_readings']}"
+             f" steady), max {effect['max_bytes']} B against {effect['reference_bytes']} B at the check: verified "
+             f"{effect['verified']}",
+             f"  intervention verified: {intervention['verified']}"]
+    if growth:
+        steps, opportunity, residency = growth["net_steps"], growth["opportunity"], growth["residency"]
+        loops = report["clip_loops"]
+        lines += [
+            f"  net-step rule (D57): {steps['candidates']} candidates in steady, by class {steps['by_class']}; net steps "
+            f"{steps['by_class']['net_step']} ({steps['net_bytes']:,} B), of which loop-coincident "
+            f"{steps['loop_coincident']} ({steps['loop_coincident_bytes']:,} B); counted: anonymous {steps['anonymous']} "
+            f"({steps['anonymous_bytes']:,} B), category unavailable {steps['category_unavailable']}, with a counted "
+            f"collapse {steps['with_counted_collapse']}; clip reopens {loops['count']} (times recorded "
+            f"{loops['times_recorded']}, complete {loops['complete']})",
+            f"  heap Rss first/last {residency['heap_rss']['first']}/{residency['heap_rss']['last']} B; heap "
+            f"AnonHugePages first/max {residency['heap_anon_huge_pages']['first']}/"
+            f"{residency['heap_anon_huge_pages']['max']} B",
+            f"  opportunity: heap non-resident at the first steady reading "
+            f"{opportunity['heap_nonresident_at_first_steady_reading_bytes']} B (needs at least "
+            f"{opportunity['required_headroom_bytes']:,} B); khugepaged active {opportunity['khugepaged_active']} "
+            f"(collapse deltas {opportunity['steady_collapse_deltas']}); scan coverage {opportunity['scan_coverage']}; "
+            f"comparable {opportunity['comparable']}",
+        ]
+    perf = report["performance"]
+    lines += [f"  latency and throughput (descriptive): detector {perf['detector']['unique_fps']} fps, latency ms "
+              f"{perf['detector']['latency_ms']}; face {perf['face']['achieved_hz']} Hz, latency ms "
+              f"{perf['face']['latency_ms']}; scene {perf['scene']['completed']} completed, latency ms "
+              f"{perf['scene']['latency_ms']}",
+              f"  reading: {report['outcome']['label']}" + (f" ({report['outcome']['reason']})"
+                                                            if report["outcome"]["reason"] else ""),
+              "  Cannot establish: " + "; ".join(report["cannot_establish"]) + "."]
+    return lines
+
+
+def net_step_report(run_dir: Path) -> dict[str, object]:
+    """D57's growth and opportunity measures for any saved profile run, read-only (nothing is written): the
+    net-step rule applied beside, never instead of, the run's own classifications and reading."""
+    run_dir = Path(run_dir)
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    samples = load_samples(run_dir / "memory.csv")
+    steady_s = float((manifest.get("parameters") or {}).get("steady_s") or step4_criteria.STEADY_S)
+    interval, _ = step4_criteria.steady_interval(load_boundary_events(run_dir / "events.jsonl"), samples, steady_s)
+    if interval["status"] == step4_criteria.UNAVAILABLE:
+        return {"run_id": manifest.get("run_id"), "steady_interval": interval, "growth": None}
+    maps = [m for m in load_memattr_events(run_dir / "events.jsonl") if m["event"] == "memattr_maps"
+            and m.get("status") == "observed" and isinstance(m.get("categories"), dict)
+            and type(m.get("t_mono")) in (int, float)]
+    loops = (load_latest_events(run_dir / "events.jsonl").get("workload_stats") or {}).get("clip_loop_t_mono")
+    loops = [t for t in loops if type(t) in (int, float)] if isinstance(loops, list) else None  # MA1-WTD runs only
+    return {"run_id": manifest.get("run_id"), "steady_interval": interval,
+            "growth": growth_evidence(samples, maps, (interval["start_t_mono"], interval["end_t_mono"]), loops),
+            "baseline": dict(WTD_BASELINE)}
+
+
 def prompt_cache_summary(log_path: Path, steady: tuple[float, float] | None) -> dict[str, object] | None:
     """Numbers from llama-server's prompt-cache lines; None when the log has none (older runs)."""
     try:
@@ -2638,6 +3058,15 @@ def summarize(run_dir: Path) -> str:
                     profile["thp_observation"] = "thp.json"
                     profile["instrumentation"] += "; with THP observation (D56), read-only"
                     lines += thp_lines(observed)
+                    if (manifest.get("parameters") or {}).get("workload_thp_disable"):  # D57: its own reading
+                        disabled = wtd_report(run_dir, status, samples, manifest,
+                                              (interval["start_t_mono"], interval["end_t_mono"])
+                                              if interval["status"] != step4_criteria.UNAVAILABLE else None, stats)
+                        (run_dir / "wtd.json").write_text(json.dumps(disabled, indent=2) + "\n")
+                        profile["workload_thp_disable"] = "wtd.json"
+                        profile["instrumentation"] += ("; with THP disabled in the workload process alone (D57), so "
+                                                       "fault-time huge pages are absent there too")
+                        lines += wtd_lines(disabled)
             lines += ["", f"Step-4 criteria decidable from this run ({step4_criteria.PLR_CRITERIA_ID}: D47's rules and "
                       "thresholds under the PLR identity; demo profile, not the 1080p beta gates; never acceptance "
                       "or admission" + ("; instrumented MA1 run: descriptive only, never eligible" if instrumented
@@ -2715,6 +3144,14 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                              "aggregates, meminfo AnonHugePages and the THP fault, collapse and split counters with "
                              "khugepaged's progress counters in each memory.csv row, and the THP settings before and "
                              "after the run; read-only, nothing set or tuned")
+    parser.add_argument("--workload-thp-disable", action="store_true",
+                        help="MA1-WTD (opt-in diagnostic, D57; only with --thp-observation): the workload disables "
+                             "transparent huge pages for its own process (prctl, before any model library) and stops "
+                             "unless verified; this profiler and llama-server keep the system setting, checked at four "
+                             "points; no system-wide THP setting is written")
+    parser.add_argument("--net-steps", type=Path, metavar="RUN_DIR",
+                        help="only print D57's net-step, residency and opportunity measures for a saved run as JSON; "
+                             "read-only, writes nothing")
     parser.add_argument("--sanitized-logs", action="store_true",
                         help="discard raw server/workload output; retain fixed numeric/placement diagnostics only")
     parser.add_argument("--allow-desktop", action="store_true", help="measure with a desktop session running")
@@ -2732,6 +3169,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.summarize:
         print(summarize(args.summarize))
+        return 0
+    if args.net_steps:
+        print(json.dumps(net_step_report(args.net_steps), indent=2))
         return 0
     return run(args)
 

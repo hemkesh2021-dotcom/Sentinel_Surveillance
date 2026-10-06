@@ -505,7 +505,12 @@ class Backend:
         self.plr_report = None  # step-4 PLR: the profiler's plr.json, likewise
         self.memattr_report = None  # MA1: the profiler's memattr.json, likewise
         self.thp_report = None  # MA1-THP: the profiler's thp.json, likewise
+        self.wtd_report = None  # MA1-WTD: the profiler's wtd.json, likewise
+        self.thp_flag = 1  # MA1-WTD: this (operator) process's THP_enabled
         self.sleeps = []
+
+    def thp_enabled(self):
+        return self.thp_flag
 
     def clock(self):
         return self.now
@@ -593,6 +598,8 @@ class Backend:
             (run / "memattr.json").write_text(json.dumps(self.memattr_report))
         if self.thp_report is not None:
             (run / "thp.json").write_text(json.dumps(self.thp_report))
+        if self.wtd_report is not None:
+            (run / "wtd.json").write_text(json.dumps(self.wtd_report))
 
 
 def identity_tree(tmp_path: Path) -> dict[str, Path]:
@@ -1562,9 +1569,146 @@ def test_each_ma1_confirmation_belongs_to_its_own_mode(runners, tmp_path) -> Non
     op = runners.operator
     for wrong in (["--execute-workload", "ma1", "--confirm-ma1thp-prerequisites"],
                   ["--execute-workload", "ma1thp", "--confirm-ma1-prerequisites"],
-                  ["--confirm-ma1thp-prerequisites"]):
+                  ["--confirm-ma1thp-prerequisites"],
+                  ["--execute-workload", "ma1thp", "--confirm-ma1wtd-prerequisites"],
+                  ["--execute-workload", "ma1wtd", "--confirm-ma1thp-prerequisites"],
+                  ["--confirm-ma1wtd-prerequisites"]):
         with pytest.raises(SystemExit):
             op.main(wrong, backend=Backend())
+
+
+# ---------------------------------------------------------------- MA1-WTD (D57): MA1-THP with the workload's THP disabled
+
+
+def fake_wtd_report(runners, tmp_path, *, outcome="supported") -> dict:
+    """The profiler's own wtd.json, built by its function from a few synthetic rows, readings and events."""
+    profile = runners.profile
+    run = tmp_path / f"wtd-source-{outcome}"
+    run.mkdir(exist_ok=True)
+    grown = outcome == "contrary"
+    samples = [{"t": round(130.0 + 0.2 * i, 3), "phase": "steady",
+                "work_rss": 2_000_000_000 + (4 << 20 if grown and i >= 100 else 0), "llama_rss": 1, "anon_pages": 1,
+                "thp_t_mono": 1.0, "khugepaged_pages_collapsed": 5 + (i >= 100) * (outcome != "no_opportunity"),
+                "thp_collapse_alloc": 5 + (i >= 100) * (outcome != "no_opportunity"), "khugepaged_full_scans": 2,
+                "thp_split_page": 0, "thp_split_pmd": 0, "anon_huge_pages": 1} for i in range(200)]
+    events = [{"t_mono": 100.0, "event": "thp_disable", "requested": True, "model_modules_loaded": [], "set_rc": 0,
+               "set_errno": None, "get_value": 1, "thp_enabled": 0, "anon_huge_pages_bytes": 0,
+               "verified": outcome != "not_verified", "reason": None},
+              {"t_mono": 101.0, "event": "phase", "name": "detector_load"},
+              *({"t_mono": 100.0, "event": "wtd_scope", "checkpoint": name, "thp_enabled": profile.WTD_EXPECTED[name],
+                 "expected": profile.WTD_EXPECTED[name], "ok": True} for name in profile.WTD_CHECKPOINTS)]
+    for t in range(130, 171, 5):
+        rss = (600 << 20) + (4 << 20 if grown and t >= 150 else 0)
+        events.append({"t_mono": float(t), "event": "memattr_maps", "status": "observed",
+                       "categories": {name: {"size_bytes": (800 << 20) if name == "heap" else 1,
+                                             "rss_bytes": rss if name == "heap" else 1, "anon_huge_pages_bytes": 0}
+                                      for name in profile.MAPS_CATEGORIES}})
+    (run / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    manifest = {"thp_settings": {"before": THP_SNAPSHOT, "after": THP_SNAPSHOT}}
+    stats = {"clip_loops": 1, "clip_loop_t_mono": [100.5], "detector": {"unique_fps": 15.0}, "face": {}, "scene": {}}
+    report = profile.wtd_report(run, "complete", samples, manifest, (130.0, 168.0), stats)
+    report["intervention"]["startup"]["note"] = "/home/someone/private"  # never relayed
+    return report
+
+
+def run_ma1wtd(runners, tmp_path, prep, backend=None, *, outcome="supported", record=True, **overrides):
+    op = runners.operator
+    output = private_dir(tmp_path, "ma1wtd")
+    backend = backend or Backend()
+    backend.output = output
+    backend.identity_hashes = {label: entry["sha256"] for label, entry in prep.identity["files"].items()}
+    backend.plr_report = backend.plr_report or fake_plr_report(runners, tmp_path)
+    backend.memattr_report = backend.memattr_report or fake_memattr_report(runners, tmp_path)
+    backend.thp_report = backend.thp_report or fake_thp_report(runners, tmp_path, reading="unsupported")
+    if record and backend.wtd_report is None:
+        backend.wtd_report = fake_wtd_report(runners, tmp_path, outcome=outcome)
+    kwargs = dict(check9_report=prep.check9_path, identity_report=prep.identity_path, clip=prep.files["clip"],
+                  confirm_ma1wtd=True, dropped_caches=True, identity_files_fn=lambda clip: prep.files)
+    kwargs.update(overrides)
+    return op.execute("ma1wtd", backend, output, **kwargs), backend
+
+
+def test_the_ma1wtd_child_is_ma1thps_command_plus_the_disable_flag_only(runners, tmp_path) -> None:
+    op = runners.operator
+    prep = prepare(runners, tmp_path)
+    result, backend = run_ma1wtd(runners, tmp_path, prep)
+    (child,) = [c for c in backend.children if "demo_profile.py" in " ".join(c.argv)]
+    assert child.argv == [*op.ma1thp_argv(backend.output, prep.files["clip"]), "--workload-thp-disable"]
+    assert result["ma1wtd"]["deadline_s"] == op.STEP4_DEADLINE_S
+    assert [(m[0].split()[:2], m[2]) for m in backend.markers] == [(["ma1wtd", "start"], "sentinel-ma1wtd"),
+                                                                   (["ma1wtd", "end"], "sentinel-ma1wtd")]
+    args = runners.profile.parse_args(child.argv[2:])
+    ma1thp = runners.profile.parse_args(op.ma1thp_argv(backend.output, prep.files["clip"])[2:])
+    assert args.workload_thp_disable is True and ma1thp.workload_thp_disable is False
+    assert {k: v for k, v in vars(args).items() if k != "workload_thp_disable"} == {
+        k: v for k, v in vars(ma1thp).items() if k != "workload_thp_disable"}  # models, rates, durations, guard inputs
+    assert result["ma1wtd"]["operator_thp_enabled"] == 1
+
+
+def test_a_completed_ma1wtd_run_records_the_intervention_and_reading_and_is_never_eligible(runners, tmp_path) -> None:
+    prep = prepare(runners, tmp_path)
+    result, _ = run_ma1wtd(runners, tmp_path, prep)
+    section = result["ma1wtd"]
+    assert section["status"] == "completed" and section["acceptance"].startswith("never: instrumented diagnostic")
+    assert "criteria" not in section and "fault-time huge pages" in section["reference_note"]
+    reading = section["interpretation"]
+    assert reading["execution_valid"] and reading["attribution_recorded"] and reading["thp_recorded"]
+    assert reading["intervention_verified"] is True and reading["wtd_reading"] == {"label": "supported", "reason": None}
+    assert reading["thp_reading"]["label"] == "unsupported"  # D56's reading is still recorded beside it
+    assert reading["eligible_for_maintainer_review"] is False and "not a fix" in reading["wtd"]
+    excerpt = section["wtd"]
+    assert excerpt["status"] == "recorded" and excerpt["label"] == "ma1wtd-workload-thp-disable"
+    assert excerpt["intervention"]["scope"]["llama_ready"]["thp_enabled"] == {"profiler": 1, "llama": 1}
+    assert excerpt["growth"]["opportunity"]["comparable"] is True and excerpt["clip_loops"]["complete"] is True
+    assert excerpt["growth"]["net_steps"]["by_class"]["net_step"] == 0
+    text = json.dumps(result)
+    assert '"listed"' not in json.dumps(excerpt) and "/home/someone" not in text and "rule" not in excerpt["outcome"]
+    assert "ma1thp" not in result and result["step4"]["status"] == "PENDING"
+
+
+@pytest.mark.parametrize(("case", "exit_code", "label"), [
+    ("supported", 0, "supported"), ("contrary", 0, "contrary"), ("no_opportunity", 0, "inconclusive"),
+    ("not_verified", 1, "inconclusive"), ("no_record", 1, "unavailable"),
+])
+def test_the_ma1wtd_exit_needs_a_verified_intervention_and_never_its_reading(
+    runners, tmp_path, monkeypatch, capsys, case, exit_code, label,
+) -> None:
+    op = runners.operator
+    monkeypatch.setattr(op, "OUTPUT_ROOT", tmp_path)
+    prep = prepare(runners, tmp_path)
+    monkeypatch.setattr(op, "identity_files", lambda clip: prep.files)
+    backend = Backend()
+    backend.identity_hashes = {label: entry["sha256"] for label, entry in prep.identity["files"].items()}
+    backend.plr_report = fake_plr_report(runners, tmp_path)
+    backend.memattr_report = fake_memattr_report(runners, tmp_path)
+    backend.thp_report = fake_thp_report(runners, tmp_path, reading="unsupported")
+    backend.wtd_report = None if case == "no_record" else fake_wtd_report(runners, tmp_path, outcome=case)
+    backend.profile["steady_trend"]["used"]["slope_bytes_per_min"] = 19_846_506  # M3 fails: descriptive only
+    common = ["--execute-workload", "ma1wtd", "--check9-report", str(prep.check9_path), "--identity-report",
+              str(prep.identity_path), "--step4-clip", str(prep.files["clip"]), "--operator-dropped-caches"]
+    assert op.main([*common, "--confirm-ma1wtd-prerequisites"], backend=backend) == exit_code
+    reading = json.loads(capsys.readouterr().out)["ma1wtd"]["interpretation"]
+    assert reading["wtd_reading"]["label"] == label and reading["eligible_for_maintainer_review"] is False
+    assert reading["intervention_verified"] is (case not in ("not_verified", "no_record"))
+
+
+@pytest.mark.parametrize(("overrides", "flag", "refusal"), [
+    ({"confirm_ma1wtd": False, "confirm_ma1thp": True}, 1, "ma1wtd_operator_prerequisites_unconfirmed"),
+    ({"dropped_caches": False}, 1, "ma1wtd_cache_drop_not_declared"),
+    ({"explicit_check9": False}, 1, "ma1wtd_requires_explicit_check9_report"),
+    ({"clip": None}, 1, "ma1wtd_clip_required"),
+    ({"identity_report": None}, 1, "step4_identity_report_required"),
+    ({}, 0, "ma1wtd_operator_thp_enabled_not_1"),  # everything it starts would inherit the disable
+    ({}, None, "ma1wtd_operator_thp_enabled_not_1"),  # unreadable is never as expected
+])
+def test_ma1wtd_refuses_before_any_process_when_a_prerequisite_fails(runners, tmp_path, overrides, flag,
+                                                                    refusal) -> None:
+    prep = prepare(runners, tmp_path)
+    backend = Backend()
+    backend.thp_flag = flag
+    result, backend = run_ma1wtd(runners, tmp_path, prep, backend=backend, **overrides)
+    assert result["ma1wtd"]["status"] == "refused" and refusal in result["ma1wtd"]["refusals"]
+    assert not [c for c in backend.children if "demo_profile.py" in " ".join(c.argv) or "logger" in c.argv[0]]
 
 
 # ---------------------------------------------------------------- startup identity checks

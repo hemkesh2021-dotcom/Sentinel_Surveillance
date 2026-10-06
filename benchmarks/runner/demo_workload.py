@@ -44,6 +44,19 @@ freezes, disables or retunes the collector, trims or reconfigures the
 allocator, or changes any rate or phase. Unsupported or failed readings are
 None, never zero.
 
+``--thp-disable`` (MA1-WTD, opt-in diagnostic, D57; only with
+``--memory-attribution``) disables transparent huge pages for this process
+alone with ``prctl(PR_SET_THP_DISABLE, 1)``, as the first step after the
+arguments are checked: before the CUDA driver's cuInit, any model library
+import and any model load. It is verified by the call's result,
+``PR_GET_THP_DISABLE`` and /proc/self/status ``THP_enabled``, with this
+process's AnonHugePages read at that moment, and emitted as ``thp_disable``.
+Unless all agree, the workload stops with exit status 5 before anything loads.
+The setting is the kernel's per-process flag, which children of this process
+inherit; no system-wide THP setting is read or written here. With it,
+``workload_stats`` also lists the replay clip's reopen times
+(``clip_loop_t_mono``), which the diagnostic's net-step rule sets apart.
+
 Structured results go to stdout as ``@@EVENT <json>`` lines. Model output text
 is never written anywhere: the footage is private. Only counts and timings are.
 After every scene request a ``scene_progress`` event carries cumulative
@@ -65,6 +78,7 @@ from __future__ import annotations
 import argparse
 import base64
 import ctypes
+import errno
 import gc
 import hashlib
 import json
@@ -122,6 +136,13 @@ MEMATTR_FULL_GC_PER_SAMPLE = 16  # full collections listed per sample; more are 
 MALLINFO2_FIELDS = ("arena", "ordblks", "smblks", "hblks", "hblkhd", "usmblks", "fsmblks", "uordblks", "fordblks",
                     "keepcost")  # glibc's struct mallinfo2, in order (all size_t)
 MALLINFO2_REPORTED = tuple(name for name in MALLINFO2_FIELDS if name != "usmblks")  # glibc always sets usmblks to 0
+# MA1-WTD (opt-in diagnostic, D57): transparent huge pages disabled for this process alone, before any model library.
+PR_SET_THP_DISABLE = 41  # <linux/prctl.h>; the installed kernel's uapi header has the same values (session 43)
+PR_GET_THP_DISABLE = 42
+WTD_MODEL_MODULES = ("numpy", "cv2", "torch", "ultralytics", "tensorflow", "keras", "deepface")  # none may be loaded yet
+WTD_READ_LIMIT_BYTES = 16 << 10  # /proc/self/status and smaps_rollup are about 1.5 KB each
+WTD_REFUSED_EXIT = 5
+CLIP_LOOP_TIMES_MAX = 16  # reopen times kept; 720 s of warm-up and steady with the 60 s clip has 11
 SCENE_SYSTEM = (
     "You are the scene-analysis component of a home security camera. "
     "Reply with exactly one JSON object and nothing else."
@@ -237,6 +258,75 @@ def glibc_version(load: Callable = ctypes.CDLL) -> str | None:
     function.restype = ctypes.c_char_p
     value = function()
     return value.decode("ascii", "replace") if value else None
+
+
+def libc_prctl(load: Callable = ctypes.CDLL) -> Callable[[int, int], tuple[int, int]] | None:
+    """prctl(2) through libc as ``call(option, arg2) -> (return value, errno)`` with arg3-arg5 0, or None without it."""
+    try:
+        function = load(None, use_errno=True).prctl
+    except (OSError, AttributeError):
+        return None
+    function.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+    function.restype = ctypes.c_int
+
+    def call(option: int, arg2: int) -> tuple[int, int]:
+        ctypes.set_errno(0)
+        value = function(option, arg2, 0, 0, 0)
+        return value, ctypes.get_errno()
+
+    return call
+
+
+def _proc_self_field(path: str, name: str, opener=open) -> str | None:
+    """One ``name:`` line's value from a small /proc/self file, or None when unreadable, oversized or absent."""
+    try:
+        with opener(path, "rb") as handle:
+            data = handle.read(WTD_READ_LIMIT_BYTES + 1)
+    except OSError:
+        return None
+    if len(data) > WTD_READ_LIMIT_BYTES:
+        return None
+    for line in data.decode("ascii", "replace").splitlines():
+        key, _, value = line.partition(":")
+        if key == name:
+            return value.strip()
+    return None
+
+
+def disable_thp_for_this_process(*, prctl: Callable[[int, int], tuple[int, int]] | None = None,
+                                 modules: Mapping[str, object] | None = None, opener=open,
+                                 clock: Callable[[], float] = time.monotonic) -> dict[str, object]:
+    """MA1-WTD (D57): ``PR_SET_THP_DISABLE`` for this process alone, then verified, with numbers and fixed labels only.
+
+    Refused (nothing set) when a model library is already imported. ``verified`` needs the call to return 0,
+    ``PR_GET_THP_DISABLE`` to return 1, /proc/self/status ``THP_enabled`` to read 0 and this process's AnonHugePages
+    (smaps_rollup; huge pages made before the call stay) to be readable; ``reason`` names the first check that
+    failed. The kernel flag is inherited by this process's children; nothing system-wide is touched."""
+    loaded = [name for name in WTD_MODEL_MODULES if name in (sys.modules if modules is None else modules)]
+    record: dict[str, object] = {"t_mono": round(clock(), 3), "requested": True, "model_modules_loaded": loaded,
+                                 "set_rc": None, "set_errno": None, "get_value": None, "thp_enabled": None,
+                                 "anon_huge_pages_bytes": None, "verified": False, "reason": None}
+    if loaded:
+        record["reason"] = "model_modules_loaded"
+        return record
+    call = prctl if prctl is not None else libc_prctl()
+    if call is None:
+        record["reason"] = "prctl_unavailable"
+        return record
+    rc, error = call(PR_SET_THP_DISABLE, 1)
+    record.update(set_rc=rc, set_errno=errno.errorcode.get(error) if error else None)
+    record["get_value"] = call(PR_GET_THP_DISABLE, 0)[0]
+    status = _proc_self_field("/proc/self/status", "THP_enabled", opener)
+    record["thp_enabled"] = int(status) if status in ("0", "1") else None
+    huge = (_proc_self_field("/proc/self/smaps_rollup", "AnonHugePages", opener) or "").split()
+    record["anon_huge_pages_bytes"] = (int(huge[0]) * 1024 if len(huge) == 2 and huge[0].isdigit() and huge[1] == "kB"
+                                       else None)
+    checks = (("set_failed", rc == 0), ("get_mismatch", record["get_value"] == 1),
+              ("status_unavailable", record["thp_enabled"] is not None), ("status_mismatch", record["thp_enabled"] == 0),
+              ("anon_huge_pages_unavailable", record["anon_huge_pages_bytes"] is not None))
+    record["reason"] = next((reason for reason, passed in checks if not passed), None)
+    record["verified"] = record["reason"] is None
+    return record
 
 
 class GcRecorder:
@@ -425,6 +515,7 @@ class Frames:
         self.clip = clip
         self.fps = fps
         self.loops = 0
+        self.loop_t_mono: list[float] = []  # each reopen's time.monotonic(), at most CLIP_LOOP_TIMES_MAX
         self.decoded = 0
         if clip:
             self._cap = cv2.VideoCapture(clip)
@@ -443,6 +534,8 @@ class Frames:
             self._cap.release()
             self._cap = self._cv2.VideoCapture(self.clip)
             self.loops += 1
+            if len(self.loop_t_mono) < CLIP_LOOP_TIMES_MAX:
+                self.loop_t_mono.append(round(time.monotonic(), 3))
             ok, frame = self._cap.read()
             if not ok:
                 raise SystemExit("replay clip became unreadable")
@@ -872,6 +965,8 @@ def run_workload(model, deepface, args, stats: Stats, allocator: AllocatorSample
         worker.join(timeout=VLM_TIMEOUT_S + 5)
     summary["input"] = "replay clip" if args.clip else "synthetic noise"
     summary["clip_loops"] = frames.loops
+    if getattr(args, "thp_disable", False):  # MA1-WTD (D57): reopen times, so its net-step rule can set them apart
+        summary["clip_loop_t_mono"] = list(frames.loop_t_mono)
     event("workload_stats", **summary)
 
 
@@ -991,12 +1086,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--memory-attribution", action="store_true",
                         help="MA1 (opt-in diagnostic): emit this process's allocator and garbage-collector counters "
                              "at 1 Hz; changes no rate, phase, collector or allocator setting")
+    parser.add_argument("--thp-disable", action="store_true",
+                        help="MA1-WTD (opt-in diagnostic, D57; only with --memory-attribution): disable transparent huge "
+                             "pages for this process alone (prctl PR_SET_THP_DISABLE) before the CUDA driver, any model "
+                             "library or model loads; stop with status 5 unless the call, PR_GET_THP_DISABLE and "
+                             "THP_enabled verify it")
     args = parser.parse_args(argv)
     if args.mr1_release_check and args.post_load_release:
         parser.error("--mr1-release-check and --post-load-release are separate procedures; pass one")
     if args.memory_attribution and (args.scene_only or args.mr1_release_check):
         parser.error("--memory-attribution observes the combined warm-up and steady phases; "
                      "not with --scene-only or --mr1-release-check")
+    if args.thp_disable and not args.memory_attribution:
+        parser.error("--thp-disable (MA1-WTD) is defined only with --memory-attribution")
     if args.scene_only:
         if args.clip:
             parser.error("--scene-only uses its own synthetic images; --clip is not allowed")
@@ -1008,6 +1110,12 @@ def main(argv: list[str] | None = None) -> int:
     if not args.engine:
         parser.error("--engine is required unless --scene-only is given")
 
+    if args.thp_disable:  # MA1-WTD (D57): this process alone, before cuInit, any model library and any load
+        record = disable_thp_for_this_process()
+        event("thp_disable", **record)
+        if not record["verified"]:
+            event("fatal", reason="thp disable not verified (D57)")
+            return WTD_REFUSED_EXIT
     if not check_cuda_driver():
         event("fatal", reason="libcuda is not L4T's or cuInit failed (decision D27)")
         return 3
