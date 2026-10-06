@@ -97,7 +97,7 @@ MEMINFO_KEYS = (*BASE_MEMINFO_KEYS, *ATTRIBUTION_MEMINFO_KEYS)
 DESKTOP_COMMS = frozenset({"Xorg", "Xwayland", "gnome-shell", "Xtigervnc", "Xvnc", "xfwm4", "xfce4-session"})
 V1_SCRIPTS = frozenset({"surveillance4_1.py", "dashboard.py", "dashboard_1.py"})
 DEEPFACE_WEIGHTS = ("facenet512_weights.h5", "face_detection_yunet_2023mar.onnx")
-PHASES_IN_ORDER = (  # the *_release and smoke phases occur only with --mr1-release-check
+PHASES_IN_ORDER = (  # *_release: --mr1-release-check or --post-load-release; smoke: --mr1-release-check only
     "baseline", "llama_load", "llama_settle", "scene_release", "detector_load", "detector_settle", "detector_release",
     "face_load", "face_settle", "face_release", "smoke", "warmup", "steady", "stopping", "unload_workload",
     "unload_llama",
@@ -120,6 +120,18 @@ MR1_SMOKE_KEYS = {
 MR1_SMOKE_LABELS = frozenset({"stop", "length", "other", "missing", "http", "timeout", "truncated", "invalid_report",
                               "incomplete_completion", "malformed_response", "server_error", "unsupported_completion",
                               "response_too_large"})
+# Step-4 PLR (opt-in, D54): MR1's per-model release after each load and settle, then step 4's full warm-up and
+# steady phases, judged by D47's criteria under step4_criteria.PLR_CRITERIA_ID. The outcomes stay descriptive.
+PLR_LABEL = "step4plr-post-load-release"
+PLR_CANNOT_ESTABLISH = (
+    "per-file page-cache residency, or which pages or files were released: the counters are device-wide",
+    "that a returned 0 dropped any page: mapped, dirty or locked pages stay",
+    "how much of any headroom difference the releases caused: the run has no same-boot arm without them",
+    "that sentinel run would behave the same: it performs no post-load release",
+    "GPU (NvMap) allocation behaviour at low MemFree beyond this run",
+    "model accuracy or scene accuracy",
+    "other boots, other inputs or other flags",
+)
 COMPONENTS = (  # (key, load phase, settle phase, event carrying the load time)
     ("scene", "llama_load", "llama_settle", "llama_ready"),
     ("detector", "detector_load", "detector_settle", "detector_loaded"),
@@ -268,6 +280,10 @@ def preconditions(args: argparse.Namespace) -> tuple[list[str], dict[str, object
             problems.append("--scene-only uses its own synthetic images; do not pass --clip")
     if getattr(args, "mr1_release_check", False) and args.scene_only:
         problems.append("--mr1-release-check needs the detector and face models; do not pass --scene-only")
+    if getattr(args, "post_load_release", False) and args.scene_only:
+        problems.append("--post-load-release needs the detector and face models; do not pass --scene-only")
+    if getattr(args, "post_load_release", False) and getattr(args, "mr1_release_check", False):
+        problems.append("--mr1-release-check and --post-load-release are separate procedures; pass one")
     for label, path in required.items():
         if not Path(path).exists():
             problems.append(f"missing {label}: {path}")
@@ -341,10 +357,16 @@ def provenance(args: argparse.Namespace, context: dict[str, object], run_id: str
             "port": args.port, "sample_interval_s": SAMPLE_INTERVAL_S, "pss_interval_s": PSS_INTERVAL_S,
             **({"mr1_release_check": True, "mr1_release_settle_s": args.mr1_release_settle_s}
                if getattr(args, "mr1_release_check", False) else {}),
+            **({"post_load_release": True, "release_settle_s": args.mr1_release_settle_s}
+               if getattr(args, "post_load_release", False) else {}),
         },
         **({"mr1_note": "MR1 release check: loads and settles, each model's file cache released after its settle, "
                         "bounded smoke checks and unload. Not a resource profile, step-4 evidence or a sustained-memory test."}
            if getattr(args, "mr1_release_check", False) else {}),
+        **({"plr_note": "Step-4 PLR (D54): step 4's procedure with each model's file cache released after its load and "
+                        "settle, then the full warm-up and steady phases. Judged by D47's criteria under "
+                        f"{step4_criteria.PLR_CRITERIA_ID}; never D47's step-4 result, accepted or admissible."}
+           if getattr(args, "post_load_release", False) else {}),
     }
 
 
@@ -818,8 +840,10 @@ def start_workload(args: argparse.Namespace, run_dir: Path) -> subprocess.Popen:
         argv += ["--clip", str(args.clip)]
     if args.scene_only:
         argv.append("--scene-only")
-    if getattr(args, "mr1_release_check", False):  # MR1: the workload waits on stdin at each checkpoint
-        argv.append("--mr1-release-check")
+    releasing = [flag for flag, on in (("--mr1-release-check", getattr(args, "mr1_release_check", False)),
+                                       ("--post-load-release", getattr(args, "post_load_release", False))) if on]
+    if releasing:  # MR1 or PLR: the workload waits on stdin at each checkpoint
+        argv += releasing
         return subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                 bufsize=1, env=env, cwd=run_dir)
     # cwd is the run directory so no library can leave files in the repository.
@@ -932,6 +956,16 @@ def stop_process(proc: subprocess.Popen | None, name: str, events: Events) -> No
 # ------------------------------------------------------------------------ run
 
 
+def workload_budget(args: argparse.Namespace) -> float:
+    """Seconds the workload may take from its start to its exit before the run aborts."""
+    if args.mr1_release_check:  # loads, two releases with their checkpoints, the smoke checks, no warm-up/steady
+        return args.load_timeout_s + 2 * args.settle_s + 3 * (args.mr1_release_settle_s + 10) + MR1_SMOKE_BUDGET_S + 60
+    if args.post_load_release:  # step 4's budget plus the two releases the workload waits for
+        return (args.load_timeout_s + 2 * args.settle_s + 2 * (args.mr1_release_settle_s + 10)
+                + args.warmup_s + args.steady_s + 60)
+    return args.load_timeout_s + 2 * args.settle_s + args.warmup_s + args.steady_s + 60
+
+
 def run(args: argparse.Namespace) -> int:
     problems, context = preconditions(args)
     if problems:
@@ -1009,7 +1043,7 @@ def run(args: argparse.Namespace) -> int:
         set_phase("llama_settle")
         time.sleep(args.settle_s)
         on_checkpoint = None
-        if args.mr1_release_check:
+        if args.mr1_release_check or args.post_load_release:
             on_checkpoint = mr1_checkpoint_handler(procs, events, set_phase, mr1_files(args), args.mr1_release_settle_s)
             on_checkpoint("scene")  # llama-server has settled; the workload has not started
 
@@ -1021,12 +1055,8 @@ def run(args: argparse.Namespace) -> int:
             daemon=True,
         )
         pump.start()
-        if args.mr1_release_check:  # loads, two releases with their checkpoints, the smoke checks, no warm-up/steady
-            budget = args.load_timeout_s + 2 * args.settle_s + 3 * (args.mr1_release_settle_s + 10) + MR1_SMOKE_BUDGET_S + 60
-        else:
-            budget = args.load_timeout_s + 2 * args.settle_s + args.warmup_s + args.steady_s + 60
         try:
-            returncode = procs["work"].wait(timeout=budget)
+            returncode = procs["work"].wait(timeout=workload_budget(args))
         except subprocess.TimeoutExpired:
             raise RunAborted("the workload exceeded its time budget") from None
         pump.join(timeout=10)
@@ -1207,17 +1237,26 @@ def load_mr1_events(path: Path) -> list[dict[str, object]]:
     return found
 
 
+def release_records(records: list[dict[str, object]]) -> dict[str, dict[str, object]]:
+    """Each component's release record (MR1 or PLR), keyed by component."""
+    return {r["component"]: {k: r.get(k) for k in ("files", "files_total_bytes", "calls_elapsed_s", "settle_s",
+                                                      "before", "after", "deltas", "outcome")}
+            for r in records if r["event"] == "mr1_release" and r.get("component") in MR1_RELEASE_FILES}
+
+
+def _status_label(status: str) -> str:
+    return next((name for name in ("complete", "aborted", "interrupted", "incomplete") if status.startswith(name)), "unknown")
+
+
 def mr1_report(run_dir: Path, status: str) -> dict[str, object]:
     """MR1's record: each release, the after-smoke sample, the smoke checks; descriptive, never acceptance."""
     records = load_mr1_events(Path(run_dir) / "events.jsonl")
-    releases = {r["component"]: {k: r.get(k) for k in ("files", "files_total_bytes", "calls_elapsed_s", "settle_s",
-                                                         "before", "after", "deltas", "outcome")}
-                for r in records if r["event"] == "mr1_release" and r.get("component") in MR1_RELEASE_FILES}
+    releases = release_records(records)
     after_smoke = next((r for r in records if r["event"] == "mr1_snapshot"), None)
     after_smoke = {k: after_smoke.get(k) for k in ("t_mono", "meminfo", "pressure_bytes", "processes")} if after_smoke else None
     smoke = next(({k: r.get(k) for k in MR1_SMOKE_KEYS} for r in records if r["event"] == "mr1_smoke"), None)
     face = releases.get("face")
-    label = next((name for name in ("complete", "aborted", "interrupted", "incomplete") if status.startswith(name)), "unknown")
+    label = _status_label(status)
     return {
         "label": "mr1-release-check",
         "scope": "loads and settles, each model's file cache released after its settle, bounded smoke checks; "
@@ -1233,10 +1272,10 @@ def mr1_report(run_dir: Path, status: str) -> dict[str, object]:
     }
 
 
-def mr1_lines(report: dict[str, object]) -> list[str]:
-    lines = ["", "MR1 release check (descriptive; not step-4 evidence, never acceptance):", f"  basis: {MR1_BASIS}"]
+def release_lines(releases: dict[str, dict[str, object]]) -> list[str]:
+    lines = []
     for component in MR1_RELEASE_FILES:
-        item = report["releases"].get(component)
+        item = releases.get(component)
         if item is None:
             lines.append(f"  {component}: not reached")
             continue
@@ -1247,11 +1286,68 @@ def mr1_lines(report: dict[str, object]) -> list[str]:
         lines.append(f"    deltas over {item['settle_s']} s: MemFree {gb(d.get('MemFree'), True)}, Cached {gb(d.get('Cached'), True)}, "
                      f"Mapped {gb(d.get('Mapped'), True)}, AnonPages {gb(d.get('AnonPages'), True)}, "
                      f"Inactive(file) {gb(d.get('Inactive(file)'), True)}, pressure {gb(d.get('pressure_bytes'), True)}")
+    return lines
+
+
+def mr1_lines(report: dict[str, object]) -> list[str]:
+    lines = ["", "MR1 release check (descriptive; not step-4 evidence, never acceptance):", f"  basis: {MR1_BASIS}"]
+    lines += release_lines(report["releases"])
     after = report.get("after_smoke_vs_face_release")
     if after:
         lines.append(f"  after the smoke checks vs after the face release: MemFree {gb(after.get('MemFree'), True)}, "
                      f"Cached {gb(after.get('Cached'), True)}, pressure {gb(after.get('pressure_bytes'), True)}")
     lines.append(f"  smoke checks: {report['functional_smoke']} {report['smoke']}")
+    lines.append("  Cannot establish: " + "; ".join(report["cannot_establish"]) + ".")
+    return lines
+
+
+def _memory_window(rows: list[dict[str, object]]) -> dict[str, object] | None:
+    """MemFree's minimum and Cached at the first and last sample of a window; None without rows."""
+    if not rows:
+        return None
+    free = [r["mem_free"] for r in rows if r.get("mem_free") is not None]
+    cached = [r["cached"] for r in rows if r.get("cached") is not None]
+    return {"samples": len(rows), "mem_free_min_bytes": min(free) if free else None,
+            "cached_first_bytes": cached[0] if cached else None, "cached_last_bytes": cached[-1] if cached else None}
+
+
+def plr_report(run_dir: Path, status: str, warmup: list[dict[str, object]],
+               steady: list[dict[str, object]]) -> dict[str, object]:
+    """Step-4 PLR's release record: each release, then MemFree and Cached over warm-up and the steady interval.
+
+    Descriptive only; the step-4 criteria judge the run. ``steady`` holds the samples inside the monotonic steady
+    interval (empty when it is unavailable)."""
+    releases = release_records(load_mr1_events(Path(run_dir) / "events.jsonl"))
+    face = releases.get("face")
+    last = ((face or {}).get("after") or {}).get("meminfo") or {}
+    return {
+        "label": PLR_LABEL,
+        "criteria_id": step4_criteria.PLR_CRITERIA_ID,
+        "scope": "each model's file cache released after its load and settle, then step 4's warm-up and steady "
+                 "phases; release outcomes are descriptive, never a criterion",
+        "profile_status": _status_label(status),
+        "releases": releases,
+        "release_outcomes": {c: (releases.get(c) or {}).get("outcome", "not_reached") for c in MR1_RELEASE_FILES},
+        "after_last_release": {"MemFree": last.get("MemFree"), "Cached": last.get("Cached")} if face else None,
+        "warmup": _memory_window(warmup),
+        "steady": _memory_window(steady),
+        "basis": MR1_BASIS,
+        "cannot_establish": list(PLR_CANNOT_ESTABLISH),
+    }
+
+
+def plr_lines(report: dict[str, object]) -> list[str]:
+    lines = ["", "Post-load release (step-4 PLR, D54; release outcomes descriptive, never a criterion):",
+             f"  basis: {MR1_BASIS}"]
+    lines += release_lines(report["releases"])
+    after = report.get("after_last_release")
+    if after:
+        lines.append(f"  after the last release: MemFree {gb(after.get('MemFree'))}, Cached {gb(after.get('Cached'))}")
+    for key, name in (("warmup", "warm-up"), ("steady", "steady interval")):
+        window = report.get(key)
+        lines.append(f"  {name}: not reached" if not window else
+                     f"  {name}: MemFree min {gb(window['mem_free_min_bytes'])}; Cached first "
+                     f"{gb(window['cached_first_bytes'])}, last {gb(window['cached_last_bytes'])}")
     lines.append("  Cannot establish: " + "; ".join(report["cannot_establish"]) + ".")
     return lines
 
@@ -1613,8 +1709,19 @@ def summarize(run_dir: Path) -> str:
         lines += mr1_lines(report)
     else:
         profile["step4_profile_criteria"] = step4_criteria.evaluate_profile(profile)
-        lines += ["", f"Step-4 criteria decidable from this run ({step4_criteria.CRITERIA_ID}; demo profile, "
-                  "not the 1080p beta gates; never acceptance):"]
+        if (manifest.get("parameters") or {}).get("post_load_release"):
+            report = plr_report(run_dir, status, in_phases("warmup"),
+                                list(interval_rows) if interval["status"] != step4_criteria.UNAVAILABLE else [])
+            (run_dir / "plr.json").write_text(json.dumps(report, indent=2) + "\n")
+            profile["criteria_id"] = step4_criteria.PLR_CRITERIA_ID
+            profile["post_load_release"] = "plr.json"
+            lines += plr_lines(report)
+            lines += ["", f"Step-4 criteria decidable from this run ({step4_criteria.PLR_CRITERIA_ID}: D47's rules and "
+                      "thresholds under the PLR identity; demo profile, not the 1080p beta gates; never acceptance "
+                      "or admission):"]
+        else:
+            lines += ["", f"Step-4 criteria decidable from this run ({step4_criteria.CRITERIA_ID}; demo profile, "
+                      "not the 1080p beta gates; never acceptance):"]
         lines += [f"  {name}: {item['status']}" for name, item in profile["step4_profile_criteria"].items()]
     (run_dir / "profile.json").write_text(json.dumps(profile, indent=2) + "\n")
     text = "\n".join(lines) + "\n"
@@ -1659,8 +1766,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help="MR1 (opt-in): after each model's load and settle, release that model's files from the page "
                              "cache (posix_fadvise DONTNEED, no root) with memory samples around it, then bounded smoke "
                              "checks and unload; no warm-up or steady phase. Not a resource profile or step-4 run")
-    parser.add_argument("--mr1-release-settle-s", type=float, default=MR1_RELEASE_SETTLE_S,
-                        help="MR1: seconds between the release calls and the after sample")
+    parser.add_argument("--post-load-release", action="store_true",
+                        help="step-4 PLR (opt-in, D54): MR1's release of each model's files after its load and settle, "
+                             "then the full warm-up and steady phases; judged by D47's criteria under its own identity")
+    parser.add_argument("--mr1-release-settle-s", "--release-settle-s", dest="mr1_release_settle_s", type=float,
+                        default=MR1_RELEASE_SETTLE_S,
+                        help="MR1 and PLR: seconds between the release calls and the after sample")
     parser.add_argument("--sanitized-logs", action="store_true",
                         help="discard raw server/workload output; retain fixed numeric/placement diagnostics only")
     parser.add_argument("--allow-desktop", action="store_true", help="measure with a desktop session running")

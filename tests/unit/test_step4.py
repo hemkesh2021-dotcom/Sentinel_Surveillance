@@ -502,6 +502,7 @@ class Backend:
         self.manifest_overrides = {}
         self.child_plan = {}
         self.mr1_report = None  # MR1: the profiler's mr1.json, written with the other files when set
+        self.plr_report = None  # step-4 PLR: the profiler's plr.json, likewise
         self.sleeps = []
 
     def clock(self):
@@ -584,6 +585,8 @@ class Backend:
         (run / "profile.json").write_text(json.dumps(self.profile))
         if self.mr1_report is not None:
             (run / "mr1.json").write_text(json.dumps(self.mr1_report))
+        if self.plr_report is not None:
+            (run / "plr.json").write_text(json.dumps(self.plr_report))
 
 
 def identity_tree(tmp_path: Path) -> dict[str, Path]:
@@ -1117,6 +1120,160 @@ def test_the_mr1_cli_exit_status_reflects_execution_and_smoke_never_memory(
         assert printed["mr1"]["release_check"]["releases"]["face"]["files"]["model"]["error"] == "ENOENT"
     with pytest.raises(SystemExit):
         op.main(["--execute-workload", "step4", "--mr1-clip", str(prep.files["clip"])], backend=Backend())
+
+
+# ---------------------------------------------------------------- step-4 PLR (D54): step 4 plus post-load releases
+
+
+def fake_plr_report(runners, tmp_path, *, result="returned_0", moved=True, reached=("scene", "detector", "face")) -> dict:
+    """The profiler's own plr.json, built by its functions from fake samples and calls."""
+    source = fake_mr1_report(runners, tmp_path, result=result, moved=moved, reached=reached)
+    run = tmp_path / "plr-source"
+    run.mkdir(exist_ok=True)
+    events = [{"event": "mr1_release", "component": name, **record} for name, record in source["releases"].items()]
+    (run / "events.jsonl").write_text("".join(json.dumps(item) + "\n" for item in events))
+    rows = [{"t": 1.0, "phase": "warmup", "mem_free": 1_300_000_000, "cached": 2_300_000_000}]
+    return runners.profile.plr_report(run, "complete", rows, rows)
+
+
+def run_step4plr(runners, tmp_path, prep, backend=None, *, record=True, **overrides):
+    op = runners.operator
+    output = private_dir(tmp_path, "step4plr")
+    backend = backend or Backend()
+    backend.output = output
+    backend.identity_hashes = {label: entry["sha256"] for label, entry in prep.identity["files"].items()}
+    if record and backend.plr_report is None:  # record=False: the profiler wrote no plr.json
+        backend.plr_report = fake_plr_report(runners, tmp_path)
+    kwargs = dict(check9_report=prep.check9_path, identity_report=prep.identity_path, clip=prep.files["clip"],
+                  confirm_step4plr=True, dropped_caches=True, identity_files_fn=lambda clip: prep.files)
+    kwargs.update(overrides)
+    return op.execute("step4plr", backend, output, **kwargs), backend
+
+
+def test_the_step4plr_child_is_step4s_reviewed_command_plus_the_release_only(runners, tmp_path) -> None:
+    op = runners.operator
+    prep = prepare(runners, tmp_path)
+    result, backend = run_step4plr(runners, tmp_path, prep)
+    section = result["step4plr"]
+    (child,) = [c for c in backend.children if "demo_profile.py" in " ".join(c.argv)]
+    step4 = op.step4_argv(backend.output, prep.files["clip"])
+    assert child.argv == [*step4, "--post-load-release", "--release-settle-s", "5.0"]
+    assert step4[step4.index("--warmup-s") + 1] == "120" and step4[step4.index("--steady-s") + 1] == "600"
+    assert "--mr1-release-check" not in child.argv and "--allow-dev-tools" not in child.argv
+    assert section["deadline_s"] == op.STEP4_DEADLINE_S == 1200.0  # step 4's deadline, not MR1's 540 s
+    assert [(m[0].split()[:2], m[2]) for m in backend.markers] == [(["step4plr", "start"], "sentinel-step4plr"),
+                                                                   (["step4plr", "end"], "sentinel-step4plr")]
+    assert "--post-load-release" not in step4  # step 4's own command is pinned by the reviewed-command test
+
+
+def test_a_completed_step4plr_is_eligible_only_under_its_own_identity_and_never_accepted(runners, tmp_path) -> None:
+    prep = prepare(runners, tmp_path)
+    result, backend = run_step4plr(runners, tmp_path, prep)
+    section = result["step4plr"]
+    criteria = section["criteria"]
+    assert section["status"] == "completed" and section["post_run_wait_s"] == 60.0 and section["guard_trigger"] is None
+    assert criteria["criteria_id"] == "step4plr-combined-cache-off-v2" and criteria["eligible_for_maintainer_review"]
+    assert criteria["accepted"] is False and "not admissible" in criteria["admission"]
+    assert criteria["criteria"]["R_valid_run"]["value"]["releases_recorded"] is True
+    assert criteria["criteria"]["R_valid_run"]["value"]["release_calls_returned_0"] is True
+    assert section["status_detail"].startswith("eligible for maintainer review as a step-4 PLR result; not D47's")
+    assert section["identity"]["status"] == "verified" and section["kernel"]["status"] == "observed"
+    assert "never D47's step-4 result" in section["scope"] and section["acceptance"].startswith("never")
+    excerpt = section["release_check"]
+    assert excerpt["status"] == "recorded" and excerpt["criteria_id"] == "step4plr-combined-cache-off-v2"
+    assert excerpt["release_outcomes"] == dict.fromkeys(("scene", "detector", "face"), "memfree_rose_cached_fell")
+    assert excerpt["releases"]["face"]["deltas"]["MemFree"] == 400_000_000 and excerpt["steady"]["samples"] == 1
+    text = json.dumps(result)
+    assert "private-name" not in text and "/home/someone" not in text  # numbers and fixed labels only
+    assert result["step4"]["status"] == "PENDING" and result["hardware_acceptance"] == "PENDING"
+
+
+@pytest.mark.parametrize(("overrides", "refusal"), [
+    ({"confirm_step4plr": False, "confirm_step4": True}, "step4plr_operator_prerequisites_unconfirmed"),
+    ({"dropped_caches": False}, "step4plr_cache_drop_not_declared"),
+    ({"explicit_check9": False}, "step4plr_requires_explicit_check9_report"),
+    ({"clip": None}, "step4plr_clip_required"),
+    ({"identity_report": None}, "step4_identity_report_required"),  # the step-4 identity snapshot
+])
+def test_step4plr_refuses_before_any_process_when_a_step4_prerequisite_fails(
+    runners, tmp_path, overrides, refusal,
+) -> None:
+    prep = prepare(runners, tmp_path)
+    result, backend = run_step4plr(runners, tmp_path, prep, **overrides)
+    assert result["step4plr"]["status"] == "refused" and refusal in result["step4plr"]["refusals"]
+    assert not [c for c in backend.children if "demo_profile.py" in " ".join(c.argv) or "logger" in c.argv[0]]
+
+
+@pytest.mark.parametrize("case", ["no_record", "call_failed", "scene_only_reached", "ineffective"])
+def test_a_step4plr_run_without_its_declared_releases_is_never_eligible(runners, tmp_path, case) -> None:
+    prep = prepare(runners, tmp_path)
+    backend = Backend()
+    backend.plr_report = {"no_record": None, "call_failed": fake_plr_report(runners, tmp_path, result="open_failed"),
+                          "scene_only_reached": fake_plr_report(runners, tmp_path, reached=("scene",)),
+                          "ineffective": fake_plr_report(runners, tmp_path, moved=False)}[case]
+    result, _ = run_step4plr(runners, tmp_path, prep, backend=backend, record=case != "no_record")
+    criteria = result["step4plr"]["criteria"]
+    r = criteria["criteria"]["R_valid_run"]
+    if case == "ineffective":  # a memory outcome is descriptive: it never blocks eligibility
+        assert r["status"] == "pass" and criteria["eligible_for_maintainer_review"] is True
+        assert set(result["step4plr"]["release_check"]["release_outcomes"].values()) == {"ineffective"}
+        return
+    assert r["status"] == "fail" and criteria["eligible_for_maintainer_review"] is False
+    assert criteria["accepted"] is False and "R_valid_run" in criteria["blocking"]
+    if case == "no_record":
+        assert result["step4plr"]["release_check"] == {"status": "unavailable"}
+        assert r["value"]["releases_recorded"] is False and r["value"]["release_calls_returned_0"] is False
+    elif case == "call_failed":
+        assert r["value"] == {**r["value"], "releases_recorded": True, "release_calls_returned_0": False}
+    else:
+        assert r["value"]["releases_recorded"] is False
+
+
+def test_a_step4plr_guard_stop_is_not_eligible_and_names_its_stopping_sample(runners, tmp_path) -> None:
+    prep = prepare(runners, tmp_path)
+    backend = Backend()
+    original = backend.sample
+
+    def falling():
+        sample = original()
+        if backend.now > 1100:
+            sample["MemFree"] = GIB - 1
+        return sample
+
+    backend.sample = falling
+    result, backend = run_step4plr(runners, tmp_path, prep, backend=backend)
+    section = result["step4plr"]
+    (child,) = [c for c in backend.children if "demo_profile.py" in " ".join(c.argv)]
+    assert section["status"] == section["guard_trigger"]["stop"] == "free_or_available_stop"
+    assert section["guard_trigger"]["conditions"][0]["field"] == "MemFree" and child.signals[:1] == [signal.SIGTERM]
+    assert section["criteria"]["criteria"]["R_valid_run"]["status"] == "fail"
+    assert section["criteria"]["eligible_for_maintainer_review"] is False and section["cleanup_clear"] is True
+
+
+def test_the_step4plr_cli_exit_status_reflects_eligibility_and_needs_its_own_confirmation(
+    runners, tmp_path, monkeypatch, capsys,
+) -> None:
+    op = runners.operator
+    monkeypatch.setattr(op, "OUTPUT_ROOT", tmp_path)
+    prep = prepare(runners, tmp_path)
+    monkeypatch.setattr(op, "identity_files", lambda clip: prep.files)
+
+    def backend():
+        b = Backend()
+        b.identity_hashes = {label: entry["sha256"] for label, entry in prep.identity["files"].items()}
+        b.plr_report = fake_plr_report(runners, tmp_path)
+        return b
+
+    common = ["--execute-workload", "step4plr", "--check9-report", str(prep.check9_path), "--identity-report",
+              str(prep.identity_path), "--step4-clip", str(prep.files["clip"]), "--operator-dropped-caches"]
+    assert op.main([*common, "--confirm-step4plr-prerequisites"], backend=backend()) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["step4plr"]["criteria"]["criteria_id"] == "step4plr-combined-cache-off-v2"
+    assert printed["step4plr"]["criteria"]["accepted"] is False
+    assert op.main([*common, "--confirm-step4-prerequisites"], backend=backend()) == 1  # step 4's confirmation is not PLR's
+    assert "step4plr_operator_prerequisites_unconfirmed" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        op.main(["--execute-workload", "step4", "--confirm-step4plr-prerequisites"], backend=Backend())
 
 
 # ---------------------------------------------------------------- startup identity checks

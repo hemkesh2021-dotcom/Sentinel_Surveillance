@@ -38,6 +38,17 @@ MIN_SCENE_STRICT_VALID_SHARE = 0.95
 MAX_SCENE_LATENCY_MS = 8000.0  # D16 job timeout
 POST_RUN_WAIT_S = 60.0
 EXPECTED_LLAMA_FLAGS = ("--n-gpu-layers", "999", "--ctx-size", "2048", "--parallel", "1", "--cache-ram", "0")
+# Step-4 PLR (opt-in, D54): step 4's procedure with each model's file cache released after its load and settle
+# (MR1's release), then step 4's full warm-up and steady phases. Every rule and threshold above applies unchanged,
+# under this distinct identity: a PLR result is never D47's step-4 result, and D46's admission
+# (sentinel.adapters.accepted_profile_problem) requires CRITERIA_ID. R also needs the declared releases to have
+# happened: all three recorded, every call returning 0. The release outcomes themselves stay descriptive.
+PLR_CRITERIA_ID = "step4plr-combined-cache-off-v2"
+PLR_RUN_INPUTS = ("releases_recorded", "release_calls_returned_0")
+PLR_PROCEDURE = ("step 4 with each model's file cache released (posix_fadvise DONTNEED) after its load and settle, "
+                 "then step 4's 120 s warm-up and 600 s steady phases (D54)")
+PLR_ADMISSION = (f"not admissible: D46 scene admission requires {CRITERIA_ID} from step 4's procedure, and "
+                 "sentinel run performs no post-load release")
 
 PASS, FAIL, UNAVAILABLE = "pass", "fail", "unavailable"
 
@@ -287,15 +298,24 @@ def evaluate(
     run: Mapping[str, Any],
     kernel: Mapping[str, Any],
     identity: Mapping[str, Any],
+    criteria_id: str = CRITERIA_ID,
 ) -> dict[str, Any]:
-    """Every criterion, and whether the run may go to the maintainer for review (never acceptance)."""
+    """Every criterion, and whether the run may go to the maintainer for review (never acceptance).
+
+    ``criteria_id`` is CRITERIA_ID for step 4, or PLR_CRITERIA_ID for the step-4 PLR variant: the same rules and
+    thresholds, plus R's two release inputs, reported under the variant's own identity."""
+    if criteria_id not in (CRITERIA_ID, PLR_CRITERIA_ID):
+        raise ValueError(f"unknown criteria identity {criteria_id!r}")
+    plr = criteria_id == PLR_CRITERIA_ID
     criteria: dict[str, dict[str, Any]] = {}
     criteria["R_valid_run"] = _check(
         bool(run.get("guard_completed") and run.get("cleanup_clear") and run.get("check9_ok")
              and run.get("drop_declared") and run.get("profile_complete") and run.get("headless")
-             and run.get("no_dev_tools") and run.get("no_tracked_changes")),
+             and run.get("no_dev_tools") and run.get("no_tracked_changes")
+             and (not plr or all(run.get(key) is True for key in PLR_RUN_INPUTS))),
         "guard completed, cleanup clear, same-boot Check 9, cache drop declared, profile complete, headless, "
-        "no dev tools, no tracked changes",
+        "no dev tools, no tracked changes"
+        + ("; PLR: all three post-load releases recorded and every release call returned 0" if plr else ""),
         dict(run),
     )
     if profile is None:
@@ -323,8 +343,8 @@ def evaluate(
         dict(identity),
     )
     blocking = [name for name, item in criteria.items() if item["status"] != PASS]
-    return {
-        "criteria_id": CRITERIA_ID,
+    result = {
+        "criteria_id": criteria_id,
         "criteria": criteria,
         "eligible_for_maintainer_review": not blocking,
         "blocking": blocking,
@@ -332,3 +352,8 @@ def evaluate(
         "acceptance": "only a separate, maintainer-approved registry commit can accept a profile (D46)",
         "scope": "demo profile (640x480 replay, 15 fps); not the guide's 1080p beta gates",
     }
+    if plr:
+        result.update(procedure=PLR_PROCEDURE, admission=PLR_ADMISSION,
+                      criteria_rules=f"{CRITERIA_ID} (D47 with the session 18 amendment): every rule and threshold "
+                                     "unchanged; R adds the two release inputs")
+    return result

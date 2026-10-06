@@ -31,6 +31,10 @@ model's file cache and samples memory. It then runs bounded smoke checks
 with counts and fixed labels, waits for a last acknowledgement and exits. It
 runs no warm-up or steady phase.
 
+``--post-load-release`` (step-4 PLR, opt-in, D54) has the same two checkpoints
+and acknowledgements after the detector's and the face model's settles, then
+runs the default warm-up and steady phases unchanged; no smoke checks.
+
 Structured results go to stdout as ``@@EVENT <json>`` lines. Model output text
 is never written anywhere: the footage is private. Only counts and timings are.
 After every scene request a ``scene_progress`` event carries cumulative
@@ -787,12 +791,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--steady-s", type=float, default=600.0)
     parser.add_argument("--mr1-release-check", action="store_true",
                         help="MR1: pause after each settle for the orchestrator's cache release, then smoke checks only")
+    parser.add_argument("--post-load-release", action="store_true",
+                        help="step-4 PLR: pause after each settle for the orchestrator's cache release, then the "
+                             "default warm-up and steady phases")
     args = parser.parse_args(argv)
+    if args.mr1_release_check and args.post_load_release:
+        parser.error("--mr1-release-check and --post-load-release are separate procedures; pass one")
     if args.scene_only:
         if args.clip:
             parser.error("--scene-only uses its own synthetic images; --clip is not allowed")
-        if args.mr1_release_check:
-            parser.error("--mr1-release-check needs the detector and face models; not with --scene-only")
+        if args.mr1_release_check or args.post_load_release:
+            parser.error("--mr1-release-check and --post-load-release need the detector and face models; "
+                         "not with --scene-only")
         run_scene_only(args, Stats())
         return 0
     if not args.engine:
@@ -801,6 +811,7 @@ def main(argv: list[str] | None = None) -> int:
     if not check_cuda_driver():
         event("fatal", reason="libcuda is not L4T's or cuInit failed (decision D27)")
         return 3
+    releasing = args.mr1_release_check or args.post_load_release  # the orchestrator releases after each settle
     event("phase", name="detector_load")
     model = load_detector(args.engine)
     allocator = AllocatorSampler(torch_allocator_stats)
@@ -808,7 +819,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         event("phase", name="detector_settle")
         time.sleep(args.settle_s)
-        if args.mr1_release_check:
+        if releasing:
             mr1_checkpoint("detector")
         allocator.phase = "face_load"
         event("phase", name="face_load")
@@ -816,8 +827,9 @@ def main(argv: list[str] | None = None) -> int:
         allocator.phase = "face_settle"
         event("phase", name="face_settle")
         time.sleep(args.settle_s)
-        if args.mr1_release_check:
+        if releasing:
             mr1_checkpoint("face")
+        if args.mr1_release_check:
             allocator.phase = "smoke"
             event("phase", name="smoke")
             event("mr1_smoke", **run_smoke(model, deepface, args))

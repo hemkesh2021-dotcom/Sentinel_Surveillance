@@ -49,6 +49,13 @@ MR1_LABELS = frozenset({
     "returned_0", "returned_error", "open_failed", "unsupported", "pass", "fail", "unavailable",
     "complete", "aborted", "interrupted", "incomplete", "unknown", "mr1-release-check", *profile.MR1_SMOKE_LABELS,
 })
+# Step-4 PLR (opt-in, D54): step 4's admission, child command, deadline, guard, cleanup and evidence, with MR1's
+# per-model release after each load and settle added to the child; judged by D47's criteria under its own identity.
+STEP4PLR_MARKER_TAG = "sentinel-step4plr"
+STEP4PLR_SCOPE = ("step-4 PLR variant: step 4 with each model's file cache released after its load and settle, then "
+                  "the full warm-up and steady phases; D47's criteria and thresholds under "
+                  f"{step4_criteria.PLR_CRITERIA_ID}; never D47's step-4 result, accepted or admissible")
+RELEASE_LABELS = MR1_LABELS | {"not_reached", profile.PLR_LABEL, step4_criteria.PLR_CRITERIA_ID}
 JOURNAL_LOSS = re.compile(r"missed|suppress|rate.?limit|is full|truncat|corrupt", re.IGNORECASE)
 BOOT_ID = re.compile(r"[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 JOURNAL_ERRORS = (  # (fixed class, journalctl stderr pattern); first match wins
@@ -858,7 +865,7 @@ def _profiler_files(output: Path) -> tuple[dict | None, dict | None]:
 def execute(mode: str | None, backend, output: Path, *, check9_report=None, confirm_u21=False,
             s1_arm=None, confirm_s1=False, dropped_caches=False, interrupted=lambda: False,
             identity_report=None, clip=None, confirm_step4=False, explicit_check9=True, identity_files_fn=None,
-            confirm_mr1=False) -> dict:
+            confirm_mr1=False, confirm_step4plr=False) -> dict:
     runner = ProcessRunner(backend, interrupted)
     report = {"schema_version": 1, "mode": mode or "inspection",
               "hardware_acceptance": "PENDING", "check9": {"status": "PENDING", "u18_acceptance": "PENDING",
@@ -868,6 +875,9 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
                               "procedure": DROP_CACHES_PROCEDURE}}
     if mode == "mr1":
         report["mr1"] = {"status": "PENDING", "scope": MR1_SCOPE}
+    if mode == "step4plr":
+        report["step4plr"] = {"status": "PENDING", "scope": STEP4PLR_SCOPE,
+                              "acceptance": "never: not D47's step-4 result; " + step4_criteria.PLR_ADMISSION}
     try:
         current = inspection(backend, runner)
         report["inspection"] = current
@@ -875,7 +885,7 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
         if mode is None:
             return report
         refusal = current["workload_refusals"]
-        if mode in ("u21", "s1", "step4", "mr1"):
+        if mode in ("u21", "s1", "step4", "mr1", "step4plr"):
             problem = check9_prerequisite(check9_report, current)
             if problem:
                 refusal.append(problem)
@@ -883,21 +893,21 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
         if mode == "u21" and not confirm_u21:
             refusal.append("u21_operator_prerequisites_unconfirmed")
         identity = None
-        if mode == "step4":
+        if mode in ("step4", "step4plr"):  # the PLR variant has step 4's admission, with its own confirmation
             if not explicit_check9:
-                refusal.append("step4_requires_explicit_check9_report")
-            if not confirm_step4:
-                refusal.append("step4_operator_prerequisites_unconfirmed")
+                refusal.append(f"{mode}_requires_explicit_check9_report")
+            if not (confirm_step4 if mode == "step4" else confirm_step4plr):
+                refusal.append(f"{mode}_operator_prerequisites_unconfirmed")
             if not dropped_caches:
-                refusal.append("step4_cache_drop_not_declared")
+                refusal.append(f"{mode}_cache_drop_not_declared")
             if clip is None:
-                refusal.append("step4_clip_required")
+                refusal.append(f"{mode}_clip_required")
             else:
                 files = (identity_files_fn or identity_files)(clip)
                 problem, identity = identity_prerequisite(identity_report, current, check9_report, files)
                 if problem:
                     refusal.append(problem)
-            report["step4"]["identity_report_dir"] = identity_report.parent.name if identity_report else None
+            report[mode]["identity_report_dir"] = identity_report.parent.name if identity_report else None
         if mode == "mr1":
             if not explicit_check9:
                 refusal.append("mr1_requires_explicit_check9_report")
@@ -973,6 +983,9 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
                 run_step4(report["step4"], runner, backend, guard, output, clip, identity, dropped_caches, interrupted)
             elif mode == "mr1":
                 run_mr1(report["mr1"], runner, backend, guard, output, clip, interrupted)
+            elif mode == "step4plr":
+                run_step4(report["step4plr"], runner, backend, guard, output, clip, identity, dropped_caches, interrupted,
+                          plr=True)
             else:
                 cache_ram = S1_ARMS[s1_arm]
                 child = runner.run([
@@ -1019,15 +1032,42 @@ def guarded_child_with_kernel_evidence(section: dict, runner, backend, guard, ou
     return child, waited, manifest, prof, kernel
 
 
-def run_step4(section: dict, runner, backend, guard, output: Path, clip: Path, identity: dict,
-              dropped_caches: bool, interrupted) -> None:
-    """The guarded combined profile: same guard and cleanup as U21/S1, full phases, then the post-run evidence."""
-    child, waited, manifest, prof, kernel = guarded_child_with_kernel_evidence(section, runner, backend, guard, output, [
+def step4_argv(output: Path, clip: Path) -> list[str]:
+    """Step 4's reviewed child command (D47)."""
+    return [
         "/usr/bin/python3", str(profile.HERE / "demo_profile.py"), "--out", str(output), "--clip", str(clip),
         "--no-evict", "--sanitized-logs", "--llama-cache-ram", "0", "--face-hz", "1", "--scene-interval-s", "4",
         "--baseline-s", "30", "--settle-s", "15", "--warmup-s", "120", "--steady-s", str(int(step4_criteria.STEADY_S)),
         "--llama-timeout-s", "60", "--load-timeout-s", "90", "--min-free-gb", "3.5",
-    ], STEP4_DEADLINE_S, STEP4_MARKER_TAG, "step4", interrupted)
+    ]
+
+
+def step4plr_argv(output: Path, clip: Path) -> list[str]:
+    """Step 4's command unchanged, plus MR1's per-model release after each load and settle (D54)."""
+    return [*step4_argv(output, clip), "--post-load-release", "--release-settle-s", str(profile.MR1_RELEASE_SETTLE_S)]
+
+
+def plr_release_inputs(excerpt: dict) -> dict:
+    """R's PLR inputs: all three releases recorded, and every call returned 0. Missing is never met."""
+    releases = excerpt.get("releases") if isinstance(excerpt.get("releases"), dict) else {}
+    recorded = all(isinstance(releases.get(name), dict) for name in profile.MR1_RELEASE_FILES)
+    calls = [item for name in profile.MR1_RELEASE_FILES
+             for item in (((releases.get(name) or {}).get("files") or {}).values() if recorded else ())]
+    returned = recorded and bool(calls) and all(isinstance(item, dict) and item.get("result") == "returned_0"
+                                                for item in calls)
+    return {"releases_recorded": recorded, "release_calls_returned_0": returned}
+
+
+def run_step4(section: dict, runner, backend, guard, output: Path, clip: Path, identity: dict,
+              dropped_caches: bool, interrupted, *, plr: bool = False) -> None:
+    """The guarded combined profile: same guard and cleanup as U21/S1, full phases, then the post-run evidence.
+
+    ``plr`` runs the step-4 PLR variant (D54): the same command plus the post-load releases, its own journal marker
+    tag, its release record, and D47's criteria under PLR_CRITERIA_ID."""
+    argv = step4plr_argv(output, clip) if plr else step4_argv(output, clip)
+    tag, prefix = (STEP4PLR_MARKER_TAG, "step4plr") if plr else (STEP4_MARKER_TAG, "step4")
+    child, waited, manifest, prof, kernel = guarded_child_with_kernel_evidence(
+        section, runner, backend, guard, output, argv, STEP4_DEADLINE_S, tag, prefix, interrupted)
     identity_check = identity_end_check(identity, manifest)
     if prof is not None and guard.peak is not None:
         combined = dict(prof.get("combined") or {})
@@ -1041,9 +1081,16 @@ def run_step4(section: dict, runner, backend, guard, output: Path, clip: Path, i
         "no_dev_tools": manifest is not None and not manifest.get("dev_tools_running"),
         "no_tracked_changes": repo.get("tracked_changes") is False and repo.get("commit") == (identity or {}).get("commit"),
     }
-    evaluation = step4_criteria.evaluate(prof, run=run, kernel=kernel, identity=identity_check)
+    if plr:
+        excerpt = release_excerpt(output, "plr.json")
+        run.update(plr_release_inputs(excerpt))
+        section["release_check"] = excerpt
+    evaluation = step4_criteria.evaluate(prof, run=run, kernel=kernel, identity=identity_check,
+                                         criteria_id=step4_criteria.PLR_CRITERIA_ID if plr else step4_criteria.CRITERIA_ID)
+    eligible = ("eligible for maintainer review as a step-4 PLR result; not D47's step-4 result, not accepted, not "
+                "admissible" if plr else "eligible for maintainer review")
     section.update(post_run_wait_s=waited, kernel=kernel, identity=identity_check, criteria=evaluation,
-                   status_detail="eligible for maintainer review" if evaluation["eligible_for_maintainer_review"]
+                   status_detail=eligible if evaluation["eligible_for_maintainer_review"]
                    else "not eligible: " + ", ".join(evaluation["blocking"]))
 
 
@@ -1069,15 +1116,15 @@ def _mr1_value(value, depth: int = 0):
         return {key: item for key, item in kept.items() if item is not _DROPPED}
     if type(value) in (int, float, bool) or value is None:
         return value if type(value) is not float or math.isfinite(value) else None
-    if isinstance(value, str) and (value in MR1_LABELS or re.fullmatch(r"E[A-Z0-9]{1,15}", value)
+    if isinstance(value, str) and (value in RELEASE_LABELS or re.fullmatch(r"E[A-Z0-9]{1,15}", value)
                                    or re.fullmatch(r"[A-Za-z]{1,40}(?:Error|Exception)|HTTP [1-5]\d\d", value)):
         return value
     return _DROPPED
 
 
-def mr1_excerpt(output: Path) -> dict:
-    """The single profiler run's mr1.json, reduced to numbers and fixed labels (no names, paths or text)."""
-    paths = list(output.glob("demo-profile-*/mr1.json"))
+def release_excerpt(output: Path, name: str) -> dict:
+    """The single profiler run's mr1.json or plr.json, reduced to numbers and fixed labels (no names, paths or text)."""
+    paths = list(output.glob(f"demo-profile-*/{name}"))
     if len(paths) != 1:
         return {"status": "unavailable"}
     try:
@@ -1089,6 +1136,10 @@ def mr1_excerpt(output: Path) -> dict:
     except (OSError, ValueError):
         return {"status": "unavailable"}
     return {"status": "recorded", **_mr1_value(report if isinstance(report, dict) else {})}
+
+
+def mr1_excerpt(output: Path) -> dict:
+    return release_excerpt(output, "mr1.json")
 
 
 def mr1_interpretation(child: ChildResult, excerpt: dict, kernel: dict) -> dict:
@@ -1125,7 +1176,7 @@ def _sha256_arg(text: str) -> str:
 
 def main(argv: list[str] | None = None, *, backend=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--execute-workload", choices=("check9", "u21", "s1", "step4", "mr1"),
+    parser.add_argument("--execute-workload", choices=("check9", "u21", "s1", "step4", "mr1", "step4plr"),
                         help="explicitly execute only this guarded diagnostic; default is read-only")
     reports = parser.add_mutually_exclusive_group()
     reports.add_argument("--check9-report", type=Path, help="successful same-boot/revision bounded Check 9 report")
@@ -1152,7 +1203,12 @@ def main(argv: list[str] | None = None, *, backend=None) -> int:
     parser.add_argument("--confirm-mr1-prerequisites", action="store_true",
                         help="operator confirms MR1 approval, headless preparation, the cache drop and the same-boot "
                              "Check 9")
+    parser.add_argument("--confirm-step4plr-prerequisites", action="store_true",
+                        help="operator confirms the step-4 PLR approval (D54), headless preparation, the identity "
+                             "snapshot, the cache drop and the same-boot Check 9")
     args = parser.parse_args(argv)
+    if args.confirm_step4plr_prerequisites and args.execute_workload != "step4plr":
+        parser.error("--confirm-step4plr-prerequisites is only for --execute-workload step4plr")
     if args.mr1_clip is not None and args.execute_workload != "mr1":
         parser.error("--mr1-clip is only for --execute-workload mr1")
     if args.step4_identity and (args.execute_workload or not args.step4_clip or not args.step4_clip_sha256):
@@ -1181,7 +1237,8 @@ def main(argv: list[str] | None = None, *, backend=None) -> int:
                          identity_report=args.identity_report,
                          clip=args.mr1_clip if args.execute_workload == "mr1" else args.step4_clip,
                          confirm_step4=args.confirm_step4_prerequisites,
-                         explicit_check9=not args.latest_check9_report, confirm_mr1=args.confirm_mr1_prerequisites)
+                         explicit_check9=not args.latest_check9_report, confirm_mr1=args.confirm_mr1_prerequisites,
+                         confirm_step4plr=args.confirm_step4plr_prerequisites)
     report["result_file"] = str(output / "result.json")
     report["finished_utc"] = profile.utc_now()
     report["metric"] = "MemTotal - MemAvailable, integer bytes; kB x1024; time.monotonic within boot"
@@ -1200,8 +1257,8 @@ def main(argv: list[str] | None = None, *, backend=None) -> int:
         return 130
     if args.step4_identity:
         return 0 if report["step4_identity"]["status"] == "complete" else 1
-    if args.execute_workload == "step4":
-        criteria = report["step4"].get("criteria") or {}
+    if args.execute_workload in ("step4", "step4plr"):  # eligibility for review, never acceptance
+        criteria = report[args.execute_workload].get("criteria") or {}
         return 0 if criteria.get("eligible_for_maintainer_review") else 1
     if args.execute_workload == "mr1":  # memory outcomes are descriptive and never set the exit status
         reading = report["mr1"].get("interpretation") or {}
