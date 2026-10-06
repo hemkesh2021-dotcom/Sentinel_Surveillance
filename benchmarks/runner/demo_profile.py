@@ -36,6 +36,14 @@ workload's /proc/<pid>/smaps summed into fixed mapping categories
 (``memattr_maps`` events: numbers only, never a path or memory contents). The
 summary writes memattr.json. An MA1 run is never eligible, accepted or admitted.
 
+THP observation (--thp-observation, opt-in, D56; only with --memory-attribution)
+reads, without changing anything: AnonHugePages in the same smaps aggregates;
+meminfo AnonHugePages, /proc/vmstat's THP fault, collapse and split counters
+and khugepaged's progress counters in each 0.2 s memory.csv row (with their own
+monotonic read time and cost); and the kernel identity, page sizes and THP
+settings before and after the run. The summary writes thp.json with the
+predeclared reading (session 42). It never sets or tunes a THP setting.
+
 Run from a plain SSH session on the Jetson, headless (decision D29), with
 VS Code and Claude Code closed; see docs/IMPLEMENTATION_STATUS.md, check 8.
 Standard library only; run with the system Python 3. Nothing here reads camera
@@ -47,8 +55,11 @@ the raw files with --summarize RUN_DIR.
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 import errno
+import functools
+import gzip
 import hashlib
 import json
 import math
@@ -63,6 +74,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import zlib
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -172,6 +184,77 @@ MA1_CANNOT_ESTABLISH = (
     "any step-4 or PLR result, eligibility, acceptance or admission",
     "other boots, inputs or flags",
 )
+# THP observation (opt-in, D56; only with MA1): read-only transparent-huge-page counters and settings. The khugepaged
+# hypothesis for U26's steps (session 42) stays unconfirmed; this records what could support or contradict it.
+THP_LABEL = "ma1thp-thp-observation"
+THP_SYSFS = Path("/sys/kernel/mm/transparent_hugepage")
+SMAPS_THP_FIELDS = {**SMAPS_FIELDS, "AnonHugePages": "anon_huge_pages_bytes"}
+THP_VMSTAT_KEYS = (  # the fault, collapse and split counters this kernel family documents; each kept when present
+    "thp_fault_alloc", "thp_fault_fallback", "thp_fault_fallback_charge", "thp_collapse_alloc",
+    "thp_collapse_alloc_failed", "thp_split_page", "thp_split_page_failed", "thp_deferred_split_page", "thp_split_pmd",
+)
+THP_KHUGEPAGED_COUNTERS = ("pages_collapsed", "full_scans")  # khugepaged's progress counters (sysfs)
+THP_COUNTER_COLUMNS = (*THP_VMSTAT_KEYS, *(f"khugepaged_{name}" for name in THP_KHUGEPAGED_COUNTERS))
+# memory.csv columns added after every existing column, only with --thp-observation; thp_t_mono is the monotonic
+# time the counter reads began (after the row's meminfo and process reads), thp_read_us their duration.
+THP_COLUMNS = ("anon_huge_pages", *THP_COUNTER_COLUMNS, "thp_t_mono", "thp_read_us")
+THP_FLOAT_COLUMNS = frozenset({"thp_t_mono", "thp_read_us"})
+THP_COLLAPSE_KEYS = ("khugepaged_pages_collapsed", "thp_collapse_alloc")
+THP_SPLIT_KEYS = ("thp_split_page", "thp_split_pmd")
+THP_VMSTAT_LIMIT_BYTES = 64 << 10  # /proc/vmstat is about 5 KB on this kernel; a larger read is unavailable
+THP_SYSFS_LIMIT_BYTES = 256
+THP_CONFIG_LIMIT_BYTES = 1 << 20  # /proc/config.gz, decompressed
+THP_CHOICE_SETTINGS = ("enabled", "defrag", "shmem_enabled")
+KHUGEPAGED_SETTINGS = ("defrag", "scan_sleep_millisecs", "alloc_sleep_millisecs", "pages_to_scan", "max_ptes_none",
+                       "max_ptes_swap", "max_ptes_shared")
+THP_CONFIG_KEYS = ("HZ", "TRANSPARENT_HUGEPAGE", "TRANSPARENT_HUGEPAGE_ALWAYS", "TRANSPARENT_HUGEPAGE_MADVISE",
+                   "READ_ONLY_THP_FOR_FS")
+THP_CHOICE_LABELS = frozenset({"always", "madvise", "never", "defer", "defer+madvise", "within_size", "advise", "deny",
+                               "force"})
+THP_SETTING_KEYS = (  # compared before and after the run, flattened
+    "kernel.release", "kernel.version", "base_page_bytes", "thp_pmd_bytes", "hugetlb_default_bytes",
+    *THP_CHOICE_SETTINGS, "use_zero_page", *(f"khugepaged.{name}" for name in KHUGEPAGED_SETTINGS),
+    *(f"config.{name}" for name in THP_CONFIG_KEYS),
+)
+THP_OUTCOMES = ("supported", "unsupported", "inconclusive")
+THP_REASONS = (
+    "collapse_counters_unavailable", "process_maps_unavailable", "step_not_in_mapping_categories",
+    "collapse_counted_without_local_huge_page_rise", "split_counted_in_maps_bracket",
+    "local_huge_page_rise_without_counted_collapse", "thp_settings_changed", "no_steady_steps_not_reproduced",
+    "mixed", "only_inconclusive_steps",
+)
+THP_RSS_LABELS = ("workload_rss_rose", "llama_rss_rose", "both_rss_rose", "no_recorded_rss_rise", "unknown")
+THP_MAX_STEPS = 128
+THP_MAX_COLLAPSES = 512
+THP_MAX_FULL_SCANS = 64
+THP_RULE = (
+    "per step (a workload RSS increase of at least 1 MiB between consecutive memory.csv rows): the collapse signal "
+    "is a rise in khugepaged pages_collapsed or vmstat thp_collapse_alloc from one row before the step's first row "
+    "to one row after its second (device-wide); the local signal is the AnonHugePages change, over the smaps "
+    "readings that bracket the step, of the workload mapping category whose Rss rose most there. supported: both "
+    "rose; unsupported: both observed and neither rose; inconclusive: a signal unavailable, or only one rose. Run, "
+    "from the steady interval's steps only (warm-up steps are labelled and listed, not counted; U26 concerns steady "
+    "growth): supported with at least one supported and no unsupported step; unsupported with the reverse; otherwise "
+    "inconclusive (mixed, only inconclusive steps, no steady steps, or THP settings changed during the run). No "
+    "count of collapses per pass or per bracket is a rule"
+)
+THP_SEMANTICS = (
+    "counter meanings are the kernel's documented ones (admin-guide/mm/transhuge), not verified against the installed "
+    "kernel's source: thp_collapse_alloc counts huge pages khugepaged allocated for a collapse; khugepaged "
+    "pages_collapsed counts its collapses; thp_split_page counts huge pages split, thp_split_pmd page-table splits; "
+    "thp_fault_alloc counts huge pages allocated at a page fault; AnonHugePages is anonymous memory mapped by huge "
+    "pages (smaps per mapping, meminfo device-wide)"
+)
+THP_CANNOT_ESTABLISH = (
+    "which address range a collapse filled, or that a collapse caused a step: the readings are coincident counters, "
+    "not a trace",
+    "which process a counted collapse belongs to: the vmstat and khugepaged counters are device-wide",
+    "the counters' exact semantics or the scan rate in the installed kernel: their documented meaning is assumed",
+    "any timer or scan-cadence explanation: intervals between readings are reported descriptively",
+    "that a run without steps, or with unsupported steps, removes the growth: a non-reproduction is not a fix",
+    "any step-4 or PLR result, eligibility, acceptance or admission",
+    "other boots, inputs, flags or THP settings",
+)
 COMPONENTS = (  # (key, load phase, settle phase, event carrying the load time)
     ("scene", "llama_load", "llama_settle", "llama_ready"),
     ("detector", "detector_load", "detector_settle", "detector_loaded"),
@@ -190,13 +273,13 @@ class Interrupted(Exception):
 # ---------------------------------------------------------------- /proc readers
 
 
-def read_meminfo(path: Path = Path("/proc/meminfo")) -> dict[str, int]:
+def read_meminfo(path: Path = Path("/proc/meminfo"), keys: tuple[str, ...] = MEMINFO_KEYS) -> dict[str, int]:
     """Convert Linux kB (1024 bytes) to bytes; omit missing/invalid fields."""
     values = {}
     with open(path) as handle:
         for line in handle:
             key, _, rest = line.partition(":")
-            if key in MEMINFO_KEYS:
+            if key in keys:
                 fields = rest.split()
                 if len(fields) == 2 and fields[0].isdigit() and fields[1] == "kB":
                     values[key] = int(fields[0]) * 1024
@@ -272,8 +355,9 @@ def _mapping_category(vmas: list[dict[str, object]], index: int) -> str:
     return "anon_other"
 
 
-def parse_smaps(text: str) -> dict[str, object]:
-    """/proc/<pid>/smaps summed by category: mapping count, virtual size and the SMAPS_FIELDS, in bytes.
+def parse_smaps(text: str, fields: dict[str, str] = SMAPS_FIELDS) -> dict[str, object]:
+    """/proc/<pid>/smaps summed by category: mapping count, virtual size and ``fields`` (default SMAPS_FIELDS;
+    SMAPS_THP_FIELDS adds AnonHugePages), in bytes.
 
     A category's field is None (unavailable, never zero) when any of its mappings lacks that line or has an
     unparseable value. Raises ValueError when the text holds no mapping (a zombie or an empty read).
@@ -288,26 +372,27 @@ def parse_smaps(text: str) -> dict[str, object]:
                          "path": header[4], "fields": {}})
         elif vmas:
             name, _, rest = line.partition(":")
-            key = SMAPS_FIELDS.get(name)
+            key = fields.get(name)
             if key is not None:
                 parts = rest.split()
                 vmas[-1]["fields"][key] = (int(parts[0]) * 1024 if len(parts) == 2 and parts[1] == "kB"
                                            and parts[0].isdigit() else None)
     if not vmas:
         raise ValueError("no mappings")
-    categories = {name: {"vmas": 0, "size_bytes": 0, **dict.fromkeys(SMAPS_FIELDS.values(), 0)}
+    categories = {name: {"vmas": 0, "size_bytes": 0, **dict.fromkeys(fields.values(), 0)}
                   for name in MAPS_CATEGORIES}
     for index, vma in enumerate(vmas):
         total = categories[_mapping_category(vmas, index)]
         total["vmas"] += 1
         total["size_bytes"] += vma["end"] - vma["start"]
-        for key in SMAPS_FIELDS.values():
+        for key in fields.values():
             value = vma["fields"].get(key)
             total[key] = None if value is None or total[key] is None else total[key] + value
     return {"vmas": len(vmas), "categories": categories}
 
 
-def read_maps_aggregate(pid: int, *, opener=open, clock=time.perf_counter) -> dict[str, object]:
+def read_maps_aggregate(pid: int, *, opener=open, clock=time.perf_counter,
+                        fields: dict[str, str] = SMAPS_FIELDS) -> dict[str, object]:
     """MA1: one bounded read of /proc/<pid>/smaps, aggregated; status, reason and its own cost, numbers only."""
     started = clock()
     try:
@@ -322,12 +407,140 @@ def read_maps_aggregate(pid: int, *, opener=open, clock=time.perf_counter) -> di
         return {"status": "unavailable", "reason": "too_large", "bytes_read": len(data), "read_ms": read_ms}
     parsing = clock()
     try:
-        aggregate = parse_smaps(data.decode("utf-8", "replace"))
+        aggregate = parse_smaps(data.decode("utf-8", "replace"), fields)
     except ValueError:
         return {"status": "unavailable", "reason": "unparsed" if data.strip() else "no_mappings",
                 "bytes_read": len(data), "read_ms": read_ms}
     return {"status": "observed", "bytes_read": len(data), "read_ms": read_ms,
             "parse_ms": round((clock() - parsing) * 1000, 3), **aggregate}
+
+
+def _read_bounded(path: Path, limit: int, opener=open) -> bytes | None:
+    """At most ``limit`` bytes of a file, or None when it cannot be read or is longer."""
+    try:
+        with opener(path, "rb") as handle:
+            data = handle.read(limit + 1)
+    except OSError:
+        return None
+    return data if len(data) <= limit else None
+
+
+def _plain_count(text: str | None) -> int | None:
+    text = (text or "").strip()
+    return int(text) if text.isascii() and text.isdigit() else None
+
+
+def read_thp_counters(*, vmstat: Path = Path("/proc/vmstat"), sysfs: Path = THP_SYSFS, opener=open,
+                      clock=time.monotonic, timer=time.perf_counter) -> dict[str, object]:
+    """THP observation: /proc/vmstat's THP_VMSTAT_KEYS and khugepaged's progress counters, read-only.
+
+    Each counter is None (unavailable, never zero) when absent, unreadable, over its read bound or not a plain
+    non-negative integer. ``thp_t_mono`` is when the reads began and ``thp_read_us`` how long they took."""
+    t_mono = clock()
+    started = timer()
+    values: dict[str, object] = dict.fromkeys(THP_COUNTER_COLUMNS)
+    data = _read_bounded(vmstat, THP_VMSTAT_LIMIT_BYTES, opener)
+    for line in (data.decode("ascii", "replace").splitlines() if data is not None else ()):
+        parts = line.split()
+        if len(parts) == 2 and parts[0] in THP_VMSTAT_KEYS:
+            values[parts[0]] = _plain_count(parts[1])
+    for name in THP_KHUGEPAGED_COUNTERS:
+        raw = _read_bounded(Path(sysfs) / "khugepaged" / name, THP_SYSFS_LIMIT_BYTES, opener)
+        values[f"khugepaged_{name}"] = _plain_count(raw.decode("ascii", "replace")) if raw is not None else None
+    return {"thp_t_mono": round(t_mono, 3), "thp_read_us": round((timer() - started) * 1e6, 1), **values}
+
+
+def _selected_choice(text: str | None) -> str | None:
+    """The bracketed choice of a sysfs setting such as "[always] madvise never"; None when absent or unrecognised."""
+    match = re.fullmatch(r"(?:[a-z+_]{1,24} )*\[([a-z+_]{1,24})\](?: [a-z+_]{1,24})*", (text or "").strip())
+    return match[1] if match else None
+
+
+def read_kernel_config(path: Path = Path("/proc/config.gz"), *, opener=gzip.open) -> dict[str, object] | None:
+    """THP_CONFIG_KEYS from the running kernel's config ("y", "m" or "n"; HZ as a number), or None when unavailable.
+
+    Bounded: at most THP_CONFIG_LIMIT_BYTES are decompressed; a longer config is unavailable."""
+    try:
+        with opener(path, "rb") as handle:
+            data = handle.read(THP_CONFIG_LIMIT_BYTES + 1)
+    except (OSError, EOFError, zlib.error):
+        return None
+    if len(data) > THP_CONFIG_LIMIT_BYTES:
+        return None
+    values: dict[str, object] = dict.fromkeys(THP_CONFIG_KEYS)
+    for line in data.decode("ascii", "replace").splitlines():
+        if unset := re.fullmatch(r"# CONFIG_([A-Z0-9_]+) is not set", line):
+            if unset[1] in values:
+                values[unset[1]] = "n"
+        elif (setting := re.fullmatch(r"CONFIG_([A-Z0-9_]+)=(.*)", line)) and setting[1] in values:
+            values[setting[1]] = (_plain_count(setting[2]) if setting[1] == "HZ"
+                                  else setting[2] if setting[2] in ("y", "m", "n") else None)
+    return values
+
+
+def thp_settings_snapshot(*, sysfs: Path = THP_SYSFS, config: Path = Path("/proc/config.gz"),
+                          meminfo: Path = Path("/proc/meminfo"), opener=open, config_opener=gzip.open,
+                          page_size=None, uname=os.uname, clock=time.monotonic,
+                          timer=time.perf_counter) -> dict[str, object]:
+    """THP observation: the kernel identity, the base and huge-page sizes and the THP settings, read-only.
+
+    Every value is None when it cannot be read or parsed (never a default). ``thp_pmd_bytes`` is THP's PMD size
+    (hpage_pmd_size); ``hugetlb_default_bytes`` is meminfo's Hugepagesize, which belongs to hugetlbfs, not THP."""
+    t_mono = clock()
+    started = timer()
+
+    def text(relative: str) -> str | None:
+        raw = _read_bounded(Path(sysfs) / relative, THP_SYSFS_LIMIT_BYTES, opener)
+        return raw.decode("ascii", "replace") if raw is not None else None
+
+    try:
+        base = (page_size or (lambda: os.sysconf("SC_PAGE_SIZE")))()
+        base = base if type(base) is int and base > 0 else None
+    except (OSError, ValueError):
+        base = None
+    try:
+        name = uname()
+        kernel = {"release": name.release, "version": name.version}
+    except OSError:
+        kernel = {"release": None, "version": None}
+    try:
+        hugetlb = read_meminfo(meminfo, keys=("Hugepagesize",)).get("Hugepagesize")
+    except (OSError, ValueError):
+        hugetlb = None
+    return {
+        "t_mono": round(t_mono, 3),
+        "kernel": kernel,
+        "base_page_bytes": base,
+        "thp_pmd_bytes": _plain_count(text("hpage_pmd_size")),
+        "hugetlb_default_bytes": hugetlb,
+        **{setting: _selected_choice(text(setting)) for setting in THP_CHOICE_SETTINGS},
+        "use_zero_page": _plain_count(text("use_zero_page")),
+        "khugepaged": {setting: _plain_count(text(f"khugepaged/{setting}")) for setting in KHUGEPAGED_SETTINGS},
+        "config": read_kernel_config(config, opener=config_opener),
+        "read_ms": round((timer() - started) * 1000, 3),
+    }
+
+
+def _flat_settings(snapshot: object) -> dict[str, object]:
+    """THP_SETTING_KEYS of one snapshot; every key None when the snapshot is missing."""
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    out = {}
+    for key in THP_SETTING_KEYS:
+        group, _, name = key.partition(".")
+        value = snapshot.get(group)
+        if name:
+            value = value.get(name) if isinstance(value, dict) else None
+        out[key] = value
+    return out
+
+
+def thp_settings_changes(before: object, after: object) -> tuple[list[str], list[str]]:
+    """(keys whose before and after values were both read and differ, keys missing on either side)."""
+    first, last = _flat_settings(before), _flat_settings(after)
+    changed = [key for key in THP_SETTING_KEYS
+               if first[key] is not None and last[key] is not None and first[key] != last[key]]
+    unverified = [key for key in THP_SETTING_KEYS if first[key] is None or last[key] is None]
+    return changed, unverified
 
 
 def scan_processes() -> list[tuple[int, str, str, list[str]]]:
@@ -423,6 +636,8 @@ def preconditions(args: argparse.Namespace) -> tuple[list[str], dict[str, object
         problems.append("--mr1-release-check and --post-load-release are separate procedures; pass one")
     if getattr(args, "memory_attribution", False) and not getattr(args, "post_load_release", False):
         problems.append("--memory-attribution (MA1) is defined only with --post-load-release")
+    if getattr(args, "thp_observation", False) and not getattr(args, "memory_attribution", False):
+        problems.append("--thp-observation extends MA1's readings; it is defined only with --memory-attribution")
     for label, path in required.items():
         if not Path(path).exists():
             problems.append(f"missing {label}: {path}")
@@ -500,6 +715,7 @@ def provenance(args: argparse.Namespace, context: dict[str, object], run_id: str
                if getattr(args, "post_load_release", False) else {}),
             **({"memory_attribution": True, "maps_interval_s": args.maps_interval_s}
                if getattr(args, "memory_attribution", False) else {}),
+            **({"thp_observation": True} if getattr(args, "thp_observation", False) else {}),
         },
         **({"mr1_note": "MR1 release check: loads and settles, each model's file cache released after its settle, "
                         "bounded smoke checks and unload. Not a resource profile, step-4 evidence or a sustained-memory test."}
@@ -512,6 +728,10 @@ def provenance(args: argparse.Namespace, context: dict[str, object], run_id: str
                         "allocator and garbage-collector counters and its mapping categories. Never eligible, accepted "
                         "or admissible."}
            if getattr(args, "memory_attribution", False) else {}),
+        **({"thp_note": "THP observation (D56): MA1 with read-only transparent-huge-page counters and settings; "
+                        "nothing is set or tuned. Never eligible, accepted or admissible.",
+            "thp_settings": {"before": thp_settings_snapshot()}}
+           if getattr(args, "thp_observation", False) else {}),
     }
 
 
@@ -804,10 +1024,13 @@ class Sampler(threading.Thread):
         "anon_pages", "mapped", "active_file", "inactive_file",  # ATTRIBUTION_MEMINFO_KEYS, in order
     ]
 
-    def __init__(self, path: Path, on_floor) -> None:
+    def __init__(self, path: Path, on_floor, *, thp: bool = False, read_thp=None) -> None:
         super().__init__(name="sampler", daemon=True)
         self.path = path
         self.on_floor = on_floor
+        self.thp = thp  # THP observation: THP_COLUMNS after every existing column, read in the same sample
+        self.columns = [*self.COLUMNS, *(THP_COLUMNS if thp else ())]
+        self._read_thp = read_thp or read_thp_counters
         self.phase = "start"
         self.pids: dict[str, int] = {}
         self.floor_hit = False
@@ -818,10 +1041,10 @@ class Sampler(threading.Thread):
         next_slow = 0.0
         with open(self.path, "w", newline="") as handle:
             writer = csv.writer(handle)
-            writer.writerow(self.COLUMNS)
+            writer.writerow(self.columns)
             while not self._halt.is_set():
                 now = time.monotonic()
-                mem = read_meminfo()
+                mem = read_meminfo(keys=(*MEMINFO_KEYS, "AnonHugePages")) if self.thp else read_meminfo()
                 slow = now >= next_slow
                 row: list[object] = [f"{now:.3f}", self.phase] + [mem.get(key, "") for key in BASE_MEMINFO_KEYS]
                 for key in ("llama", "work"):
@@ -832,6 +1055,10 @@ class Sampler(threading.Thread):
                 swap = read_swap_counters() if slow else {}
                 row += [swap.get("pswpin", ""), swap.get("pswpout", "")]
                 row += [mem.get(key, "") for key in ATTRIBUTION_MEMINFO_KEYS]
+                if self.thp:  # after the meminfo and process reads; the counters carry their own read time
+                    thp = self._read_thp()
+                    row += [mem.get("AnonHugePages", "")]
+                    row += ["" if thp.get(key) is None else thp[key] for key in THP_COLUMNS[1:]]
                 if slow:
                     next_slow = now + PSS_INTERVAL_S
                 writer.writerow(row)
@@ -1234,7 +1461,8 @@ def run(args: argparse.Namespace) -> int:
             if proc is not None and proc.poll() is None:
                 proc.terminate()
 
-    sampler = Sampler(run_dir / "memory.csv", on_floor)
+    thp = bool(getattr(args, "thp_observation", False))
+    sampler = Sampler(run_dir / "memory.csv", on_floor, thp=thp)
     tegrastats = Tegrastats(run_dir / "tegrastats.log", sampler)
 
     def set_phase(name: str, source: str = "orchestrator") -> None:
@@ -1295,7 +1523,9 @@ def run(args: argparse.Namespace) -> int:
         sampler.pids["work"] = procs["work"].pid
         if getattr(args, "memory_attribution", False):  # MA1: the workload's mappings, read-only, numbers only
             maps = MapsSampler(lambda: sampler.pids.get("work"), lambda: sampler.phase, events.add,
-                               interval_s=args.maps_interval_s)
+                               interval_s=args.maps_interval_s,  # THP: the same reads, plus AnonHugePages
+                               read=functools.partial(read_maps_aggregate, fields=SMAPS_THP_FIELDS) if thp
+                               else read_maps_aggregate)
             maps.start()
         pump = threading.Thread(
             target=pump_workload, args=(procs["work"], run_dir, events, set_phase),
@@ -1346,6 +1576,8 @@ def run(args: argparse.Namespace) -> int:
         events.add("orchestrator", "cleanup", llama_server_running=bool(leftovers), port_in_use=port_in_use(args.port))
         events.add("orchestrator", "run_end", status=status)
         events.close()
+    if thp:  # after cleanup: the same readings as before the run
+        manifest["thp_settings"]["after"] = thp_settings_snapshot()
     manifest["finished_utc"] = utc_now()
     manifest["status"] = status
     manifest["sha256"] = {label: sha256_of(path) for label, path in model_files(args).items()}
@@ -1366,10 +1598,16 @@ def _int(value: str | None) -> int | None:
 def load_samples(path: Path) -> list[dict[str, object]]:
     samples = []
     with open(path, newline="") as handle:
-        for row in csv.DictReader(handle):
+        reader = csv.DictReader(handle)
+        thp = [key for key in THP_COLUMNS if key in (reader.fieldnames or ())]  # THP observation runs only
+        for row in reader:
             sample: dict[str, object] = {"t": float(row["t_mono"]), "phase": row["phase"]}
             for key in Sampler.COLUMNS[2:]:
                 sample[key] = _int(row.get(key))
+            for key in thp:
+                value = row.get(key)
+                sample[key] = ((None if value in ("", None) else float(value)) if key in THP_FLOAT_COLUMNS
+                               else _int(value))
             sample["used"] = sample["mem_total"] - sample["mem_available"]
             sample["swap_used"] = sample["swap_total"] - sample["swap_free"]
             samples.append(sample)
@@ -1785,6 +2023,235 @@ def memattr_lines(report: dict[str, object]) -> list[str]:
     return lines
 
 
+def _timed_first_last(records: list[dict[str, object]], value, t_key: str) -> dict[str, object]:
+    """_first_last of the available values, with the times of the first and last of them (None without any)."""
+    present = [(r[t_key], value(r)) for r in records if value(r) is not None]
+    summary = _first_last([v for _, v in present])
+    return {**summary, "t_first": present[0][0] if present else None, "t_last": present[-1][0] if present else None}
+
+
+def _collapse_signal(deltas: dict[str, object]) -> bool | None:
+    """True when a collapse counter rose, False when at least one was read at both ends and none rose, else None."""
+    seen = [deltas.get(key) for key in THP_COLLAPSE_KEYS if deltas.get(key) is not None]
+    return any(value > 0 for value in seen) if seen else None
+
+
+def _rss_label(first: dict[str, object], last: dict[str, object]) -> str:
+    """Which recorded process's RSS rose between two memory.csv rows (a collapse of a fully resident range moves none)."""
+    work, llama = _delta(first.get("work_rss"), last.get("work_rss")), _delta(first.get("llama_rss"), last.get("llama_rss"))
+    if work is None and llama is None:
+        return "unknown"
+    rose = ((work or 0) > 0, (llama or 0) > 0)
+    return {(True, True): "both_rss_rose", (True, False): "workload_rss_rose", (False, True): "llama_rss_rose",
+            (False, False): "no_recorded_rss_rise"}[rose]
+
+
+def _thp_step_outcome(collapse: bool | None, local: int | None, local_reason: str | None,
+                      split: bool | None) -> tuple[str, list[str]]:
+    """THP_RULE for one step; the reasons say why a step is inconclusive."""
+    if collapse is None:
+        return "inconclusive", ["collapse_counters_unavailable"]
+    if local is None:
+        return "inconclusive", [local_reason or "process_maps_unavailable"]
+    if collapse and local > 0:
+        return "supported", []
+    if not collapse and local <= 0:
+        return "unsupported", []
+    if collapse:
+        return "inconclusive", ["collapse_counted_without_local_huge_page_rise",
+                                *(["split_counted_in_maps_bracket"] if split else [])]
+    return "inconclusive", ["local_huge_page_rise_without_counted_collapse"]
+
+
+def _maps_step_evidence(maps: list[dict[str, object]], rows: list[dict[str, object]], times: list[float],
+                        before: float, after: float) -> dict[str, object]:
+    """The smaps readings bracketing one step: each category's Rss and AnonHugePages changes, the category whose Rss
+    rose most (the step's category), its AnonHugePages change, and the split counters over the same bracket."""
+    bracket = _bracket(maps, before, after)
+    if bracket is None:
+        return {"t0": None, "t1": None, "step_category": None, "local_ahp_delta": None,
+                "local_reason": "process_maps_unavailable", "categories": None, "split_deltas": None}
+    first, last = bracket
+    categories = {}
+    for name in MAPS_CATEGORIES:
+        a, b = first["categories"].get(name) or {}, last["categories"].get(name) or {}
+        categories[name] = {"rss_delta": _delta(a.get("rss_bytes"), b.get("rss_bytes")),
+                            "ahp_delta": _delta(a.get("anon_huge_pages_bytes"), b.get("anon_huge_pages_bytes"))}
+    rising = [(item["rss_delta"], name) for name, item in categories.items()
+              if item["rss_delta"] is not None and item["rss_delta"] > 0]
+    category = max(rising)[1] if rising else None
+    local = categories[category]["ahp_delta"] if category else None
+    reason = None if local is not None else (
+        "step_not_in_mapping_categories" if category is None else "process_maps_unavailable")
+    low = bisect.bisect_right(times, first["t_mono"]) - 1  # counter rows at or before / at or after the readings
+    high = bisect.bisect_left(times, last["t_mono"])
+    split = ({key: _delta(rows[low].get(key), rows[high].get(key)) for key in THP_SPLIT_KEYS}
+             if low >= 0 and high < len(rows) else dict.fromkeys(THP_SPLIT_KEYS))
+    return {"t0": first["t_mono"], "t1": last["t_mono"], "step_category": category, "local_ahp_delta": local,
+            "local_reason": reason, "categories": categories, "split_deltas": split}
+
+
+def _thp_window(rows: list[dict[str, object]], maps: list[dict[str, object]], window: tuple[float, float]) -> dict:
+    rows = [r for r in rows if window[0] <= r["t"] <= window[1]]
+    maps = _between(maps, window)
+    return {
+        "seconds": round(window[1] - window[0], 3),
+        "counter_readings": sum(1 for r in rows if r.get("thp_t_mono") is not None),
+        "counters": {key: _timed_first_last(rows, lambda r, key=key: r.get(key), "t")
+                     for key in ("anon_huge_pages", *THP_COUNTER_COLUMNS)},
+        "maps_readings": len(maps),
+        "maps": {name: {field: _timed_first_last(maps, lambda m, name=name, field=field:
+                                                 (m["categories"].get(name) or {}).get(field), "t_mono")
+                        for field in ("rss_bytes", "anon_huge_pages_bytes")}
+                 for name in MAPS_CATEGORIES},
+    }
+
+
+def thp_report(run_dir: Path, status: str, samples: list[dict[str, object]], manifest: dict[str, object],
+               warmup: tuple[float, float] | None, steady: tuple[float, float] | None) -> dict[str, object]:
+    """THP observation's record (D56): the settings before and after, per-window counter and mapping changes, each
+    workload RSS step with its device-wide counter bracket and process-local smaps bracket, the collapse readings
+    with whichever recorded RSS rose beside them, and the predeclared reading (THP_RULE). Descriptive only."""
+    events = load_memattr_events(Path(run_dir) / "events.jsonl")
+    maps = [m for m in events if m["event"] == "memattr_maps" and m.get("status") == "observed"
+            and isinstance(m.get("categories"), dict) and type(m.get("t_mono")) in (int, float)]
+    settings = manifest.get("thp_settings") if isinstance(manifest.get("thp_settings"), dict) else {}
+    before, after = settings.get("before"), settings.get("after")
+    changed, unverified = thp_settings_changes(before, after)
+    rows = list(samples)
+    times = [r["t"] for r in rows]
+    span = ((warmup or steady)[0], (steady or warmup)[1]) if (warmup or steady) else None
+    steps = []
+    for index in range(1, len(rows)):
+        first, second = rows[index - 1], rows[index]
+        rise = _delta(first.get("work_rss"), second.get("work_rss"))
+        inside = span is not None and span[0] <= first["t"] and second["t"] <= span[1]  # MA1's steps: both rows
+        if not inside or rise is None or rise < MA1_STEP_BYTES:
+            continue
+        low, high = rows[max(index - 2, 0)], rows[min(index + 1, len(rows) - 1)]  # one row of tolerance each side
+        counters = {key: _delta(low.get(key), high.get(key)) for key in ("anon_huge_pages", *THP_COUNTER_COLUMNS)}
+        collapse = _collapse_signal(counters)
+        local = _maps_step_evidence(maps, rows, times, first["t"], second["t"])
+        split = local["split_deltas"]
+        split_rose = None if split is None or all(v is None for v in split.values()) else any(
+            (v or 0) > 0 for v in split.values())
+        outcome, reasons = _thp_step_outcome(collapse, local["local_ahp_delta"], local["local_reason"], split_rose)
+        window = "steady" if steady and first["t"] >= steady[0] else "warmup"
+        steps.append({"t_mono": second["t"], "phase": second["phase"], "window": window, "rss_delta_bytes": rise,
+                      "anon_pages_delta_bytes": _delta(first.get("anon_pages"), second.get("anon_pages")),
+                      "counter_bracket": {"t0": low["t"], "t1": high["t"], "deltas": counters,
+                                          "rss": _rss_label(low, high),
+                                          "llama_rss_delta_bytes": _delta(low.get("llama_rss"), high.get("llama_rss"))},
+                      "collapse_counted": collapse,
+                      "maps_bracket": {k: v for k, v in local.items() if k != "local_reason"},
+                      "outcome": outcome, "reasons": reasons})
+    for step in steps:  # steps sharing one smaps bracket cannot be told apart in it
+        bracket = (step["maps_bracket"]["t0"], step["maps_bracket"]["t1"])
+        step["steps_in_maps_bracket"] = sum(1 for other in steps
+                                            if (other["maps_bracket"]["t0"], other["maps_bracket"]["t1"]) == bracket)
+    counted = [s for s in steps if s["window"] == "steady"]  # the run reading: steady steps only
+    by_outcome = {name: sum(1 for s in counted if s["outcome"] == name) for name in THP_OUTCOMES}
+    if changed:
+        outcome, reason = "inconclusive", "thp_settings_changed"
+    elif not counted:
+        outcome, reason = "inconclusive", "no_steady_steps_not_reproduced"
+    elif by_outcome["supported"] and not by_outcome["unsupported"]:
+        outcome, reason = "supported", None
+    elif by_outcome["unsupported"] and not by_outcome["supported"]:
+        outcome, reason = "unsupported", None
+    else:
+        outcome, reason = "inconclusive", "mixed" if by_outcome["supported"] else "only_inconclusive_steps"
+
+    collapses = []
+    for first, second in zip(rows, rows[1:]):
+        deltas = {key: _delta(first.get(key), second.get(key)) for key in THP_COLLAPSE_KEYS}
+        if any((value or 0) > 0 for value in deltas.values()):
+            collapses.append({"t_mono": second["t"], "phase": second["phase"], **deltas, "rss": _rss_label(first, second),
+                              "work_rss_delta_bytes": _delta(first.get("work_rss"), second.get("work_rss")),
+                              "llama_rss_delta_bytes": _delta(first.get("llama_rss"), second.get("llama_rss"))})
+    gaps = sorted(round(b["t_mono"] - a["t_mono"], 3) for a, b in zip(collapses, collapses[1:]))
+    scans = [second["t"] for first, second in zip(rows, rows[1:])
+             if (_delta(first.get("khugepaged_full_scans"), second.get("khugepaged_full_scans")) or 0) > 0]
+    costs = [r["thp_read_us"] for r in rows if r.get("thp_read_us") is not None]
+    in_steady = [r for r in rows if steady and steady[0] <= r["t"] <= steady[1]]
+    steady_maps = _between(maps, steady) if steady else []
+    return {
+        "label": THP_LABEL,
+        "scope": "read-only transparent-huge-page counters and settings beside MA1's readings; descriptive only, never "
+                 "a criterion, eligibility, acceptance or admission; the khugepaged hypothesis stays unconfirmed",
+        "profile_status": _status_label(status),
+        "settings": {"before": before, "after": after, "before_recorded": isinstance(before, dict)
+                     and before.get("enabled") is not None, "after_recorded": isinstance(after, dict)
+                     and after.get("enabled") is not None, "changed": changed, "unverified": unverified},
+        "sources": {
+            "counter_rows": sum(1 for r in rows if r.get("thp_t_mono") is not None),
+            "counter_observed": {key: sum(1 for r in rows if r.get(key) is not None)
+                                 for key in ("anon_huge_pages", *THP_COUNTER_COLUMNS)},
+            "steady_counter_readings": sum(1 for r in in_steady if any(r.get(k) is not None for k in THP_COLLAPSE_KEYS)),
+            "maps_observed": len(maps),
+            "steady_maps_heap_ahp_observed": sum(1 for m in steady_maps
+                                                 if (m["categories"].get("heap") or {}).get("anon_huge_pages_bytes")
+                                                 is not None),
+        },
+        "windows": {name: _thp_window(rows, maps, window)
+                    for name, window in (("warmup", warmup), ("steady", steady)) if window},
+        "steps": {"threshold_bytes": MA1_STEP_BYTES, "count": len(steps), "steady_count": len(counted),
+                  "by_outcome": by_outcome,  # steady steps: the run reading's basis
+                  "bytes_by_outcome": {name: sum(s["rss_delta_bytes"] for s in counted if s["outcome"] == name)
+                                       for name in THP_OUTCOMES},
+                  "warmup_by_outcome": {name: sum(1 for s in steps if s["window"] == "warmup" and s["outcome"] == name)
+                                        for name in THP_OUTCOMES},
+                  "listed": steps[:THP_MAX_STEPS]},
+        "collapses": {"readings": len(collapses),
+                      "by_rss": {label: sum(1 for c in collapses if c["rss"] == label) for label in THP_RSS_LABELS},
+                      "gaps_s": {"n": len(gaps), "min": gaps[0] if gaps else None, "p50": nearest_rank(gaps, 0.5),
+                                 "max": gaps[-1] if gaps else None},
+                      "listed": collapses[:THP_MAX_COLLAPSES]},
+        "full_scans": {"increments": len(scans), "listed": scans[:THP_MAX_FULL_SCANS]},
+        "outcome": {"label": outcome, "reason": reason, "rule": THP_RULE},
+        "cost": {"counter_read_us": {"n": len(costs), "p50": nearest_rank(costs, 0.5), "max": max(costs, default=None)},
+                 "settings_read_ms": {"before": (before or {}).get("read_ms") if isinstance(before, dict) else None,
+                                      "after": (after or {}).get("read_ms") if isinstance(after, dict) else None}},
+        "semantics": THP_SEMANTICS,
+        "cannot_establish": list(THP_CANNOT_ESTABLISH),
+    }
+
+
+def thp_lines(report: dict[str, object]) -> list[str]:
+    settings = report["settings"]
+    first = settings["before"] if isinstance(settings["before"], dict) else {}
+    khugepaged = first.get("khugepaged") or {}
+    lines = ["", "THP observation (D56; read-only; descriptive, never a criterion or eligibility):",
+             f"  settings before: enabled {first.get('enabled')}, defrag {first.get('defrag')}, khugepaged "
+             f"pages_to_scan {khugepaged.get('pages_to_scan')}, scan_sleep_millisecs {khugepaged.get('scan_sleep_millisecs')}, "
+             f"max_ptes_none {khugepaged.get('max_ptes_none')}; base page {first.get('base_page_bytes')} B, THP PMD "
+             f"{first.get('thp_pmd_bytes')} B; kernel {(first.get('kernel') or {}).get('release')}",
+             f"  settings after: recorded {settings['after_recorded']}; changed {settings['changed'] or 'none'}; "
+             f"not comparable {len(settings['unverified'])} of {len(THP_SETTING_KEYS)}",
+             f"  sources: counter rows {report['sources']['counter_rows']} (steady {report['sources']['steady_counter_readings']}); "
+             f"smaps readings {report['sources']['maps_observed']} (steady with heap AnonHugePages "
+             f"{report['sources']['steady_maps_heap_ahp_observed']})"]
+    for name, window in report["windows"].items():
+        counters, heap = window["counters"], window["maps"]["heap"]["anon_huge_pages_bytes"]
+        lines.append(f"  {name}: pages_collapsed {counters['khugepaged_pages_collapsed']['delta']}, thp_collapse_alloc "
+                     f"{counters['thp_collapse_alloc']['delta']}, full_scans {counters['khugepaged_full_scans']['delta']}, "
+                     f"thp_fault_alloc {counters['thp_fault_alloc']['delta']}, splits page/pmd "
+                     f"{counters['thp_split_page']['delta']}/{counters['thp_split_pmd']['delta']}; meminfo AnonHugePages "
+                     f"{gb(counters['anon_huge_pages']['delta'], True)}; workload heap AnonHugePages {gb(heap['delta'], True)}")
+    steps = report["steps"]
+    lines += [f"  RSS steps of at least {steps['threshold_bytes']:,} B: {steps['count']} ({steps['steady_count']} steady); "
+              f"steady by outcome {steps['by_outcome']}; steady bytes by outcome {steps['bytes_by_outcome']}; "
+              f"warm-up by outcome {steps['warmup_by_outcome']} (listed, not counted)",
+              f"  collapse readings {report['collapses']['readings']}, beside RSS rises {report['collapses']['by_rss']}; "
+              f"gaps between them {report['collapses']['gaps_s']} s (descriptive)",
+              f"  reading: {report['outcome']['label']}" + (f" ({report['outcome']['reason']})"
+                                                            if report["outcome"]["reason"] else ""),
+              f"  counter read cost p50/max {report['cost']['counter_read_us']['p50']}/"
+              f"{report['cost']['counter_read_us']['max']} us",
+              "  Cannot establish: " + "; ".join(report["cannot_establish"]) + "."]
+    return lines
+
+
 def prompt_cache_summary(log_path: Path, steady: tuple[float, float] | None) -> dict[str, object] | None:
     """Numbers from llama-server's prompt-cache lines; None when the log has none (older runs)."""
     try:
@@ -2161,6 +2628,16 @@ def summarize(run_dir: Path) -> str:
                 profile["instrumentation"] = ("MA1 memory attribution (D55): an instrumented diagnostic; its criteria "
                                               "are descriptive only, never eligibility, acceptance or admission")
                 lines += memattr_lines(attribution)
+                if (manifest.get("parameters") or {}).get("thp_observation"):  # D56: read-only THP counters
+                    observed = thp_report(
+                        run_dir, status, samples, manifest,
+                        (warm_rows[0]["t"], warm_rows[-1]["t"]) if warm_rows else None,
+                        (interval["start_t_mono"], interval["end_t_mono"])
+                        if interval["status"] != step4_criteria.UNAVAILABLE else None)
+                    (run_dir / "thp.json").write_text(json.dumps(observed, indent=2) + "\n")
+                    profile["thp_observation"] = "thp.json"
+                    profile["instrumentation"] += "; with THP observation (D56), read-only"
+                    lines += thp_lines(observed)
             lines += ["", f"Step-4 criteria decidable from this run ({step4_criteria.PLR_CRITERIA_ID}: D47's rules and "
                       "thresholds under the PLR identity; demo profile, not the 1080p beta gates; never acceptance "
                       "or admission" + ("; instrumented MA1 run: descriptive only, never eligible" if instrumented
@@ -2233,6 +2710,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--maps-interval-s", type=maps_interval, default=MAPS_INTERVAL_S,
                         help=f"MA1: seconds between reads of the workload's smaps (default {MAPS_INTERVAL_S:g}, "
                              f"{MAPS_INTERVAL_RANGE_S[0]:g}-{MAPS_INTERVAL_RANGE_S[1]:g})")
+    parser.add_argument("--thp-observation", action="store_true",
+                        help="THP observation (opt-in, D56; only with --memory-attribution): AnonHugePages in the smaps "
+                             "aggregates, meminfo AnonHugePages and the THP fault, collapse and split counters with "
+                             "khugepaged's progress counters in each memory.csv row, and the THP settings before and "
+                             "after the run; read-only, nothing set or tuned")
     parser.add_argument("--sanitized-logs", action="store_true",
                         help="discard raw server/workload output; retain fixed numeric/placement diagnostics only")
     parser.add_argument("--allow-desktop", action="store_true", help="measure with a desktop session running")

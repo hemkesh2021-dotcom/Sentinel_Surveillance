@@ -504,6 +504,7 @@ class Backend:
         self.mr1_report = None  # MR1: the profiler's mr1.json, written with the other files when set
         self.plr_report = None  # step-4 PLR: the profiler's plr.json, likewise
         self.memattr_report = None  # MA1: the profiler's memattr.json, likewise
+        self.thp_report = None  # MA1-THP: the profiler's thp.json, likewise
         self.sleeps = []
 
     def clock(self):
@@ -590,6 +591,8 @@ class Backend:
             (run / "plr.json").write_text(json.dumps(self.plr_report))
         if self.memattr_report is not None:
             (run / "memattr.json").write_text(json.dumps(self.memattr_report))
+        if self.thp_report is not None:
+            (run / "thp.json").write_text(json.dumps(self.thp_report))
 
 
 def identity_tree(tmp_path: Path) -> dict[str, Path]:
@@ -1426,6 +1429,142 @@ def test_the_ma1_cli_exit_reflects_execution_and_recording_and_needs_its_own_con
     for wrong in (["--confirm-step4plr-prerequisites"], ["--execute-workload", "step4plr", "--confirm-ma1-prerequisites"]):
         with pytest.raises(SystemExit):  # each confirmation belongs to its own mode
             op.main([*common, *wrong] if wrong[0].startswith("--confirm") else wrong, backend=Backend())
+
+
+# ---------------------------------------------------------------- MA1-THP (D56): MA1 plus read-only THP observation
+
+
+THP_SNAPSHOT = {"kernel": {"release": "5.15.148-tegra", "version": "#1 SMP PREEMPT Thu Sep 18 /home/someone"},
+                "base_page_bytes": 4096, "thp_pmd_bytes": 2 << 20, "hugetlb_default_bytes": 2 << 20,
+                "enabled": "always", "defrag": "madvise", "shmem_enabled": "never", "use_zero_page": 1,
+                "khugepaged": {"pages_to_scan": 4096, "scan_sleep_millisecs": 10000, "max_ptes_none": 511},
+                "config": {"HZ": 250, "TRANSPARENT_HUGEPAGE": "y"}, "read_ms": 2.0}
+
+
+def fake_thp_report(runners, tmp_path, *, reading="supported", after=THP_SNAPSHOT) -> dict:
+    """The profiler's own thp.json, built by its function from a few synthetic rows and smaps readings."""
+    profile = runners.profile
+    run = tmp_path / f"thp-source-{reading}"
+    run.mkdir(exist_ok=True)
+    stepped, collapsed = (lambda t: t >= 150.0), (lambda t: reading == "supported" and t >= 150.0)
+    samples = [{"t": t, "phase": "steady", "work_rss": 2_000_000_000 + (4 << 20 if stepped(t) else 0),
+                "llama_rss": 1, "anon_pages": 1,
+                **({"thp_t_mono": t, "khugepaged_pages_collapsed": 5 + collapsed(t), "thp_collapse_alloc": 5 + collapsed(t),
+                    "thp_split_page": 0, "thp_split_pmd": 0, "anon_huge_pages": 1}
+                   if reading != "inconclusive" else {})}
+               for t in (149.6, 149.8, 150.0, 150.2)]
+    events = [{"t_mono": t, "event": "memattr_maps", "status": "observed",
+               "categories": {name: {"rss_bytes": 1 + (4 << 20 if name == "heap" and stepped(t) else 0),
+                                     "anon_huge_pages_bytes": (2 << 20 if name == "heap" and collapsed(t) else 0)}
+                              for name in profile.MAPS_CATEGORIES}} for t in (145.0, 150.0, 155.0)]
+    (run / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    manifest = {"thp_settings": {"before": THP_SNAPSHOT, "after": after}}
+    return profile.thp_report(run, "complete", samples, manifest, None, (140.0, 160.0))
+
+
+def run_ma1thp(runners, tmp_path, prep, backend=None, *, reading="supported", record=True, **overrides):
+    op = runners.operator
+    output = private_dir(tmp_path, "ma1thp")
+    backend = backend or Backend()
+    backend.output = output
+    backend.identity_hashes = {label: entry["sha256"] for label, entry in prep.identity["files"].items()}
+    backend.plr_report = backend.plr_report or fake_plr_report(runners, tmp_path)
+    backend.memattr_report = backend.memattr_report or fake_memattr_report(runners, tmp_path)
+    if record and backend.thp_report is None:
+        backend.thp_report = fake_thp_report(runners, tmp_path, reading=reading)
+    kwargs = dict(check9_report=prep.check9_path, identity_report=prep.identity_path, clip=prep.files["clip"],
+                  confirm_ma1thp=True, dropped_caches=True, identity_files_fn=lambda clip: prep.files)
+    kwargs.update(overrides)
+    return op.execute("ma1thp", backend, output, **kwargs), backend
+
+
+def test_the_ma1thp_child_is_ma1s_command_plus_the_thp_flag_only(runners, tmp_path) -> None:
+    op = runners.operator
+    prep = prepare(runners, tmp_path)
+    result, backend = run_ma1thp(runners, tmp_path, prep)
+    (child,) = [c for c in backend.children if "demo_profile.py" in " ".join(c.argv)]
+    assert child.argv == [*op.ma1_argv(backend.output, prep.files["clip"]), "--thp-observation"]
+    assert op.ma1_argv(backend.output, prep.files["clip"])[-1] == "5.0"  # MA1's own command is unchanged
+    assert result["ma1thp"]["deadline_s"] == op.STEP4_DEADLINE_S
+    assert [(m[0].split()[:2], m[2]) for m in backend.markers] == [(["ma1thp", "start"], "sentinel-ma1thp"),
+                                                                   (["ma1thp", "end"], "sentinel-ma1thp")]
+    args = runners.profile.parse_args(child.argv[2:])
+    ma1 = runners.profile.parse_args(op.ma1_argv(backend.output, prep.files["clip"])[2:])
+    assert args.thp_observation is True and ma1.thp_observation is False
+    assert {k: v for k, v in vars(args).items() if k != "thp_observation"} == {
+        k: v for k, v in vars(ma1).items() if k != "thp_observation"}  # rates, durations, guard inputs, interval
+
+
+def test_a_completed_ma1thp_run_records_thp_and_is_never_eligible(runners, tmp_path) -> None:
+    prep = prepare(runners, tmp_path)
+    result, _ = run_ma1thp(runners, tmp_path, prep)
+    section = result["ma1thp"]
+    assert section["status"] == "completed" and section["acceptance"].startswith("never: instrumented diagnostic")
+    assert "criteria" not in section and "PLR and MA1 runs only" in section["reference_note"]
+    reading = section["interpretation"]
+    assert reading["execution_valid"] and reading["attribution_recorded"] and reading["thp_recorded"] is True
+    assert reading["thp_reading"] == {"label": "supported", "reason": None}
+    assert reading["eligible_for_maintainer_review"] is False and "unconfirmed" in reading["thp"]
+    excerpt = section["thp"]
+    assert excerpt["status"] == "recorded" and excerpt["label"] == "ma1thp-thp-observation"
+    assert excerpt["settings"]["before"]["enabled"] == "always" and excerpt["settings"]["before"]["config"]["HZ"] == 250
+    assert excerpt["settings"]["before"]["kernel_release"] == "5.15.148-tegra"
+    assert excerpt["steps"]["by_outcome"] == {"supported": 1, "unsupported": 0, "inconclusive": 0}
+    text = json.dumps(result)
+    assert "/home/someone" not in text and "PREEMPT" not in text  # the version string stays in the private file
+    assert '"listed"' not in json.dumps(excerpt) and "rule" not in excerpt["outcome"]
+    assert "ma1" not in result and result["step4"]["status"] == "PENDING"
+
+
+@pytest.mark.parametrize(("case", "exit_code"), [
+    ("supported", 0), ("unsupported", 0), ("inconclusive_counters", 1), ("no_record", 1), ("settings_after_missing", 1),
+])
+def test_the_ma1thp_exit_needs_recorded_thp_readings_and_never_their_reading(
+    runners, tmp_path, monkeypatch, capsys, case, exit_code,
+) -> None:
+    op = runners.operator
+    monkeypatch.setattr(op, "OUTPUT_ROOT", tmp_path)
+    prep = prepare(runners, tmp_path)
+    monkeypatch.setattr(op, "identity_files", lambda clip: prep.files)
+    backend = Backend()
+    backend.identity_hashes = {label: entry["sha256"] for label, entry in prep.identity["files"].items()}
+    backend.plr_report = fake_plr_report(runners, tmp_path)
+    backend.memattr_report = fake_memattr_report(runners, tmp_path)
+    backend.profile["steady_trend"]["used"]["slope_bytes_per_min"] = 16_235_751  # M3 fails: descriptive only
+    backend.thp_report = None if case == "no_record" else fake_thp_report(
+        runners, tmp_path, reading={"inconclusive_counters": "inconclusive"}.get(case, case.split("_")[0]),
+        after=None if case == "settings_after_missing" else THP_SNAPSHOT)
+    common = ["--execute-workload", "ma1thp", "--check9-report", str(prep.check9_path), "--identity-report",
+              str(prep.identity_path), "--step4-clip", str(prep.files["clip"]), "--operator-dropped-caches"]
+    assert op.main([*common, "--confirm-ma1thp-prerequisites"], backend=backend) == exit_code
+    reading = json.loads(capsys.readouterr().out)["ma1thp"]["interpretation"]
+    assert reading["eligible_for_maintainer_review"] is False
+    if case == "unsupported":  # an unsupported reading is recorded, not a failure and not a fix
+        assert reading["thp_recorded"] is True and reading["thp_reading"]["label"] == "unsupported"
+
+
+@pytest.mark.parametrize(("overrides", "refusal"), [
+    ({"confirm_ma1thp": False, "confirm_ma1": True}, "ma1thp_operator_prerequisites_unconfirmed"),
+    ({"dropped_caches": False}, "ma1thp_cache_drop_not_declared"),
+    ({"explicit_check9": False}, "ma1thp_requires_explicit_check9_report"),
+    ({"clip": None}, "ma1thp_clip_required"),
+    ({"identity_report": None}, "step4_identity_report_required"),
+])
+def test_ma1thp_refuses_before_any_process_when_a_step4_prerequisite_fails(runners, tmp_path, overrides,
+                                                                          refusal) -> None:
+    prep = prepare(runners, tmp_path)
+    result, backend = run_ma1thp(runners, tmp_path, prep, **overrides)
+    assert result["ma1thp"]["status"] == "refused" and refusal in result["ma1thp"]["refusals"]
+    assert not [c for c in backend.children if "demo_profile.py" in " ".join(c.argv) or "logger" in c.argv[0]]
+
+
+def test_each_ma1_confirmation_belongs_to_its_own_mode(runners, tmp_path) -> None:
+    op = runners.operator
+    for wrong in (["--execute-workload", "ma1", "--confirm-ma1thp-prerequisites"],
+                  ["--execute-workload", "ma1thp", "--confirm-ma1-prerequisites"],
+                  ["--confirm-ma1thp-prerequisites"]):
+        with pytest.raises(SystemExit):
+            op.main(wrong, backend=Backend())
 
 
 # ---------------------------------------------------------------- startup identity checks
