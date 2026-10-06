@@ -38,6 +38,17 @@ OUTPUT_ROOT = Path("/tmp")
 STEP4_DEADLINE_S = 1200.0  # expected about 1,040 s: 30 s baseline, loads, 3 settles, 120 s warm-up, 600 s steady, unload
 STEP4_JOURNAL_TIMEOUT_S = 10.0
 STEP4_MARKER_TAG = "sentinel-step4"
+# MR1 (opt-in diagnostic): loads, per-model cache releases and smoke checks. Expected about 200 s: 30 s baseline,
+# three loads with 15 s settles, three releases with 5 s settles, the smoke checks and two 15 s unload settles.
+MR1_DEADLINE_S = 540.0
+MR1_MARKER_TAG = "sentinel-mr1"
+MR1_SCOPE = ("MR1 diagnostic: loads and settles, each model's file cache released after its settle, bounded smoke "
+             "checks; not step-4 acceptance, a resource profile or a sustained-memory test; never accepted")
+MR1_LABELS = frozenset({
+    "call_failed", "telemetry_unavailable", "ineffective", "partial", "memfree_rose_cached_fell",
+    "returned_0", "returned_error", "open_failed", "unsupported", "pass", "fail", "unavailable",
+    "complete", "aborted", "interrupted", "incomplete", "unknown", "mr1-release-check", *profile.MR1_SMOKE_LABELS,
+})
 JOURNAL_LOSS = re.compile(r"missed|suppress|rate.?limit|is full|truncat|corrupt", re.IGNORECASE)
 BOOT_ID = re.compile(r"[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 JOURNAL_ERRORS = (  # (fixed class, journalctl stderr pattern); first match wins
@@ -758,7 +769,8 @@ def _journal(result: ChildResult) -> tuple[str, list[dict], dict]:
     return "observed", records, {**query, "error_class": "success", "records": len(records)}
 
 
-def kernel_evidence(runner, backend, manifest: dict | None, tag: str, wait_complete: bool) -> dict:
+def kernel_evidence(runner, backend, manifest: dict | None, tag: str, wait_complete: bool, *,
+                    marker_tag: str = STEP4_MARKER_TAG, marker_prefix: str = "step4") -> dict:
     """Kernel candidate lines for the recorded boot over the run plus the post-run wait, with coverage proof.
 
     Coverage is ``observed`` only when every bounded query completed untruncated and parsed, the
@@ -798,7 +810,7 @@ def kernel_evidence(runner, backend, manifest: dict | None, tag: str, wait_compl
     boot_arg = f"--boot={recorded}"  # attached: journalctl fails on a bad value instead of reading the next word
     kernel_q = runner.run(["/usr/bin/journalctl", "-k", boot_arg, "--since", f"@{since}", "--until", f"@{until}",
                            *common], STEP4_JOURNAL_TIMEOUT_S, capture_stderr=True)
-    marker_q = runner.run(["/usr/bin/journalctl", boot_arg, "-t", STEP4_MARKER_TAG, "--since", f"@{since - 600}",
+    marker_q = runner.run(["/usr/bin/journalctl", boot_arg, "-t", marker_tag, "--since", f"@{since - 600}",
                            *common], STEP4_JOURNAL_TIMEOUT_S, capture_stderr=True)
     loss_q = runner.run(["/usr/bin/journalctl", boot_arg, "_COMM=systemd-journal", "--since", f"@{since}",
                          "--until", f"@{until}", *common], STEP4_JOURNAL_TIMEOUT_S, capture_stderr=True)
@@ -813,7 +825,7 @@ def kernel_evidence(runner, backend, manifest: dict | None, tag: str, wait_compl
     nvmap = sum("nvmapmemalloc" in r["message"].lower() for r in records)
     reasons = [f"{name} query output truncated" for name, (state, _) in states.items() if state == "truncated"]
     marks = {r["message"]: r["t"] for r in states["markers"][1]}
-    started_at, ended_at = marks.get(f"step4 start {tag}"), marks.get(f"step4 end {tag}")
+    started_at, ended_at = marks.get(f"{marker_prefix} start {tag}"), marks.get(f"{marker_prefix} end {tag}")
     if started_at is None or ended_at is None:
         reasons.append("run markers not readable: journal access or coverage not proven")
     elif not (started_at <= since + 1 and ended_at >= until - 1):
@@ -845,7 +857,8 @@ def _profiler_files(output: Path) -> tuple[dict | None, dict | None]:
 
 def execute(mode: str | None, backend, output: Path, *, check9_report=None, confirm_u21=False,
             s1_arm=None, confirm_s1=False, dropped_caches=False, interrupted=lambda: False,
-            identity_report=None, clip=None, confirm_step4=False, explicit_check9=True, identity_files_fn=None) -> dict:
+            identity_report=None, clip=None, confirm_step4=False, explicit_check9=True, identity_files_fn=None,
+            confirm_mr1=False) -> dict:
     runner = ProcessRunner(backend, interrupted)
     report = {"schema_version": 1, "mode": mode or "inspection",
               "hardware_acceptance": "PENDING", "check9": {"status": "PENDING", "u18_acceptance": "PENDING",
@@ -853,6 +866,8 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
               "step4": {"status": "PENDING", "acceptance": "PENDING: only a maintainer-approved registry commit (D46)"},
               "preparation": {"drop_caches": "operator_declared" if dropped_caches else "not_declared",
                               "procedure": DROP_CACHES_PROCEDURE}}
+    if mode == "mr1":
+        report["mr1"] = {"status": "PENDING", "scope": MR1_SCOPE}
     try:
         current = inspection(backend, runner)
         report["inspection"] = current
@@ -860,7 +875,7 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
         if mode is None:
             return report
         refusal = current["workload_refusals"]
-        if mode in ("u21", "s1", "step4"):
+        if mode in ("u21", "s1", "step4", "mr1"):
             problem = check9_prerequisite(check9_report, current)
             if problem:
                 refusal.append(problem)
@@ -883,6 +898,15 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
                 if problem:
                     refusal.append(problem)
             report["step4"]["identity_report_dir"] = identity_report.parent.name if identity_report else None
+        if mode == "mr1":
+            if not explicit_check9:
+                refusal.append("mr1_requires_explicit_check9_report")
+            if not confirm_mr1:
+                refusal.append("mr1_operator_prerequisites_unconfirmed")
+            if not dropped_caches:
+                refusal.append("mr1_cache_drop_not_declared")
+            if clip is None or not Path(clip).is_file():
+                refusal.append("mr1_clip_required")
         if mode == "s1":
             if s1_arm not in S1_ARMS:
                 refusal.append("s1_arm_required")
@@ -947,6 +971,8 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
                 report["u21"]["operator_prerequisites_confirmed"] = True
             elif mode == "step4":
                 run_step4(report["step4"], runner, backend, guard, output, clip, identity, dropped_caches, interrupted)
+            elif mode == "mr1":
+                run_mr1(report["mr1"], runner, backend, guard, output, clip, interrupted)
             else:
                 cache_ram = S1_ARMS[s1_arm]
                 child = runner.run([
@@ -968,18 +994,13 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
     return report
 
 
-def run_step4(section: dict, runner, backend, guard, output: Path, clip: Path, identity: dict,
-              dropped_caches: bool, interrupted) -> None:
-    """The guarded combined profile: same guard and cleanup as U21/S1, full phases, then the post-run evidence."""
+def guarded_child_with_kernel_evidence(section: dict, runner, backend, guard, output: Path, argv: list[str],
+                                       deadline: float, marker_tag: str, marker_prefix: str, interrupted):
+    """The guarded child between journal markers, the post-run wait, then the bounded kernel queries."""
     tag = output.name
-    start_marker = runner.run(["/usr/bin/logger", "-t", STEP4_MARKER_TAG, "--", f"step4 start {tag}"], 3.0)
-    child = runner.run([
-        "/usr/bin/python3", str(profile.HERE / "demo_profile.py"), "--out", str(output), "--clip", str(clip),
-        "--no-evict", "--sanitized-logs", "--llama-cache-ram", "0", "--face-hz", "1", "--scene-interval-s", "4",
-        "--baseline-s", "30", "--settle-s", "15", "--warmup-s", "120", "--steady-s", str(int(step4_criteria.STEADY_S)),
-        "--llama-timeout-s", "60", "--load-timeout-s", "90", "--min-free-gb", "3.5",
-    ], STEP4_DEADLINE_S, guard=guard)
-    section.update(child.diagnostic(), deadline_s=STEP4_DEADLINE_S, guard_stopped_at_s=None)
+    start_marker = runner.run(["/usr/bin/logger", "-t", marker_tag, "--", f"{marker_prefix} start {tag}"], 3.0)
+    child = runner.run(argv, deadline, guard=guard)
+    section.update(child.diagnostic(), deadline_s=deadline, guard_stopped_at_s=None)
     if child.status not in ("completed", "child_failed"):
         # The clock when the owned group's cleanup returned, after the stop. The stopping sample, its
         # exact conditions and time are in guard_trigger (execute() adds it for every guarded mode).
@@ -990,10 +1011,23 @@ def run_step4(section: dict, runner, backend, guard, output: Path, clip: Path, i
         backend.sleep(1.0)
         waited += 1.0
     wait_complete = waited >= step4_criteria.POST_RUN_WAIT_S
-    end_marker = runner.run(["/usr/bin/logger", "-t", STEP4_MARKER_TAG, "--", f"step4 end {tag}"], 3.0)
+    end_marker = runner.run(["/usr/bin/logger", "-t", marker_tag, "--", f"{marker_prefix} end {tag}"], 3.0)
     manifest, prof = _profiler_files(output)
-    kernel = kernel_evidence(runner, backend, manifest, tag, wait_complete)  # unwritten markers -> not observed
+    kernel = kernel_evidence(runner, backend, manifest, tag, wait_complete,  # unwritten markers -> not observed
+                             marker_tag=marker_tag, marker_prefix=marker_prefix)
     kernel["markers_written"] = {"start": start_marker.status == "completed", "end": end_marker.status == "completed"}
+    return child, waited, manifest, prof, kernel
+
+
+def run_step4(section: dict, runner, backend, guard, output: Path, clip: Path, identity: dict,
+              dropped_caches: bool, interrupted) -> None:
+    """The guarded combined profile: same guard and cleanup as U21/S1, full phases, then the post-run evidence."""
+    child, waited, manifest, prof, kernel = guarded_child_with_kernel_evidence(section, runner, backend, guard, output, [
+        "/usr/bin/python3", str(profile.HERE / "demo_profile.py"), "--out", str(output), "--clip", str(clip),
+        "--no-evict", "--sanitized-logs", "--llama-cache-ram", "0", "--face-hz", "1", "--scene-interval-s", "4",
+        "--baseline-s", "30", "--settle-s", "15", "--warmup-s", "120", "--steady-s", str(int(step4_criteria.STEADY_S)),
+        "--llama-timeout-s", "60", "--load-timeout-s", "90", "--min-free-gb", "3.5",
+    ], STEP4_DEADLINE_S, STEP4_MARKER_TAG, "step4", interrupted)
     identity_check = identity_end_check(identity, manifest)
     if prof is not None and guard.peak is not None:
         combined = dict(prof.get("combined") or {})
@@ -1013,6 +1047,76 @@ def run_step4(section: dict, runner, backend, guard, output: Path, clip: Path, i
                    else "not eligible: " + ", ".join(evaluation["blocking"]))
 
 
+# ---------------------------------------------------------------- MR1 (opt-in diagnostic)
+
+
+def mr1_argv(output: Path, clip: Path) -> list[str]:
+    """Step 4's server flags, models, clip and load settings; MR1's releases and smoke checks instead of warm-up/steady."""
+    return [
+        "/usr/bin/python3", str(profile.HERE / "demo_profile.py"), "--out", str(output), "--clip", str(clip),
+        "--no-evict", "--sanitized-logs", "--llama-cache-ram", "0", "--face-hz", "1", "--scene-interval-s", "4",
+        "--baseline-s", "30", "--settle-s", "15", "--warmup-s", "0", "--steady-s", "0",
+        "--llama-timeout-s", "60", "--load-timeout-s", "90", "--min-free-gb", "3.5",
+        "--mr1-release-check", "--mr1-release-settle-s", str(profile.MR1_RELEASE_SETTLE_S),
+    ]
+
+
+def _mr1_value(value, depth: int = 0):
+    """Numbers, booleans, None and MR1's fixed labels (errno and exception class names included); drop the rest."""
+    if isinstance(value, dict) and depth < 8:
+        kept = {key: _mr1_value(item, depth + 1) for key, item in list(value.items())[:64]
+                if isinstance(key, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_.()]{0,63}", key)}
+        return {key: item for key, item in kept.items() if item is not _DROPPED}
+    if type(value) in (int, float, bool) or value is None:
+        return value if type(value) is not float or math.isfinite(value) else None
+    if isinstance(value, str) and (value in MR1_LABELS or re.fullmatch(r"E[A-Z0-9]{1,15}", value)
+                                   or re.fullmatch(r"[A-Za-z]{1,40}(?:Error|Exception)|HTTP [1-5]\d\d", value)):
+        return value
+    return _DROPPED
+
+
+def mr1_excerpt(output: Path) -> dict:
+    """The single profiler run's mr1.json, reduced to numbers and fixed labels (no names, paths or text)."""
+    paths = list(output.glob("demo-profile-*/mr1.json"))
+    if len(paths) != 1:
+        return {"status": "unavailable"}
+    try:
+        with paths[0].open("rb") as handle:
+            data = handle.read(OUTPUT_LIMIT + 1)
+        if len(data) > OUTPUT_LIMIT:
+            return {"status": "unavailable"}
+        report = json.loads(data)
+    except (OSError, ValueError):
+        return {"status": "unavailable"}
+    return {"status": "recorded", **_mr1_value(report if isinstance(report, dict) else {})}
+
+
+def mr1_interpretation(child: ChildResult, excerpt: dict, kernel: dict) -> dict:
+    """MR1's predeclared reading: execution, the smoke checks and each release's descriptive outcome; never acceptance."""
+    releases = excerpt.get("releases") if isinstance(excerpt.get("releases"), dict) else {}
+    outcomes = {name: (releases.get(name) or {}).get("outcome", "not_reached") for name in profile.MR1_RELEASE_FILES}
+    execution_valid = (child.status == "completed" and child.cleanup_clear and excerpt.get("profile_status") == "complete"
+                       and "not_reached" not in outcomes.values() and isinstance(excerpt.get("smoke"), dict))
+    return {
+        "execution_valid": execution_valid,
+        "functional_smoke": excerpt.get("functional_smoke", "unavailable"),
+        "release_outcomes": outcomes,
+        "kernel": {key: kernel.get(key) for key in ("status", "oom_candidates", "nvmap_candidates")},
+        "memory": "descriptive deltas only (release_check); no threshold, not step-4 evidence",
+        "acceptance": "none",
+    }
+
+
+def run_mr1(section: dict, runner, backend, guard, output: Path, clip: Path, interrupted) -> None:
+    """MR1 under step 4's guard, cleanup, post-run wait and journal evidence, with its own marker tag."""
+    child, waited, _manifest, _prof, kernel = guarded_child_with_kernel_evidence(
+        section, runner, backend, guard, output, mr1_argv(output, clip), MR1_DEADLINE_S, MR1_MARKER_TAG, "mr1",
+        interrupted)
+    excerpt = mr1_excerpt(output)
+    section.update(post_run_wait_s=waited, kernel=kernel, release_check=excerpt,
+                   interpretation=mr1_interpretation(child, excerpt, kernel))
+
+
 def _sha256_arg(text: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{64}", text):
         raise argparse.ArgumentTypeError("expected 64 lowercase hex characters")
@@ -1021,7 +1125,7 @@ def _sha256_arg(text: str) -> str:
 
 def main(argv: list[str] | None = None, *, backend=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--execute-workload", choices=("check9", "u21", "s1", "step4"),
+    parser.add_argument("--execute-workload", choices=("check9", "u21", "s1", "step4", "mr1"),
                         help="explicitly execute only this guarded diagnostic; default is read-only")
     reports = parser.add_mutually_exclusive_group()
     reports.add_argument("--check9-report", type=Path, help="successful same-boot/revision bounded Check 9 report")
@@ -1044,7 +1148,13 @@ def main(argv: list[str] | None = None, *, backend=None) -> int:
     parser.add_argument("--confirm-step4-prerequisites", action="store_true",
                         help="operator confirms step-4 approval, headless preparation, the identity snapshot, "
                              "the cache drop and the same-boot Check 9")
+    parser.add_argument("--mr1-clip", type=Path, help="MR1's replay clip (step 4's input)")
+    parser.add_argument("--confirm-mr1-prerequisites", action="store_true",
+                        help="operator confirms MR1 approval, headless preparation, the cache drop and the same-boot "
+                             "Check 9")
     args = parser.parse_args(argv)
+    if args.mr1_clip is not None and args.execute_workload != "mr1":
+        parser.error("--mr1-clip is only for --execute-workload mr1")
     if args.step4_identity and (args.execute_workload or not args.step4_clip or not args.step4_clip_sha256):
         parser.error("--step4-identity takes only --step4-clip and --step4-clip-sha256")
     interrupted = False
@@ -1068,9 +1178,10 @@ def main(argv: list[str] | None = None, *, backend=None) -> int:
                          check9_report=check9_report, confirm_u21=args.confirm_u21_prerequisites,
                          s1_arm=args.s1_arm, confirm_s1=args.confirm_s1_prerequisites,
                          dropped_caches=args.operator_dropped_caches, interrupted=lambda: interrupted,
-                         identity_report=args.identity_report, clip=args.step4_clip,
+                         identity_report=args.identity_report,
+                         clip=args.mr1_clip if args.execute_workload == "mr1" else args.step4_clip,
                          confirm_step4=args.confirm_step4_prerequisites,
-                         explicit_check9=not args.latest_check9_report)
+                         explicit_check9=not args.latest_check9_report, confirm_mr1=args.confirm_mr1_prerequisites)
     report["result_file"] = str(output / "result.json")
     report["finished_utc"] = profile.utc_now()
     report["metric"] = "MemTotal - MemAvailable, integer bytes; kB x1024; time.monotonic within boot"
@@ -1092,6 +1203,9 @@ def main(argv: list[str] | None = None, *, backend=None) -> int:
     if args.execute_workload == "step4":
         criteria = report["step4"].get("criteria") or {}
         return 0 if criteria.get("eligible_for_maintainer_review") else 1
+    if args.execute_workload == "mr1":  # memory outcomes are descriptive and never set the exit status
+        reading = report["mr1"].get("interpretation") or {}
+        return 0 if reading.get("execution_valid") and reading.get("functional_smoke") == "pass" else 1
     if args.execute_workload:
         return 0 if report[args.execute_workload]["status"] in ("completed", "bounded_smoke_complete") else 1
     return 0 if "inspection" in report else 1

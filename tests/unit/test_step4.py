@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import csv
 import dataclasses
+import errno
 import hashlib
 import importlib
 import json
@@ -30,6 +31,7 @@ from sentinel.scene.llama_server import SCENE_REQUEST_SHA256
 
 RUNNERS = Path(__file__).resolve().parents[2] / "benchmarks/runner"
 COMMIT = "a" * 40
+GIB = 1 << 30
 BOOT = "11111111-2222-4333-8444-555555555555"
 SERVICES = (
     "ActiveState=inactive\nUnitFileState=enabled\nId=ollama.service\nLoadState=loaded\n\n"
@@ -452,10 +454,11 @@ def journalctl_argument_error(argv: list[str]) -> tuple[int, bytes] | None:
 
 
 class Child:
-    def __init__(self, backend, argv, *, duration=0.0, returncode=0, output=b"", on_done=None, errors=b""):
+    def __init__(self, backend, argv, *, duration=0.0, returncode=0, output=b"", on_done=None, errors=b"",
+                 stubborn=False):
         self.backend, self.argv, self.end = backend, argv, backend.now + duration
         self.returncode, self.chunks, self.on_done, self.killed, self.closed = returncode, [output], on_done, False, False
-        self.errors = errors
+        self.errors, self.stubborn, self.signals = errors, stubborn, []
 
     def poll(self):
         done = self.killed or self.backend.now >= self.end
@@ -471,9 +474,12 @@ class Child:
         return self.errors
 
     def exists(self):
-        return not self.killed and self.poll() is None
+        return self.stubborn or (not self.killed and self.poll() is None)
 
     def signal(self, signum):
+        self.signals.append(signum)
+        if self.stubborn:
+            return
         if self.exists() and signum == signal.SIGKILL:
             self.killed, self.returncode = True, -9
         elif self.exists() and signum == signal.SIGTERM:
@@ -495,6 +501,7 @@ class Backend:
         self.profile = good_profile()
         self.manifest_overrides = {}
         self.child_plan = {}
+        self.mr1_report = None  # MR1: the profiler's mr1.json, written with the other files when set
         self.sleeps = []
 
     def clock(self):
@@ -526,9 +533,10 @@ class Backend:
         kind = "kernel" if "-k" in argv else "markers" if "-t" in argv else "journald"
         plan = dict(self.journal_status.get(kind, {}))
         records = self.journal[kind]
-        if records is None:  # markers: written by this run, at the logger calls' times
-            records = [{"MESSAGE": f"step4 {edge} {self.output.name}", "__REALTIME_TIMESTAMP": str(int(t * 1e6))}
-                       for edge, t in self.markers]
+        if records is None:  # markers: written by this run under the queried tag, at the logger calls' times
+            tag = argv[argv.index("-t") + 1]
+            records = [{"MESSAGE": message, "__REALTIME_TIMESTAMP": str(int(t * 1e6))}
+                       for message, t, marker_tag in self.markers if marker_tag == tag]
         plan.setdefault("output", "\n".join(json.dumps(r) for r in records).encode())
         return plan
 
@@ -540,8 +548,7 @@ class Backend:
         elif argv[0] == "git":
             plan = {"output": COMMIT.encode()}
         elif "logger" in argv[0]:
-            edge = argv[-1].split()[1]
-            self.markers = [*getattr(self, "markers", []), (edge, self.wall())]
+            self.markers = [*getattr(self, "markers", []), (argv[-1], self.wall(), argv[argv.index("-t") + 1])]
             plan = {}
         elif "--api" in argv:
             api = argv[argv.index("--api") + 1]
@@ -549,6 +556,9 @@ class Backend:
                 "api": api, "status": "bounded_smoke_complete", "allocated_bytes": 256 << 20,
                 "cap_bytes": 256 << 20, "chunk_bytes": 32 << 20, "cleanup_clear": True}).encode()}
         else:
+            if "--out" in argv:  # the CLI makes its own private output directory
+                self.output = Path(argv[argv.index("--out") + 1])
+            self.child_started = self.wall()
             plan = {"duration": 900.0, "on_done": self._write_profiler_files, **self.child_plan}
         if not capture_stderr:
             plan.pop("errors", None)  # stderr goes to DEVNULL unless the caller captures it
@@ -562,7 +572,7 @@ class Backend:
     def _write_profiler_files(self):
         run = self.output / "demo-profile-20991231T000000Z"
         run.mkdir(exist_ok=True)
-        start = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.wall() - 900))
+        start = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(getattr(self, "child_started", self.wall() - 900)))
         finish = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.wall()))
         manifest = {"boot_id": BOOT, "started_utc": start, "finished_utc": finish, "display_manager": "inactive",
                     "desktop_processes": [], "dev_tools_running": [],
@@ -572,6 +582,8 @@ class Backend:
                     "sha256_clip": self.identity_hashes.get("clip"), **self.manifest_overrides}
         (run / "manifest.json").write_text(json.dumps(manifest))
         (run / "profile.json").write_text(json.dumps(self.profile))
+        if self.mr1_report is not None:
+            (run / "mr1.json").write_text(json.dumps(self.mr1_report))
 
 
 def identity_tree(tmp_path: Path) -> dict[str, Path]:
@@ -915,6 +927,196 @@ def test_the_cli_exit_status_reflects_eligibility_not_acceptance(runners, tmp_pa
     assert op.main(["--execute-workload", "step4", "--latest-check9-report", "--confirm-step4-prerequisites",
                     "--operator-dropped-caches", "--step4-clip", str(files["clip"])], backend=Backend()) == 1
     assert "step4_requires_explicit_check9_report" in capsys.readouterr().out
+
+
+def test_the_step4_child_command_is_exactly_the_reviewed_one(runners, tmp_path) -> None:
+    prep = prepare(runners, tmp_path)
+    _, backend = run_step4(runners, tmp_path, prep)
+    (child,) = [c for c in backend.children if "demo_profile.py" in " ".join(c.argv)]
+    assert child.argv == [
+        "/usr/bin/python3", str(RUNNERS / "demo_profile.py"), "--out", str(backend.output), "--clip", str(prep.files["clip"]),
+        "--no-evict", "--sanitized-logs", "--llama-cache-ram", "0", "--face-hz", "1", "--scene-interval-s", "4",
+        "--baseline-s", "30", "--settle-s", "15", "--warmup-s", "120", "--steady-s", "600",
+        "--llama-timeout-s", "60", "--load-timeout-s", "90", "--min-free-gb", "3.5",
+    ]
+    assert [m[2] for m in backend.markers] == ["sentinel-step4", "sentinel-step4"]
+
+
+# ---------------------------------------------------------------- MR1 operator mode (step 4's guard and evidence)
+
+
+def fake_mr1_report(runners, tmp_path, *, result="returned_0", moved=True, smoke_ok=True,
+                    reached=("scene", "detector", "face")) -> dict:
+    """The profiler's own mr1.json, built by its functions from fake samples and calls."""
+    profile = runners.profile
+
+    def snap(free, cached):
+        meminfo = dict.fromkeys(profile.MEMINFO_KEYS)
+        meminfo.update(MemTotal=8_000_000_000, MemFree=free, MemAvailable=free + cached, Cached=cached, Mapped=600_000_000)
+        return {"t_mono": 1.0, "meminfo": meminfo, "pressure_bytes": 8_000_000_000 - free - cached,
+                "processes": {"llama": {"rss_bytes": 2_000_000_000, "hwm_bytes": None, "pss_bytes": None}}}
+
+    call = {"name": "LFM2-private-name.gguf", "bytes": 10, "call": profile.MR1_FADVISE_CALL, "result": result,
+            "returncode": 0 if result == "returned_0" else errno.ENOENT,
+            "error": None if result == "returned_0" else "ENOENT", "elapsed_s": 0.001}
+    events = []
+    for component in reached:
+        states = iter([snap(1_000_000_000, 2_700_000_000),
+                       snap(1_400_000_000, 2_300_000_000) if moved else snap(1_000_000_000, 2_700_000_000)])
+        record = profile.release_component(component, {"model": Path("/home/someone/models/x.gguf")}, {}, 5.0,
+                                           snapshot=lambda: next(states), release=lambda path: dict(call),
+                                           sleep=lambda seconds: None)
+        events.append({"event": "mr1_release", **record})
+    events.append({"event": "mr1_smoke", **profile.sanitize_mr1_smoke({
+        "detector": {"frames_requested": 15, "processed": 15 if smoke_ok else 12, "errors": {} if smoke_ok else {"ValueError": 3}},
+        "face": {"runs": 1, "completed": 1, "errors": {}},
+        "scene": {"attempts": 1, "completed": 1, "finish_reason": "stop", "valid": True}})})
+    events.append({"event": "mr1_snapshot", "stage": "after_smoke", **snap(1_350_000_000, 2_350_000_000)})
+    run = tmp_path / "mr1-source"
+    run.mkdir(exist_ok=True)
+    (run / "events.jsonl").write_text("\n".join(json.dumps(item) for item in events) + "\n")
+    return profile.mr1_report(run, "complete")
+
+
+def run_mr1(runners, tmp_path, prep, backend=None, **overrides):
+    op = runners.operator
+    output = private_dir(tmp_path, "mr1")
+    backend = backend or Backend()
+    backend.output = output
+    backend.identity_hashes = {}  # MR1 hashes nothing; the fake manifest still lists none
+    backend.child_plan.setdefault("duration", 200.0)
+    if backend.mr1_report is None:
+        backend.mr1_report = fake_mr1_report(runners, tmp_path)
+    kwargs = dict(check9_report=prep.check9_path, clip=prep.files["clip"], confirm_mr1=True, dropped_caches=True)
+    kwargs.update(overrides)
+    return op.execute("mr1", backend, output, **kwargs), backend
+
+
+@pytest.mark.parametrize(("case", "refusal"), [
+    ("unconfirmed", "mr1_operator_prerequisites_unconfirmed"), ("drop_undeclared", "mr1_cache_drop_not_declared"),
+    ("no_clip", "mr1_clip_required"), ("missing_clip", "mr1_clip_required"),
+    ("latest_check9", "mr1_requires_explicit_check9_report"), ("no_check9", "check9_report_required"),
+    ("failed_check9", "check9_report_mismatch"),
+])
+def test_mr1_refuses_before_any_process_when_a_prerequisite_fails(runners, tmp_path, case, refusal) -> None:
+    prep = prepare(runners, tmp_path)
+    overrides = {"unconfirmed": {"confirm_mr1": False}, "drop_undeclared": {"dropped_caches": False},
+                 "no_clip": {"clip": None}, "missing_clip": {"clip": tmp_path / "absent.mp4"},
+                 "latest_check9": {"explicit_check9": False}, "no_check9": {"check9_report": None}}.get(case, {})
+    if case == "failed_check9":
+        report = json.loads(prep.check9_path.read_text())
+        report["check9"]["status"] = "inconclusive"
+        prep.check9_path.write_text(json.dumps(report))
+    result, backend = run_mr1(runners, tmp_path, prep, **overrides)
+    assert result["mr1"]["status"] == "refused" and refusal in result["mr1"]["refusals"]
+    assert not [c for c in backend.children if "demo_profile.py" in " ".join(c.argv) or "logger" in c.argv[0]]
+    assert not (backend.output / "guard.jsonl").exists()
+
+
+def test_a_completed_mr1_run_keeps_step4_settings_and_evidence_and_is_never_acceptance(runners, tmp_path) -> None:
+    op = runners.operator
+    prep = prepare(runners, tmp_path)
+    result, backend = run_mr1(runners, tmp_path, prep)
+    section = result["mr1"]
+    (child,) = [c for c in backend.children if "demo_profile.py" in " ".join(c.argv)]
+    argv = child.argv
+    assert argv == op.mr1_argv(backend.output, prep.files["clip"])
+    assert argv[argv.index("--llama-cache-ram") + 1] == "0" and argv[argv.index("--clip") + 1] == str(prep.files["clip"])
+    assert argv[argv.index("--min-free-gb") + 1] == "3.5" and "--no-evict" in argv and "--sanitized-logs" in argv
+    assert argv[argv.index("--warmup-s") + 1] == argv[argv.index("--steady-s") + 1] == "0"
+    assert argv[-3:] == ["--mr1-release-check", "--mr1-release-settle-s", "5.0"] and "--allow-dev-tools" not in argv
+    assert section["status"] == "completed" and section["deadline_s"] == op.MR1_DEADLINE_S == 540.0
+    assert section["guard_trigger"] is None and section["post_run_wait_s"] == 60.0
+    assert [(m[0].split()[:2], m[2]) for m in backend.markers] == [(["mr1", "start"], "sentinel-mr1"),
+                                                                   (["mr1", "end"], "sentinel-mr1")]
+    queries = [c.argv for c in backend.children if "journalctl" in c.argv[0] and "-n" not in c.argv]
+    assert all(f"--boot={BOOT.replace('-', '')}" in q for q in queries) and len(queries) == 3
+    assert section["kernel"]["status"] == "observed" and section["kernel"]["oom_candidates"] == 0
+    reading = section["interpretation"]
+    assert reading["execution_valid"] is True and reading["functional_smoke"] == "pass"
+    assert reading["release_outcomes"] == dict.fromkeys(("scene", "detector", "face"), "memfree_rose_cached_fell")
+    assert reading["acceptance"] == "none" and "never accepted" in section["scope"]
+    excerpt = section["release_check"]
+    assert excerpt["status"] == "recorded" and excerpt["releases"]["scene"]["deltas"]["MemFree"] == 400_000_000
+    assert excerpt["releases"]["scene"]["files"]["model"]["result"] == "returned_0"
+    text = json.dumps(result)
+    assert "private-name" not in text and "/home/someone" not in text  # numbers and fixed labels only
+    assert result["step4"]["status"] == "PENDING" and result["hardware_acceptance"] == "PENDING"
+
+
+@pytest.mark.parametrize("failure", ["free_floor", "timeout", "cleanup_failed", "no_record"])
+def test_an_mr1_guard_stop_timeout_cleanup_failure_or_missing_record_is_never_a_valid_execution(
+    runners, tmp_path, failure,
+) -> None:
+    op = runners.operator
+    prep = prepare(runners, tmp_path)
+    backend = Backend()
+    if failure == "free_floor":
+        original = backend.sample
+
+        def falling():
+            sample = original()
+            if backend.now > 1100:
+                sample["MemFree"] = GIB - 1
+            return sample
+
+        backend.sample = falling
+    elif failure == "timeout":
+        backend.child_plan["duration"] = op.MR1_DEADLINE_S + 100
+    elif failure == "cleanup_failed":
+        backend.child_plan.update(duration=op.MR1_DEADLINE_S + 100, stubborn=True)
+    else:
+        backend.mr1_report = {}
+    result, backend = run_mr1(runners, tmp_path, prep, backend=backend)
+    section = result["mr1"]
+    (child,) = [c for c in backend.children if "demo_profile.py" in " ".join(c.argv)]
+    reading = section["interpretation"]
+    assert reading["execution_valid"] is False and reading["acceptance"] == "none"
+    if failure == "free_floor":
+        assert section["status"] == section["guard_trigger"]["stop"] == "free_or_available_stop"
+        assert section["guard_trigger"]["conditions"][0]["field"] == "MemFree"
+        assert child.signals[:1] == [signal.SIGTERM] and section["cleanup_clear"] is True
+    elif failure == "timeout":
+        assert section["status"] == "timeout" and section["guard_trigger"] is None and section["cleanup_clear"] is True
+    elif failure == "cleanup_failed":
+        assert section["status"] == "cleanup_failed" and section["cleanup_clear"] is False
+        assert child.signals == [signal.SIGTERM, signal.SIGKILL]
+        assert section["release_check"] == {"status": "unavailable"}
+        assert reading["release_outcomes"] == dict.fromkeys(("scene", "detector", "face"), "not_reached")
+    else:
+        assert section["status"] == "completed" and reading["functional_smoke"] == "unavailable"
+    if failure == "no_record":
+        assert section["guard_stopped_at_s"] is None
+    else:
+        assert section["guard_stopped_at_basis"] == "post_cleanup_clock"
+
+
+@pytest.mark.parametrize(("report_kwargs", "exit_status", "outcome"), [
+    ({}, 0, "memfree_rose_cached_fell"),
+    ({"moved": False}, 0, "ineffective"),  # a memory outcome never sets the exit status
+    ({"result": "open_failed"}, 0, "call_failed"),
+    ({"smoke_ok": False}, 1, "memfree_rose_cached_fell"),
+])
+def test_the_mr1_cli_exit_status_reflects_execution_and_smoke_never_memory(
+    runners, tmp_path, monkeypatch, capsys, report_kwargs, exit_status, outcome,
+) -> None:
+    op = runners.operator
+    monkeypatch.setattr(op, "OUTPUT_ROOT", tmp_path)
+    prep = prepare(runners, tmp_path)
+    backend = Backend()
+    backend.child_plan["duration"] = 200.0
+    backend.mr1_report = fake_mr1_report(runners, tmp_path, **report_kwargs)
+    backend.identity_hashes = {}
+    status = op.main(["--execute-workload", "mr1", "--check9-report", str(prep.check9_path), "--mr1-clip",
+                      str(prep.files["clip"]), "--confirm-mr1-prerequisites", "--operator-dropped-caches"],
+                     backend=backend)
+    printed = json.loads(capsys.readouterr().out)
+    assert status == exit_status
+    assert set(printed["mr1"]["interpretation"]["release_outcomes"].values()) == {outcome}
+    if "result" in report_kwargs:
+        assert printed["mr1"]["release_check"]["releases"]["face"]["files"]["model"]["error"] == "ENOENT"
+    with pytest.raises(SystemExit):
+        op.main(["--execute-workload", "step4", "--mr1-clip", str(prep.files["clip"])], backend=Backend())
 
 
 # ---------------------------------------------------------------- startup identity checks

@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import errno
 import hashlib
 import json
 import math
@@ -96,13 +97,29 @@ MEMINFO_KEYS = (*BASE_MEMINFO_KEYS, *ATTRIBUTION_MEMINFO_KEYS)
 DESKTOP_COMMS = frozenset({"Xorg", "Xwayland", "gnome-shell", "Xtigervnc", "Xvnc", "xfwm4", "xfce4-session"})
 V1_SCRIPTS = frozenset({"surveillance4_1.py", "dashboard.py", "dashboard_1.py"})
 DEEPFACE_WEIGHTS = ("facenet512_weights.h5", "face_detection_yunet_2023mar.onnx")
-PHASES_IN_ORDER = (
-    "baseline", "llama_load", "llama_settle", "detector_load", "detector_settle",
-    "face_load", "face_settle", "warmup", "steady", "stopping", "unload_workload", "unload_llama",
+PHASES_IN_ORDER = (  # the *_release and smoke phases occur only with --mr1-release-check
+    "baseline", "llama_load", "llama_settle", "scene_release", "detector_load", "detector_settle", "detector_release",
+    "face_load", "face_settle", "face_release", "smoke", "warmup", "steady", "stopping", "unload_workload",
+    "unload_llama",
 )
 # Events that carry monotonic boundaries and run-side evidence (kept in full, few per run).
 BOUNDARY_EVENTS = frozenset({"steady_boundary", "stop_boundary", "llama_cmdline", "cuda_driver"})
 LLAMA_BUILD_PREFIXES = ("libllama", "libggml", "libmtmd")
+# MR1 (opt-in): each component's model files, released after its load and settle.
+MR1_RELEASE_FILES = {"scene": ("llm", "mmproj"), "detector": ("engine",), "face": DEEPFACE_WEIGHTS}
+MR1_RELEASE_SETTLE_S = 5.0  # /proc/meminfo counters fold in about every second
+MR1_SMOKE_BUDGET_S = 60.0  # detector frames, one face analysis and one scene request (30 s client timeout)
+MR1_FADVISE_CALL = "posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED)"
+MR1_BASIS = ("device-wide /proc/meminfo and per-process status before and after the release window; it includes any "
+             "other activity in the window and shows neither per-file residency nor which pages were released")
+MR1_SMOKE_KEYS = {
+    "detector": ("frames_requested", "processed", "errors", "latency_ms"),
+    "face": ("runs", "completed", "runs_with_face", "errors", "latency_ms"),
+    "scene": ("attempts", "completed", "finish_reason", "valid", "rejection", "error", "errors", "latency_ms"),
+}
+MR1_SMOKE_LABELS = frozenset({"stop", "length", "other", "missing", "http", "timeout", "truncated", "invalid_report",
+                              "incomplete_completion", "malformed_response", "server_error", "unsupported_completion",
+                              "response_too_large"})
 COMPONENTS = (  # (key, load phase, settle phase, event carrying the load time)
     ("scene", "llama_load", "llama_settle", "llama_ready"),
     ("detector", "detector_load", "detector_settle", "detector_loaded"),
@@ -249,6 +266,8 @@ def preconditions(args: argparse.Namespace) -> tuple[list[str], dict[str, object
         required["clip"] = args.clip
         if args.scene_only:
             problems.append("--scene-only uses its own synthetic images; do not pass --clip")
+    if getattr(args, "mr1_release_check", False) and args.scene_only:
+        problems.append("--mr1-release-check needs the detector and face models; do not pass --scene-only")
     for label, path in required.items():
         if not Path(path).exists():
             problems.append(f"missing {label}: {path}")
@@ -320,7 +339,12 @@ def provenance(args: argparse.Namespace, context: dict[str, object], run_id: str
             "settle_s": args.settle_s, "warmup_s": args.warmup_s, "steady_s": args.steady_s, "evict_model_cache": args.evict,
             "min_free_gb": args.min_free_gb, "scene_only": args.scene_only,
             "port": args.port, "sample_interval_s": SAMPLE_INTERVAL_S, "pss_interval_s": PSS_INTERVAL_S,
+            **({"mr1_release_check": True, "mr1_release_settle_s": args.mr1_release_settle_s}
+               if getattr(args, "mr1_release_check", False) else {}),
         },
+        **({"mr1_note": "MR1 release check: loads and settles, each model's file cache released after its settle, "
+                        "bounded smoke checks and unload. Not a resource profile, step-4 evidence or a sustained-memory test."}
+           if getattr(args, "mr1_release_check", False) else {}),
     }
 
 
@@ -387,6 +411,197 @@ def evict_page_cache(paths: list[Path]) -> int:
         finally:
             os.close(fd)
     return count
+
+
+def release_file_cache(path: Path, *, advise=None, clock=time.monotonic) -> dict[str, object]:
+    """MR1: the evict_page_cache call on one whole file, with its exact outcome.
+
+    ``returncode`` is posix_fadvise's own return value (0, or the error number it reported), or
+    open()'s errno when the file could not be opened. A 0 return means the kernel accepted the advice,
+    not that pages were dropped: mapped, dirty or locked pages stay. Needs no root; nothing is unmapped.
+    """
+    advise = advise or getattr(os, "posix_fadvise", None)
+    record: dict[str, object] = {"name": Path(path).name, "bytes": None, "call": MR1_FADVISE_CALL,
+                                 "result": None, "returncode": None, "error": None}
+    started = clock()
+    if advise is None:
+        record["result"] = "unsupported"
+    else:
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except OSError as exc:
+            record.update(result="open_failed", returncode=exc.errno, error=errno.errorcode.get(exc.errno, "unknown"))
+        else:
+            try:
+                record["bytes"] = os.fstat(fd).st_size
+                advise(fd, 0, 0, getattr(os, "POSIX_FADV_DONTNEED", 4))
+                record.update(result="returned_0", returncode=0)
+            except OSError as exc:
+                record.update(result="returned_error", returncode=exc.errno,
+                              error=errno.errorcode.get(exc.errno, "unknown"))
+            finally:
+                os.close(fd)
+    record["elapsed_s"] = round(clock() - started, 6)
+    return record
+
+
+def mr1_snapshot(pids: dict[str, int | None], *, meminfo=None, process_memory=None, pss=None,
+                 clock=time.monotonic) -> dict[str, object]:
+    """Every MEMINFO_KEYS field (None when missing) and each process's RSS, HWM and PSS (None when unavailable)."""
+    meminfo, process_memory, pss = meminfo or read_meminfo, process_memory or read_process_memory, pss or read_pss
+    try:
+        mem = meminfo()
+    except (OSError, ValueError):
+        mem = {}
+    values = {key: mem.get(key) if type(mem.get(key)) is int and mem[key] >= 0 else None for key in MEMINFO_KEYS}
+    total, available = values["MemTotal"], values["MemAvailable"]
+    processes = {}
+    for name, pid in pids.items():
+        rss, hwm = process_memory(pid) if pid else (None, None)
+        processes[name] = {"rss_bytes": rss, "hwm_bytes": hwm, "pss_bytes": pss(pid) if pid else None}
+    return {"t_mono": round(clock(), 3), "meminfo": values,
+            "pressure_bytes": total - available if total is not None and available is not None else None,
+            "processes": processes}
+
+
+def snapshot_deltas(before: dict[str, object], after: dict[str, object]) -> dict[str, object]:
+    """after - before for each field present in both; None otherwise (never zero)."""
+    def delta(a, b):
+        return b - a if type(a) is int and type(b) is int else None
+
+    deltas: dict[str, object] = {key: delta(before["meminfo"].get(key), after["meminfo"].get(key)) for key in MEMINFO_KEYS}
+    deltas["pressure_bytes"] = delta(before.get("pressure_bytes"), after.get("pressure_bytes"))
+    deltas["processes"] = {
+        name: {key: delta((before["processes"].get(name) or {}).get(key), value) for key, value in fields.items()}
+        for name, fields in after["processes"].items()
+    }
+    return deltas
+
+
+def release_outcome(files: dict[str, dict[str, object]], deltas: dict[str, object]) -> str:
+    """A descriptive label from the calls' results and the directions of MemFree and Cached; no magnitude threshold.
+
+    call_failed: a call did not return 0 (or the file could not be opened); telemetry_unavailable: MemFree or
+    Cached is missing before or after; ineffective: every call returned 0 but MemFree did not rise and Cached
+    did not fall; partial: only one of the two moved that way; memfree_rose_cached_fell: both did.
+    """
+    if not files or any(item.get("result") != "returned_0" for item in files.values()):
+        return "call_failed"
+    free, cached = deltas.get("MemFree"), deltas.get("Cached")
+    if free is None or cached is None:
+        return "telemetry_unavailable"
+    rose, fell = free > 0, cached < 0
+    return "memfree_rose_cached_fell" if rose and fell else "partial" if rose or fell else "ineffective"
+
+
+def release_component(component: str, files: dict[str, Path], pids: dict[str, int | None], settle_s: float, *,
+                      snapshot=None, release=None, sleep=time.sleep, clock=time.monotonic) -> dict[str, object]:
+    """MR1: sample, release each of this component's model files, wait settle_s, sample again."""
+    snapshot, release = snapshot or (lambda: mr1_snapshot(pids)), release or release_file_cache
+    before = snapshot()
+    started = clock()
+    results = {label: release(path) for label, path in files.items()}
+    calls_elapsed = round(clock() - started, 6)
+    sleep(settle_s)
+    after = snapshot()
+    deltas = snapshot_deltas(before, after)
+    sizes = [item.get("bytes") for item in results.values()]
+    return {
+        "component": component, "files": results,
+        "files_total_bytes": sum(sizes) if sizes and all(type(size) is int for size in sizes) else None,
+        "files_total_bytes_note": "the most these files' cache can occupy; not how much of it was cached or released",
+        "calls_elapsed_s": calls_elapsed, "settle_s": settle_s, "before": before, "after": after, "deltas": deltas,
+        "outcome": release_outcome(results, deltas), "basis": MR1_BASIS,
+    }
+
+
+def mr1_files(args: argparse.Namespace) -> dict[str, dict[str, Path]]:
+    files = model_files(args)
+    return {component: {label: files[label] for label in labels} for component, labels in MR1_RELEASE_FILES.items()}
+
+
+def mr1_checkpoint_handler(procs: dict, events, set_phase, files: dict[str, dict[str, Path]], settle_s: float, *,
+                           release=release_component, snapshot=mr1_snapshot):
+    """MR1: the orchestrator's side of each checkpoint, run while the workload waits.
+
+    "scene", "detector" and "face" release that component's files with samples around them; "after_smoke"
+    samples only. Then ``ack <stage>`` goes to the workload. An unexpected error is recorded by class and
+    sends no acknowledgement, so the workload stops itself after its bounded wait.
+    """
+    def pids() -> dict[str, int | None]:
+        return {name: proc.pid if proc is not None else None for name, proc in procs.items()}
+
+    def handle(stage: str) -> None:
+        try:
+            if stage == "after_smoke":
+                events.add("orchestrator", "mr1_snapshot", stage=stage, **snapshot(pids()))
+            else:
+                set_phase(f"{stage}_release")
+                events.add("orchestrator", "mr1_release", **release(stage, files[stage], pids(), settle_s))
+        except Exception as exc:  # noqa: BLE001 - by class only
+            events.add("orchestrator", "mr1_error", stage=stage, error=type(exc).__name__)
+            return
+        if stage == "scene":
+            return  # before the workload starts: nothing waits for it
+        try:
+            procs["work"].stdin.write(f"ack {stage}\n")
+            procs["work"].stdin.flush()
+        except (AttributeError, OSError, ValueError):
+            pass  # the workload is gone; it stops itself without the acknowledgement
+
+    return handle
+
+
+def sanitize_mr1_smoke(record: object) -> dict[str, object]:
+    """Fixed keys, numbers, booleans, fixed labels and exception class names only."""
+    def label(value):
+        if value is None or type(value) is bool:
+            return value
+        if isinstance(value, str) and (value in MR1_SMOKE_LABELS or re.fullmatch(r"[A-Za-z]{1,40}(?:Error|Exception)", value)):
+            return value
+        return None
+
+    def number(value):
+        if type(value) is int:
+            return value if value.bit_length() <= 63 else None
+        return value if type(value) is float and math.isfinite(value) else None
+
+    out: dict[str, object] = {}
+    record = record if isinstance(record, dict) else {}
+    for part, keys in MR1_SMOKE_KEYS.items():
+        source = record.get(part) if isinstance(record.get(part), dict) else {}
+        clean: dict[str, object] = {}
+        for key in keys:
+            value = source.get(key)
+            if key == "errors":
+                clean[key] = {name: count for name, count in list(value.items())[:16]
+                              if (label(name) is not None or re.fullmatch(r"HTTP [1-5]\d\d", str(name)))
+                              and type(count) is int} if isinstance(value, dict) else None
+            elif key == "latency_ms" and isinstance(value, dict):
+                clean[key] = {k: number(v) for k, v in value.items() if k in ("n", "p50", "p95", "p99", "max")}
+            elif key in ("finish_reason", "rejection", "error"):
+                clean[key] = label(value)
+            elif key == "valid":
+                clean[key] = value if type(value) is bool else None
+            else:
+                clean[key] = number(value)
+        out[part] = clean
+    return out
+
+
+def functional_smoke(smoke: dict[str, object] | None) -> str:
+    """pass: every detector frame processed without error, one face analysis completed without error and one
+    scene request completed with finish reason stop and a strict-valid report; fail: any of those not met;
+    unavailable: no smoke record."""
+    if not smoke:
+        return "unavailable"
+    detector, face, scene = (smoke.get(key) or {} for key in ("detector", "face", "scene"))
+    ok = (type(detector.get("processed")) is int and detector.get("processed") == detector.get("frames_requested")
+          and not detector.get("errors")
+          and face.get("completed") == 1 and not face.get("errors")
+          and scene.get("completed") == 1 and scene.get("finish_reason") == "stop" and scene.get("valid") is True
+          and scene.get("error") is None)
+    return "pass" if ok else "fail"
 
 
 # ------------------------------------------------------------------ recording
@@ -603,6 +818,10 @@ def start_workload(args: argparse.Namespace, run_dir: Path) -> subprocess.Popen:
         argv += ["--clip", str(args.clip)]
     if args.scene_only:
         argv.append("--scene-only")
+    if getattr(args, "mr1_release_check", False):  # MR1: the workload waits on stdin at each checkpoint
+        argv.append("--mr1-release-check")
+        return subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                bufsize=1, env=env, cwd=run_dir)
     # cwd is the run directory so no library can leave files in the repository.
     return subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env, cwd=run_dir)
 
@@ -657,7 +876,10 @@ def sanitize_diagnostic(value, depth: int = 0):
     return None
 
 
-def pump_workload(proc: subprocess.Popen, run_dir: Path, events: Events, set_phase, *, sanitized: bool = False) -> None:
+def pump_workload(proc: subprocess.Popen, run_dir: Path, events: Events, set_phase, *, sanitized: bool = False,
+                  on_checkpoint=None) -> None:
+    """Relay the workload's events. ``on_checkpoint`` (MR1 only) handles ``mr1_checkpoint`` and ``mr1_smoke``."""
+    mr1 = on_checkpoint is not None
     with open(run_dir / "workload.log", "w") as log:
         while line := proc.stdout.readline(65_536):
             if line.startswith(EVENT_PREFIX):
@@ -666,6 +888,14 @@ def pump_workload(proc: subprocess.Popen, run_dir: Path, events: Events, set_pha
                 except json.JSONDecodeError:
                     if not sanitized:
                         log.write(line)
+                    continue
+                if mr1 and isinstance(record, dict) and record.get("event") == "mr1_checkpoint":
+                    stage = record.get("stage")
+                    if isinstance(stage, str) and stage in ("detector", "face", "after_smoke"):
+                        on_checkpoint(stage)
+                    continue
+                if mr1 and isinstance(record, dict) and record.get("event") == "mr1_smoke":
+                    events.add("workload", "mr1_smoke", **sanitize_mr1_smoke(record))
                     continue
                 if sanitized:
                     if not isinstance(record, dict) or record.get("event") not in {
@@ -778,15 +1008,23 @@ def run(args: argparse.Namespace) -> int:
             raise RunAborted("llama-server is not fully on the GPU with L4T's libcuda (decision D27)")
         set_phase("llama_settle")
         time.sleep(args.settle_s)
+        on_checkpoint = None
+        if args.mr1_release_check:
+            on_checkpoint = mr1_checkpoint_handler(procs, events, set_phase, mr1_files(args), args.mr1_release_settle_s)
+            on_checkpoint("scene")  # llama-server has settled; the workload has not started
 
         procs["work"] = start_workload(args, run_dir)
         sampler.pids["work"] = procs["work"].pid
         pump = threading.Thread(
             target=pump_workload, args=(procs["work"], run_dir, events, set_phase),
-            kwargs={"sanitized": args.sanitized_logs}, daemon=True,
+            kwargs={"sanitized": args.sanitized_logs, **({"on_checkpoint": on_checkpoint} if on_checkpoint else {})},
+            daemon=True,
         )
         pump.start()
-        budget = args.load_timeout_s + 2 * args.settle_s + args.warmup_s + args.steady_s + 60
+        if args.mr1_release_check:  # loads, two releases with their checkpoints, the smoke checks, no warm-up/steady
+            budget = args.load_timeout_s + 2 * args.settle_s + 3 * (args.mr1_release_settle_s + 10) + MR1_SMOKE_BUDGET_S + 60
+        else:
+            budget = args.load_timeout_s + 2 * args.settle_s + args.warmup_s + args.steady_s + 60
         try:
             returncode = procs["work"].wait(timeout=budget)
         except subprocess.TimeoutExpired:
@@ -942,6 +1180,80 @@ def load_latest_events(path: Path) -> dict[str, dict[str, object]]:
                 if record["event"] in names:
                     latest[record["event"]] = record
     return latest
+
+
+MR1_CANNOT_ESTABLISH = (
+    "per-file page-cache residency, or which pages or files were released: the counters are device-wide",
+    "that a returned 0 dropped any page: mapped, dirty or locked pages stay",
+    "behaviour under sustained load: the smoke checks are single, bounded runs",
+    "whether the released headroom is enough for step 4, or any step-4 criterion",
+    "GPU (NvMap) allocation behaviour at low MemFree beyond this run",
+    "model accuracy or scene accuracy",
+    "other boots, other inputs or other flags",
+)
+
+
+def load_mr1_events(path: Path) -> list[dict[str, object]]:
+    found = []
+    try:
+        with open(path) as handle:
+            for line in handle:
+                if line.strip():
+                    record = json.loads(line)
+                    if record.get("event") in ("mr1_release", "mr1_snapshot", "mr1_smoke"):
+                        found.append(record)
+    except OSError:
+        pass
+    return found
+
+
+def mr1_report(run_dir: Path, status: str) -> dict[str, object]:
+    """MR1's record: each release, the after-smoke sample, the smoke checks; descriptive, never acceptance."""
+    records = load_mr1_events(Path(run_dir) / "events.jsonl")
+    releases = {r["component"]: {k: r.get(k) for k in ("files", "files_total_bytes", "calls_elapsed_s", "settle_s",
+                                                         "before", "after", "deltas", "outcome")}
+                for r in records if r["event"] == "mr1_release" and r.get("component") in MR1_RELEASE_FILES}
+    after_smoke = next((r for r in records if r["event"] == "mr1_snapshot"), None)
+    after_smoke = {k: after_smoke.get(k) for k in ("t_mono", "meminfo", "pressure_bytes", "processes")} if after_smoke else None
+    smoke = next(({k: r.get(k) for k in MR1_SMOKE_KEYS} for r in records if r["event"] == "mr1_smoke"), None)
+    face = releases.get("face")
+    label = next((name for name in ("complete", "aborted", "interrupted", "incomplete") if status.startswith(name)), "unknown")
+    return {
+        "label": "mr1-release-check",
+        "scope": "loads and settles, each model's file cache released after its settle, bounded smoke checks; "
+                 "not step-4 acceptance, a resource profile or a sustained-memory test",
+        "profile_status": label,
+        "releases": releases,
+        "after_smoke": after_smoke,
+        "after_smoke_vs_face_release": snapshot_deltas(face["after"], after_smoke) if face and after_smoke else None,
+        "smoke": smoke,
+        "functional_smoke": functional_smoke(smoke),
+        "basis": MR1_BASIS,
+        "cannot_establish": list(MR1_CANNOT_ESTABLISH),
+    }
+
+
+def mr1_lines(report: dict[str, object]) -> list[str]:
+    lines = ["", "MR1 release check (descriptive; not step-4 evidence, never acceptance):", f"  basis: {MR1_BASIS}"]
+    for component in MR1_RELEASE_FILES:
+        item = report["releases"].get(component)
+        if item is None:
+            lines.append(f"  {component}: not reached")
+            continue
+        d = item["deltas"]
+        calls = ", ".join(f"{label} {f.get('result')}" + (f" ({f.get('error')})" if f.get("error") else "")
+                          for label, f in item["files"].items())
+        lines.append(f"  {component}: {item['outcome']}; calls: {calls}; files total {gb(item['files_total_bytes'])}")
+        lines.append(f"    deltas over {item['settle_s']} s: MemFree {gb(d.get('MemFree'), True)}, Cached {gb(d.get('Cached'), True)}, "
+                     f"Mapped {gb(d.get('Mapped'), True)}, AnonPages {gb(d.get('AnonPages'), True)}, "
+                     f"Inactive(file) {gb(d.get('Inactive(file)'), True)}, pressure {gb(d.get('pressure_bytes'), True)}")
+    after = report.get("after_smoke_vs_face_release")
+    if after:
+        lines.append(f"  after the smoke checks vs after the face release: MemFree {gb(after.get('MemFree'), True)}, "
+                     f"Cached {gb(after.get('Cached'), True)}, pressure {gb(after.get('pressure_bytes'), True)}")
+    lines.append(f"  smoke checks: {report['functional_smoke']} {report['smoke']}")
+    lines.append("  Cannot establish: " + "; ".join(report["cannot_establish"]) + ".")
+    return lines
 
 
 def prompt_cache_summary(log_path: Path, steady: tuple[float, float] | None) -> dict[str, object] | None:
@@ -1293,10 +1605,17 @@ def summarize(run_dir: Path) -> str:
             manifest, last_event("llama_cmdline"), cache,
             telemetry_timestamped=bool(cache and (cache.get("startup") or {}).get("t_mono") is not None)),
     }
-    profile["step4_profile_criteria"] = step4_criteria.evaluate_profile(profile)
-    lines += ["", f"Step-4 criteria decidable from this run ({step4_criteria.CRITERIA_ID}; demo profile, "
-              "not the 1080p beta gates; never acceptance):"]
-    lines += [f"  {name}: {item['status']}" for name, item in profile["step4_profile_criteria"].items()]
+    if (manifest.get("parameters") or {}).get("mr1_release_check"):
+        report = mr1_report(run_dir, status)
+        (run_dir / "mr1.json").write_text(json.dumps(report, indent=2) + "\n")
+        profile["step4_profile_criteria"] = None  # an MR1 run is never step-4 evidence
+        profile["mr1"] = "mr1.json"
+        lines += mr1_lines(report)
+    else:
+        profile["step4_profile_criteria"] = step4_criteria.evaluate_profile(profile)
+        lines += ["", f"Step-4 criteria decidable from this run ({step4_criteria.CRITERIA_ID}; demo profile, "
+                  "not the 1080p beta gates; never acceptance):"]
+        lines += [f"  {name}: {item['status']}" for name, item in profile["step4_profile_criteria"].items()]
     (run_dir / "profile.json").write_text(json.dumps(profile, indent=2) + "\n")
     text = "\n".join(lines) + "\n"
     (run_dir / "summary.txt").write_text(text)
@@ -1336,6 +1655,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help="S1: llama-server and scene requests only, one distinct synthetic image per request")
     parser.add_argument("--llama-cache-ram", type=cache_ram_mib, metavar="MIB",
                         help="pass --cache-ram MIB to llama-server (0 disables its prompt cache); default: not passed")
+    parser.add_argument("--mr1-release-check", action="store_true",
+                        help="MR1 (opt-in): after each model's load and settle, release that model's files from the page "
+                             "cache (posix_fadvise DONTNEED, no root) with memory samples around it, then bounded smoke "
+                             "checks and unload; no warm-up or steady phase. Not a resource profile or step-4 run")
+    parser.add_argument("--mr1-release-settle-s", type=float, default=MR1_RELEASE_SETTLE_S,
+                        help="MR1: seconds between the release calls and the after sample")
     parser.add_argument("--sanitized-logs", action="store_true",
                         help="discard raw server/workload output; retain fixed numeric/placement diagnostics only")
     parser.add_argument("--allow-desktop", action="store_true", help="measure with a desktop session running")

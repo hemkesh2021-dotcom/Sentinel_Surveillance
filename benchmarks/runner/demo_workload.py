@@ -23,6 +23,14 @@ detector, face model, torch or CUDA driver in this process. Each request then
 carries its own deterministic synthetic noise image (index i is the same in
 every run), so no two requests send the same image.
 
+``--mr1-release-check`` (MR1, opt-in) stops after the loads: after the
+detector's and the face model's settles it emits ``mr1_checkpoint`` and waits,
+bounded, for ``ack <stage>`` on stdin while the orchestrator releases that
+model's file cache and samples memory. It then runs bounded smoke checks
+(detector frames, one face analysis, one scene request), emits ``mr1_smoke``
+with counts and fixed labels, waits for a last acknowledgement and exits. It
+runs no warm-up or steady phase.
+
 Structured results go to stdout as ``@@EVENT <json>`` lines. Model output text
 is never written anywhere: the footage is private. Only counts and timings are.
 After every scene request a ``scene_progress`` event carries cumulative
@@ -47,6 +55,8 @@ import ctypes
 import hashlib
 import json
 import math
+import os
+import select
 import sys
 import threading
 import time
@@ -78,6 +88,8 @@ VLM_JPEG_QUALITY = 60
 VLM_MAX_TOKENS = 200
 VLM_MAX_RESPONSE_BYTES = 1_000_000
 VLM_TIMEOUT_S = 30.0
+MR1_ACK_TIMEOUT_S = 60.0  # the orchestrator's release and samples take a few seconds
+MR1_DETECTOR_FRAMES = 15  # one second of the 15 fps replay, unpaced
 WINDOW_S = 10  # unique-frame throughput windows (step-4 criterion T1)
 MAX_FRAME_SAMPLES = 20_000  # 600 s at 15 fps is 9,000
 DEMO_SCENE_JOB_TIMEOUT_S = 8.0  # D16; latencies above it are counted, not cut off
@@ -459,23 +471,28 @@ class SceneProgress:
         (self._emit or event)("scene_progress", **snapshot)
 
 
+def face_attempt(deepface, frame, stats: Stats) -> None:
+    """One face analysis of a frame, counted in stats (errors by class, never raised)."""
+    started = time.perf_counter()
+    try:
+        faces = deepface.represent(img_path=frame, **FACE_ARGS)
+        found = sum(1 for face in faces if float(face.get("face_confidence") or 0) > 0)
+        with stats.lock:
+            stats.face_ms.append((time.perf_counter() - started) * 1000)
+            stats.face_runs_with_face += 1 if found else 0
+    except Exception as exc:  # noqa: BLE001 - counted by class, never raised
+        with stats.lock:
+            name = type(exc).__name__
+            stats.face_errors[name] = stats.face_errors.get(name, 0) + 1
+
+
 def face_loop(deepface, latest: Latest, stats: Stats, hz: float, stop: threading.Event) -> None:
     period = 1.0 / hz
     next_start = time.monotonic()
     while not stop.is_set():
         frame = latest.get()
         if frame is not None:
-            started = time.perf_counter()
-            try:
-                faces = deepface.represent(img_path=frame, **FACE_ARGS)
-                found = sum(1 for face in faces if float(face.get("face_confidence") or 0) > 0)
-                with stats.lock:
-                    stats.face_ms.append((time.perf_counter() - started) * 1000)
-                    stats.face_runs_with_face += 1 if found else 0
-            except Exception as exc:  # noqa: BLE001 - counted by class, never raised
-                with stats.lock:
-                    name = type(exc).__name__
-                    stats.face_errors[name] = stats.face_errors.get(name, 0) + 1
+            face_attempt(deepface, frame, stats)
         next_start += period
         stop.wait(max(0.0, next_start - time.monotonic()))
 
@@ -519,62 +536,68 @@ def scene_request(port: int, frame) -> dict:
     return json.loads(data)
 
 
+def scene_attempt(port: int, frame, stats: Stats) -> dict[str, object]:
+    """One scene request for a frame, counted in stats; returns the fixed-key outcome SceneProgress records."""
+    started = time.perf_counter()
+    outcome: dict[str, object] = {}
+    try:
+        from sentinel.scene.completion import (
+            SceneCompletionError, parse_scene_completion, scene_completion_finish_reason,
+        )
+        from sentinel.scene.report import SceneReportError
+
+        payload = scene_request(port, frame)
+        elapsed = (time.perf_counter() - started) * 1000
+        usage = payload.get("usage") if isinstance(payload, Mapping) else None
+        usage = usage if isinstance(usage, Mapping) else {}
+        finish_reason = scene_completion_finish_reason(payload)
+        tokens = {key: usage[key] if type(usage.get(key)) is int and usage[key] >= 0 else None
+                  for key in ("prompt_tokens", "completion_tokens")}
+        outcome.update(latency_ms=elapsed, finish_reason=finish_reason, **tokens)
+        with stats.lock:
+            stats.vlm_ms.append(elapsed)
+            stats.vlm_finish_reasons[finish_reason] = stats.vlm_finish_reasons.get(finish_reason, 0) + 1
+            if tokens["prompt_tokens"] is not None:
+                stats.vlm_prompt_tokens.append(tokens["prompt_tokens"])
+            if tokens["completion_tokens"] is not None:
+                stats.vlm_completion_tokens.append(tokens["completion_tokens"])
+        try:
+            report = parse_scene_completion(payload)
+        except SceneReportError as exc:
+            rejection = exc.reason if isinstance(exc, SceneCompletionError) else "invalid_report"
+            outcome["rejection"] = rejection
+            with stats.lock:
+                stats.vlm_invalid += 1
+                stats.vlm_rejections[rejection] = stats.vlm_rejections.get(rejection, 0) + 1
+        else:
+            outcome["valid"] = True
+            schema = report.model_json_schema()["properties"]
+            with stats.lock:
+                stats.vlm_valid += 1
+                stats.vlm_summary_at_limit += int(len(report.summary) == schema["summary"]["maxLength"])
+                stats.vlm_observations_at_limit += sum(
+                    len(observation) == schema["observations"]["items"]["maxLength"]
+                    for observation in report.observations
+                )
+    except Exception as exc:  # noqa: BLE001 - counted by class, never raised or echoed
+        if isinstance(exc, urllib.error.HTTPError):
+            name, outcome["error"] = f"HTTP {exc.code}", "http"
+        elif isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):
+            name, outcome["error"] = "timeout", "timeout"
+        else:
+            name, outcome["error"] = type(exc).__name__, "other"
+        with stats.lock:
+            stats.vlm_errors[name] = stats.vlm_errors.get(name, 0) + 1
+    return outcome
+
+
 def scene_loop(port: int, latest: Latest, stats: Stats, interval: float, stop: threading.Event,
                progress: SceneProgress | None = None) -> None:
     next_start = time.monotonic()
     while not stop.is_set():
         frame = latest.get()
         if frame is not None:
-            started = time.perf_counter()
-            outcome: dict[str, object] = {}
-            try:
-                from sentinel.scene.completion import (
-                    SceneCompletionError, parse_scene_completion, scene_completion_finish_reason,
-                )
-                from sentinel.scene.report import SceneReportError
-
-                payload = scene_request(port, frame)
-                elapsed = (time.perf_counter() - started) * 1000
-                usage = payload.get("usage") if isinstance(payload, Mapping) else None
-                usage = usage if isinstance(usage, Mapping) else {}
-                finish_reason = scene_completion_finish_reason(payload)
-                tokens = {key: usage[key] if type(usage.get(key)) is int and usage[key] >= 0 else None
-                          for key in ("prompt_tokens", "completion_tokens")}
-                outcome.update(latency_ms=elapsed, finish_reason=finish_reason, **tokens)
-                with stats.lock:
-                    stats.vlm_ms.append(elapsed)
-                    stats.vlm_finish_reasons[finish_reason] = stats.vlm_finish_reasons.get(finish_reason, 0) + 1
-                    if tokens["prompt_tokens"] is not None:
-                        stats.vlm_prompt_tokens.append(tokens["prompt_tokens"])
-                    if tokens["completion_tokens"] is not None:
-                        stats.vlm_completion_tokens.append(tokens["completion_tokens"])
-                try:
-                    report = parse_scene_completion(payload)
-                except SceneReportError as exc:
-                    rejection = exc.reason if isinstance(exc, SceneCompletionError) else "invalid_report"
-                    outcome["rejection"] = rejection
-                    with stats.lock:
-                        stats.vlm_invalid += 1
-                        stats.vlm_rejections[rejection] = stats.vlm_rejections.get(rejection, 0) + 1
-                else:
-                    outcome["valid"] = True
-                    schema = report.model_json_schema()["properties"]
-                    with stats.lock:
-                        stats.vlm_valid += 1
-                        stats.vlm_summary_at_limit += int(len(report.summary) == schema["summary"]["maxLength"])
-                        stats.vlm_observations_at_limit += sum(
-                            len(observation) == schema["observations"]["items"]["maxLength"]
-                            for observation in report.observations
-                        )
-            except Exception as exc:  # noqa: BLE001 - counted by class, never raised or echoed
-                if isinstance(exc, urllib.error.HTTPError):
-                    name, outcome["error"] = f"HTTP {exc.code}", "http"
-                elif isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):
-                    name, outcome["error"] = "timeout", "timeout"
-                else:
-                    name, outcome["error"] = type(exc).__name__, "other"
-                with stats.lock:
-                    stats.vlm_errors[name] = stats.vlm_errors.get(name, 0) + 1
+            outcome = scene_attempt(port, frame, stats)
             if progress is not None:
                 progress.record(**outcome)
         next_start = max(next_start + interval, time.monotonic())
@@ -654,6 +677,77 @@ def run_workload(model, deepface, args, stats: Stats, allocator: AllocatorSample
     event("workload_stats", **summary)
 
 
+def read_ack_line(timeout: float, fd: int = 0) -> str | None:
+    """One line from the orchestrator within the timeout; None on timeout, EOF or an overlong line."""
+    deadline = time.monotonic() + timeout
+    data = b""
+    while not data.endswith(b"\n"):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or len(data) > 256:
+            return None
+        ready, _, _ = select.select([fd], [], [], remaining)
+        if not ready:
+            return None
+        chunk = os.read(fd, 64)
+        if not chunk:
+            return None
+        data += chunk
+    return data.decode(errors="replace").strip()
+
+
+def mr1_checkpoint(stage: str, read_line: Callable[[float], str | None] = read_ack_line) -> None:
+    """Pause until the orchestrator acknowledges this stage; stop the workload if it does not."""
+    event("mr1_checkpoint", stage=stage)
+    if read_line(MR1_ACK_TIMEOUT_S) != f"ack {stage}":
+        event("fatal", reason="mr1 checkpoint not acknowledged")
+        raise SystemExit(4)
+
+
+def run_smoke(model, deepface, args, *, frames=None, scene=None) -> dict[str, object]:
+    """Bounded functional checks after the releases: detector frames, one face analysis, one scene request.
+
+    Counts, latencies and fixed labels only. It checks that each component still runs, not accuracy.
+    """
+    frames = frames or Frames(args.clip, args.fps)
+    scene = scene or scene_attempt
+    stats = Stats()
+    detector: dict[str, object] = {"frames_requested": MR1_DETECTOR_FRAMES, "processed": 0, "errors": {}}
+    latencies: list[float] = []
+    frame = None
+    for _ in range(MR1_DETECTOR_FRAMES):
+        try:
+            frame = frames.read()
+            started = time.perf_counter()
+            model.track(frame, **TRACK_ARGS)
+            latencies.append((time.perf_counter() - started) * 1000)
+            detector["processed"] += 1
+        except Exception as exc:  # noqa: BLE001 - counted by class, never raised
+            name = type(exc).__name__
+            detector["errors"][name] = detector["errors"].get(name, 0) + 1
+    detector["latency_ms"] = percentiles(latencies)
+    face: dict[str, object] = {"runs": 0, "completed": 0, "runs_with_face": 0, "errors": {}, "latency_ms": None}
+    outcome: dict[str, object] = {}
+    if frame is not None:
+        face["runs"] = 1
+        face_attempt(deepface, frame, stats)
+        outcome = scene(args.port, frame, stats)
+    with stats.lock:
+        face.update(completed=len(stats.face_ms), runs_with_face=stats.face_runs_with_face, errors=dict(stats.face_errors),
+                    latency_ms=round(stats.face_ms[0], 1) if stats.face_ms else None)
+        scene_errors = dict(stats.vlm_errors)
+    latency = outcome.get("latency_ms")
+    return {
+        "detector": detector,
+        "face": face,
+        "scene": {
+            "attempts": 1 if frame is not None else 0, "completed": int(latency is not None),
+            "finish_reason": outcome.get("finish_reason"), "valid": bool(outcome.get("valid")),
+            "rejection": outcome.get("rejection"), "error": outcome.get("error"), "errors": scene_errors,
+            "latency_ms": round(latency, 1) if isinstance(latency, float) else None,
+        },
+    }
+
+
 def run_scene_only(args, stats: Stats) -> None:
     """S1: scene requests alone, each with a new deterministic image; no detector, face or CUDA here."""
     source = SyntheticScenes()
@@ -691,10 +785,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--settle-s", type=float, default=15.0)
     parser.add_argument("--warmup-s", type=float, default=120.0)
     parser.add_argument("--steady-s", type=float, default=600.0)
+    parser.add_argument("--mr1-release-check", action="store_true",
+                        help="MR1: pause after each settle for the orchestrator's cache release, then smoke checks only")
     args = parser.parse_args(argv)
     if args.scene_only:
         if args.clip:
             parser.error("--scene-only uses its own synthetic images; --clip is not allowed")
+        if args.mr1_release_check:
+            parser.error("--mr1-release-check needs the detector and face models; not with --scene-only")
         run_scene_only(args, Stats())
         return 0
     if not args.engine:
@@ -710,13 +808,22 @@ def main(argv: list[str] | None = None) -> int:
     try:
         event("phase", name="detector_settle")
         time.sleep(args.settle_s)
+        if args.mr1_release_check:
+            mr1_checkpoint("detector")
         allocator.phase = "face_load"
         event("phase", name="face_load")
         deepface = load_face()
         allocator.phase = "face_settle"
         event("phase", name="face_settle")
         time.sleep(args.settle_s)
-        run_workload(model, deepface, args, Stats(), allocator)
+        if args.mr1_release_check:
+            mr1_checkpoint("face")
+            allocator.phase = "smoke"
+            event("phase", name="smoke")
+            event("mr1_smoke", **run_smoke(model, deepface, args))
+            mr1_checkpoint("after_smoke")
+        else:
+            run_workload(model, deepface, args, Stats(), allocator)
     finally:
         allocator.stop()
     return 0
