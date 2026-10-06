@@ -85,10 +85,14 @@ SAMPLE_INTERVAL_S = 0.2
 PSS_INTERVAL_S = 1.0
 LABEL = "provisional-demo"
 EVENT_PREFIX = "@@EVENT "
-MEMINFO_KEYS = (
+BASE_MEMINFO_KEYS = (
     "MemTotal", "MemFree", "MemAvailable", "Cached", "SwapTotal", "SwapFree",
     "Shmem", "Unevictable", "Mlocked", "SUnreclaim", "KReclaimable", "CmaFree",
 )
+# Attribution only (session 39): anonymous vs mapped memory and the file LRU split. No guard or
+# criterion reads them; their memory.csv columns come last so the existing column positions stay.
+ATTRIBUTION_MEMINFO_KEYS = ("AnonPages", "Mapped", "Active(file)", "Inactive(file)")
+MEMINFO_KEYS = (*BASE_MEMINFO_KEYS, *ATTRIBUTION_MEMINFO_KEYS)
 DESKTOP_COMMS = frozenset({"Xorg", "Xwayland", "gnome-shell", "Xtigervnc", "Xvnc", "xfwm4", "xfce4-session"})
 V1_SCRIPTS = frozenset({"surveillance4_1.py", "dashboard.py", "dashboard_1.py"})
 DEEPFACE_WEIGHTS = ("facenet512_weights.h5", "face_detection_yunet_2023mar.onnx")
@@ -413,6 +417,7 @@ class Sampler(threading.Thread):
         "t_mono", "phase", "mem_total", "mem_free", "mem_available", "cached", "swap_total", "swap_free",
         "shmem", "unevictable", "mlocked", "s_unreclaim", "k_reclaimable", "cma_free",
         "llama_rss", "llama_hwm", "llama_pss", "work_rss", "work_hwm", "work_pss", "pswpin", "pswpout",
+        "anon_pages", "mapped", "active_file", "inactive_file",  # ATTRIBUTION_MEMINFO_KEYS, in order
     ]
 
     def __init__(self, path: Path, on_floor) -> None:
@@ -434,7 +439,7 @@ class Sampler(threading.Thread):
                 now = time.monotonic()
                 mem = read_meminfo()
                 slow = now >= next_slow
-                row: list[object] = [f"{now:.3f}", self.phase] + [mem.get(key, "") for key in MEMINFO_KEYS]
+                row: list[object] = [f"{now:.3f}", self.phase] + [mem.get(key, "") for key in BASE_MEMINFO_KEYS]
                 for key in ("llama", "work"):
                     pid = self.pids.get(key)
                     rss, hwm = read_process_memory(pid) if pid else (None, None)
@@ -442,6 +447,7 @@ class Sampler(threading.Thread):
                     row += ["" if value is None else value for value in (rss, hwm, pss)]
                 swap = read_swap_counters() if slow else {}
                 row += [swap.get("pswpin", ""), swap.get("pswpout", "")]
+                row += [mem.get(key, "") for key in ATTRIBUTION_MEMINFO_KEYS]
                 if slow:
                     next_slow = now + PSS_INTERVAL_S
                 writer.writerow(row)

@@ -25,6 +25,7 @@ PRESSURE_STOP = 4_800_000_000
 FREE_FLOOR = 1 << 30
 AVAILABLE_FLOOR = 2 << 30
 OUTPUT_LIMIT = 1_048_576
+ERROR_LIMIT = 4096  # stderr bytes read for classification; never stored
 MEMORY_KEYS = (*profile.MEMINFO_KEYS, "pswpin", "pswpout")
 REQUIRED = ("MemTotal", "MemAvailable", "MemFree", "pswpin", "pswpout")
 SERVICES = ("ollama.service", "display-manager.service")
@@ -38,6 +39,15 @@ STEP4_DEADLINE_S = 1200.0  # expected about 1,040 s: 30 s baseline, loads, 3 set
 STEP4_JOURNAL_TIMEOUT_S = 10.0
 STEP4_MARKER_TAG = "sentinel-step4"
 JOURNAL_LOSS = re.compile(r"missed|suppress|rate.?limit|is full|truncat|corrupt", re.IGNORECASE)
+BOOT_ID = re.compile(r"[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+JOURNAL_ERRORS = (  # (fixed class, journalctl stderr pattern); first match wins
+    ("invalid_match", re.compile(r"failed to add match", re.IGNORECASE)),
+    ("invalid_boot_descriptor", re.compile(r"failed to parse boot descriptor", re.IGNORECASE)),
+    ("boot_not_found", re.compile(r"boot entry found|specified boot", re.IGNORECASE)),
+    ("invalid_timestamp", re.compile(r"failed to parse timestamp", re.IGNORECASE)),
+    ("permission_denied", re.compile(r"insufficient permissions|permission denied", re.IGNORECASE)),
+    ("no_journal_files", re.compile(r"no journal files", re.IGNORECASE)),
+)
 S1_ARMS = {"a": None, "b": 0}  # llama-server --cache-ram MiB; None keeps b8932's default (8192 MiB)
 _DROPPED = object()
 DROP_CACHES_PROCEDURE = (
@@ -51,19 +61,42 @@ SERVICE_VALUES = {
 }
 
 
-def memory_problem(sample: dict, baseline: dict | None = None, projected: int = 0) -> str | None:
-    if any(type(sample.get(key)) is not int or sample[key] < 0 for key in REQUIRED):
-        return "telemetry_unavailable"
+def _condition(stop: str, field: str, comparison: str, threshold, value) -> dict:
+    return {"stop": stop, "condition": f"{field} {comparison} {threshold}", "field": field,
+            "comparison": comparison, "threshold": threshold, "value": value}
+
+
+def memory_conditions(sample: dict, baseline: dict | None = None, projected: int = 0) -> list[dict]:
+    """Every guard condition the sample meets, in the guard's order; the first one names the stop.
+
+    ``free_or_available_stop`` covers two floors, so each one met is listed with its field,
+    threshold and value. Missing or invalid telemetry stops before any threshold is compared.
+    """
+    missing = [key for key in REQUIRED if type(sample.get(key)) is not int or sample[key] < 0]
+    if missing:
+        return [{"stop": "telemetry_unavailable", "condition": "required field missing or invalid", "fields": missing}]
     total = sample["MemTotal"]
     if total <= 0 or sample["MemAvailable"] > total or sample["MemFree"] > total:
-        return "telemetry_invalid"
+        return [{"stop": "telemetry_invalid", "condition": "MemTotal <= 0 or MemFree/MemAvailable > MemTotal",
+                 "fields": ["MemTotal", "MemFree", "MemAvailable"]}]
+    met = []
     if total - sample["MemAvailable"] + projected >= PRESSURE_STOP:
-        return "sampled_pressure_stop"
-    if sample["MemFree"] - projected < FREE_FLOOR or sample["MemAvailable"] - projected < AVAILABLE_FLOOR:
-        return "free_or_available_stop"
-    if baseline and any(sample[key] != baseline[key] for key in ("pswpin", "pswpout")):
-        return "swap_counter_change"
-    return None
+        met.append(_condition("sampled_pressure_stop", "MemTotal - MemAvailable", ">=", PRESSURE_STOP,
+                              total - sample["MemAvailable"] + projected))
+    if sample["MemFree"] - projected < FREE_FLOOR:
+        met.append(_condition("free_or_available_stop", "MemFree", "<", FREE_FLOOR, sample["MemFree"] - projected))
+    if sample["MemAvailable"] - projected < AVAILABLE_FLOOR:
+        met.append(_condition("free_or_available_stop", "MemAvailable", "<", AVAILABLE_FLOOR,
+                              sample["MemAvailable"] - projected))
+    for key in ("pswpin", "pswpout") if baseline else ():
+        if sample[key] != baseline[key]:
+            met.append(_condition("swap_counter_change", key, "!=", baseline[key], sample[key]))
+    return met
+
+
+def memory_problem(sample: dict, baseline: dict | None = None, projected: int = 0) -> str | None:
+    met = memory_conditions(sample, baseline, projected)
+    return met[0]["stop"] if met else None
 
 
 def baseline_problem(sample: dict) -> str | None:
@@ -94,17 +127,21 @@ class PressureGuard:
         self.peak = None
         self.minimum_free = None
         self.samples = 0
+        self.trigger = None  # the first stopping sample: its conditions, time and guard.jsonl line
 
     def observe(self, sample: dict) -> str | None:
         reading = safe_sample(sample)
         self.emit(reading)
         self.samples += 1
-        problem = memory_problem(sample, self.baseline)
+        conditions = memory_conditions(sample, self.baseline)
         stamp = reading["t_mono"]
         if stamp is None:
-            return "clock_unavailable"
+            return self._stop([{"stop": "clock_unavailable", "condition": "t_mono missing or not finite",
+                                "fields": ["t_mono"]}], reading)
         if self.previous is not None and (stamp < self.previous or stamp - self.previous > 0.5):
-            return "sampling_gap"
+            interval = round(stamp - self.previous, 6)
+            return self._stop([_condition("sampling_gap", "t_mono interval", "<" if interval < 0 else ">",
+                                          0 if interval < 0 else 0.5, interval)], reading)
         self.previous = stamp
         pressure = reading["pressure_bytes"]
         if pressure is not None:
@@ -112,13 +149,22 @@ class PressureGuard:
         free = reading["MemFree"]
         if free is not None:
             self.minimum_free = min(self.minimum_free if self.minimum_free is not None else free, free)
-        return problem
+        return self._stop(conditions, reading) if conditions else None
+
+    def _stop(self, conditions: list[dict], reading: dict) -> str:
+        if self.trigger is None:
+            self.trigger = {"stop": conditions[0]["stop"], "conditions": conditions, "t_mono": reading["t_mono"],
+                            "guard_jsonl_line": self.samples, "sample": reading,
+                            "basis": "the sample that stopped the guard, before the owned group's cleanup"}
+        return conditions[0]["stop"]
 
 
 class NativeChild:
-    def __init__(self, argv: list[str], env: dict | None) -> None:
+    def __init__(self, argv: list[str], env: dict | None, capture_stderr: bool = False) -> None:
+        # stderr goes to an unlinked temporary file only when a caller classifies it (journal queries)
+        self.errors = tempfile.TemporaryFile() if capture_stderr else None
         self.process = subprocess.Popen(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True,
+            argv, stdout=subprocess.PIPE, stderr=self.errors or subprocess.DEVNULL, start_new_session=True,
             cwd=profile.REPO, env=env,
         )
         self.nonblocking = False
@@ -154,8 +200,16 @@ class NativeChild:
             except ProcessLookupError:
                 self.gone = True
 
+    def error_output(self) -> bytes:
+        if self.errors is None:
+            return b""
+        self.errors.seek(0)
+        return self.errors.read(ERROR_LIMIT)
+
     def close(self) -> None:
         self.process.stdout.close()
+        if self.errors is not None:
+            self.errors.close()
 
 
 class SystemBackend:
@@ -235,6 +289,7 @@ class ChildResult:
     returncode: int | None
     output: bytes
     cleanup_clear: bool
+    errors: bytes = b""  # bounded stderr, only when captured; classified, never written to a report
 
     def diagnostic(self) -> dict:
         return {"status": self.status, "returncode": self.returncode, "cleanup_clear": self.cleanup_clear}
@@ -255,17 +310,18 @@ class ProcessRunner:
         child.close()
         return clear
 
-    def run(self, argv: list[str], timeout: float, *, guard=None, env=None) -> ChildResult:
+    def run(self, argv: list[str], timeout: float, *, guard=None, env=None, capture_stderr=False) -> ChildResult:
         if self.interrupted():
             return ChildResult("interrupted", None, b"", True)
         deadline = self.backend.clock() + timeout
         output = bytearray()
+        errors = b""
         child = None
         status = "process_error"
         returncode = None
         clear = True
         try:
-            child = self.backend.spawn(argv, env)
+            child = self.backend.spawn(argv, env, **({"capture_stderr": True} if capture_stderr else {}))
             while True:
                 if self.interrupted():
                     status = "interrupted"
@@ -300,11 +356,13 @@ class ProcessRunner:
         finally:
             if child is not None:
                 try:
+                    if capture_stderr:
+                        errors = child.error_output()[:ERROR_LIMIT]
                     clear = self.cleanup(child, 5.0 if guard else 0.2)
                     returncode = child.poll()
                 except Exception:
                     clear = False
-        return ChildResult(status if clear else "cleanup_failed", returncode, bytes(output), clear)
+        return ChildResult(status if clear else "cleanup_failed", returncode, bytes(output), clear, errors)
 
 
 def pva_cgroup_member(path: Path) -> bool:
@@ -656,24 +714,48 @@ def identity_end_check(identity: dict | None, manifest: dict | None) -> dict:
             "files": len(identity["files"])}
 
 
-def _journal(result: ChildResult) -> tuple[str, list[dict]]:
+def journal_boot_id(value: object) -> str | None:
+    """The boot ID as the 32 lowercase hex characters that ``journalctl --boot=`` parses, or None.
+
+    In systemd 255's source, a boot descriptor's first 32 characters are parsed as the ID, so the
+    dashed form in /proc/sys/kernel/random/boot_id is not; after ``-b`` as a separate word,
+    journalctl keeps the current boot and takes the ID as a match. On the device that failed
+    (step 4 run 1; the maintainer's parsing test: dashed rc 1 ``invalid_match``, 32 hex rc 0).
+    The all-zero ID is refused because journalctl reads it as "no ID", that is, the current boot.
+    """
+    if not isinstance(value, str) or not BOOT_ID.fullmatch(value):
+        return None
+    compact = value.replace("-", "")
+    return None if compact == "0" * 32 else compact
+
+
+def journal_error_class(result: ChildResult) -> str:
+    """A fixed label for a query that did not complete; journalctl's text is matched, never kept."""
+    if result.status == "child_failed":
+        text = result.errors[:ERROR_LIMIT].decode(errors="replace")
+        return next((label for label, pattern in JOURNAL_ERRORS if pattern.search(text)), "nonzero_exit_unclassified")
+    return result.status  # timeout, output_limit, interrupted, process_error or cleanup_failed
+
+
+def _journal(result: ChildResult) -> tuple[str, list[dict], dict]:
+    query = {"status": result.status, "returncode": result.returncode, "records": None}
     if result.status == "output_limit":
-        return "truncated", []
+        return "truncated", [], {**query, "error_class": "output_limit"}
     if result.status != "completed":
-        return "unavailable", []
+        return "unavailable", [], {**query, "error_class": journal_error_class(result)}
     records = []
     for line in result.output.decode(errors="replace").splitlines():
         try:
             record = json.loads(line)
         except ValueError:
-            return "unavailable", []
+            return "unavailable", [], {**query, "error_class": "unparsable_output"}
         if not isinstance(record, dict):
-            return "unavailable", []
+            return "unavailable", [], {**query, "error_class": "unparsable_output"}
         message = record.get("MESSAGE")
         stamp = record.get("__REALTIME_TIMESTAMP")
         records.append({"message": message if isinstance(message, str) else "",
                         "t": int(stamp) / 1e6 if isinstance(stamp, str) and stamp.isdigit() else None})
-    return "observed", records
+    return "observed", records, {**query, "error_class": "success", "records": len(records)}
 
 
 def kernel_evidence(runner, backend, manifest: dict | None, tag: str, wait_complete: bool) -> dict:
@@ -683,14 +765,26 @@ def kernel_evidence(runner, backend, manifest: dict | None, tag: str, wait_compl
     run's own journal markers (written before the run and after the wait) are readable and bracket
     the interval, and journald logged no loss in it. Otherwise it is ``truncated``, ``uncertain``
     or ``unavailable``, and the candidate counts are not zero but absent (lower bounds at most).
+    Each query that ran keeps its status, return code and fixed error class under ``queries``.
+    The boot is passed as ``--boot=<32 hex>``; an invalid recorded or current ID runs no query.
     """
     def result(status, reasons, **extra):
-        return {"status": status, "reasons": reasons, "oom_candidates": None, "nvmap_candidates": None, **extra}
+        return {"status": status, "reasons": reasons, "oom_candidates": None, "nvmap_candidates": None,
+                "queries": {}, **extra}
 
     if manifest is None:
         return result("unavailable", ["profiler manifest unavailable"])
     boot = manifest.get("boot_id")
-    if not isinstance(boot, str) or not boot or boot != backend.boot_id():
+    recorded = journal_boot_id(boot)
+    if recorded is None:
+        return result("unavailable", ["recorded boot ID missing or invalid; no journal query ran"])
+    try:
+        current = journal_boot_id(backend.boot_id())
+    except OSError:
+        current = None
+    if current is None:
+        return result("unavailable", ["current boot ID unreadable or invalid; no journal query ran"])
+    if recorded != current:
         return result("unavailable", ["the recorded boot is not the current boot; the journal is volatile"])
     start, end = _utc(manifest.get("started_utc")), _utc(manifest.get("finished_utc"))
     if start is None or end is None:
@@ -698,15 +792,19 @@ def kernel_evidence(runner, backend, manifest: dict | None, tag: str, wait_compl
     if not wait_complete:
         return result("unavailable", ["post-run wait incomplete"])
     since, until = int(start.timestamp()) - 1, int(end.timestamp() + step4_criteria.POST_RUN_WAIT_S) + 1
-    window = {"boot_id": boot, "since_utc": start.isoformat(), "until_epoch_s": until, "since_epoch_s": since}
+    window = {"boot_id": boot, "journal_boot_id": recorded, "since_utc": start.isoformat(), "until_epoch_s": until,
+              "since_epoch_s": since}
     common = ["-o", "json", "--quiet", "--no-pager"]
-    kernel_q = runner.run(["/usr/bin/journalctl", "-k", "-b", boot, "--since", f"@{since}", "--until", f"@{until}",
-                           *common], STEP4_JOURNAL_TIMEOUT_S)
-    marker_q = runner.run(["/usr/bin/journalctl", "-b", boot, "-t", STEP4_MARKER_TAG, "--since", f"@{since - 600}",
-                           *common], STEP4_JOURNAL_TIMEOUT_S)
-    loss_q = runner.run(["/usr/bin/journalctl", "-b", boot, "_COMM=systemd-journal", "--since", f"@{since}",
-                         "--until", f"@{until}", *common], STEP4_JOURNAL_TIMEOUT_S)
-    states = {name: _journal(q) for name, q in (("kernel", kernel_q), ("markers", marker_q), ("journald", loss_q))}
+    boot_arg = f"--boot={recorded}"  # attached: journalctl fails on a bad value instead of reading the next word
+    kernel_q = runner.run(["/usr/bin/journalctl", "-k", boot_arg, "--since", f"@{since}", "--until", f"@{until}",
+                           *common], STEP4_JOURNAL_TIMEOUT_S, capture_stderr=True)
+    marker_q = runner.run(["/usr/bin/journalctl", boot_arg, "-t", STEP4_MARKER_TAG, "--since", f"@{since - 600}",
+                           *common], STEP4_JOURNAL_TIMEOUT_S, capture_stderr=True)
+    loss_q = runner.run(["/usr/bin/journalctl", boot_arg, "_COMM=systemd-journal", "--since", f"@{since}",
+                         "--until", f"@{until}", *common], STEP4_JOURNAL_TIMEOUT_S, capture_stderr=True)
+    parsed = {name: _journal(q) for name, q in (("kernel", kernel_q), ("markers", marker_q), ("journald", loss_q))}
+    states = {name: (state, records) for name, (state, records, _) in parsed.items()}
+    window["queries"] = {name: query for name, (_, _, query) in parsed.items()}
     if any(state == "unavailable" for state, _ in states.values()):
         return result("unavailable", [f"{name} query unavailable" for name, (state, _) in states.items()
                                       if state == "unavailable"], **window)
@@ -861,7 +959,7 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
                 report["s1"].update(child.diagnostic(), arm=s1_arm, llama_cache_ram_mib=cache_ram,
                                     operator_prerequisites_confirmed=True, profile=s1_profile_excerpt(output))
             report[mode].update(samples=guard.samples, sampled_peak_pressure_bytes=guard.peak,
-                                sampled_min_free_bytes=guard.minimum_free)
+                                sampled_min_free_bytes=guard.minimum_free, guard_trigger=guard.trigger)
         if not interrupted():
             backend.sleep(5.0)
             report[mode]["post_exit"] = safe_sample(backend.sample())
@@ -883,7 +981,10 @@ def run_step4(section: dict, runner, backend, guard, output: Path, clip: Path, i
     ], STEP4_DEADLINE_S, guard=guard)
     section.update(child.diagnostic(), deadline_s=STEP4_DEADLINE_S, guard_stopped_at_s=None)
     if child.status not in ("completed", "child_failed"):
-        section["guard_stopped_at_s"] = round(backend.clock(), 3)  # the earliest authoritative stop boundary
+        # The clock when the owned group's cleanup returned, after the stop. The stopping sample, its
+        # exact conditions and time are in guard_trigger (execute() adds it for every guarded mode).
+        section["guard_stopped_at_s"] = round(backend.clock(), 3)
+        section["guard_stopped_at_basis"] = "post_cleanup_clock"
     waited = 0.0
     while waited < step4_criteria.POST_RUN_WAIT_S and not interrupted():  # after the owned group's cleanup
         backend.sleep(1.0)

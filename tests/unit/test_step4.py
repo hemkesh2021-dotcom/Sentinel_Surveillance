@@ -14,6 +14,7 @@ import dataclasses
 import hashlib
 import importlib
 import json
+import re
 import signal
 import threading
 import time
@@ -411,10 +412,50 @@ def test_the_sanitized_pump_keeps_boundaries_and_fingerprints_only(runners, tmp_
 # ---------------------------------------------------------------- operator: identity and step4
 
 
+def _boot_descriptor_parses(text: str) -> bool:
+    """systemd 255 ``parse_boot_descriptor``: only the first 32 characters are tried as an ID, then an offset."""
+    if text == "all":
+        return True
+    if len(text) >= 32 and re.fullmatch(r"[0-9a-fA-F]{32}", text[:32]):
+        text = text[32:]
+    elif len(text) >= 32 and text[:1] not in ("-", "+"):
+        return False
+    return text == "" or re.fullmatch(r"[+-]?\d+", text) is not None
+
+
+def journalctl_argument_error(argv: list[str]) -> tuple[int, bytes] | None:
+    """How journalctl 255 rejects step 4's arguments, or None if they parse (the fake journal's model).
+
+    Modelled on systemd 255's journalctl.c and the maintainer's parsing test on the device (session 39):
+    the dashed /proc boot ID after a bare ``-b`` left ``-b`` meaning the current boot and became a match
+    (rc 1, invalid_match), while the 32-hex form parsed (rc 0). ``--boot=`` with a bad value fails itself.
+    """
+    words, positional, index = argv[1:], [], 0
+    while index < len(words):
+        word = words[index]
+        if word.startswith("--boot="):
+            value = word.split("=", 1)[1]
+            if not _boot_descriptor_parses(value):
+                return 1, f"Failed to parse boot descriptor '{value}'\n".encode()
+        elif word == "-b":
+            if index + 1 < len(words) and _boot_descriptor_parses(words[index + 1]):
+                index += 1  # journalctl takes the next word as the boot only if it parses
+        elif word in ("--since", "--until", "-t", "-n", "-o"):
+            index += 1
+        elif not word.startswith("-"):
+            positional.append(word)
+        index += 1
+    for word in positional:
+        if "=" not in word and not word.startswith("/"):
+            return 1, f"Failed to add match '{word}': Invalid argument\n".encode()
+    return None
+
+
 class Child:
-    def __init__(self, backend, argv, *, duration=0.0, returncode=0, output=b"", on_done=None):
+    def __init__(self, backend, argv, *, duration=0.0, returncode=0, output=b"", on_done=None, errors=b""):
         self.backend, self.argv, self.end = backend, argv, backend.now + duration
         self.returncode, self.chunks, self.on_done, self.killed, self.closed = returncode, [output], on_done, False, False
+        self.errors = errors
 
     def poll(self):
         done = self.killed or self.backend.now >= self.end
@@ -425,6 +466,9 @@ class Child:
 
     def read(self):
         return self.chunks.pop(0) if self.chunks else b""
+
+    def error_output(self):
+        return self.errors
 
     def exists(self):
         return not self.killed and self.poll() is None
@@ -474,6 +518,9 @@ class Backend:
                               ("model_servers", "desktop", "dev_tools", "python_unclassified", "media_or_gpu_tools")}}
 
     def _journal_output(self, argv):
+        rejected = journalctl_argument_error(argv)
+        if rejected:
+            return {"returncode": rejected[0], "errors": rejected[1]}
         if "-k" in argv and "-n" in argv:
             return {"output": json.dumps({"MESSAGE": "boot ok"}).encode()}
         kind = "kernel" if "-k" in argv else "markers" if "-t" in argv else "journald"
@@ -485,7 +532,7 @@ class Backend:
         plan.setdefault("output", "\n".join(json.dumps(r) for r in records).encode())
         return plan
 
-    def spawn(self, argv, env):
+    def spawn(self, argv, env, capture_stderr=False):
         if "systemctl" in argv[0]:
             plan = {"output": SERVICES.encode()}
         elif "journalctl" in argv[0]:
@@ -503,6 +550,8 @@ class Backend:
                 "cap_bytes": 256 << 20, "chunk_bytes": 32 << 20, "cleanup_clear": True}).encode()}
         else:
             plan = {"duration": 900.0, "on_done": self._write_profiler_files, **self.child_plan}
+        if not capture_stderr:
+            plan.pop("errors", None)  # stderr goes to DEVNULL unless the caller captures it
         child = Child(self, argv, **plan)
         self.children.append(child)
         return child
@@ -632,7 +681,7 @@ def test_a_completed_step4_waits_then_queries_the_recorded_boot_and_interval(run
     assert argv[argv.index("--clip") + 1] == str(prep.files["clip"]) and "--allow-dev-tools" not in argv
     assert section["status"] == "completed" and section["post_run_wait_s"] == 60.0
     queries = [c.argv for c in backend.children if "journalctl" in c.argv[0] and "-n" not in c.argv]
-    assert len(queries) == 3 and all(q[q.index("-b") + 1] == BOOT for q in queries)
+    assert len(queries) == 3 and all(f"--boot={BOOT.replace('-', '')}" in q and "-b" not in q for q in queries)
     kernel_query = next(q for q in queries if "-k" in q)
     manifest = json.loads(next(backend.output.glob("demo-profile-*/manifest.json")).read_text())
     started, finished = (runners.operator._utc(manifest[k]).timestamp() for k in ("started_utc", "finished_utc"))
@@ -642,6 +691,8 @@ def test_a_completed_step4_waits_then_queries_the_recorded_boot_and_interval(run
     child_end = 1_900_000_000 + 1000.0 + 900.0
     assert end_marker_time >= child_end + 60  # the wait really happened before the end marker and the queries
     assert section["kernel"]["status"] == "observed" and section["kernel"]["oom_candidates"] == 0
+    assert {q["error_class"] for q in section["kernel"]["queries"].values()} == {"success"}
+    assert section["guard_trigger"] is None and section["guard_stopped_at_s"] is None
     assert section["identity"]["status"] == "verified"
     assert section["criteria"]["eligible_for_maintainer_review"] is True and section["criteria"]["accepted"] is False
     assert result["hardware_acceptance"] == "PENDING"
@@ -669,6 +720,130 @@ def test_uncertain_kernel_coverage_is_never_zero_errors(runners, tmp_path, setup
     assert kernel["oom_candidates"] is None and kernel["nvmap_candidates"] is None
     assert result["step4"]["criteria"]["criteria"]["K_kernel"]["status"] == "unavailable"
     assert result["step4"]["criteria"]["eligible_for_maintainer_review"] is False
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (BOOT, BOOT.replace("-", "")),
+        (BOOT.replace("-", ""), BOOT.replace("-", "")),
+        (None, None), (12345, None), ("", None), ("test-boot", None),
+        ("ABCDEF00-1111-4222-8333-444444444444", None),  # /proc prints lowercase; anything else is refused
+        (BOOT + "\n", None), (BOOT[:-1], None), (BOOT.replace("-", "", 1), None),  # dashes all or none
+        ("11111111222243338444555555555555-1", None),  # an offset is not a boot ID
+        ("00000000-0000-0000-0000-000000000000", None), ("0" * 32, None),  # journalctl: no ID = current boot
+    ],
+)
+def test_boot_ids_are_validated_and_normalized_for_journalctl(runners, value, expected) -> None:
+    assert runners.operator.journal_boot_id(value) == expected
+
+
+def test_the_dashed_boot_after_a_bare_b_is_a_match_error_and_the_new_form_parses() -> None:
+    """The fake journal's model reproduces the device result before step4 code relies on it."""
+    old = ["/usr/bin/journalctl", "-k", "-b", BOOT, "--since", "@1", "--until", "@2", "-o", "json", "--quiet"]
+    assert journalctl_argument_error(old) == (1, f"Failed to add match '{BOOT}': Invalid argument\n".encode())
+    assert journalctl_argument_error(["/usr/bin/journalctl", "-k", f"--boot={BOOT}"])[0] == 1
+    assert journalctl_argument_error(["/usr/bin/journalctl", "-k", f"--boot={BOOT.replace('-', '')}", "--since", "@1"]) is None
+    assert journalctl_argument_error(["/usr/bin/journalctl", "-k", "-b", "-n", "1000", "-o", "json"]) is None
+
+
+@pytest.mark.parametrize(
+    ("kind", "plan", "status", "returncode", "error_class"),
+    [
+        ("kernel", {"returncode": 1, "errors": f"Failed to add match '{BOOT}': Invalid argument\n".encode()},
+         "child_failed", 1, "invalid_match"),
+        ("markers", {"returncode": 1, "errors": b"Failed to parse boot descriptor 'x'\n"},
+         "child_failed", 1, "invalid_boot_descriptor"),
+        ("journald", {"returncode": 1, "errors": b"No journal files were opened due to insufficient permissions.\n"},
+         "child_failed", 1, "permission_denied"),
+        ("kernel", {"returncode": 1, "errors": b"camera rtsp://user:secret@cam failed\n"},
+         "child_failed", 1, "nonzero_exit_unclassified"),
+        ("kernel", {"duration": 30.0}, "timeout", -15, "timeout"),
+        ("journald", {"output": b"not json"}, "completed", 0, "unparsable_output"),
+    ],
+)
+def test_a_failed_query_keeps_status_return_code_and_a_fixed_error_class(
+    runners, tmp_path, kind, plan, status, returncode, error_class,
+) -> None:
+    prep = prepare(runners, tmp_path)
+    backend = Backend()
+    backend.journal_status[kind] = plan
+    result, _ = run_step4(runners, tmp_path, prep, backend=backend)
+    kernel = result["step4"]["kernel"]
+    assert kernel["queries"][kind] == {"status": status, "returncode": returncode, "records": None,
+                                       "error_class": error_class}
+    assert all(q["error_class"] == "success" for name, q in kernel["queries"].items() if name != kind)
+    assert kernel["status"] == "unavailable" and kernel["reasons"] == [f"{kind} query unavailable"]
+    assert kernel["oom_candidates"] is None and kernel["nvmap_candidates"] is None and "records" not in kernel
+    assert result["step4"]["criteria"]["criteria"]["K_kernel"]["status"] == "unavailable"
+    assert result["step4"]["criteria"]["criteria"]["K_kernel"]["value"]["records"] is None
+    assert "secret" not in json.dumps(result) and "Failed to" not in json.dumps(result)  # classes, never text
+
+
+@pytest.mark.parametrize(
+    ("setup", "reason"),
+    [
+        (lambda b: b.manifest_overrides.update(boot_id="test-boot"), "recorded boot ID missing or invalid"),
+        (lambda b: b.manifest_overrides.update(boot_id="00000000-0000-0000-0000-000000000000"),
+         "recorded boot ID missing or invalid"),
+        (lambda b: b.manifest_overrides.update(boot_id=None), "recorded boot ID missing or invalid"),
+        (lambda b: setattr(b, "boot", "ABCDEF00-1111-4222-8333-444444444444"), "current boot ID unreadable or invalid"),
+    ],
+)
+def test_an_invalid_boot_id_runs_no_journal_query_and_never_falls_back_to_the_current_boot(
+    runners, tmp_path, setup, reason,
+) -> None:
+    prep = prepare(runners, tmp_path)
+    backend = Backend()
+    original = backend.context
+    setup(backend)
+    backend.context = lambda: {**original(), "boot_id": BOOT}  # admission sees the real boot; only the journal differs
+    result, backend = run_step4(runners, tmp_path, prep, backend=backend)
+    kernel = result["step4"]["kernel"]
+    assert [c for c in backend.children if "journalctl" in c.argv[0] and "-n" not in c.argv] == []
+    assert kernel["status"] == "unavailable" and any(reason in r for r in kernel["reasons"])
+    assert kernel["queries"] == {} and kernel["oom_candidates"] is None and kernel["nvmap_candidates"] is None
+    assert result["step4"]["criteria"]["criteria"]["K_kernel"]["status"] == "unavailable"
+
+
+def test_an_unnormalized_boot_in_the_attached_form_fails_loudly_not_as_the_current_boot(
+    runners, tmp_path, monkeypatch,
+) -> None:
+    monkeypatch.setattr(runners.operator, "journal_boot_id", lambda value: value)  # skip the normalization
+    prep = prepare(runners, tmp_path)
+    result, _ = run_step4(runners, tmp_path, prep)
+    kernel = result["step4"]["kernel"]
+    assert kernel["status"] == "unavailable" and kernel["oom_candidates"] is None
+    assert {name: (q["returncode"], q["error_class"]) for name, q in kernel["queries"].items()} == {
+        name: (1, "invalid_boot_descriptor") for name in ("kernel", "markers", "journald")}
+
+
+def test_a_free_floor_stop_reports_its_condition_sample_and_time_apart_from_cleanup(runners, tmp_path) -> None:
+    prep = prepare(runners, tmp_path)
+    backend = Backend()
+    original = backend.sample
+
+    def falling():
+        sample = original()
+        if backend.now > 1100:  # pressure and MemAvailable stay inside their limits; only MemFree crosses
+            sample["MemFree"] = (1 << 30) - 6_340_608
+        return sample
+
+    backend.sample = falling
+    result, _ = run_step4(runners, tmp_path, prep, backend=backend)
+    section = result["step4"]
+    trigger = section["guard_trigger"]
+    assert section["status"] == trigger["stop"] == "free_or_available_stop"
+    assert trigger["conditions"] == [{"stop": "free_or_available_stop", "condition": "MemFree < 1073741824",
+                                      "field": "MemFree", "comparison": "<", "threshold": 1 << 30,
+                                      "value": (1 << 30) - 6_340_608}]
+    lines = (backend.output / "guard.jsonl").read_text().splitlines()
+    assert trigger["guard_jsonl_line"] == len(lines) == section["samples"]
+    assert json.loads(lines[trigger["guard_jsonl_line"] - 1]) == trigger["sample"]
+    assert trigger["t_mono"] == trigger["sample"]["t_mono"] and 1100 < trigger["t_mono"] < 1100.5
+    assert section["guard_stopped_at_basis"] == "post_cleanup_clock"  # fake cleanup takes no time
+    assert section["guard_stopped_at_s"] >= round(trigger["t_mono"], 3)
+    assert section["criteria"]["criteria"]["R_valid_run"]["status"] == "fail"
 
 
 def test_an_interrupted_post_run_wait_leaves_kernel_evidence_unavailable(runners, tmp_path) -> None:

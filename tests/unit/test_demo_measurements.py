@@ -20,6 +20,9 @@ NEW_FIELDS = {
     "Shmem": "shmem", "Unevictable": "unevictable", "Mlocked": "mlocked",
     "SUnreclaim": "s_unreclaim", "KReclaimable": "k_reclaimable", "CmaFree": "cma_free",
 }
+ATTRIBUTION_FIELDS = {
+    "AnonPages": "anon_pages", "Mapped": "mapped", "Active(file)": "active_file", "Inactive(file)": "inactive_file",
+}
 LEGACY_COLUMNS = [
     "t_mono", "phase", "mem_total", "mem_free", "mem_available", "cached", "swap_total", "swap_free",
     "llama_rss", "llama_hwm", "llama_pss", "work_rss", "work_hwm", "work_pss", "pswpin", "pswpout",
@@ -119,6 +122,49 @@ def test_sampler_new_fields_round_trip_with_missing_values(
         assert rows[0][column] == ("" if expected is None else str(expected))
     assert sample["used"] == 2_000_000 * 1024
     assert sample["swap_used"] == 0
+
+
+def test_attribution_columns_follow_every_existing_column_in_place(profile) -> None:
+    before_session_39 = [*LEGACY_COLUMNS[:8], *NEW_FIELDS.values(), *LEGACY_COLUMNS[8:]]
+    assert profile.Sampler.COLUMNS == [*before_session_39, *ATTRIBUTION_FIELDS.values()]
+    assert profile.MEMINFO_KEYS == (*profile.BASE_MEMINFO_KEYS, *ATTRIBUTION_FIELDS)
+    assert profile.BASE_MEMINFO_KEYS[:6] == ("MemTotal", "MemFree", "MemAvailable", "Cached", "SwapTotal", "SwapFree")
+
+
+@pytest.mark.parametrize("present", [True, False])
+def test_sampler_records_attribution_fields_or_marks_them_unavailable(
+    profile, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, present: bool,
+) -> None:
+    meminfo = tmp_path / "meminfo"
+    lines = ["MemTotal: 8000000 kB", "MemFree: 4000000 kB", "MemAvailable: 6000000 kB", "Cached: 2000000 kB",
+             "SwapTotal: 0 kB", "SwapFree: 0 kB", "Active(anon): 11 kB", "Inactive(anon): 12 kB"]
+    if present:
+        lines += ["AnonPages: 100 kB", "Mapped: 200 kB", "Active(file): 300 kB", "Inactive(file): 400 kB"]
+    meminfo.write_text("\n".join(lines))
+    read_meminfo = profile.read_meminfo
+    assert ("Active(anon)" in read_meminfo(meminfo)) is False  # only the named fields are kept
+    monkeypatch.setattr(profile, "read_meminfo", lambda: read_meminfo(meminfo))
+    monkeypatch.setattr(profile, "read_swap_counters", lambda: {"pswpin": 0, "pswpout": 0})
+    path = tmp_path / "memory.csv"
+    sampler = profile.Sampler(path, lambda: pytest.fail("unexpected memory-floor callback"))
+    monkeypatch.setattr(sampler._halt, "wait", lambda timeout: sampler._halt.set())
+    sampler.run()
+    with path.open(newline="") as handle:
+        header, row = list(csv.reader(handle))
+    assert header == profile.Sampler.COLUMNS and len(row) == len(header)
+    values = dict(zip(header, row))
+    sample = profile.load_samples(path)[0]
+    for index, column in enumerate(ATTRIBUTION_FIELDS.values(), start=1):
+        expected = index * 100 * 1024 if present else None
+        assert sample[column] == expected and values[column] == ("" if expected is None else str(expected))
+    assert sample["mem_free"] == 4_000_000 * 1024 and sample["used"] == 2_000_000 * 1024
+    assert values["pswpout"] == "0" and values["cma_free"] == ""
+
+
+def test_legacy_csv_marks_attribution_fields_unavailable(profile, tmp_path: Path) -> None:
+    path = tmp_path / "memory.csv"
+    write_legacy_csv(path)
+    assert all(sample[column] is None for sample in profile.load_samples(path) for column in ATTRIBUTION_FIELDS.values())
 
 
 def write_legacy_csv(path: Path) -> None:

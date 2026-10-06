@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import signal
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,9 +28,11 @@ def operator(monkeypatch):
 
 
 class FakeChild:
-    def __init__(self, backend, argv, *, duration=0.0, returncode=0, output=b"", stubborn=False, descendants=False):
+    def __init__(self, backend, argv, *, duration=0.0, returncode=0, output=b"", stubborn=False, descendants=False,
+                 errors=b""):
         self.backend = backend
         self.argv = argv
+        self.errors = errors
         self.end = backend.now + duration
         self.returncode = returncode
         self.chunks = [output]
@@ -44,6 +47,9 @@ class FakeChild:
 
     def read(self):
         return self.chunks.pop(0) if self.chunks else b""
+
+    def error_output(self):
+        return self.errors
 
     def exists(self):
         return self.stubborn or (not self.killed and (self.descendants or self.poll() is None))
@@ -91,7 +97,8 @@ class FakeBackend:
             **self.context_overrides,
         }
 
-    def spawn(self, argv, env):
+    def spawn(self, argv, env, capture_stderr=False):
+        self.captured = [*getattr(self, "captured", []), capture_stderr]
         if "systemctl" in argv[0]:
             plan = {"output": self.services.encode(), **self.overrides.get("services", {})}
         elif "journalctl" in argv[0]:
@@ -239,6 +246,138 @@ def test_live_guard_aborts_owned_probe_and_stops_next_phase(operator, tmp_path, 
     assert "managed" not in result["check9"]
     if field == "MemAvailable":
         assert result["check9"]["sampled_peak_pressure_bytes"] == 5_000_000_000
+    trigger = result["check9"]["guard_trigger"]
+    assert trigger["stop"] == reason and trigger["guard_jsonl_line"] == result["check9"]["samples"]
+    assert field in str(trigger["conditions"][0].get("field", trigger["conditions"][0].get("fields")))
+
+
+def reference_memory_problem(sample, baseline=None, projected=0):
+    """The guard's decision before session 39, kept verbatim to prove the refactor changed nothing."""
+    if any(type(sample.get(key)) is not int or sample[key] < 0 for key in ("MemTotal", "MemAvailable", "MemFree",
+                                                                          "pswpin", "pswpout")):
+        return "telemetry_unavailable"
+    total = sample["MemTotal"]
+    if total <= 0 or sample["MemAvailable"] > total or sample["MemFree"] > total:
+        return "telemetry_invalid"
+    if total - sample["MemAvailable"] + projected >= 4_800_000_000:
+        return "sampled_pressure_stop"
+    if sample["MemFree"] - projected < (1 << 30) or sample["MemAvailable"] - projected < (2 << 30):
+        return "free_or_available_stop"
+    if baseline and any(sample[key] != baseline[key] for key in ("pswpin", "pswpout")):
+        return "swap_counter_change"
+    return None
+
+
+def test_guard_decisions_and_thresholds_are_unchanged_on_a_boundary_grid(operator):
+    assert (operator.PRESSURE_STOP, operator.FREE_FLOOR, operator.AVAILABLE_FLOOR) == (4_800_000_000, 1 << 30, 2 << 30)
+    baseline = {"MemTotal": 8_000_000_000, "MemAvailable": 7_000_000_000, "MemFree": 6_000_000_000,
+                "pswpin": 0, "pswpout": 0}
+    total = 8_000_000_000
+    frees = [None, -1, 0, (1 << 30) - 1, 1 << 30, 3_000_000_000, total + 1]
+    availables = [(2 << 30) - 1, 2 << 30, total - 4_800_000_001, total - 4_800_000_000, total - 4_799_999_999, total + 1]
+    count = 0
+    for free in frees:
+        for available in availables:
+            for swap in (0, 1):
+                for projected in (0, 32 << 20):
+                    sample = {"MemTotal": total, "MemFree": free, "MemAvailable": available, "pswpin": 0,
+                              "pswpout": swap}
+                    for base in (None, baseline):
+                        expected = reference_memory_problem(sample, base, projected)
+                        assert operator.memory_problem(sample, base, projected) == expected
+                        met = operator.memory_conditions(sample, base, projected)
+                        assert (met[0]["stop"] if met else None) == expected
+                        count += 1
+    assert count == len(frees) * len(availables) * 2 * 2 * 2
+
+
+@pytest.mark.parametrize("update,conditions", [
+    ({"MemFree": 1_067_401_216, "MemAvailable": 3_682_267_136},  # step 4 run 1's stopping sample
+     [("free_or_available_stop", "MemFree", "<", 1 << 30, 1_067_401_216)]),
+    ({"MemAvailable": (2 << 30) - 1},
+     [("sampled_pressure_stop", "MemTotal - MemAvailable", ">=", 4_800_000_000, 8_000_000_000 - (2 << 30) + 1),
+      ("free_or_available_stop", "MemAvailable", "<", 2 << 30, (2 << 30) - 1)]),
+    ({"MemTotal": 4_000_000_000, "MemAvailable": (2 << 30) - 1, "MemFree": (1 << 30) - 1},
+     [("free_or_available_stop", "MemFree", "<", 1 << 30, (1 << 30) - 1),
+      ("free_or_available_stop", "MemAvailable", "<", 2 << 30, (2 << 30) - 1)]),
+    ({"pswpin": 3}, [("swap_counter_change", "pswpin", "!=", 0, 3)]),
+])
+def test_the_guard_trigger_names_every_condition_met_with_its_threshold_and_value(operator, update, conditions):
+    backend = FakeBackend()
+    lines = []
+    guard = operator.PressureGuard(backend.sample(), emit=lines.append)
+    for _ in range(3):
+        backend.now += 0.2
+        assert guard.observe(backend.sample()) is None
+    backend.now += 0.2
+    stopping = {**backend.sample(), **update}
+    stop = guard.observe(stopping)
+    trigger = guard.trigger
+    assert stop == trigger["stop"] == conditions[0][0]
+    assert [(c["stop"], c["field"], c["comparison"], c["threshold"], c["value"]) for c in trigger["conditions"]] == conditions
+    assert all(c["condition"] == f"{c['field']} {c['comparison']} {c['threshold']}" for c in trigger["conditions"])
+    assert trigger["t_mono"] == stopping["t_mono"] and trigger["guard_jsonl_line"] == 4 == len(lines)
+    assert trigger["sample"] == lines[-1] == operator.safe_sample(stopping)
+    backend.now += 0.2
+    guard.observe({**backend.sample(), "MemAvailable": 1})
+    assert guard.trigger is trigger  # the first stopping sample is kept
+
+
+@pytest.mark.parametrize("sample_update,stop,condition", [
+    ({"t_mono": 0.801}, "sampling_gap", "t_mono interval > 0.5"),
+    ({"t_mono": 0.1}, "sampling_gap", "t_mono interval < 0"),
+    ({"t_mono": float("nan")}, "clock_unavailable", "t_mono missing or not finite"),
+    ({"MemFree": None, "pswpout": True}, "telemetry_unavailable", "required field missing or invalid"),
+])
+def test_clock_and_telemetry_stops_are_attributed_too(operator, sample_update, stop, condition):
+    backend = FakeBackend()
+    guard = operator.PressureGuard(backend.sample())
+    backend.now = 0.2
+    assert guard.observe(backend.sample()) is None
+    assert guard.observe({**backend.sample(), **sample_update}) == stop
+    assert guard.trigger["stop"] == stop and guard.trigger["conditions"][0]["condition"] == condition
+    if stop == "telemetry_unavailable":
+        assert guard.trigger["conditions"][0]["fields"] == ["MemFree", "pswpout"]
+    if stop == "sampling_gap":
+        assert guard.trigger["conditions"][0]["value"] == round(sample_update["t_mono"] - 0.2, 6)
+
+
+def test_missing_or_invalid_attribution_fields_are_recorded_unavailable_and_never_stop_the_guard(operator):
+    assert {"AnonPages", "Mapped", "Active(file)", "Inactive(file)"} <= set(operator.MEMORY_KEYS)
+    backend = FakeBackend()
+    lines = []
+    guard = operator.PressureGuard(backend.sample(), emit=lines.append)
+    for update in ({}, {"AnonPages": -1, "Mapped": True, "Active(file)": 1.5, "Inactive(file)": "7"},
+                   {"AnonPages": 1024, "Mapped": 2048, "Active(file)": 0, "Inactive(file)": 4096}):
+        backend.now += 0.2
+        assert guard.observe({**backend.sample(), **update}) is None
+    assert guard.trigger is None
+    for line in lines[:2]:
+        assert all(line[key] is None for key in ("AnonPages", "Mapped", "Active(file)", "Inactive(file)"))
+    assert [lines[2][key] for key in ("AnonPages", "Mapped", "Active(file)", "Inactive(file)")] == [1024, 2048, 0, 4096]
+    assert lines[2]["pressure_bytes"] == 1_000_000_000  # the guard metric is unchanged
+
+
+def test_stderr_is_captured_bounded_only_when_asked_and_never_otherwise(operator):
+    backend = FakeBackend()
+    backend.overrides["journal"] = {"returncode": 1, "errors": b"x" * 10_000}
+    runner = operator.ProcessRunner(backend)
+    captured = runner.run(["/usr/bin/journalctl"], 1.0, capture_stderr=True)
+    plain = runner.run(["/usr/bin/journalctl"], 1.0)
+    assert backend.captured == [True, False]
+    assert captured.status == plain.status == "child_failed" and captured.returncode == 1
+    assert captured.errors == b"x" * operator.ERROR_LIMIT and plain.errors == b""
+    assert "errors" not in captured.diagnostic()
+
+
+def test_a_real_child_stderr_goes_to_an_unlinked_file_only_when_captured(operator):
+    script = "import sys; sys.stdout.write('out'); sys.stderr.write('e' * 10000); sys.exit(3)"
+    runner = operator.ProcessRunner(operator.SystemBackend())
+    captured = runner.run([sys.executable, "-c", script], 10.0, capture_stderr=True)
+    plain = runner.run([sys.executable, "-c", script], 10.0)
+    assert (captured.status, captured.returncode, captured.output) == ("child_failed", 3, b"out")
+    assert captured.errors == b"e" * operator.ERROR_LIMIT and captured.cleanup_clear
+    assert (plain.status, plain.returncode, plain.output, plain.errors) == ("child_failed", 3, b"out", b"")
 
 
 def test_sampling_gap_and_unavailable_clock_are_fail_closed(operator):
