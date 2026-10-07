@@ -180,6 +180,14 @@ def _e(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
+def _identity_counts(live: dict[str, Any]) -> str | None:
+    counts = live.get("identity") if live else None
+    if not counts:
+        return None
+    return (f"known {counts.get('known')} (fresh {counts.get('fresh')}, retained {counts.get('retained')}) · "
+            f"unknown {counts.get('unknown')} · uncertain {counts.get('uncertain')} · unresolved {counts.get('unresolved')}")
+
+
 def _rows(pairs: list[tuple[str, object]]) -> str:
     return "".join(f"<tr><th>{_e(k)}</th><td>{_e(v)}</td></tr>" for k, v in pairs)
 
@@ -205,7 +213,7 @@ def render_html(status: Mapping[str, Any]) -> str:
         if degraded else "<div class='banner ok'><strong>All components working</strong></div>"
     )
     component_rows = []
-    for name in ("capture", "detector", "scene", "incidents"):
+    for name in ("capture", "detector", "scene", "face", "incidents"):
         item = components.get(name) or {}
         component_rows.append([name, item.get("state"), item.get("problem")])
     notifications = components.get("notifications") or {}
@@ -272,7 +280,8 @@ table.list{{width:100%}} .muted{{color:var(--muted)}} .banner{{padding:8px 12px;
         ("detector", live.get("detector")), ("occupancy", live.get("occupancy")),
         ("why", live.get("occupancy_reason")), ("people (confirmed)",
         None if not live else f"{live.get('people')} ({live.get('confirmed_people')})"),
-        ("face recognition", live.get("face_recognition")), ("scene analysis", live.get("scene_analysis"))])}</table>
+        ("face recognition", live.get("face_recognition")), ("identities (counts only)", _identity_counts(live)),
+        ("scene analysis", live.get("scene_analysis"))])}</table>
 <table>{_rows(scene_rows)}</table></section>
 </div>
 <h2>Incidents</h2><p>{_e(incidents.get("unresolved"))} unresolved; latest {MAX_INCIDENTS} shown.

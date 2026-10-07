@@ -249,3 +249,16 @@ def test_the_in_memory_buffer_limitation_is_always_shown(page) -> None:
     assert document["components"]["incidents"]["durability"] == PENDING_DURABILITY
     page.state["snapshot"] = {"runtime": {"state": "starting", "camera_id": "cam-1"}}  # before the runtime exists
     assert "not a crash-safe spool" in get(page, "/")[2].decode()
+
+
+def test_face_recognition_and_identity_counts_are_shown_without_ids(page) -> None:
+    page.state["snapshot"] = {
+        **SNAPSHOT,
+        "components": {**SNAPSHOT["components"], "face": {"state": "available", "problem": None}},
+        "live": {**SNAPSHOT["live"], "face_recognition": "available", "identity": {
+            "unresolved": 1, "unknown": 0, "known": 1, "uncertain": 0, "fresh": 1, "retained": 0}},
+    }
+    text = get(page, "/")[2].decode()
+    assert "<td>face</td>" in text.replace("<td>face recognition</td>", "")
+    assert "known 1 (fresh 1, retained 0) · unknown 0 · uncertain 0 · unresolved 1" in text
+    assert "idn-" not in text
