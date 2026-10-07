@@ -121,7 +121,11 @@ class AdapterSpec:
     contract_versions: frozenset[int] = SUPPORTED_CONTRACT_VERSIONS
     # Needs an ACCEPTED combined profile that passed the step-4 criteria, not just a known one (D46).
     requires_accepted_profile: bool = False
+    # Needs its own face admission record keyed to an accepted profile (V2-25 demo form), never a profile alone.
+    requires_face_admission: bool = False
 
+
+FACE_ADAPTER_ID = "legacy-deepface-facenet512-yunet"
 
 # Real adapters join with their packages (face V2-25, notifiers V2-15 still to
 # come). Keep this table explicit.
@@ -135,6 +139,17 @@ BUILTIN_ADAPTERS: Mapping[str, AdapterSpec] = {
         input_kinds=frozenset({"frame"}),
         output_kinds=frozenset({"scene.report"}),
         requires_accepted_profile=True,
+    ),
+    # V2-25 demo form: the face path the accepted replay profile measured (YuNet + Facenet512, TensorFlow on the CPU,
+    # 1 Hz). Admitted only through a FACE_ADMISSIONS record, which starts PENDING_VALIDATION.
+    FACE_ADAPTER_ID: AdapterSpec(
+        adapter_id=FACE_ADAPTER_ID,
+        role=AdapterRole.FACE,
+        module="sentinel.identity.legacy_deepface",
+        attribute="LegacyDeepFaceBackend",
+        input_kinds=frozenset({"frame"}),
+        output_kinds=frozenset({"face.observation"}),
+        requires_face_admission=True,
     ),
     # V2-09/V2-10 demo form: v1's engine through Ultralytics track() with ByteTrack.
     "legacy-yolov8n-bytetrack": AdapterSpec(
@@ -381,6 +396,80 @@ def known_profile_ids(profiles: Mapping[str, ResourceProfile] = RESOURCE_PROFILE
 KNOWN_RESOURCE_PROFILES: frozenset[str] = known_profile_ids()
 
 
+# ---------------------------------------------------------------- face admission (V2-25 demo form)
+
+
+class FaceAdmissionStatus(str, Enum):
+    PENDING_VALIDATION = "pending_validation"  # only an explicit, guarded --face-validation run may use it
+    VALIDATED = "validated"  # set by a separate, maintainer-approved commit after the live device validation
+
+
+# What the replay profile's face measurement does not establish about the live identity pipeline.
+FACE_RUNTIME_LIMITATION = (
+    "the profile measured this face model on replay in the profiler's workload: YuNet and Facenet512 on whole 640x480 "
+    "frames at 1.0 Hz with TensorFlow on the CPU (600 runs, 0 errors, p50 919.0 ms, a 439,967,744 B load delta), with "
+    "no enrolled identities; it does not measure live camera faces, sentinel run's face worker (scheduling, skipped "
+    "empty frames, frame copies, result rejection), association with live tracks, gallery matching or the sealed "
+    "gallery, identity correctness, or the runtime's memory with face; those need the separate live device validation"
+)
+
+
+@dataclass(frozen=True)
+class FaceAdmission:
+    """A face admission record, separate from the resource profile it names (whose entry is never edited)."""
+
+    profile_id: str
+    status: FaceAdmissionStatus
+    face_hz: float  # the measured cadence; the runtime's identity.face_interval_s must equal 1 / face_hz
+    model_weights: FileFacts  # with sha256
+    detector_weights: FileFacts  # with sha256
+    deepface_version: str
+    limitation: str = FACE_RUNTIME_LIMITATION
+    note: str = ""
+
+
+FACE_ADMISSIONS: Mapping[str, FaceAdmission] = MappingProxyType({
+    # Maintainer decision (2026-10-07): a separate record keyed to the accepted replay profile, starting
+    # PENDING_VALIDATION; the profile entry, its acceptance and its limitations stay as recorded.
+    "step4cand-demo-20261007T090339Z": FaceAdmission(
+        profile_id="step4cand-demo-20261007T090339Z",
+        status=FaceAdmissionStatus.PENDING_VALIDATION,
+        face_hz=1.0,
+        model_weights=FileFacts("facenet512_weights.h5", 94_955_648, "2026-03-23T14:43:46+00:00",
+                                "3f76b5117a9ca574d536af8199e6720089eb4ad3dc7e93534496d88265de864f"),
+        detector_weights=FileFacts("face_detection_yunet_2023mar.onnx", 232_589, "2026-04-25T22:14:17+00:00",
+                                   "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"),
+        deepface_version="0.0.99",
+        note="weights as that run's provenance recorded them; face workload_steady: 600 runs at 1.0 Hz, 0 errors",
+    ),
+})
+
+
+def face_admission_problem(
+    profile_id: str | None,
+    *,
+    validation_run: bool,
+    profiles: Mapping[str, ResourceProfile] = RESOURCE_PROFILES,
+    admissions: Mapping[str, FaceAdmission] = FACE_ADMISSIONS,
+) -> str | None:
+    """None if face recognition may run on ``profile_id``: an accepted profile with a face admission record that is
+    VALIDATED, or PENDING_VALIDATION in a ``--face-validation`` run; otherwise the first missing prerequisite."""
+    if profile_id is None:
+        return "the manifest names no resource_profile_id; face needs a face admission record"
+    problem = accepted_profile_problem(profile_id, profiles)
+    if problem is not None:
+        return problem
+    admission = admissions.get(profile_id)
+    if admission is None or admission.profile_id != profile_id:
+        return f"resource profile {profile_id} has no face admission record"
+    if admission.status is FaceAdmissionStatus.PENDING_VALIDATION and not validation_run:
+        return (f"the face admission for {profile_id} is pending validation; only a guarded --face-validation run "
+                "may use it")
+    if admission.status not in (FaceAdmissionStatus.PENDING_VALIDATION, FaceAdmissionStatus.VALIDATED):
+        return f"the face admission for {profile_id} is {admission.status.value}"
+    return None
+
+
 def accepted_profile_problem(
     profile_id: str | None, profiles: Mapping[str, ResourceProfile] = RESOURCE_PROFILES
 ) -> str | None:
@@ -488,12 +577,13 @@ def resolve(
     registry: Mapping[str, AdapterSpec] = BUILTIN_ADAPTERS,
     known_profiles: frozenset[str] | None = None,
     profiles: Mapping[str, ResourceProfile] = RESOURCE_PROFILES,
+    face_admissions: Mapping[str, FaceAdmission] = FACE_ADMISSIONS,
 ) -> tuple[AdapterStatus, ...]:
     """Decide each adapter's state without importing anything."""
     known = known_profile_ids(profiles) if known_profiles is None else known_profiles
     statuses = []
     for manifest in manifests:
-        statuses.append(_resolve_one(manifest, registry, known, profiles))
+        statuses.append(_resolve_one(manifest, registry, known, profiles, face_admissions))
     return tuple(statuses)
 
 
@@ -502,6 +592,7 @@ def _resolve_one(
     registry: Mapping[str, AdapterSpec],
     known_profiles: frozenset[str],
     profiles: Mapping[str, ResourceProfile],
+    face_admissions: Mapping[str, FaceAdmission] = FACE_ADMISSIONS,
 ) -> AdapterStatus:
     def unavailable(reason: str, spec: AdapterSpec | None = None) -> AdapterStatus:
         return AdapterStatus(manifest, AdapterState.UNAVAILABLE, reason, spec)
@@ -519,6 +610,15 @@ def _resolve_one(
     if missing_in or missing_out:
         kinds = ", ".join(sorted(missing_in | missing_out))
         return unavailable(f"implementation does not handle kinds: {kinds}", spec)
+    if spec.requires_face_admission:
+        problem = face_admission_problem(manifest.resource_profile_id, validation_run=True, profiles=profiles,
+                                         admissions=face_admissions)
+        if problem is not None:
+            return unavailable(problem, spec)
+        if face_admissions[manifest.resource_profile_id].status is FaceAdmissionStatus.PENDING_VALIDATION:  # type: ignore[index]
+            return AdapterStatus(manifest, AdapterState.ENABLED,
+                                 "enabled for guarded --face-validation runs only (admission pending validation)", spec)
+        return AdapterStatus(manifest, AdapterState.ENABLED, "enabled", spec)
     if spec.requires_accepted_profile:
         problem = accepted_profile_problem(manifest.resource_profile_id, profiles)
         if problem is not None:
