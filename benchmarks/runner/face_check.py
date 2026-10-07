@@ -2,7 +2,15 @@
 """The V2-25 device check's predeclared readings (F1 consented enrollment, F2 guarded live validation).
 
     face_check.py f1 F1_DIR --identity-dir DIR
-    face_check.py f2 F2_DIR --f1 F1_DIR
+    face_check.py f2 F2_DIR --f1 F1_DIR [--run RUN_DIR --identity-dir DIR --recheck-root ROOT]
+    face_check.py f1-recheck RECHECK_DIR --run RUN_DIR --identity-dir DIR
+    face_check.py gate RUN_DIR --identity-dir DIR [--recheck-root ROOT]
+
+``f1-recheck`` is a corrected F1 reading made afterwards (face_recheck.py writes its directory); the run's own
+result stays as recorded. ``gate`` says whether F2 may build on a run's F1: its own F1 validated, or exactly one
+corrected F1 reading of it that the maintainer explicitly accepted (face_recheck.py accept) and that still matches
+the run, its manifest, the enrolled identity and the audit log, and still validates. The privacy counts come from
+face_privacy.py (face_counts.sh) and must cover every evidence file with each of their keys, nonconforming included.
 
 Each item prints PASS, FAIL, MISSING or NOT_EXERCISED, then ``face-<part>: validated`` or ``not validated``; exit
 status 0 only when every item passed. Missing evidence never passes, and NOT_EXERCISED (the run did not test what the
@@ -41,6 +49,7 @@ from pathlib import Path
 from typing import Any
 
 import face_account
+import face_evidence
 import step5_check as s5
 from operator_account import parse as parse_account
 from operator_account import seconds as stopwatch_seconds
@@ -287,8 +296,13 @@ def _counts(directory: Path, name: str) -> Any:
     return out or MISSING
 
 
-def read_f2(directory: Path, f1: Path) -> Reading:
+def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | None = None) -> Reading:
+    """``gate`` (run directory, identity directory, recheck root): F2 also needs that run's F1 basis (f1_gate)."""
     r = Reading()
+    if gate is not None:
+        ok, lines = f1_gate(*gate)
+        r.item("F1 basis for this F2: the run's own F1 validated, or the maintainer's accepted corrected F1 reading of "
+               "it", dict(line.split("=", 1) for line in lines), ok and f1.resolve() == (gate[0] / "f1").resolve())
     result = s5._load(directory / "result.json")
     s5._supervision(r, result, "duration_stop", 0)
     start = s5._get(result, "run_output", "starting")
@@ -499,17 +513,31 @@ def _retention(r: Reading, line: Timeline, windows: dict, enrolled: str, account
 
 
 COUNT_FILES = ("secret-counts-camera.txt", "secret-counts-identity.txt")
-NOT_COUNTED = {"SHA256SUMS", "check.txt", *COUNT_FILES}  # written after the counts, or the counts themselves
+NOT_COUNTED = face_evidence.NOT_COUNTED  # written after the counts, or the counts themselves
+# face_privacy's keys per counts file; "nonconforming" counts the parts of a file that do not fit its profile
+COUNT_KEYS = {"secret-counts-camera.txt": ("userinfo",),
+              "secret-counts-identity.txt": ("passphrase", "name", "nonconforming")}
+F1_COUNT_KEYS = ("passphrase", "name", "filenames", "nonconforming")
+
+
+def _count_check(counts: Any, expected: set[str], keys: tuple[str, ...]) -> tuple[Any, bool]:
+    """(the value shown, passed): every expected file counted with exactly these keys, all 0."""
+    if not isinstance(counts, dict):
+        return MISSING, False
+    by_file: dict[str, set[str]] = {}
+    for line in counts:
+        path, key = line.rsplit(" ", 1)
+        by_file.setdefault(path, set()).add(key)
+    incomplete = sorted(path for path in expected if by_file.get(path) != set(keys))
+    nonzero = [k for k, v in counts.items() if v]
+    return {"lines": len(counts), "nonzero": nonzero, "incomplete": incomplete}, not nonzero and not incomplete
 
 
 def _counts_items(r: Reading, directory: Path) -> None:
     expected = {p.name for p in directory.iterdir() if p.is_file() and p.name not in NOT_COUNTED}
-    for name, label in zip(COUNT_FILES, ("camera userinfo", "passphrase and name")):
-        counts = _counts(directory, name)
-        files = {line.split(" ")[0] for line in counts} if isinstance(counts, dict) else set()
-        r.item(f"{label} counts: every evidence file counted, all 0",
-               {"lines": len(counts), "nonzero": [k for k, v in counts.items() if v]} if isinstance(counts, dict)
-               else MISSING, isinstance(counts, dict) and not any(counts.values()) and expected <= files)
+    for name, label in zip(COUNT_FILES, ("camera userinfo", "passphrase, name and nonconforming")):
+        value, passed = _count_check(_counts(directory, name), expected, COUNT_KEYS[name])
+        r.item(f"{label} counts: every evidence file counted with each, all 0", value, passed)
 
 
 def _describe(r: Reading, result: Any, line: Timeline, windows: dict, last: Any) -> None:
@@ -613,13 +641,156 @@ def read_f1(directory: Path, identity_dir: Path) -> Reading:
            and enrolls[0].get("photos_used") == s5._get(enroll, "accepted")
            and enrolls[0].get("photos_rejected") == (supplied_n if isinstance(supplied_n, int) else -1)
            - (s5._get(enroll, "accepted") or 0))
-    counts = _counts(directory, "secret-counts-identity.txt")
-    files = {line.split(" ")[0] for line in counts} if isinstance(counts, dict) else set()
-    expected = {p.name for p in directory.iterdir() if p.is_file() and p.name not in NOT_COUNTED} | {"audit.jsonl"}
-    r.item("passphrase, name and photo-file-name counts: every evidence file counted, all 0",
-           {"lines": len(counts), "nonzero": [k for k, v in counts.items() if v]} if isinstance(counts, dict)
-           else MISSING, isinstance(counts, dict) and not any(counts.values()) and expected <= files)
+    value, passed = _count_check(_counts(directory, "secret-counts-identity.txt"), _f1_files(directory), F1_COUNT_KEYS)
+    r.item(f"{PRIVACY_ITEM}, and nonconforming parts: every evidence file counted with each, all 0", value, passed)
     return r
+
+
+PRIVACY_ITEM = "passphrase, name and photo-file-name counts"  # how F1's privacy item begins, before and after 95ce253
+
+
+def _f1_files(directory: Path) -> set[str]:
+    """F1's counted evidence: its directory's files and the identity directory's audit log."""
+    return {p.name for p in directory.iterdir() if p.is_file() and p.name not in NOT_COUNTED} | {"audit.jsonl"}
+
+
+# ---------------------------------------------------------------- F1 recheck and the F1 gate for F2
+
+RUN_EVIDENCE = ("provenance.txt", "f1/dryrun.json", "f1/enroll.json", "f1/list.json", "f1/provenance.txt",
+                "f1/check.txt", "f1/secret-counts-identity.txt")
+NAME_COUNTS = "secret-counts-names.txt"
+CARRIED_SOURCE = "f1/secret-counts-identity.txt"
+RECHECK_VERDICT = "face-f1-recheck: validated"
+ACCEPTANCE = "acceptance.txt"
+
+
+def _sha256(path: Path) -> Any:
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else MISSING
+
+
+def _manifest(directory: Path, ignore: frozenset[str] = frozenset()) -> tuple[dict[str, str] | None, list[str]]:
+    """The directory's SHA256SUMS as {relative path: SHA-256}, and its problems: a listed file missing or changed,
+    or a file present but not listed (``ignore``: names never listed)."""
+    try:
+        text = (directory / "SHA256SUMS").read_text()
+    except OSError:
+        return None, ["SHA256SUMS missing"]
+    listed = {}
+    for line in text.splitlines():
+        match = re.fullmatch(r"([0-9a-f]{64})  (?:\./)?(.+)", line)
+        if match is None:
+            return None, ["SHA256SUMS malformed"]
+        listed[match[2]] = match[1]
+    problems = [f"{'missing' if not (directory / rel).is_file() else 'changed'}: {rel}"
+                for rel, digest in sorted(listed.items()) if _sha256(directory / rel) != digest]
+    present = {p.relative_to(directory).as_posix() for p in directory.rglob("*") if p.is_file()}
+    problems += [f"not listed: {rel}" for rel in sorted(present - set(listed) - {"SHA256SUMS"} - ignore)]
+    return listed, problems
+
+
+def _last(path: Path) -> Any:
+    lines = path.read_text().splitlines() if path.is_file() else []
+    return lines[-1] if lines else MISSING
+
+
+def _key_values(path: Path) -> dict[str, str]:
+    return dict(line.split("=", 1) for line in path.read_text().splitlines() if "=" in line) if path.is_file() else {}
+
+
+def read_f1_recheck(recheck: Path, run: Path, identity_dir: Path) -> Reading:
+    """A corrected F1 reading of a run, made afterwards: the run's own result stays as recorded."""
+    r = Reading()
+    listed, problems = _manifest(run)
+    unlisted = [e for e in RUN_EVIDENCE if e not in (listed or {})]
+    r.item("the run's evidence unchanged: its SHA256SUMS verifies every file, lists F1's evidence, counts and reading, "
+           "and nothing was added", {"problems": problems, "not_listed": unlisted},
+           listed is not None and not problems and not unlisted)
+    exits = [line.split("=", 1)[1] for line in (run / "provenance.txt").read_text().splitlines()
+             if line.startswith("F1_exit=")] if (run / "provenance.txt").is_file() else []
+    r.describe("the run's own result, kept as recorded", {"F1_exit": exits[-1] if exits else MISSING,
+                                                          "f1/check.txt": _last(run / "f1/check.txt")})
+    original = (run / "f1/check.txt").read_text().splitlines() if (run / "f1/check.txt").is_file() else []
+    fresh = read_f1(run / "f1", identity_dir).lines
+
+    def others(lines: list[str]) -> list[str]:
+        return [x for x in lines if not x.startswith("face-f1:") and not x.split(" ", 1)[-1].startswith(PRIVACY_ITEM)]
+
+    same = bool(others(original)) and others(original) == others(fresh)
+    r.item("every original F1 item other than the privacy counts is reproduced unchanged by this code, and passes",
+           {"items": len(others(fresh)), "identical": same}, same and all(x.startswith("PASS ") for x in others(fresh)))
+    expected = _f1_files(run / "f1")
+    value, passed = _count_check(_counts(recheck, NAME_COUNTS), expected, ("name", "nonconforming"))
+    r.item("names counted again with the corrected method, and every file fits its profile: every F1 evidence file "
+           "counted with each, all 0", value, passed)
+    source = _sha256(run / CARRIED_SOURCE)
+    in_manifest = listed is not None and listed.get(CARRIED_SOURCE) == source
+    carried = _counts(run / "f1", "secret-counts-identity.txt")
+    if isinstance(carried, dict):
+        carried = {k: v for k, v in carried.items() if k.rsplit(" ", 1)[1] in ("passphrase", "filenames")}
+    value, passed = _count_check(carried, expected, ("passphrase", "filenames"))
+    if isinstance(value, dict):
+        value.update(source=CARRIED_SOURCE, sha256=source, verified_by_run_manifest=in_manifest, rescanned=False)
+    r.item("passphrase and photo-file-name counts carried forward from the run's own counts file, not rescanned: the "
+           "file verified by the run's SHA256SUMS, every F1 evidence file counted, all 0", value,
+           passed and in_manifest)
+    identity = _enrolled_id(run / "f1")
+    want = {"run": run.name, "run_manifest_sha256": _sha256(run / "SHA256SUMS"), "identity_id": identity,
+            "audit_sha256": _sha256(identity_dir / "audit.jsonl"), "carried_source_sha256": source,
+            "names": "recounted", "passphrase_counts": "carried_forward", "filename_counts": "carried_forward"}
+    recorded = _key_values(recheck / "provenance.txt")
+    got = {key: recorded.get(key, MISSING) for key in want}
+    r.item("the recheck's provenance names this run, its manifest, the enrolled identity and the audit log as they are "
+           "now, and what was carried forward", got, got == want and identity is not None)
+    return r
+
+
+def f1_gate(run: Path, identity_dir: Path, recheck_root: Path | None) -> tuple[bool, list[str]]:
+    """Whether F2 may build on this run's F1, as ``key=value`` lines: its own F1 validated, or exactly one corrected
+    F1 reading of it that the maintainer explicitly accepted and that still matches the run, its manifest, the
+    enrolled identity and the audit log, and still validates."""
+
+    def refused(reason: str) -> tuple[bool, list[str]]:
+        return False, ["f1_gate=refused", f"f1_gate_reason={reason}"]
+
+    listed, problems = _manifest(run)
+    if listed is None or problems or not all(e in listed for e in RUN_EVIDENCE):
+        return refused("run_evidence_changed")
+    identity = _enrolled_id(run / "f1")
+    if identity is None:
+        return refused("no_enrolled_identity")
+    if not (identity_dir / "gallery.sealed").is_file():
+        return refused("gallery_missing")
+    exits = [line.split("=", 1)[1] for line in (run / "provenance.txt").read_text().splitlines()
+             if line.startswith("F1_exit=")]
+    head = ["f1_gate=passed", f"run={run.name}"]
+    if exits and exits[-1] == "0":
+        if _last(run / "f1/check.txt") != "face-f1: validated":
+            return refused("f1_check_not_validated")
+        return True, [*head, "f1_basis=original", f"f1_identity_id={identity}"]
+    candidates = sorted(p for p in recheck_root.glob(f"{run.name}-f1-*") if (p / ACCEPTANCE).is_file()) \
+        if recheck_root is not None and recheck_root.is_dir() else []
+    if len(candidates) != 1:
+        return refused("no_accepted_recheck" if not candidates else "several_accepted_rechecks")
+    recheck = candidates[0]
+    if not re.fullmatch(face_evidence.RECHECK_NAME, recheck.name):
+        return refused("recheck_name")
+    rlisted, rproblems = _manifest(recheck, ignore=frozenset({ACCEPTANCE}))
+    if rlisted is None or rproblems:
+        return refused("recheck_changed")
+    if _last(recheck / "check.txt") != RECHECK_VERDICT:
+        return refused("recheck_not_validated")
+    if not read_f1_recheck(recheck, run, identity_dir).ok:
+        return refused("recheck_no_longer_validates")
+    accepted = _key_values(recheck / ACCEPTANCE)
+    want = {"accepted_reading": "f1-recheck", "run": run.name, "identity_id": identity,
+            "run_manifest_sha256": _sha256(run / "SHA256SUMS"),
+            "recheck_manifest_sha256": _sha256(recheck / "SHA256SUMS"),
+            "recheck_check_sha256": _sha256(recheck / "check.txt"),
+            "audit_sha256": _sha256(identity_dir / "audit.jsonl"), "confirmation": f"ACCEPT {run.name} {identity}"}
+    if any(accepted.get(k) != v for k, v in want.items()) or not face_evidence.ISO.fit(accepted.get("accepted_utc"))[0]:
+        return refused("acceptance_does_not_match")
+    return True, [*head, "f1_basis=accepted_recheck", f"f1_recheck={recheck.name}",
+                  f"f1_accepted_utc={accepted['accepted_utc']}", f"f1_identity_id={identity}"]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -631,11 +802,34 @@ def main(argv: list[str] | None = None) -> int:
     f2 = commands.add_parser("f2", help="read the guarded live validation's evidence")
     f2.add_argument("directory", type=Path)
     f2.add_argument("--f1", type=Path, required=True, help="F1's evidence directory (the enrolled ID)")
+    f2.add_argument("--run", type=Path, help="with --identity-dir: also require this run's F1 basis (see gate)")
+    f2.add_argument("--identity-dir", type=Path)
+    f2.add_argument("--recheck-root", type=Path, help="where accepted corrected F1 readings are (see gate)")
+    recheck = commands.add_parser("f1-recheck", help="a corrected F1 reading of a run, made afterwards")
+    recheck.add_argument("directory", type=Path, help="the recheck directory (face_recheck.py run)")
+    recheck.add_argument("--run", type=Path, required=True)
+    recheck.add_argument("--identity-dir", type=Path, required=True)
+    gate = commands.add_parser("gate", help="whether F2 may build on a run's F1 (key=value lines; exit 0 if so)")
+    gate.add_argument("run", type=Path)
+    gate.add_argument("--identity-dir", type=Path, required=True)
+    gate.add_argument("--recheck-root", type=Path)
     args = parser.parse_args(argv)
-    reading = read_f1(args.directory, args.identity_dir) if args.part == "f1" else read_f2(args.directory, args.f1)
+    if args.part == "gate":
+        ok, lines = f1_gate(args.run, args.identity_dir, args.recheck_root)
+        print("\n".join(lines))
+        return 0 if ok else 1
+    if args.part == "f1":
+        reading, verdict = read_f1(args.directory, args.identity_dir), "face-f1"
+    elif args.part == "f1-recheck":
+        reading, verdict = read_f1_recheck(args.directory, args.run, args.identity_dir), "face-f1-recheck"
+    else:
+        if (args.run is None) != (args.identity_dir is None):
+            parser.error("f2: --run and --identity-dir go together")
+        gate_args = None if args.run is None else (args.run, args.identity_dir, args.recheck_root)
+        reading, verdict = read_f2(args.directory, args.f1, gate_args), "face-f2"
     for line in reading.lines:
         print(line)
-    print(f"face-{args.part}: {'validated' if reading.ok else 'not validated'}")
+    print(f"{verdict}: {'validated' if reading.ok else 'not validated'}")
     return 0 if reading.ok else 1
 
 
