@@ -655,7 +655,7 @@ def status_line(snapshot: dict[str, Any]) -> dict[str, Any]:
         "video": live.get("video"),
         "occupancy": live.get("occupancy"),
         "scene": live.get("scene"),
-        "identity": live.get("identity"),
+        "identities": live.get("identity"),  # counts by state and basis; never the "identity" record key
         "rates": snapshot["rates"],
         "capture": {k: snapshot["components"]["capture"][k] for k in ("state", "stream_epoch", "reconnects")},
         "pending_signals": snapshot["components"]["incidents"]["pending_signals"],
