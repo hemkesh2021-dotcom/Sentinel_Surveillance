@@ -49,6 +49,23 @@ PLR_PROCEDURE = ("step 4 with each model's file cache released (posix_fadvise DO
                  "then step 4's 120 s warm-up and 600 s steady phases (D54)")
 PLR_ADMISSION = (f"not admissible: D46 scene admission requires {CRITERIA_ID} from step 4's procedure, and "
                  "sentinel run performs no post-load release")
+# D58 candidate (opt-in): the PLR procedure plus the workload's verified THP disable (D57's call, shared with sentinel
+# run), without MA1's sampling. Every rule and threshold above applies unchanged under this identity; R also needs
+# PLR's two release inputs and these four, which the profiler's candidate.json records (missing is never met).
+CANDIDATE_CRITERIA_ID = "step4cand-wtd-plr-combined-cache-off-v2"
+CANDIDATE_RUN_INPUTS = ("thp_disable_verified", "thp_scope_verified", "thp_effect_verified", "thp_settings_unchanged")
+CANDIDATE_PROCEDURE = ("step 4 with each model's file cache released after its load and settle (D54) and transparent "
+                       "huge pages disabled in the workload process alone, verified (D57's call), without MA1's "
+                       "allocator, smaps or THP-counter sampling; step 4's 120 s warm-up and 600 s steady phases (D58)")
+CANDIDATE_ADMISSION = (f"not admissible: D46 scene admission requires {CRITERIA_ID}; admitting this identity needs a "
+                       "separate maintainer decision and acceptance commit, and sentinel run must apply the same "
+                       "memory policy (thp workload_disabled, model-file release post_load)")
+# The memory policy (sentinel.memory_policy: thp, model_file_release) each identity's procedure measures.
+MEMORY_POLICIES = {
+    CRITERIA_ID: ("system", "none"),
+    PLR_CRITERIA_ID: ("system", "post_load"),
+    CANDIDATE_CRITERIA_ID: ("workload_disabled", "post_load"),
+}
 
 PASS, FAIL, UNAVAILABLE = "pass", "fail", "unavailable"
 
@@ -302,20 +319,26 @@ def evaluate(
 ) -> dict[str, Any]:
     """Every criterion, and whether the run may go to the maintainer for review (never acceptance).
 
-    ``criteria_id`` is CRITERIA_ID for step 4, or PLR_CRITERIA_ID for the step-4 PLR variant: the same rules and
-    thresholds, plus R's two release inputs, reported under the variant's own identity."""
-    if criteria_id not in (CRITERIA_ID, PLR_CRITERIA_ID):
+    ``criteria_id`` is CRITERIA_ID for step 4, PLR_CRITERIA_ID for the step-4 PLR variant, or CANDIDATE_CRITERIA_ID
+    for the D58 candidate: the same rules and thresholds, plus R's two release inputs (both variants) and the four
+    THP-disable inputs (the candidate), reported under the variant's own identity."""
+    if criteria_id not in (CRITERIA_ID, PLR_CRITERIA_ID, CANDIDATE_CRITERIA_ID):
         raise ValueError(f"unknown criteria identity {criteria_id!r}")
-    plr = criteria_id == PLR_CRITERIA_ID
+    candidate = criteria_id == CANDIDATE_CRITERIA_ID
+    plr = criteria_id == PLR_CRITERIA_ID or candidate
     criteria: dict[str, dict[str, Any]] = {}
     criteria["R_valid_run"] = _check(
         bool(run.get("guard_completed") and run.get("cleanup_clear") and run.get("check9_ok")
              and run.get("drop_declared") and run.get("profile_complete") and run.get("headless")
              and run.get("no_dev_tools") and run.get("no_tracked_changes")
-             and (not plr or all(run.get(key) is True for key in PLR_RUN_INPUTS))),
+             and (not plr or all(run.get(key) is True for key in PLR_RUN_INPUTS))
+             and (not candidate or all(run.get(key) is True for key in CANDIDATE_RUN_INPUTS))),
         "guard completed, cleanup clear, same-boot Check 9, cache drop declared, profile complete, headless, "
         "no dev tools, no tracked changes"
-        + ("; PLR: all three post-load releases recorded and every release call returned 0" if plr else ""),
+        + ("; PLR: all three post-load releases recorded and every release call returned 0" if plr else "")
+        + ("; candidate: the workload's THP disable verified before the detector load, THP_enabled as expected at "
+           "all four checkpoints, its AnonHugePages never above its value at the check, and the THP settings "
+           "unchanged" if candidate else ""),
         dict(run),
     )
     if profile is None:
@@ -352,7 +375,11 @@ def evaluate(
         "acceptance": "only a separate, maintainer-approved registry commit can accept a profile (D46)",
         "scope": "demo profile (640x480 replay, 15 fps); not the guide's 1080p beta gates",
     }
-    if plr:
+    if candidate:
+        result.update(procedure=CANDIDATE_PROCEDURE, admission=CANDIDATE_ADMISSION,
+                      criteria_rules=f"{CRITERIA_ID} (D47 with the session 18 amendment): every rule and threshold "
+                                     "unchanged; R adds the two release inputs and the four THP-disable inputs")
+    elif plr:
         result.update(procedure=PLR_PROCEDURE, admission=PLR_ADMISSION,
                       criteria_rules=f"{CRITERIA_ID} (D47 with the session 18 amendment): every rule and threshold "
                                      "unchanged; R adds the two release inputs")

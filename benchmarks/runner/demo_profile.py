@@ -44,16 +44,29 @@ monotonic read time and cost); and the kernel identity, page sizes and THP
 settings before and after the run. The summary writes thp.json with the
 predeclared reading (session 42). It never sets or tunes a THP setting.
 
-MA1-WTD (--workload-thp-disable, opt-in, D57; only with --thp-observation)
-passes --thp-disable to the workload, which disables transparent huge pages
-for its own process with prctl before any model library and stops unless that
-is verified. This profiler checks THP_enabled read-only at four points: itself
-before anything starts, itself and llama-server before the workload starts,
-all three when the workload reports its check, and again at the steady end.
+MA1-WTD (--workload-thp-disable, opt-in, D57; with --thp-observation, or with
+--candidate for D58) passes --thp-disable to the workload, which disables
+transparent huge pages for its own process with prctl before any model library
+and stops unless that is verified. This profiler checks THP_enabled read-only
+at four points: itself before anything starts, itself and llama-server before
+the workload starts, all three when the workload reports its check, and again
+at the steady end.
 The summary writes wtd.json: the intervention's verification, the D57 net-step
 rule, the heap's residency, khugepaged's activity, latency and throughput, and
 the predeclared reading (session 43). --net-steps RUN_DIR prints the same
 measures for any saved run without writing anything.
+
+The D58 candidate (--candidate, opt-in; with --post-load-release and
+--workload-thp-disable, without --memory-attribution or --thp-observation) is
+step 4 with the post-load release and the workload's verified THP disable, and
+none of MA1's allocator, smaps or THP-counter sampling. Its scope checks are
+cheap reads: THP_enabled at MA1-WTD's four checkpoints, the workload's
+AnonHugePages at its check and at the two steady boundaries, and the THP
+settings before and after. A release call that does not return 0 stops the
+run. The release call, its eligible files and the THP disable are
+sentinel.memory_policy's, which `sentinel run` uses for the same policies. The
+summary writes candidate.json; the run is judged by D47's rules and thresholds
+under step4_criteria.CANDIDATE_CRITERIA_ID and is never accepted.
 
 Run from a plain SSH session on the Jetson, headless (decision D29), with
 VS Code and Claude Code closed; see docs/IMPLEMENTATION_STATUS.md, check 8.
@@ -95,6 +108,10 @@ REPO = HERE.parents[1]
 if str(HERE) not in sys.path:  # loaded by path in tests; step4_criteria lives beside this file
     sys.path.insert(0, str(HERE))
 import step4_criteria  # noqa: E402 - standard library only
+SRC = REPO / "src"
+if str(SRC) not in sys.path:  # the memory policies shared with sentinel run (D58); standard library only, like this file
+    sys.path.insert(0, str(SRC))
+from sentinel import memory_policy  # noqa: E402
 WORKLOAD = HERE / "demo_workload.py"
 HOME = Path.home()
 L4T_LIBCUDA = "/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1"
@@ -127,7 +144,7 @@ ATTRIBUTION_MEMINFO_KEYS = ("AnonPages", "Mapped", "Active(file)", "Inactive(fil
 MEMINFO_KEYS = (*BASE_MEMINFO_KEYS, *ATTRIBUTION_MEMINFO_KEYS)
 DESKTOP_COMMS = frozenset({"Xorg", "Xwayland", "gnome-shell", "Xtigervnc", "Xvnc", "xfwm4", "xfce4-session"})
 V1_SCRIPTS = frozenset({"surveillance4_1.py", "dashboard.py", "dashboard_1.py"})
-DEEPFACE_WEIGHTS = ("facenet512_weights.h5", "face_detection_yunet_2023mar.onnx")
+DEEPFACE_WEIGHTS = memory_policy.RELEASE_FILE_ROLES["face"]  # ("facenet512_weights.h5", "face_detection_yunet_...")
 PHASES_IN_ORDER = (  # *_release: --mr1-release-check or --post-load-release; smoke: --mr1-release-check only
     "baseline", "llama_load", "llama_settle", "scene_release", "detector_load", "detector_settle", "detector_release",
     "face_load", "face_settle", "face_release", "smoke", "warmup", "steady", "stopping", "unload_workload",
@@ -136,11 +153,12 @@ PHASES_IN_ORDER = (  # *_release: --mr1-release-check or --post-load-release; sm
 # Events that carry monotonic boundaries and run-side evidence (kept in full, few per run).
 BOUNDARY_EVENTS = frozenset({"steady_boundary", "stop_boundary", "llama_cmdline", "cuda_driver"})
 LLAMA_BUILD_PREFIXES = ("libllama", "libggml", "libmtmd")
-# MR1 (opt-in): each component's model files, released after its load and settle.
-MR1_RELEASE_FILES = {"scene": ("llm", "mmproj"), "detector": ("engine",), "face": DEEPFACE_WEIGHTS}
+# MR1 (opt-in): each component's model files, released after its load and settle. The table and the call are
+# sentinel.memory_policy's, which sentinel run uses for its post-load release too (D58).
+MR1_RELEASE_FILES = memory_policy.RELEASE_FILE_ROLES  # scene: llm, mmproj; detector: engine; face: DEEPFACE_WEIGHTS
 MR1_RELEASE_SETTLE_S = 5.0  # /proc/meminfo counters fold in about every second
 MR1_SMOKE_BUDGET_S = 60.0  # detector frames, one face analysis and one scene request (30 s client timeout)
-MR1_FADVISE_CALL = "posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED)"
+MR1_FADVISE_CALL = memory_policy.FADVISE_CALL
 MR1_BASIS = ("device-wide /proc/meminfo and per-process status before and after the release window; it includes any "
              "other activity in the window and shows neither per-file residency nor which pages were released")
 MR1_SMOKE_KEYS = {
@@ -271,8 +289,8 @@ THP_CANNOT_ESTABLISH = (
 # llama-server keep the system setting, read at four checkpoints; nothing system-wide is written. The summary writes
 # wtd.json with the predeclared reading (session 43).
 WTD_LABEL = "ma1wtd-workload-thp-disable"
-WTD_STATUS_LIMIT_BYTES = 16 << 10  # /proc/<pid>/status is about 1.5 KB
-WTD_MODEL_MODULES = ("numpy", "cv2", "torch", "ultralytics", "tensorflow", "keras", "deepface")  # demo_workload's
+WTD_STATUS_LIMIT_BYTES = memory_policy.PROC_READ_LIMIT_BYTES  # /proc/<pid>/status is about 1.5 KB
+WTD_MODEL_MODULES = memory_policy.MODEL_MODULES  # demo_workload's (and sentinel run's)
 WTD_CHECKPOINTS = ("before_launch", "llama_ready", "workload_verified", "steady_end")
 WTD_EXPECTED = {  # THP_enabled each process must show at each checkpoint (a process not listed is not read there)
     "before_launch": {"profiler": 1},
@@ -280,8 +298,7 @@ WTD_EXPECTED = {  # THP_enabled each process must show at each checkpoint (a pro
     "workload_verified": {"profiler": 1, "llama": 1, "workload": 0},
     "steady_end": {"profiler": 1, "llama": 1, "workload": 0},
 }
-WTD_STARTUP_REASONS = ("model_modules_loaded", "prctl_unavailable", "set_failed", "get_mismatch", "status_unavailable",
-                       "status_mismatch", "anon_huge_pages_unavailable")
+WTD_STARTUP_REASONS = memory_policy.THP_DISABLE_REASONS
 NET_STEP_WINDOW_ROWS = 5  # 1.0 s of 0.2 s rows on each side of a rise
 NET_STEP_LOOP_WINDOW_S = 1.0  # a net step this close to a recorded clip reopen is loop-coincident
 NET_STEP_CLASSES = ("net_step", "rebound", "transient", "unresolved")
@@ -331,6 +348,24 @@ WTD_CANNOT_ESTABLISH = (
     "which pages a net step wrote or which code wrote them",
     "any THP policy for the runtime, step 4 or PLR result, eligibility, acceptance or admission",
     "other boots, inputs, flags or THP settings",
+)
+# D58 candidate (opt-in; --candidate, with --post-load-release and --workload-thp-disable): step 4 with the post-load
+# release (D54) and the workload's verified THP disable (D57's call), without MA1's allocator, smaps or THP-counter
+# sampling. Its scope checks are cheap reads: THP_enabled at MA1-WTD's four checkpoints, the workload's AnonHugePages
+# (smaps_rollup) at its check and at the two steady boundaries, and the THP settings before and after. A release call
+# that does not return 0 stops the run. Judged by D47's rules and thresholds under CANDIDATE_CRITERIA_ID; never
+# accepted, and not admissible while D46 is unchanged.
+CANDIDATE_LABEL = "step4cand-wtd-plr-candidate"
+CANDIDATE_EFFECT_POINTS = ("workload_verified", "steady_start", "steady_end")
+CANDIDATE_CANNOT_ESTABLISH = (
+    "that sentinel run behaves the same: it applies the same two policies through the same code, but runs no face "
+    "model, adds its own components (camera capture, rules, incidents, outbox, status page) and is not measured here",
+    "acceptance or scene admission: D46 accepts only step4-combined-cache-off-v2; this identity needs a separate "
+    "maintainer decision and acceptance commit",
+    "that the THP disable or the releases caused any memory or latency difference: one run, no same-boot arm without "
+    "them",
+    "per-file page-cache residency, or that a returned 0 dropped any page: mapped, dirty or locked pages stay",
+    "behaviour beyond the steady interval, other boots, inputs, flags or THP settings",
 )
 COMPONENTS = (  # (key, load phase, settle phase, event carrying the load time)
     ("scene", "llama_load", "llama_settle", "llama_ready"),
@@ -620,19 +655,16 @@ def thp_settings_changes(before: object, after: object) -> tuple[list[str], list
     return changed, unverified
 
 
-def read_thp_enabled(pid: int | str, *, opener=open) -> int | None:
-    """D57: ``THP_enabled`` (0 or 1) from /proc/<pid>/status, read-only; None when unreadable or unparsed, never 1."""
-    data = _read_bounded(Path(f"/proc/{pid}/status"), WTD_STATUS_LIMIT_BYTES, opener)
-    for line in (data.decode("ascii", "replace").splitlines() if data is not None else ()):
-        name, _, value = line.partition(":")
-        if name == "THP_enabled":
-            return int(value.strip()) if value.strip() in ("0", "1") else None
-    return None
+# D57: THP_enabled from /proc/<pid>/status, read-only; None when unreadable or unparsed, never 1. D58: the workload's
+# AnonHugePages from /proc/<pid>/smaps_rollup. Both are sentinel.memory_policy's, which sentinel run reads with too.
+read_thp_enabled = memory_policy.read_thp_enabled
+read_anon_huge_pages = memory_policy.read_anon_huge_pages
 
 
-def wtd_scope(checkpoint: str, pids: dict[str, int | None], *, read=read_thp_enabled, clock=time.monotonic) -> dict:
+def wtd_scope(checkpoint: str, pids: dict[str, int | None], *, read=None, clock=time.monotonic) -> dict:
     """D57: the THP_enabled of each process WTD_EXPECTED lists for ``checkpoint``; ``ok`` only when every one was read
     and matches. A process without a pid or an unreadable status is None, never as expected."""
+    read = read or read_thp_enabled
     expected = WTD_EXPECTED[checkpoint]
     values = {name: read(pids[name]) if pids.get(name) else None for name in expected}
     return {"checkpoint": checkpoint, "t_mono": round(clock(), 3), "thp_enabled": values, "expected": dict(expected),
@@ -734,9 +766,16 @@ def preconditions(args: argparse.Namespace) -> tuple[list[str], dict[str, object
         problems.append("--memory-attribution (MA1) is defined only with --post-load-release")
     if getattr(args, "thp_observation", False) and not getattr(args, "memory_attribution", False):
         problems.append("--thp-observation extends MA1's readings; it is defined only with --memory-attribution")
-    if getattr(args, "workload_thp_disable", False) and not getattr(args, "thp_observation", False):
-        problems.append("--workload-thp-disable (MA1-WTD, D57) is defined only with --thp-observation, whose readings "
-                        "verify it")
+    candidate = getattr(args, "candidate", False)
+    if getattr(args, "workload_thp_disable", False) and not (getattr(args, "thp_observation", False) or candidate):
+        problems.append("--workload-thp-disable is defined only with --thp-observation (MA1-WTD, D57) or --candidate "
+                        "(D58), whose readings verify it")
+    if candidate and not (getattr(args, "post_load_release", False) and getattr(args, "workload_thp_disable", False)):
+        problems.append("--candidate (D58) is the post-load release with the workload's THP disable: pass "
+                        "--post-load-release and --workload-thp-disable")
+    if candidate and (getattr(args, "memory_attribution", False) or getattr(args, "thp_observation", False)):
+        problems.append("--candidate (D58) runs without MA1's sampling: do not pass --memory-attribution or "
+                        "--thp-observation")
     for label, path in required.items():
         if not Path(path).exists():
             problems.append(f"missing {label}: {path}")
@@ -816,26 +855,38 @@ def provenance(args: argparse.Namespace, context: dict[str, object], run_id: str
                if getattr(args, "memory_attribution", False) else {}),
             **({"thp_observation": True} if getattr(args, "thp_observation", False) else {}),
             **({"workload_thp_disable": True} if getattr(args, "workload_thp_disable", False) else {}),
+            **({"candidate": True} if getattr(args, "candidate", False) else {}),
         },
+        # D58: the memory policy this run measures, in sentinel run's terms (recorded for every run).
+        "memory_policy": memory_policy.policy_from_flags(
+            workload_thp_disable=bool(getattr(args, "workload_thp_disable", False)),
+            post_load_release=bool(getattr(args, "post_load_release", False))).labels(),
         **({"mr1_note": "MR1 release check: loads and settles, each model's file cache released after its settle, "
                         "bounded smoke checks and unload. Not a resource profile, step-4 evidence or a sustained-memory test."}
            if getattr(args, "mr1_release_check", False) else {}),
         **({"plr_note": "Step-4 PLR (D54): step 4's procedure with each model's file cache released after its load and "
                         "settle, then the full warm-up and steady phases. Judged by D47's criteria under "
                         f"{step4_criteria.PLR_CRITERIA_ID}; never D47's step-4 result, accepted or admissible."}
-           if getattr(args, "post_load_release", False) else {}),
+           if getattr(args, "post_load_release", False) and not getattr(args, "candidate", False) else {}),
         **({"ma1_note": "MA1 (D55): an instrumented diagnostic run of the PLR procedure with the workload's own "
                         "allocator and garbage-collector counters and its mapping categories. Never eligible, accepted "
                         "or admissible."}
            if getattr(args, "memory_attribution", False) else {}),
         **({"thp_note": "THP observation (D56): MA1 with read-only transparent-huge-page counters and settings; "
-                        "nothing is set or tuned. Never eligible, accepted or admissible.",
-            "thp_settings": {"before": thp_settings_snapshot()}}
+                        "nothing is set or tuned. Never eligible, accepted or admissible."}
            if getattr(args, "thp_observation", False) else {}),
+        **({"thp_settings": {"before": thp_settings_snapshot()}}  # D56 and the D58 candidate: read-only, before
+           if getattr(args, "thp_observation", False) or getattr(args, "candidate", False) else {}),
         **({"wtd_note": "MA1-WTD (D57): MA1-THP with transparent huge pages disabled in the workload process alone, by "
                         "its own prctl before any model library; the profiler and llama-server keep the system "
                         "setting. Never eligible, accepted or admissible."}
-           if getattr(args, "workload_thp_disable", False) else {}),
+           if getattr(args, "workload_thp_disable", False) and not getattr(args, "candidate", False) else {}),
+        **({"candidate_note": "D58 candidate: step 4 with each model's file cache released after its load and settle "
+                              "and transparent huge pages disabled in the workload process alone (verified), without "
+                              "MA1's sampling; the profiler and llama-server keep the system setting. Judged by D47's "
+                              f"rules and thresholds under {step4_criteria.CANDIDATE_CRITERIA_ID}; never accepted; "
+                              "not admissible while D46 is unchanged."}
+           if getattr(args, "candidate", False) else {}),
     }
 
 
@@ -904,36 +955,9 @@ def evict_page_cache(paths: list[Path]) -> int:
     return count
 
 
-def release_file_cache(path: Path, *, advise=None, clock=time.monotonic) -> dict[str, object]:
-    """MR1: the evict_page_cache call on one whole file, with its exact outcome.
-
-    ``returncode`` is posix_fadvise's own return value (0, or the error number it reported), or
-    open()'s errno when the file could not be opened. A 0 return means the kernel accepted the advice,
-    not that pages were dropped: mapped, dirty or locked pages stay. Needs no root; nothing is unmapped.
-    """
-    advise = advise or getattr(os, "posix_fadvise", None)
-    record: dict[str, object] = {"name": Path(path).name, "bytes": None, "call": MR1_FADVISE_CALL,
-                                 "result": None, "returncode": None, "error": None}
-    started = clock()
-    if advise is None:
-        record["result"] = "unsupported"
-    else:
-        try:
-            fd = os.open(path, os.O_RDONLY)
-        except OSError as exc:
-            record.update(result="open_failed", returncode=exc.errno, error=errno.errorcode.get(exc.errno, "unknown"))
-        else:
-            try:
-                record["bytes"] = os.fstat(fd).st_size
-                advise(fd, 0, 0, getattr(os, "POSIX_FADV_DONTNEED", 4))
-                record.update(result="returned_0", returncode=0)
-            except OSError as exc:
-                record.update(result="returned_error", returncode=exc.errno,
-                              error=errno.errorcode.get(exc.errno, "unknown"))
-            finally:
-                os.close(fd)
-    record["elapsed_s"] = round(clock() - started, 6)
-    return record
+# MR1: the evict_page_cache call on one whole file, with its exact outcome (returned_0, returned_error, open_failed or
+# unsupported). It is sentinel.memory_policy's, which sentinel run's post-load release calls too (D58).
+release_file_cache = memory_policy.release_file_cache
 
 
 def mr1_snapshot(pids: dict[str, int | None], *, meminfo=None, process_memory=None, pss=None,
@@ -1012,15 +1036,26 @@ def mr1_files(args: argparse.Namespace) -> dict[str, dict[str, Path]]:
 
 
 def mr1_checkpoint_handler(procs: dict, events, set_phase, files: dict[str, dict[str, Path]], settle_s: float, *,
-                           release=release_component, snapshot=mr1_snapshot):
+                           release=release_component, snapshot=mr1_snapshot, require_returned_0: bool = False):
     """MR1: the orchestrator's side of each checkpoint, run while the workload waits.
 
     "scene", "detector" and "face" release that component's files with samples around them; "after_smoke"
     samples only. Then ``ack <stage>`` goes to the workload. An unexpected error is recorded by class and
     sends no acknowledgement, so the workload stops itself after its bounded wait.
+
+    ``require_returned_0`` (the D58 candidate) applies sentinel.memory_policy.release_problem, as sentinel run
+    does: a release whose files are not exactly the component's eligible ones, or with a call that did not return
+    0, is recorded as ``release_failed`` and listed in ``handle.failures``; no acknowledgement is sent and a waiting
+    workload is terminated, so the run stops.
     """
     def pids() -> dict[str, int | None]:
         return {name: proc.pid if proc is not None else None for name, proc in procs.items()}
+
+    def fail(stage: str, problem: str) -> None:
+        handle.failures.append(stage)
+        events.add("orchestrator", "release_failed", component=stage, problem=problem)
+        if stage != "scene" and procs.get("work") is not None:
+            procs["work"].terminate()  # it waits for an acknowledgement that will not come
 
     def handle(stage: str) -> None:
         try:
@@ -1028,9 +1063,16 @@ def mr1_checkpoint_handler(procs: dict, events, set_phase, files: dict[str, dict
                 events.add("orchestrator", "mr1_snapshot", stage=stage, **snapshot(pids()))
             else:
                 set_phase(f"{stage}_release")
-                events.add("orchestrator", "mr1_release", **release(stage, files[stage], pids(), settle_s))
+                record = release(stage, files[stage], pids(), settle_s)
+                events.add("orchestrator", "mr1_release", **record)
+                problem = memory_policy.release_problem(stage, record.get("files")) if require_returned_0 else None
+                if problem is not None:
+                    fail(stage, problem)
+                    return
         except Exception as exc:  # noqa: BLE001 - by class only
             events.add("orchestrator", "mr1_error", stage=stage, error=type(exc).__name__)
+            if require_returned_0 and stage != "after_smoke":
+                fail(stage, f"error:{type(exc).__name__}")
             return
         if stage == "scene":
             return  # before the workload starts: nothing waits for it
@@ -1040,6 +1082,7 @@ def mr1_checkpoint_handler(procs: dict, events, set_phase, files: dict[str, dict
         except (AttributeError, OSError, ValueError):
             pass  # the workload is gone; it stops itself without the acknowledgement
 
+    handle.failures = []
     return handle
 
 
@@ -1497,9 +1540,10 @@ def sanitize_thp_disable(record: dict) -> dict:
 
 
 def pump_workload(proc: subprocess.Popen, run_dir: Path, events: Events, set_phase, *, sanitized: bool = False,
-                  on_checkpoint=None, on_wtd=None) -> None:
+                  on_checkpoint=None, on_wtd=None, on_steady_start=None) -> None:
     """Relay the workload's events. ``on_checkpoint`` (MR1 only) handles ``mr1_checkpoint`` and ``mr1_smoke``;
-    ``on_wtd`` (MA1-WTD only) is called after the ``thp_disable`` event and after the steady end boundary."""
+    ``on_wtd`` (MA1-WTD and the D58 candidate) is called after the ``thp_disable`` event and after the steady end
+    boundary; ``on_steady_start`` (the candidate) after the steady start boundary."""
     mr1 = on_checkpoint is not None
     with open(run_dir / "workload.log", "w") as log:
         while line := proc.stdout.readline(65_536):
@@ -1541,6 +1585,8 @@ def pump_workload(proc: subprocess.Popen, run_dir: Path, events: Events, set_pha
                     set_phase(str(record.get("name")), source="workload")
                 else:
                     events.add("workload", name, **record)
+                    if on_steady_start is not None and name == "steady_boundary" and record.get("edge") == "start":
+                        on_steady_start("steady_start")
                     if on_wtd is not None and name == "steady_boundary" and record.get("edge") == "end":
                         on_wtd("steady_end")  # the workload is still running: it emits workload_stats next
             else:
@@ -1600,7 +1646,8 @@ def run(args: argparse.Namespace) -> int:
                 proc.terminate()
 
     thp = bool(getattr(args, "thp_observation", False))
-    wtd = bool(getattr(args, "workload_thp_disable", False))  # MA1-WTD (D57)
+    wtd = bool(getattr(args, "workload_thp_disable", False))  # MA1-WTD (D57) or the D58 candidate
+    cand = bool(getattr(args, "candidate", False))  # D58: no MA1 sampling; cheap scope checks only
     sampler = Sampler(run_dir / "memory.csv", on_floor, thp=thp)
     tegrastats = Tegrastats(run_dir / "tegrastats.log", sampler)
 
@@ -1614,6 +1661,14 @@ def run(args: argparse.Namespace) -> int:
                                         "workload": sampler.pids.get("work")})
         events.add("orchestrator", "wtd_scope", **record)
         return record
+
+    def candidate_checkpoint(checkpoint: str) -> None:
+        """D58: MA1-WTD's THP_enabled checkpoint (where it has one), then the workload's AnonHugePages, read-only."""
+        if checkpoint in WTD_EXPECTED:
+            wtd_checkpoint(checkpoint)
+        pid = sampler.pids.get("work")
+        events.add("orchestrator", "cand_effect", checkpoint=checkpoint,
+                   anon_huge_pages_bytes=read_anon_huge_pages(pid) if pid else None)
 
     stop_mark: dict[str, float] = {}
 
@@ -1667,8 +1722,12 @@ def run(args: argparse.Namespace) -> int:
         time.sleep(args.settle_s)
         on_checkpoint = None
         if args.mr1_release_check or args.post_load_release:
-            on_checkpoint = mr1_checkpoint_handler(procs, events, set_phase, mr1_files(args), args.mr1_release_settle_s)
+            on_checkpoint = mr1_checkpoint_handler(procs, events, set_phase, mr1_files(args), args.mr1_release_settle_s,
+                                                   require_returned_0=cand)
             on_checkpoint("scene")  # llama-server has settled; the workload has not started
+            if on_checkpoint.failures:  # D58: the policy was not applied; nothing more starts
+                raise RunAborted("the scene model files' post-load release did not return 0 (D58); the workload was "
+                                 "not started")
 
         procs["work"] = start_workload(args, run_dir)
         sampler.pids["work"] = procs["work"].pid
@@ -1681,7 +1740,8 @@ def run(args: argparse.Namespace) -> int:
         pump = threading.Thread(
             target=pump_workload, args=(procs["work"], run_dir, events, set_phase),
             kwargs={"sanitized": args.sanitized_logs, **({"on_checkpoint": on_checkpoint} if on_checkpoint else {}),
-                    **({"on_wtd": wtd_checkpoint} if wtd else {})},
+                    **({"on_wtd": candidate_checkpoint if cand else wtd_checkpoint} if wtd else {}),
+                    **({"on_steady_start": candidate_checkpoint} if cand else {})},
             daemon=True,
         )
         pump.start()
@@ -1693,6 +1753,8 @@ def run(args: argparse.Namespace) -> int:
             maps.stop()
         pump.join(timeout=10)
         events.add("orchestrator", "workload_exit", returncode=returncode)
+        if on_checkpoint is not None and on_checkpoint.failures:  # D58: the policy was not applied
+            raise RunAborted(f"the {on_checkpoint.failures[0]} model files' post-load release did not return 0 (D58)")
         if sampler.floor_hit:
             raise RunAborted("MemAvailable stayed below the safety floor")
         if returncode != 0:
@@ -1728,7 +1790,7 @@ def run(args: argparse.Namespace) -> int:
         events.add("orchestrator", "cleanup", llama_server_running=bool(leftovers), port_in_use=port_in_use(args.port))
         events.add("orchestrator", "run_end", status=status)
         events.close()
-    if thp:  # after cleanup: the same readings as before the run
+    if thp or cand:  # after cleanup: the same readings as before the run
         manifest["thp_settings"]["after"] = thp_settings_snapshot()
     manifest["finished_utc"] = utc_now()
     manifest["status"] = status
@@ -2652,6 +2714,104 @@ def wtd_lines(report: dict[str, object]) -> list[str]:
     return lines
 
 
+def candidate_report(run_dir: Path, status: str, manifest: dict[str, object],
+                     stats: dict[str, object] | None) -> dict[str, object]:
+    """The D58 candidate's record: the memory policy, the THP disable's verification from cheap reads, the releases'
+    problems by sentinel.memory_policy's rule, and the four R inputs (step4_criteria.CANDIDATE_RUN_INPUTS).
+
+    - thp_disable_verified: the workload's own check verified, before the detector load;
+    - thp_scope_verified: THP_enabled as expected at all four of MA1-WTD's checkpoints;
+    - thp_effect_verified: the workload's AnonHugePages read at its check and at both steady boundaries, each at
+      most its value at the check (huge pages made before the call may stay, never grow);
+    - thp_settings_unchanged: the THP settings read before and after, every key read both times and none changed.
+
+    Missing is never met. Latency and throughput are reported descriptively."""
+    events: list[dict[str, object]] = []
+    try:
+        with open(Path(run_dir) / "events.jsonl") as handle:
+            for line in handle:
+                if line.strip():
+                    record = json.loads(line)
+                    if record.get("event") in ("thp_disable", "wtd_scope", "cand_effect", "phase", "release_failed"):
+                        events.append(record)
+    except OSError:
+        pass
+    startup = next((e for e in events if e["event"] == "thp_disable"), None)
+    loads = [e["t_mono"] for e in events if e["event"] == "phase" and e.get("name") == "detector_load"]
+    started = (startup or {}).get("t_mono")
+    before_load = None if type(started) not in (int, float) or not loads else started < loads[0]
+    startup_ok = bool(startup and startup.get("verified") is True and before_load is True)
+    scope = {name: next((e for e in events if e["event"] == "wtd_scope" and e.get("checkpoint") == name), None)
+             for name in WTD_CHECKPOINTS}
+    scope_ok = all(item is not None and item.get("ok") is True for item in scope.values())
+    reference = (startup or {}).get("anon_huge_pages_bytes")
+    readings = {name: next((e.get("anon_huge_pages_bytes") for e in events
+                            if e["event"] == "cand_effect" and e.get("checkpoint") == name), None)
+                for name in CANDIDATE_EFFECT_POINTS}
+    effect_ok = (type(reference) is int and all(type(value) is int for value in readings.values())
+                 and all(value <= reference for value in readings.values()))
+    settings = manifest.get("thp_settings") if isinstance(manifest.get("thp_settings"), dict) else {}
+    changed, unverified = thp_settings_changes(settings.get("before"), settings.get("after"))
+    recorded = {side: isinstance(settings.get(side), dict) for side in ("before", "after")}
+    settings_ok = all(recorded.values()) and not changed and not unverified
+    releases = release_records(load_mr1_events(Path(run_dir) / "events.jsonl"))
+    problems = {component: memory_policy.release_problem(component, releases[component].get("files"))
+                if component in releases else "not_reached" for component in MR1_RELEASE_FILES}
+    detector, face, scene = ((stats or {}).get(key) or {} for key in ("detector", "face", "scene"))
+    loop_times = (stats or {}).get("clip_loop_t_mono")
+    return {
+        "label": CANDIDATE_LABEL,
+        "criteria_id": step4_criteria.CANDIDATE_CRITERIA_ID,
+        "memory_policy": manifest.get("memory_policy"),
+        "scope": "step 4 with the post-load release and the workload's verified THP disable, without MA1's sampling "
+                 "(D58); judged by D47's rules and thresholds under its own identity; never accepted",
+        "profile_status": _status_label(status),
+        "intervention": {
+            "startup": {**{k: v for k, v in (startup or {}).items() if k not in ("event", "source", "utc")},
+                        "before_model_load": before_load} if startup else None,
+            "scope": scope,
+            "effect": {"reference_bytes": reference, "readings": readings},
+            "settings": {**{f"{side}_recorded": value for side, value in recorded.items()},
+                         "changed": changed, "unverified": unverified},
+        },
+        "run_inputs": {"thp_disable_verified": startup_ok, "thp_scope_verified": scope_ok,
+                       "thp_effect_verified": effect_ok, "thp_settings_unchanged": settings_ok},
+        "release_problems": problems,
+        "release_failed": [e.get("component") for e in events if e["event"] == "release_failed"],
+        "clip_loops": {"count": (stats or {}).get("clip_loops"),
+                       "times_recorded": len(loop_times) if isinstance(loop_times, list) else None},
+        "performance": {  # descriptive only; the criteria judge throughput and latency
+            "detector": {key: detector.get(key) for key in ("processed_fps", "unique_fps", "windows", "latency_ms",
+                                                            "schedule_age_ms")},
+            "face": {key: face.get(key) for key in ("runs", "achieved_hz", "latency_ms", "error_count")},
+            "scene": {key: scene.get(key) for key in ("completed", "latency_ms", "over_d16_timeout")},
+        },
+        "cannot_establish": list(CANDIDATE_CANNOT_ESTABLISH),
+    }
+
+
+def candidate_lines(report: dict[str, object]) -> list[str]:
+    intervention, inputs = report["intervention"], report["run_inputs"]
+    startup = intervention["startup"] or {}
+    scope = "; ".join(f"{name} {'ok' if (item or {}).get('ok') else 'NOT VERIFIED'} {(item or {}).get('thp_enabled')}"
+                      for name, item in intervention["scope"].items())
+    effect = intervention["effect"]
+    return ["", "D58 candidate (post-load release and the workload's THP disable, without MA1's sampling; never "
+                "accepted):",
+            f"  memory policy {report['memory_policy']}",
+            f"  workload check: verified {startup.get('verified')} (set rc {startup.get('set_rc')}, PR_GET_THP_DISABLE "
+            f"{startup.get('get_value')}, THP_enabled {startup.get('thp_enabled')}, before the detector load "
+            f"{startup.get('before_model_load')}, AnonHugePages then {startup.get('anon_huge_pages_bytes')} B)",
+            f"  scope (THP_enabled; profiler and llama-server expected 1, workload 0): {scope}",
+            f"  effect: workload AnonHugePages {effect['readings']} against {effect['reference_bytes']} B at the check",
+            f"  THP settings before/after recorded {intervention['settings']['before_recorded']}/"
+            f"{intervention['settings']['after_recorded']}; changed {intervention['settings']['changed'] or 'none'}; "
+            f"not comparable {len(intervention['settings']['unverified'])}",
+            f"  release problems {report['release_problems']}; stopped on {report['release_failed'] or 'none'}",
+            f"  R inputs {inputs}",
+            "  Cannot establish: " + "; ".join(report["cannot_establish"]) + "."]
+
+
 def net_step_report(run_dir: Path) -> dict[str, object]:
     """D57's growth and opportunity measures for any saved profile run, read-only (nothing is written): the
     net-step rule applied beside, never instead of, the run's own classifications and reading."""
@@ -3020,6 +3180,7 @@ def summarize(run_dir: Path) -> str:
         "cache_evidence": step4_criteria.cache_evidence(
             manifest, last_event("llama_cmdline"), cache,
             telemetry_timestamped=bool(cache and (cache.get("startup") or {}).get("t_mono") is not None)),
+        "memory_policy": manifest.get("memory_policy"),  # D58: absent in runs recorded before it
     }
     if (manifest.get("parameters") or {}).get("mr1_release_check"):
         report = mr1_report(run_dir, status)
@@ -3036,6 +3197,13 @@ def summarize(run_dir: Path) -> str:
             profile["criteria_id"] = step4_criteria.PLR_CRITERIA_ID
             profile["post_load_release"] = "plr.json"
             lines += plr_lines(report)
+            candidate = bool((manifest.get("parameters") or {}).get("candidate"))
+            if candidate:  # D58: its own record and identity; the same profile-side criteria
+                checked = candidate_report(run_dir, status, manifest, stats)
+                (run_dir / "candidate.json").write_text(json.dumps(checked, indent=2) + "\n")
+                profile["criteria_id"] = step4_criteria.CANDIDATE_CRITERIA_ID
+                profile["candidate"] = "candidate.json"
+                lines += candidate_lines(checked)
             instrumented = bool((manifest.get("parameters") or {}).get("memory_attribution"))
             if instrumented:  # MA1: the same criteria, read descriptively; an instrumented run is never eligible
                 warm_rows = in_phases("warmup")
@@ -3067,10 +3235,15 @@ def summarize(run_dir: Path) -> str:
                         profile["instrumentation"] += ("; with THP disabled in the workload process alone (D57), so "
                                                        "fault-time huge pages are absent there too")
                         lines += wtd_lines(disabled)
-            lines += ["", f"Step-4 criteria decidable from this run ({step4_criteria.PLR_CRITERIA_ID}: D47's rules and "
-                      "thresholds under the PLR identity; demo profile, not the 1080p beta gates; never acceptance "
-                      "or admission" + ("; instrumented MA1 run: descriptive only, never eligible" if instrumented
-                                        else "") + "):"]
+            if candidate:
+                lines += ["", f"Step-4 criteria decidable from this run ({step4_criteria.CANDIDATE_CRITERIA_ID}: D47's "
+                          "rules and thresholds under the D58 candidate identity; demo profile, not the 1080p beta "
+                          "gates; never acceptance or admission):"]
+            else:
+                lines += ["", f"Step-4 criteria decidable from this run ({step4_criteria.PLR_CRITERIA_ID}: D47's rules "
+                          "and thresholds under the PLR identity; demo profile, not the 1080p beta gates; never "
+                          "acceptance or admission" + ("; instrumented MA1 run: descriptive only, never eligible"
+                                                       if instrumented else "") + "):"]
         else:
             lines += ["", f"Step-4 criteria decidable from this run ({step4_criteria.CRITERIA_ID}; demo profile, "
                       "not the 1080p beta gates; never acceptance):"]
@@ -3145,10 +3318,17 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                              "khugepaged's progress counters in each memory.csv row, and the THP settings before and "
                              "after the run; read-only, nothing set or tuned")
     parser.add_argument("--workload-thp-disable", action="store_true",
-                        help="MA1-WTD (opt-in diagnostic, D57; only with --thp-observation): the workload disables "
-                             "transparent huge pages for its own process (prctl, before any model library) and stops "
-                             "unless verified; this profiler and llama-server keep the system setting, checked at four "
-                             "points; no system-wide THP setting is written")
+                        help="MA1-WTD (opt-in diagnostic, D57; with --thp-observation) or the D58 candidate (with "
+                             "--candidate): the workload disables transparent huge pages for its own process (prctl, "
+                             "before any model library) and stops unless verified; this profiler and llama-server keep "
+                             "the system setting, checked at four points; no system-wide THP setting is written")
+    parser.add_argument("--candidate", action="store_true",
+                        help="the D58 candidate (opt-in; with --post-load-release and --workload-thp-disable, without "
+                             "--memory-attribution or --thp-observation): step 4 with the post-load release and the "
+                             "workload's verified THP disable; cheap scope checks only (THP_enabled at four points, "
+                             "the workload's AnonHugePages at its check and the steady boundaries, the THP settings "
+                             "before and after); a release call that does not return 0 stops the run; judged by D47's "
+                             "rules and thresholds under its own identity; never accepted")
     parser.add_argument("--net-steps", type=Path, metavar="RUN_DIR",
                         help="only print D57's net-step, residency and opportunity measures for a saved run as JSON; "
                              "read-only, writes nothing")

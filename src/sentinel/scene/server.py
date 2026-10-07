@@ -21,6 +21,15 @@ owns the child from start to stop:
   can contain request details; it is never stored or shown.
 - **Bounded stop.** SIGTERM, then SIGKILL after a grace period; the pipe and
   pump thread are always released.
+- **The system THP setting, when asked (D58).** With ``require_system_thp``
+  the server must keep the system's transparent-huge-page setting, as every
+  profile measured it: a spawn is refused (``parent_thp_disabled``, nothing
+  started) unless this process's own ``THP_enabled`` reads 1, because the
+  kernel copies a disabled state to every child started afterwards; and a
+  started server counts as ready only when its own ``THP_enabled`` reads 1
+  (``server_thp_not_system``). ``sentinel run`` asks for it with the D58 THP
+  policy, so a later spawn (a restart, or a misordered start) after the runtime
+  disabled THP for itself cannot inherit that state.
 
 Problems are fixed labels. Portable: nothing here imports a model library.
 """
@@ -41,6 +50,7 @@ from pathlib import Path
 from typing import Any
 
 from ..inference.legacy_ultralytics import L4T_LIBCUDA_DIR
+from ..memory_policy import read_thp_enabled
 from .llama_server import LOOPBACK_HOST, llama_server_command, llama_server_environment
 
 HEALTH_PATH = "/health"
@@ -145,6 +155,8 @@ class LlamaServerProcess:
         libraries: Callable[[int], list[str]] = mapped_llama_libraries,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
+        require_system_thp: bool = False,
+        thp_enabled: Callable[[int | str], int | None] = read_thp_enabled,
     ) -> None:
         self._files = {"llama_server_binary": binary, "scene_model": model, "scene_mmproj": mmproj}
         self._port = port
@@ -157,6 +169,8 @@ class LlamaServerProcess:
         self._libraries = libraries
         self._sleep = sleep
         self._monotonic = monotonic
+        self._require_system_thp = require_system_thp
+        self._thp_enabled = thp_enabled
         self._proc: Any = None
         self._pump: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -168,6 +182,11 @@ class LlamaServerProcess:
     @property
     def port(self) -> int:
         return self._port
+
+    @property
+    def pid(self) -> int | None:
+        """The child's process ID once spawned (for read-only /proc checks), else None."""
+        return None if self._proc is None else self._proc.pid
 
     def __repr__(self) -> str:
         return f"LlamaServerProcess(port={self._port}, state={self._state.value})"
@@ -208,6 +227,8 @@ class LlamaServerProcess:
             raise ServerRefused("llama_arg_override")
         if self._in_use(self._port):
             raise ServerRefused("port_in_use")
+        if self._require_system_thp and self._thp_enabled("self") != 1:
+            raise ServerRefused("parent_thp_disabled")  # a child started now would inherit it (D58)
         with self._lock:
             self._state = ServerState.STARTING
         try:
@@ -246,6 +267,8 @@ class LlamaServerProcess:
         loaded = self._libraries(self._proc.pid)
         if not loaded or not all(Path(path).resolve().parent == build_dir for path in loaded):
             raise ServerRefused("libraries_not_profiled")
+        if self._require_system_thp and self._thp_enabled(self._proc.pid) != 1:
+            raise ServerRefused("server_thp_not_system")  # D58: profiled with the system setting
 
     def _placement_complete(self) -> bool:
         with self._lock:

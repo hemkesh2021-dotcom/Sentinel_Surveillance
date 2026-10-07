@@ -45,6 +45,7 @@ from pydantic import (
 )
 
 from .contracts import Evidence, EvidenceKind, Identifier
+from .memory_policy import CANDIDATE_POLICY, DEFAULT_POLICY, RELEASE_POST_LOAD, THP_SYSTEM, MemoryPolicy
 from .redaction import redact_line
 
 SUPPORTED_CONTRACT_VERSIONS = frozenset({1})
@@ -219,11 +220,23 @@ class ResourceProfile:
     scene_request_sha256: str | None = None
     limitations: tuple[str, ...] = ()  # must include STARTUP_IDENTITY_LIMITATION
     note: str = ""
+    # D58: the memory policy the run measured (manifest ``memory_policy``; earlier runs: the default, which is what
+    # they ran). It must be the one its criteria identity's procedure measures, and the runtime's selected one.
+    memory_policy: MemoryPolicy = DEFAULT_POLICY
 
 
 # Step-4 criteria (D47; the same values as benchmarks/runner/step4_criteria.py, which a test enforces).
 # Demo criteria only: they do not establish the guide's 1080p beta gates.
 STEP4_CRITERIA_ID = "step4-combined-cache-off-v2"
+# D54's PLR variant and D58's candidate: the same rules and thresholds under their own identities, which D46 does not
+# admit (accepted_profile_problem requires STEP4_CRITERIA_ID); each identity's procedure measures one memory policy.
+STEP4PLR_CRITERIA_ID = "step4plr-combined-cache-off-v2"
+STEP4_CANDIDATE_CRITERIA_ID = "step4cand-wtd-plr-combined-cache-off-v2"
+CRITERIA_MEMORY_POLICIES: Mapping[str, MemoryPolicy] = MappingProxyType({
+    STEP4_CRITERIA_ID: DEFAULT_POLICY,
+    STEP4PLR_CRITERIA_ID: MemoryPolicy(THP_SYSTEM, RELEASE_POST_LOAD),
+    STEP4_CANDIDATE_CRITERIA_ID: CANDIDATE_POLICY,
+})
 STEP4_TARGET_STEADY_BYTES = 5_000_000_000
 STEP4_MAX_PEAK_BYTES = 5_400_000_000
 STEP4_MAX_STEADY_SLOPE_BYTES_PER_MIN = 10_000_000
@@ -301,6 +314,10 @@ def accepted_profile_problem(
         return f"resource profile {profile_id} was measured with {cache}, not --cache-ram 0"
     if profile.criteria_id != STEP4_CRITERIA_ID:
         return f"resource profile {profile_id} was not judged against {STEP4_CRITERIA_ID}"
+    measured = CRITERIA_MEMORY_POLICIES[STEP4_CRITERIA_ID]
+    if profile.memory_policy != measured:  # D58: an identity and its record must agree
+        return (f"resource profile {profile_id} records memory policy ({profile.memory_policy.describe()}), not the "
+                f"one {STEP4_CRITERIA_ID} measures ({measured.describe()})")
     if profile.criteria_passed is not True:
         return f"resource profile {profile_id} has no recorded pass against {STEP4_CRITERIA_ID}"
     if not _RUN_DIR.match(profile.run_dir):

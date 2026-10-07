@@ -506,7 +506,8 @@ class Backend:
         self.memattr_report = None  # MA1: the profiler's memattr.json, likewise
         self.thp_report = None  # MA1-THP: the profiler's thp.json, likewise
         self.wtd_report = None  # MA1-WTD: the profiler's wtd.json, likewise
-        self.thp_flag = 1  # MA1-WTD: this (operator) process's THP_enabled
+        self.candidate_report = None  # the D58 candidate: the profiler's candidate.json, likewise
+        self.thp_flag = 1  # MA1-WTD and the D58 candidate: this (operator) process's THP_enabled
         self.sleeps = []
 
     def thp_enabled(self):
@@ -600,6 +601,8 @@ class Backend:
             (run / "thp.json").write_text(json.dumps(self.thp_report))
         if self.wtd_report is not None:
             (run / "wtd.json").write_text(json.dumps(self.wtd_report))
+        if self.candidate_report is not None:
+            (run / "candidate.json").write_text(json.dumps(self.candidate_report))
 
 
 def identity_tree(tmp_path: Path) -> dict[str, Path]:
@@ -1709,6 +1712,176 @@ def test_ma1wtd_refuses_before_any_process_when_a_prerequisite_fails(runners, tm
     result, backend = run_ma1wtd(runners, tmp_path, prep, backend=backend, **overrides)
     assert result["ma1wtd"]["status"] == "refused" and refusal in result["ma1wtd"]["refusals"]
     assert not [c for c in backend.children if "demo_profile.py" in " ".join(c.argv) or "logger" in c.argv[0]]
+
+
+# ---------------------------------------------------------------- the D58 candidate: PLR plus the workload's THP disable
+
+
+CAND_SNAPSHOT = {  # every THP setting key the profiler compares, read before and after
+    "kernel": {"release": "5.15.148-tegra", "version": "#1 SMP PREEMPT /home/someone"}, "base_page_bytes": 4096,
+    "thp_pmd_bytes": 2 << 20, "hugetlb_default_bytes": 2 << 20, "enabled": "always", "defrag": "madvise",
+    "shmem_enabled": "never", "use_zero_page": 1,
+    "khugepaged": {"defrag": 1, "scan_sleep_millisecs": 10000, "alloc_sleep_millisecs": 60000, "pages_to_scan": 4096,
+                   "max_ptes_none": 511, "max_ptes_swap": 64, "max_ptes_shared": 256},
+    "config": {"HZ": 250, "TRANSPARENT_HUGEPAGE": "y", "TRANSPARENT_HUGEPAGE_ALWAYS": "y",
+               "TRANSPARENT_HUGEPAGE_MADVISE": "n", "READ_ONLY_THP_FOR_FS": "n"},
+}
+
+
+def fake_candidate_report(runners, tmp_path, *, case="verified") -> dict:
+    """The profiler's own candidate.json, built by its function from a few synthetic events and settings."""
+    profile = runners.profile
+    run = tmp_path / f"candidate-source-{case}"
+    run.mkdir(exist_ok=True)
+    events = [{"t_mono": 100.0, "event": "thp_disable", "requested": True, "model_modules_loaded": [], "set_rc": 0,
+               "set_errno": None, "get_value": 1, "thp_enabled": 0, "anon_huge_pages_bytes": 0,
+               "verified": case != "not_verified", "reason": None, "note": "/home/someone/private"},
+              {"t_mono": 101.0, "event": "phase", "name": "detector_load"},
+              *({"t_mono": 100.0, "event": "wtd_scope", "checkpoint": name, "thp_enabled": profile.WTD_EXPECTED[name],
+                 "expected": profile.WTD_EXPECTED[name], "ok": case != "scope"} for name in profile.WTD_CHECKPOINTS),
+              *({"t_mono": 130.0, "event": "cand_effect", "checkpoint": name,
+                 "anon_huge_pages_bytes": 2 << 20 if case == "effect" and name == "steady_end" else 0}
+                for name in profile.CANDIDATE_EFFECT_POINTS)]
+    (run / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    after = {**CAND_SNAPSHOT, "enabled": "madvise"} if case == "settings" else CAND_SNAPSHOT
+    manifest = {"thp_settings": {"before": CAND_SNAPSHOT, "after": after},
+                "memory_policy": {"thp": "workload_disabled", "model_file_release": "post_load"}}
+    stats = {"clip_loops": 1, "clip_loop_t_mono": [100.5], "detector": {"unique_fps": 15.0}, "face": {}, "scene": {}}
+    return profile.candidate_report(run, "complete", manifest, stats)
+
+
+def run_step4cand(runners, tmp_path, prep, backend=None, *, case="verified", record=True, **overrides):
+    op = runners.operator
+    output = private_dir(tmp_path, "step4cand")
+    backend = backend or Backend()
+    backend.output = output
+    backend.identity_hashes = {label: entry["sha256"] for label, entry in prep.identity["files"].items()}
+    backend.plr_report = backend.plr_report or fake_plr_report(runners, tmp_path)
+    if record and backend.candidate_report is None:
+        backend.candidate_report = fake_candidate_report(runners, tmp_path, case=case)
+    kwargs = dict(check9_report=prep.check9_path, identity_report=prep.identity_path, clip=prep.files["clip"],
+                  confirm_step4cand=True, dropped_caches=True, identity_files_fn=lambda clip: prep.files)
+    kwargs.update(overrides)
+    return op.execute("step4cand", backend, output, **kwargs), backend
+
+
+def test_the_step4cand_child_is_the_plr_command_plus_the_disable_and_candidate_flags_only(runners, tmp_path) -> None:
+    op = runners.operator
+    prep = prepare(runners, tmp_path)
+    result, backend = run_step4cand(runners, tmp_path, prep)
+    (child,) = [c for c in backend.children if "demo_profile.py" in " ".join(c.argv)]
+    plr = op.step4plr_argv(backend.output, prep.files["clip"])
+    assert child.argv == [*plr, "--workload-thp-disable", "--candidate"]
+    assert not {"--memory-attribution", "--thp-observation", "--maps-interval-s"} & set(child.argv)
+    assert result["step4cand"]["deadline_s"] == op.STEP4_DEADLINE_S and result["step4cand"]["operator_thp_enabled"] == 1
+    assert [(m[0].split()[:2], m[2]) for m in backend.markers] == [(["step4cand", "start"], "sentinel-step4cand"),
+                                                                   (["step4cand", "end"], "sentinel-step4cand")]
+    args = runners.profile.parse_args(child.argv[2:])
+    step4 = runners.profile.parse_args(op.step4_argv(backend.output, prep.files["clip"])[2:])
+    changed = {"post_load_release", "workload_thp_disable", "candidate"}
+    assert {k: v for k, v in vars(args).items() if k not in changed} == {
+        k: v for k, v in vars(step4).items() if k not in changed}  # models, rates, durations and guard inputs: step 4's
+
+
+def test_a_completed_step4cand_is_eligible_only_under_its_own_identity_and_never_accepted(runners, tmp_path) -> None:
+    prep = prepare(runners, tmp_path)
+    result, _ = run_step4cand(runners, tmp_path, prep)
+    section = result["step4cand"]
+    criteria = section["criteria"]
+    assert section["status"] == "completed" and criteria["criteria_id"] == "step4cand-wtd-plr-combined-cache-off-v2"
+    assert criteria["eligible_for_maintainer_review"] is True and criteria["accepted"] is False
+    assert "not admissible" in criteria["admission"] and section["acceptance"].startswith("never")
+    r = criteria["criteria"]["R_valid_run"]["value"]
+    assert all(r[key] is True for key in ("releases_recorded", "release_calls_returned_0", "thp_disable_verified",
+                                          "thp_scope_verified", "thp_effect_verified", "thp_settings_unchanged"))
+    assert section["status_detail"].startswith("eligible for maintainer review as a D58 candidate result")
+    excerpt = section["candidate"]
+    assert excerpt["status"] == "recorded" and excerpt["memory_policy"] == {"thp": "workload_disabled",
+                                                                            "model_file_release": "post_load"}
+    assert excerpt["intervention"]["scope"]["llama_ready"]["thp_enabled"] == {"profiler": 1, "llama": 1}
+    text = json.dumps(result)
+    assert "/home/someone" not in text and "private" not in text  # numbers and fixed labels only
+    assert result["step4"]["status"] == "PENDING" and result["hardware_acceptance"] == "PENDING"
+
+
+@pytest.mark.parametrize(("case", "input_key"), [
+    ("not_verified", "thp_disable_verified"), ("scope", "thp_scope_verified"), ("effect", "thp_effect_verified"),
+    ("settings", "thp_settings_unchanged"), ("no_record", None),
+])
+def test_a_step4cand_run_without_its_verified_disable_is_never_eligible(runners, tmp_path, case, input_key) -> None:
+    prep = prepare(runners, tmp_path)
+    result, _ = run_step4cand(runners, tmp_path, prep, case=case, record=case != "no_record")
+    criteria = result["step4cand"]["criteria"]
+    r = criteria["criteria"]["R_valid_run"]
+    assert r["status"] == "fail" and criteria["eligible_for_maintainer_review"] is False and criteria["accepted"] is False
+    failed = [key for key in ("thp_disable_verified", "thp_scope_verified", "thp_effect_verified",
+                              "thp_settings_unchanged") if r["value"][key] is not True]
+    assert failed == ([input_key] if input_key else ["thp_disable_verified", "thp_scope_verified",
+                                                      "thp_effect_verified", "thp_settings_unchanged"])
+
+
+def test_a_step4cand_run_whose_release_call_failed_is_never_eligible(runners, tmp_path) -> None:
+    prep = prepare(runners, tmp_path)
+    backend = Backend()
+    backend.plr_report = fake_plr_report(runners, tmp_path, result="returned_error")
+    backend.candidate_report = fake_candidate_report(runners, tmp_path)
+    backend.candidate_report["release_problems"] = {"scene": "mmproj:returned_error", "detector": "not_reached",
+                                                    "face": "not_reached"}
+    result, _ = run_step4cand(runners, tmp_path, prep, backend=backend)
+    r = result["step4cand"]["criteria"]["criteria"]["R_valid_run"]
+    assert r["status"] == "fail" and r["value"]["release_calls_returned_0"] is False
+    assert result["step4cand"]["candidate"]["release_problems"] == {  # fixed labels survive the excerpt
+        "scene": "mmproj:returned_error", "detector": "not_reached", "face": "not_reached"}
+
+
+@pytest.mark.parametrize(("overrides", "flag", "refusal"), [
+    ({"confirm_step4cand": False, "confirm_step4plr": True}, 1, "step4cand_operator_prerequisites_unconfirmed"),
+    ({"dropped_caches": False}, 1, "step4cand_cache_drop_not_declared"),
+    ({"explicit_check9": False}, 1, "step4cand_requires_explicit_check9_report"),
+    ({"clip": None}, 1, "step4cand_clip_required"),
+    ({"identity_report": None}, 1, "step4_identity_report_required"),
+    ({}, 0, "step4cand_operator_thp_enabled_not_1"),  # everything it starts would inherit the disable
+    ({}, None, "step4cand_operator_thp_enabled_not_1"),  # unreadable is never as expected
+])
+def test_step4cand_refuses_before_any_process_when_a_prerequisite_fails(runners, tmp_path, overrides, flag,
+                                                                       refusal) -> None:
+    prep = prepare(runners, tmp_path)
+    backend = Backend()
+    backend.thp_flag = flag
+    result, backend = run_step4cand(runners, tmp_path, prep, backend=backend, **overrides)
+    assert result["step4cand"]["status"] == "refused" and refusal in result["step4cand"]["refusals"]
+    assert not [c for c in backend.children if "demo_profile.py" in " ".join(c.argv) or "logger" in c.argv[0]]
+
+
+def test_the_step4cand_cli_exit_status_reflects_eligibility_and_needs_its_own_confirmation(
+    runners, tmp_path, monkeypatch, capsys,
+) -> None:
+    op = runners.operator
+    monkeypatch.setattr(op, "OUTPUT_ROOT", tmp_path)
+    prep = prepare(runners, tmp_path)
+    monkeypatch.setattr(op, "identity_files", lambda clip: prep.files)
+
+    def backend(case="verified"):
+        b = Backend()
+        b.identity_hashes = {label: entry["sha256"] for label, entry in prep.identity["files"].items()}
+        b.plr_report = fake_plr_report(runners, tmp_path)
+        b.candidate_report = fake_candidate_report(runners, tmp_path, case=case)
+        return b
+
+    common = ["--execute-workload", "step4cand", "--check9-report", str(prep.check9_path), "--identity-report",
+              str(prep.identity_path), "--step4-clip", str(prep.files["clip"]), "--operator-dropped-caches"]
+    assert op.main([*common, "--confirm-step4cand-prerequisites"], backend=backend()) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["step4cand"]["criteria"]["criteria_id"] == "step4cand-wtd-plr-combined-cache-off-v2"
+    assert printed["step4cand"]["criteria"]["accepted"] is False
+    assert op.main([*common, "--confirm-step4cand-prerequisites"], backend=backend("effect")) == 1  # not eligible
+    capsys.readouterr()
+    assert op.main(common, backend=backend()) == 1  # no confirmation: refused before any process
+    assert "step4cand_operator_prerequisites_unconfirmed" in capsys.readouterr().out
+    for argv in ([*common, "--confirm-step4plr-prerequisites"],  # another mode's confirmation is not the candidate's
+                 ["--execute-workload", "step4plr", "--confirm-step4cand-prerequisites"]):
+        with pytest.raises(SystemExit):
+            op.main(argv, backend=Backend())
 
 
 # ---------------------------------------------------------------- startup identity checks

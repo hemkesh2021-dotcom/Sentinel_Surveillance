@@ -44,13 +44,21 @@ provisional MemFree precheck (U18 stays open). A component that fails is shown
 unavailable; nothing is restarted or re-admitted at runtime (V2-19, V2-29).
 Face recognition is not wired: it stays disabled.
 
+Memory policies (D58; opt-in, off by default, see ``assemble``): this process
+can disable transparent huge pages for itself before the detector loads, and
+release each loaded model's files from the page cache after it settles. Both
+use ``sentinel.memory_policy``, the code the profiler's workload runs, and a
+resource profile admits scene analysis only when it measured the same policy.
+
 Not thread-safe apart from ``snapshot()`` and ``request_stop()``: one loop thread calls ``step()``.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import threading
+import time
 from collections import Counter, OrderedDict, deque
 from datetime import datetime, timezone
 from collections.abc import Callable, Mapping
@@ -78,6 +86,17 @@ from .jobs import AnalysisJob, WorkerOutcome
 from .live_state import Capability, LiveState
 from .media.capture import CapturedFrame, CaptureState, CaptureStatus, LatestFrame, SourceError, VideoSource
 from .media.clock import NS_PER_SECOND, Clock
+from .memory_policy import (
+    DEFAULT_POLICY,
+    RELEASE_POST_LOAD,
+    RELEASE_SETTLE_S,
+    THP_WORKLOAD_DISABLED,
+    MemoryPolicy,
+    disable_thp_for_this_process,
+    read_thp_enabled,
+    release_component_files,
+    release_file_cache,
+)
 from .rules.zones import ZonePhase
 from .runtime import CoreOutput, EdgeCore
 from .scene.analyzer import IMAGES_KEPT, RecentImages, ThreadedSceneAnalyzer
@@ -598,6 +617,9 @@ class SceneOptions:
     mmproj: Path
     ready_timeout_s: float = 180.0
     min_free_bytes: int = 3_000_000_000  # demo_profile's precheck before llama-server (V2-01)
+    # D58: the server keeps the system THP setting: no spawn from a process with THP disabled, and its own THP_enabled
+    # must read 1 when ready. assemble() sets it with the THP policy; LlamaServerProcess enforces it.
+    require_system_thp: bool = False
 
 
 @dataclass(frozen=True)
@@ -606,6 +628,17 @@ class RunOptions:
     engine: Path
     min_free_bytes: int = 1_500_000_000  # the track probe's provisional guard (U18 open)
     scene: SceneOptions | None = None  # None: scene analysis disabled (the default)
+    memory_policy: MemoryPolicy = DEFAULT_POLICY  # D58: opt-in; the default changes nothing
+
+
+@dataclass(frozen=True)
+class MemoryOps:
+    """How the D58 policies act on this process; tests pass fakes, never the real calls in a test process."""
+
+    disable_thp: Callable[[], dict[str, Any]] = disable_thp_for_this_process  # this process alone, verified
+    thp_enabled: Callable[[int | str | None], int | None] = read_thp_enabled  # read-only, /proc/<pid>/status
+    release: Callable[[Path], dict[str, Any]] = release_file_cache  # posix_fadvise(DONTNEED) on one file
+    sleep: Callable[[float], None] = time.sleep
 
 
 def environment_notifiers(
@@ -634,6 +667,7 @@ class Devices:
     scene_request: Callable[[int, float], Callable[[AnalysisJob, Any], WorkerOutcome]]
     meminfo: Callable[[], dict[str, int] | None]
     notifiers: Callable[[NotificationsConfig], tuple[dict[str, Notifier], dict[str, str]]] = environment_notifiers
+    memory: MemoryOps = field(default_factory=MemoryOps)  # D58; used only when a policy is selected
 
 
 @dataclass
@@ -655,6 +689,18 @@ def memfree_problem(meminfo: Callable[[], dict[str, int] | None], min_free_bytes
     if before is not None and before["MemFree"] < min_free_bytes:
         return "memfree_below_minimum", before
     return None, before
+
+
+def post_load_release(ops: MemoryOps, component: str, files: Mapping[str, Path]) -> dict[str, Any]:
+    """D58: after the component's load, wait the profiler's settle, then release its eligible model files with
+    sentinel.memory_policy's call and rule. Startup is refused unless every call returned 0."""
+    ops.sleep(RELEASE_SETTLE_S)
+    record = release_component_files(component, files, release=ops.release)
+    if not record["verified"]:
+        raise StartupRefused(f"post_load_release_failed:{component}:{record['problem']}")
+    return {"settle_s": RELEASE_SETTLE_S,  # numbers and fixed labels only: no file names or paths
+            "files": {role: {key: item.get(key) for key in ("result", "returncode", "error", "bytes", "elapsed_s")}
+                      for role, item in record["files"].items()}}
 
 
 def file_facts(path: Path) -> FileFacts | None:
@@ -696,12 +742,13 @@ def _identity_problem(label: str, path: Path, recorded: FileFacts) -> str | None
 
 
 def profile_mismatch(
-    profile: ResourceProfile, config: SentinelConfig, scene: SceneOptions, *, engine_sha256: str = LEGACY_ENGINE_SHA256
+    profile: ResourceProfile, config: SentinelConfig, scene: SceneOptions, *, engine_sha256: str = LEGACY_ENGINE_SHA256,
+    policy: MemoryPolicy = DEFAULT_POLICY,
 ) -> str | None:
     """None if the selected runtime configuration is the one ``profile`` measured, else the first difference.
 
-    Startup checks, in order: the server flags; the scene interval; the request
-    fingerprint; the llama-server binary and every build library up to
+    Startup checks, in order: the memory policy (D58: THP and model-file release); the server flags; the scene
+    interval; the request fingerprint; the llama-server binary and every build library up to
     STARTUP_HASH_LIMIT_BYTES by SHA-256; larger libraries (libggml-cuda) and the
     model files by name, size and modification time only; the detector engine's
     pin. Large files are not hashed here: that would fill the page cache just
@@ -709,6 +756,9 @@ def profile_mismatch(
     replacement that keeps its modification time (STARTUP_IDENTITY_LIMITATION);
     the step-4 identity snapshot and acceptance rehashing cover the measured run.
     """
+    if profile.memory_policy != policy:
+        return (f"resource profile {profile.profile_id} measured memory policy ({profile.memory_policy.describe()}), "
+                f"not the runtime's ({policy.describe()})")
     expected = PROFILED_FLAGS + PROMPT_CACHE_FLAGS
     if tuple(profile.llama_flags) != expected:
         return (f"resource profile {profile.profile_id} measured llama-server flags {' '.join(profile.llama_flags)}, "
@@ -745,9 +795,10 @@ def scene_admission(
     scene: SceneOptions,
     *,
     profiles: Mapping[str, ResourceProfile] = RESOURCE_PROFILES,
+    policy: MemoryPolicy = DEFAULT_POLICY,
 ) -> tuple[str | None, str | None]:
     """(problem, producer revision) for ``--scene``: an enabled scene adapter whose resource
-    profile is ACCEPTED (step-4 evidence, D46) and matches the selected configuration."""
+    profile is ACCEPTED (step-4 evidence, D46) and matches the selected configuration, memory policy included."""
     statuses = [s for s in resolve(config.adapters, profiles=profiles) if s.manifest.adapter_id == SCENE_ADAPTER_ID]
     if not statuses:
         return f"no {SCENE_ADAPTER_ID} adapter in the configuration", None
@@ -755,7 +806,7 @@ def scene_admission(
     if status.state is not AdapterState.ENABLED:
         return f"{SCENE_ADAPTER_ID} {status.state.value}: {status.reason}", None
     profile = profiles[status.manifest.resource_profile_id]  # type: ignore[index]  # resolve() checked it
-    problem = profile_mismatch(profile, config, scene)
+    problem = profile_mismatch(profile, config, scene, policy=policy)
     if problem is not None:
         return f"{SCENE_ADAPTER_ID}: {problem}", None
     return None, status.manifest.producer_revision
@@ -777,24 +828,46 @@ def assemble(
     database another process owns. ``profiles`` is the static registry; tests
     pass synthetic fixtures, and ``sentinel run`` has no option to change it. Model failures do not refuse: that component
     is unavailable, with its reason, and core monitoring runs without it.
+
+    Memory policies (D58, ``options.memory_policy``; the default does none of this), in the profiler's order:
+
+    - THP ``workload_disabled``: this process's own THP_enabled must read 1 before anything starts (refused before
+      the database opens). The scene server is spawned first and must keep the system setting; THP_enabled must
+      read 1 in both processes once it is ready. Then, before the detector's load (its D27 cuInit and any model
+      library), this process disables THP for itself (sentinel.memory_policy, verified three ways), and
+      THP_enabled must read 0 here and 1 in the scene server.
+    - Model-file release ``post_load``: each loaded component's files are released after RELEASE_SETTLE_S, the
+      scene's before the THP disable and the detector's after its load, every call returning 0.
+
+    A policy that cannot be established refuses startup, after its models were loaded; the scene server is then
+    stopped and the database closed (nothing it started keeps running).
     """
     from .media.capture import CaptureWorker
     from .media.frames import FrameStamper
 
+    policy = options.memory_policy
+    thp_off = policy.thp == THP_WORKLOAD_DISABLED
+    releasing = policy.model_file_release == RELEASE_POST_LOAD
+    ops = devices.memory
     try:
         source = devices.capture_source(config.capture)  # the URL is checked before any model loads
     except SourceError as exc:
         raise StartupRefused(exc.reason) from None
     revision = None
     if options.scene is not None:
-        problem, revision = scene_admission(config, options.scene, profiles=profiles)
+        problem, revision = scene_admission(config, options.scene, profiles=profiles, policy=policy)
         if problem is not None:
             raise StartupRefused(f"scene_not_admitted: {problem}")
+    startup: dict[str, Any] = {"memory_policy": policy.labels()}
+    if thp_off:
+        before_launch = {"runtime": ops.thp_enabled("self")}
+        startup["thp_scope"] = {"before_launch": before_launch}
+        if before_launch["runtime"] != 1:  # a scene server would inherit it, and it would not be this policy's state
+            raise StartupRefused("thp_enabled_not_1_before_launch")
     try:
         database = Database.open(options.data_dir / DATABASE_NAME)
     except DatabaseError as exc:
         raise StartupRefused(f"database: {exc}") from None
-    startup: dict[str, Any] = {}
     server = None
     try:
         notifiers, notifier_problems = devices.notifiers(config.notifications)
@@ -807,11 +880,21 @@ def assemble(
             scene_problem, memory = memfree_problem(devices.meminfo, options.scene.min_free_bytes)
             startup["scene_memory_before"] = memory
             if scene_problem is None:
-                server = devices.scene_server(options.scene, config.scene_server.port)
+                scene_options = dataclasses.replace(options.scene, require_system_thp=True) if thp_off else options.scene
+                server = devices.scene_server(scene_options, config.scene_server.port)
                 status = server.start(options.scene.ready_timeout_s)
                 startup["scene_server"] = {"state": status.state.value, "problem": status.problem,
                                            "layers": status.layers, "vision_on_gpu": status.vision_on_gpu}
                 if status.state.value == "ready":
+                    if thp_off:
+                        ready = {"runtime": ops.thp_enabled("self"),
+                                 "scene_server": ops.thp_enabled(getattr(server, "pid", None))}
+                        startup["thp_scope"]["llama_ready"] = ready
+                        if ready != {"runtime": 1, "scene_server": 1}:
+                            raise StartupRefused("thp_scope_not_verified:llama_ready")
+                    if releasing:  # D58: after the server's load and settle, before the THP disable
+                        startup["releases"] = {"scene": post_load_release(
+                            ops, "scene", {"llm": options.scene.model, "mmproj": options.scene.mmproj})}
                     images = RecentImages()
                     run_job = devices.scene_request(config.scene_server.port, config.scene_server.request_timeout_s)
                     analyzer = ThreadedSceneAnalyzer(run_job, images, revision=revision or "unknown")
@@ -819,6 +902,19 @@ def assemble(
                 else:
                     scene_problem = f"server_{status.state.value}:{status.problem}"
                     server = None
+
+        if thp_off:  # D58: after any scene server was spawned; before cuInit and any model library (backend.load)
+            record = ops.disable_thp()
+            startup["thp_disable"] = {key: record.get(key) for key in (
+                "t_mono", "model_modules_loaded", "set_rc", "set_errno", "get_value", "thp_enabled",
+                "anon_huge_pages_bytes", "verified", "reason")}
+            if record.get("verified") is not True:
+                raise StartupRefused(f"thp_disable_not_verified:{record.get('reason')}")
+            verified = {"runtime": ops.thp_enabled("self"),
+                        **({"scene_server": ops.thp_enabled(getattr(server, "pid", None))} if server is not None else {})}
+            startup["thp_scope"]["workload_verified"] = verified
+            if verified["runtime"] != 0 or verified.get("scene_server", 1) != 1:
+                raise StartupRefused("thp_scope_not_verified:workload_verified")
 
         tracker = None
         detector_problem, memory = memfree_problem(devices.meminfo, options.min_free_bytes)
@@ -831,6 +927,9 @@ def assemble(
                 detector_problem = exc.label + (f" ({exc.error_type})" if exc.error_type else "")
             else:
                 tracker = PersonTracker(backend)
+                if releasing:  # D58: after the detector's load and settle
+                    startup.setdefault("releases", {})["detector"] = post_load_release(
+                        ops, "detector", {"engine": options.engine})
         startup["detector_problem"] = detector_problem
         startup["scene_problem"] = scene_problem
         startup["notifier_problems"] = notifier_problems

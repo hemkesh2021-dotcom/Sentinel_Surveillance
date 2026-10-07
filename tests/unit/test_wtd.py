@@ -167,8 +167,10 @@ def test_without_the_flag_the_workload_never_touches_thp(w, monkeypatch) -> None
     assert order == ["cuda_driver"] and code == 3 and "thp_disable" not in [name for name, _ in events]
 
 
-def test_the_flag_is_defined_only_with_memory_attribution(w, monkeypatch) -> None:
+def test_the_flag_is_defined_only_with_the_post_load_release(w, monkeypatch) -> None:
+    # D57 required --memory-attribution; D58 relaxed that to the post-load release both MA1-WTD and the candidate use.
     for argv in (["--port", "1", "--engine", "e", "--thp-disable"],
+                 ["--port", "1", "--engine", "e", "--memory-attribution", "--thp-disable"],
                  ["--port", "1", "--scene-only", "--thp-disable"]):
         with pytest.raises(SystemExit):
             run_main(w, monkeypatch, argv)

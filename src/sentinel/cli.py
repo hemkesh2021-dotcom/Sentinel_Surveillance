@@ -22,6 +22,7 @@ from .demo_runtime import DATABASE_NAME, Devices, RunOptions, SceneOptions, Star
 from .media.capture import CaptureWorker, LatestFrame, SourceError, VideoSource
 from .media.clock import SystemClock
 from .media.frames import FrameStamper
+from .memory_policy import policy_from_flags
 from .media.probe import run_probe
 from .tracking.probe import TrackProbe, read_meminfo
 from .tracking.tracker import PersonTracker, TrackerError
@@ -61,7 +62,8 @@ def _legacy_tracker(engine: Path) -> Any:
 def _scene_server(options: SceneOptions, port: int) -> Any:
     from .scene.server import LlamaServerProcess
 
-    return LlamaServerProcess(options.binary, options.model, options.mmproj, port)
+    return LlamaServerProcess(options.binary, options.model, options.mmproj, port,
+                              require_system_thp=options.require_system_thp)
 
 
 def _scene_request(port: int, timeout_s: float) -> Any:
@@ -212,6 +214,18 @@ def main(
     run.add_argument(
         "--scene-min-free-gb", type=_min_free_gb, default=3.0,
         help="do not start the scene server below this MemFree (decimal GB; default 3.0, as check 8)",
+    )
+    run.add_argument(
+        "--workload-thp-disable", action="store_true",
+        help="D58 memory policy (off by default): after any scene server has started and before the detector "
+        "loads, disable transparent huge pages for this process alone (prctl), verified; the scene server keeps the "
+        "system setting; startup is refused if it cannot be verified. With --scene, the profile must have measured it",
+    )
+    run.add_argument(
+        "--post-load-release", action="store_true",
+        help="D58 memory policy (off by default): after each model loads and settles (15 s), release its model files "
+        "from the page cache (posix_fadvise DONTNEED); startup is refused unless every call returns 0. With --scene, "
+        "the profile must have measured it",
     )
     run.add_argument(
         "--status-port", type=_status_port, default=18090,
@@ -421,7 +435,9 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
             ready_timeout_s=args.scene_ready_timeout_s, min_free_bytes=round(args.scene_min_free_gb * GB),
         )
     options = RunOptions(
-        data_dir=args.data_dir.expanduser(), engine=args.engine, min_free_bytes=round(args.min_free_gb * GB), scene=scene
+        data_dir=args.data_dir.expanduser(), engine=args.engine, min_free_bytes=round(args.min_free_gb * GB), scene=scene,
+        memory_policy=policy_from_flags(workload_thp_disable=args.workload_thp_disable,
+                                        post_load_release=args.post_load_release),
     )
     clock = SystemClock()
     holder: dict[str, Any] = {}
