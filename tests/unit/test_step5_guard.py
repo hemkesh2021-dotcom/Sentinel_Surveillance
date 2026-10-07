@@ -26,8 +26,7 @@ STARTING = {"run": "starting", "startup": {
     "thp_disable": {"verified": True, "reason": None, "set_rc": 0, "thp_enabled": 0, "t_mono": 1.0},
     "releases": {"scene": {"files": {"llm": {"result": "returned_0", "bytes": 1}, "mmproj": {"result": "returned_0"}}},
                  "detector": {"files": {"engine": {"result": "returned_0"}}}},
-    "scene_server": {"state": "ready", "problem": None, "layers": "offloaded 17/17 layers to GPU",
-                     "vision_on_gpu": True},
+    "scene_server": {"state": "ready", "problem": None, "layers": "17/17", "vision_on_gpu": True},
     "scene_problem": None, "detector_problem": None, "notifier_problems": {},
     "status_page": "http://127.0.0.1:18090/"}}
 STOPPED = {"run": "stopped", "shutdown": {"stopped": {"capture": True, "scene_server": True}, "all_stopped": True,

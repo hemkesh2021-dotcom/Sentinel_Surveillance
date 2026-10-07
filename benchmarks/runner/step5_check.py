@@ -23,7 +23,9 @@ EXPECTED_REFUSAL = (
     "(THP workload_disabled, model-file release post_load), not the runtime's (THP system, model-file release none)"
 )
 CANDIDATE_POLICY = {"thp": "workload_disabled", "model_file_release": "post_load"}
-LAYERS = "offloaded 17/17 layers to GPU"
+# The runtime reports the scene server's offload as "N/M": the numbers of llama-server's "offloaded N/M layers to GPU"
+# line (sentinel.scene.server.ServerStatus.layers). The profiler's gpu_evidence keeps the whole line instead.
+LAYERS = "17/17"
 DATABASE = "sentinel.db"
 GUARD_FIGURES = ("peak_pressure_bytes", "min_mem_free_bytes", "min_mem_available_bytes")
 MISSING = object()

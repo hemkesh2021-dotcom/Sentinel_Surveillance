@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import copy
 import importlib
+import io
 import json
+import time
 from pathlib import Path
 
 import pytest
+
+from sentinel.scene.server import LlamaServerProcess
 
 RUNNERS = Path(__file__).resolve().parents[2] / "benchmarks/runner"
 LOOP = {"port": 18090, "family": "tcp", "scope": "loopback"}
@@ -68,8 +72,7 @@ def scene() -> tuple[dict, dict]:
                   "thp_disable": {"verified": True, "reason": None},
                   "releases": {"scene": {"llm": "returned_0", "mmproj": "returned_0"},
                                "detector": {"engine": "returned_0"}},
-                  "scene_server": {"state": "ready", "problem": None, "layers": "offloaded 17/17 layers to GPU",
-                                   "vision_on_gpu": True},
+                  "scene_server": {"state": "ready", "problem": None, "layers": "17/17", "vision_on_gpu": True},
                   "scene_problem": None, "detector_problem": None,
                   "scene_memory_before": {"MemFree": 4}, "detector_memory_before": {"MemFree": 3}}},
               "captures": [{"name": "scene-start", "taken_after_launch_s": 110.0, "listeners": [SCENE_PORT, LOOP]},
@@ -151,6 +154,11 @@ def test_the_core_part_fails_on_any_deviation(mod, tmp_path, change) -> None:
 @pytest.mark.parametrize("change", [
     lambda r, s: r["run_output"]["starting"]["scene_server"].update(state="failed", problem="timeout"),
     lambda r, s: r["run_output"]["starting"]["scene_server"].update(vision_on_gpu=False),
+    lambda r, s: r["run_output"]["starting"]["scene_server"].update(layers="16/17"),
+    lambda r, s: r["run_output"]["starting"]["scene_server"].update(layers="18/18"),
+    lambda r, s: r["run_output"]["starting"]["scene_server"].update(layers=None),
+    lambda r, s: r["run_output"]["starting"]["scene_server"].pop("layers"),
+    lambda r, s: r["run_output"]["starting"]["scene_server"].update(layers="offloaded 17/17 layers to GPU"),
     lambda r, s: r["run_output"]["starting"].update(scene_problem="server_failed:timeout"),
     lambda r, s: r["run_output"]["starting"]["thp_scope"].update(llama_ready={"runtime": 1, "scene_server": 0}),
     lambda r, s: r["run_output"]["starting"]["releases"].pop("scene"),
@@ -164,3 +172,67 @@ def test_the_scene_part_fails_on_any_deviation(mod, tmp_path, change) -> None:
     result, statuses = scene()
     change(result, statuses)
     assert not mod.read_scene(write(tmp_path / "s", result, statuses), tmp_path).ok
+
+
+L4T = "/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1"
+OFFLOAD_OUTPUT = [b"load_tensors: offloaded 17/17 layers to GPU\n", b"clip_model_loader: CLIP using CUDA0 backend\n"]
+
+
+class ServerChild:
+    """llama-server as LlamaServerProcess sees it: its output lines, then stopped on request."""
+
+    pid = 4242
+
+    def __init__(self, lines: list[bytes]) -> None:
+        self.stdout = io.BytesIO(b"".join(lines))
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.returncode = -15
+
+    def kill(self) -> None:
+        self.returncode = -9
+
+    def wait(self, timeout: float | None = None) -> int | None:
+        return self.returncode
+
+
+def runtime_scene_server(tmp_path: Path, lines: list[bytes]) -> dict:
+    """The starting line's ``scene_server`` as ``sentinel run`` records it, from the real server's own parse."""
+    files = [tmp_path / name for name in ("llama-server", "model.gguf", "mmproj.gguf")]
+    for path in files:
+        path.write_bytes(b"x")
+    now = [0.0]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+        time.sleep(0.001)  # lets the output pump run
+
+    server = LlamaServerProcess(
+        *files, 18081, environ={"PATH": "/usr/bin"}, popen=lambda argv, **kwargs: ServerChild(lines),
+        health=lambda port: True, in_use=lambda port: False, libcuda=lambda pid: [L4T],
+        libraries=lambda pid: [str(tmp_path / "libllama.so")], sleep=sleep, monotonic=lambda: now[0])
+    status = server.start(30.0)
+    server.stop(1.0)
+    return {"state": status.state.value, "problem": status.problem, "layers": status.layers,
+            "vision_on_gpu": status.vision_on_gpu}
+
+
+def test_the_scene_server_item_reads_the_layers_the_runtime_reports(mod, tmp_path, capsys) -> None:
+    """Step 5's first run (step5-20261007T153831Z) failed this item with the server ready, 17/17 layers and the vision
+    encoder on GPU: it expected the profiler's whole log line, not the runtime's "N/M". Here the value comes from the
+    real server's parse of llama-server's offload line, through the guard's summary."""
+    reported = runtime_scene_server(tmp_path, OFFLOAD_OUTPUT)
+    assert reported == {"state": "ready", "problem": None, "layers": "17/17", "vision_on_gpu": True}
+    run_output = tmp_path / "run.jsonl"
+    run_output.write_text(json.dumps({"run": "starting", "startup": {"scene_server": reported}}) + "\n")
+    summary = importlib.import_module("step5_guard").read_run_output(run_output)["starting"]["scene_server"]
+    result, statuses = scene()
+    result["run_output"]["starting"]["scene_server"] = summary
+    data = tmp_path / "data"
+    data.mkdir()
+    assert mod.main(["scene", str(write(tmp_path / "s", result, statuses)), "--data-dir", str(data)]) == 0
+    assert "PASS scene server ready, 17/17 layers, vision encoder on GPU; scene admitted: " in capsys.readouterr().out
