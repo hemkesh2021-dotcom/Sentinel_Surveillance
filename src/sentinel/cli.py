@@ -18,7 +18,9 @@ from typing import Any, TextIO
 from . import __version__
 from .adapters import resolve
 from .config import CaptureConfig, ConfigError, SentinelConfig, load_config
-from .demo_runtime import DATABASE_NAME, Devices, RunOptions, SceneOptions, StartupRefused, assemble
+from .demo_runtime import DATABASE_NAME, Devices, FaceOptions, RunOptions, SceneOptions, StartupRefused, assemble
+from .identity.gallery import DEFAULT_IDENTITY_DIR
+from .identity.vault import SECRET_ENV, take_secret_from_environment
 from .media.capture import CaptureWorker, LatestFrame, SourceError, VideoSource
 from .media.clock import SystemClock
 from .media.frames import FrameStamper
@@ -64,6 +66,19 @@ def _scene_server(options: SceneOptions, port: int) -> Any:
 
     return LlamaServerProcess(options.binary, options.model, options.mmproj, port,
                               require_system_thp=options.require_system_thp)
+
+
+def _face_backend(weights_dir: Path | None) -> Any:
+    from .identity.legacy_deepface import LegacyDeepFaceBackend
+
+    return LegacyDeepFaceBackend(weights_dir)
+
+
+def _identity_store(directory: Path) -> Any:
+    from .identity.gallery import IdentityStore
+    from .identity.vault import Sealer
+
+    return IdentityStore(directory, Sealer())
 
 
 def _scene_request(port: int, timeout_s: float) -> Any:
@@ -228,6 +243,18 @@ def main(
         "the profile must have measured it",
     )
     run.add_argument(
+        "--face", action="store_true",
+        help="V2-25 demo form (off by default): 1 Hz face recognition against the sealed gallery in --identity-dir, "
+        f"opened with the passphrase in {SECRET_ENV} (typed silently beforehand; removed from this process's "
+        "environment at once). Needs an enabled, admitted legacy-deepface-facenet512-yunet adapter",
+    )
+    run.add_argument(
+        "--face-validation", action="store_true",
+        help="with --face: allow a face admission that is PENDING_VALIDATION, for the guarded device validation only",
+    )
+    run.add_argument("--identity-dir", type=Path, default=DEFAULT_IDENTITY_DIR,
+                     help=f"the private (0700) identity directory (default {DEFAULT_IDENTITY_DIR})")
+    run.add_argument(
         "--status-port", type=_status_port, default=18090,
         help="read-only status page on 127.0.0.1:PORT (D-2; default 18090; 0 = none). Reach it over SSH: "
         "ssh -L 18090:127.0.0.1:18090 <device>",
@@ -257,6 +284,8 @@ def main(
             scene_server=_scene_server,
             scene_request=_scene_request,
             meminfo=meminfo,
+            face_backend=_face_backend,
+            identity_store=_identity_store,
         )
         with _json_stdout() as out:
             return _run(config, args, devices, out)
@@ -428,6 +457,18 @@ def _track_probe(
 
 
 def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out: TextIO) -> int:
+    secret = take_secret_from_environment()  # always removed first: no child (llama-server) may inherit it
+    if args.face_validation and not args.face:
+        print("run: --face-validation needs --face", file=sys.stderr)
+        return 1
+    face = None
+    if args.face:
+        if secret is None:
+            print(f"run: identity_secret_missing ({SECRET_ENV} is not set)", file=sys.stderr)
+            return 1
+        face = FaceOptions(identity_dir=args.identity_dir.expanduser(), secret=secret,
+                           validation_run=args.face_validation)
+    del secret
     scene = None
     if args.scene:
         scene = SceneOptions(
@@ -436,6 +477,7 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
         )
     options = RunOptions(
         data_dir=args.data_dir.expanduser(), engine=args.engine, min_free_bytes=round(args.min_free_gb * GB), scene=scene,
+        face=face,
         memory_policy=policy_from_flags(workload_thp_disable=args.workload_thp_disable,
                                         post_load_release=args.post_load_release),
     )
@@ -481,6 +523,8 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
         next_line = time.monotonic()
         while not runtime.stop_requested:
             runtime.step()
+            for record in runtime.drain_identity_transitions():  # opaque IDs and numbers only
+                print(json.dumps(record), file=out, flush=True)
             if time.monotonic() >= next_line:
                 print(json.dumps(status_line(runtime.snapshot())), file=out, flush=True)
                 next_line = time.monotonic() + args.status_interval_s
@@ -492,6 +536,8 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
         closed = assembly.close(shutdown)
         for sig, handler in handlers.items():
             signal.signal(sig, handler)
+    for record in runtime.drain_identity_transitions():
+        print(json.dumps(record), file=out, flush=True)
     print(json.dumps({"run": "stopped", "shutdown": shutdown, "database_closed": closed,
                       "status": status_line(runtime.snapshot())}), file=out, flush=True)
     return 0 if shutdown["all_stopped"] and closed else 2
@@ -506,6 +552,7 @@ def status_line(snapshot: dict[str, Any]) -> dict[str, Any]:
         "video": live.get("video"),
         "occupancy": live.get("occupancy"),
         "scene": live.get("scene"),
+        "identity": live.get("identity"),
         "rates": snapshot["rates"],
         "capture": {k: snapshot["components"]["capture"][k] for k in ("state", "stream_epoch", "reconnects")},
         "pending_signals": snapshot["components"]["incidents"]["pending_signals"],

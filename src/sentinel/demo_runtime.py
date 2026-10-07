@@ -42,7 +42,13 @@ Not V2-29: there is no memory-pressure admission or degradation controller.
 GPU components are loaded once at startup, behind the D27 guard and a
 provisional MemFree precheck (U18 stays open). A component that fails is shown
 unavailable; nothing is restarted or re-admitted at runtime (V2-19, V2-29).
-Face recognition is not wired: it stays disabled.
+Face recognition (V2-25 demo form, ``--face``; off by default): the 1 Hz FaceWorker analyses a private copy of a
+processed live frame that has people, and EdgeCore applies each result to that frame's own people
+(``on_face_outcome``). The gallery is sealed (sentinel.identity.vault) and opened at startup with a passphrase the
+operator types; startup refuses on a sealing error, and a missing or empty gallery leaves face recognition
+unavailable without loading the model. The face adapter needs its own admission record, which starts
+PENDING_VALIDATION: only ``--face-validation`` runs may use it. Identity transitions are kept as opaque records
+(``drain_identity_transitions``); nothing here shows names, photos or embeddings.
 
 Memory policies (D58; opt-in, off by default, see ``assemble``): this process
 can disable transparent huge pages for itself before the detector loads, and
@@ -68,7 +74,11 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .adapters import (
+    FACE_ADAPTER_ID,
+    FACE_ADMISSIONS,
     RESOURCE_PROFILES,
+    FaceAdmission,
+    face_admission_problem,
     STARTUP_HASH_LIMIT_BYTES,
     AdapterState,
     FileFacts,
@@ -79,10 +89,15 @@ from .alerts.outbox import Notifier, OutboxWorker
 from .alerts.telegram import NotifierUnavailable, TelegramNotifier
 from .config import CaptureConfig, NotificationsConfig, SentinelConfig
 from .contracts import FrameKey, FrameRef, StreamIdentity, TrackStatus
+from .identity.gallery import GalleryDocument
+from .identity.legacy_deepface import FaceBackendError, static_difference
+from .identity.vault import Secret, VaultError
+from .identity.worker import FaceWorker
 from .incidents.service import IncidentService, RecordOutcome
 from .inference.legacy_ultralytics import LEGACY_ENGINE_SHA256
 from .incidents.signals import IncidentSignal, signal_from_hazard, signal_from_zone
 from .jobs import AnalysisJob, WorkerOutcome
+from .identity.state import IdentityState
 from .live_state import Capability, LiveState
 from .media.capture import CapturedFrame, CaptureState, CaptureStatus, LatestFrame, SourceError, VideoSource
 from .media.clock import NS_PER_SECOND, Clock
@@ -113,6 +128,8 @@ PENDING_DURABILITY = (
 )
 RECORD_RETRY_NS = NS_PER_SECOND
 RATE_WINDOW_NS = 10 * NS_PER_SECOND
+FACE_STOP_TIMEOUT_S = 2.0  # a DeepFace call cannot be interrupted; p99 989 ms in the replay profile
+MAX_TRANSITION_RECORDS = 10_000  # identity transition records kept for output per run; more are counted, not kept
 
 
 class Capture(Protocol):
@@ -141,6 +158,13 @@ class RuntimeState(str, Enum):
     RUNNING = "running"
     STOPPING = "stopping"
     STOPPED = "stopped"
+
+
+@dataclass
+class FaceRuntime:
+    worker: FaceWorker
+    identities: int  # enrolled identities in the opened gallery (a count; IDs stay out of the status)
+    validation_run: bool
 
 
 @dataclass
@@ -216,6 +240,9 @@ class DemoRuntime:
         detector_problem: str | None = None,
         scene: SceneRuntime | None = None,
         scene_problem: str | None = None,
+        face: FaceRuntime | None = None,
+        face_problem: str | None = None,
+        enrollment: Any = None,
         notifier_problems: Mapping[str, str] | None = None,
         tick_s: float = 0.25,
         status_refresh_s: float = 0.5,
@@ -232,6 +259,8 @@ class DemoRuntime:
         self._detector_problem = detector_problem  # set at startup; never cleared
         self._scene = scene
         self._scene_problem = None if scene is not None else scene_problem
+        self._face = face
+        self._face_problem = None if face is not None else face_problem
         self._notifier_problems = dict(notifier_problems or {})
         self._tick_s = tick_s
         self._status_refresh_ns = round(status_refresh_s * NS_PER_SECOND)
@@ -240,8 +269,12 @@ class DemoRuntime:
             clock,
             scene.analyzer if scene is not None else None,
             detector=Capability.AVAILABLE if tracker is not None else Capability.UNAVAILABLE,
+            face_recognition=(Capability.AVAILABLE if face is not None
+                              else Capability.UNAVAILABLE if face_problem is not None else Capability.DISABLED),
+            enrollment=enrollment if face is not None else None,
             scene_problem=self._scene_problem,
         )
+        self._transitions: deque[dict[str, Any]] = deque()
         self._frames: OrderedDict[FrameKey, FrameRef] = OrderedDict()
         self._pending: deque[tuple[IncidentSignal, FrameKey | None]] = deque()
         self._retry_at_ns = 0
@@ -269,6 +302,8 @@ class DemoRuntime:
         """Start the threads this runtime owns: capture, scene worker, outbox."""
         if self._scene is not None:
             self._scene.analyzer.start()
+        if self._face is not None:
+            self._face.worker.start()
         if self._outbox is not None:
             self._outbox.start()
         self._capture.start()
@@ -295,6 +330,8 @@ class DemoRuntime:
         self._refresh_status(force=True)
         capture = self._config.capture
         stopped: dict[str, bool] = {"capture": self._capture.stop(capture.open_timeout_s + capture.read_timeout_s + 1.0)}
+        if self._face is not None:
+            stopped["face_worker"] = self._face.worker.stop(FACE_STOP_TIMEOUT_S)
         if self._scene is not None:
             self._scene.analyzer.stop(0.0)  # drop a waiting job; a running request ends when the server goes
             if self._scene.server is not None:
@@ -326,6 +363,11 @@ class DemoRuntime:
         if self._scene is not None:
             for job_id, outcome in self._scene.analyzer.drain():
                 self._handle(self._core.on_scene_outcome(job_id, outcome, self._capture.connected))
+        if self._face is not None:
+            result = self._face.worker.drain()
+            if result is not None:
+                self._handle(self._core.on_face_outcome(result.frame, result.persons, result.faces,
+                                                        self._capture.connected))
         if self._pending:
             self._handle(None)
         self._refresh_status()
@@ -348,7 +390,10 @@ class DemoRuntime:
             self.counters["frames_processed"] += 1
             self._last_frame_problem = None
             self._core.set_detector(Capability.AVAILABLE)
-            return self._core.on_frame(frame, result.persons, connected)
+            output = self._core.on_frame(frame, result.persons, connected)
+            if self._face is not None:
+                self._face.worker.consider(frame, result.persons, captured.image)  # copies it if offered
+            return output
         if result.outcome is FrameOutcome.FAILED:
             self.counters["frames_failed"] += 1
             detail = f" ({result.error_type})" if result.error_type else ""
@@ -364,6 +409,7 @@ class DemoRuntime:
             current = outputs.popleft()
             if current is not None:
                 self._live = current.state
+                self._keep_transitions(current)
                 self._annotate(current)
                 for zone in current.zones:
                     enrich = zone.last_source if zone.phase is ZonePhase.ENTERED else None
@@ -372,6 +418,20 @@ class DemoRuntime:
                     self._enqueue(signal_from_hazard(candidate), None)
             for frame, incident_id in self._flush():
                 outputs.append(self._core.request_enrichment(frame, incident_id, self._capture.connected))
+
+    def _keep_transitions(self, output: CoreOutput) -> None:
+        for transition in output.identity_transitions:
+            if self.counters["identity_transitions_kept"] >= MAX_TRANSITION_RECORDS:
+                self.counters["identity_transitions_dropped"] += 1
+                continue
+            self.counters["identity_transitions_kept"] += 1
+            self._transitions.append(transition.record())
+
+    def drain_identity_transitions(self) -> list[dict[str, Any]]:
+        """Opaque identity transition records since the last call (loop thread)."""
+        records = list(self._transitions)
+        self._transitions.clear()
+        return records
 
     def _annotate(self, output: CoreOutput) -> None:
         for routed in output.evidence:
@@ -440,6 +500,7 @@ class DemoRuntime:
             "capture": self._capture_status(capture),
             "detector": self._detector_status(),
             "scene": self._scene_status(),
+            "face": self._face_status(),
             "incidents": {
                 "state": "degraded" if self._pending or self.counters["signals_dropped"] else "ok",
                 "pending_signals": len(self._pending),
@@ -515,6 +576,21 @@ class DemoRuntime:
             "lane": dict(sorted(lane.counters.items())) if lane is not None else {},
         }
 
+    def _face_status(self) -> dict[str, Any]:
+        if self._face is None:
+            state = Capability.DISABLED if self._face_problem is None else Capability.UNAVAILABLE
+            return {"state": state.value, "problem": self._face_problem}
+        return {
+            "state": Capability.AVAILABLE.value,
+            "problem": None,
+            "validation_run": self._face.validation_run,
+            "identities_enrolled": self._face.identities,
+            "worker": self._face.worker.status(),
+            "results": self._core.identity_counters,
+            "transitions": {"kept": self.counters["identity_transitions_kept"],
+                            "dropped": self.counters["identity_transitions_dropped"]},
+        }
+
     def _notification_status(self) -> dict[str, Any]:
         channels = {}
         for channel in self._config.notifications.channels:
@@ -554,6 +630,11 @@ class DemoRuntime:
             "occupancy_reason": live.occupancy_reason,
             "people": len(live.people),
             "confirmed_people": sum(1 for p in live.people if p.status is TrackStatus.CONFIRMED),
+            "identity": {
+                **{state.value: sum(1 for p in live.people if p.identity is state) for state in IdentityState},
+                **{basis: sum(1 for p in live.people if p.identity_basis is not None and p.identity_basis.value == basis)
+                   for basis in ("fresh", "retained")},
+            },
             "scene": live.scene.value,
             "scene_reason": live.scene_reason,
             "scene_report": None if report is None else {
@@ -582,6 +663,9 @@ def degradation(snapshot: Mapping[str, Any]) -> list[str]:
     scene = components["scene"]
     if scene["state"] == "unavailable":
         reasons.append(f"scene analysis unavailable ({scene['problem']})")
+    face = components.get("face", {})
+    if face.get("state") == "unavailable":
+        reasons.append(f"face recognition unavailable ({face['problem']})")
     incidents = components["incidents"]
     if incidents["pending_signals"]:
         reasons.append(f"{incidents['pending_signals']} rule observation(s) not yet recorded ({incidents['problem']})")
@@ -623,11 +707,23 @@ class SceneOptions:
 
 
 @dataclass(frozen=True)
+class FaceOptions:
+    """``--face``: the sealed gallery's directory and the passphrase typed at startup (never printed: Secret)."""
+
+    identity_dir: Path
+    secret: Secret
+    validation_run: bool = False  # --face-validation: the only way to use a PENDING_VALIDATION admission
+    weights_dir: Path | None = None  # DeepFace's weights; None: ~/.deepface/weights
+    min_free_bytes: int = 1_500_000_000  # the detector's provisional precheck, reused (U18 open)
+
+
+@dataclass(frozen=True)
 class RunOptions:
     data_dir: Path
     engine: Path
     min_free_bytes: int = 1_500_000_000  # the track probe's provisional guard (U18 open)
     scene: SceneOptions | None = None  # None: scene analysis disabled (the default)
+    face: FaceOptions | None = None  # None: face recognition disabled (the default)
     memory_policy: MemoryPolicy = DEFAULT_POLICY  # D58: opt-in; the default changes nothing
 
 
@@ -668,6 +764,8 @@ class Devices:
     meminfo: Callable[[], dict[str, int] | None]
     notifiers: Callable[[NotificationsConfig], tuple[dict[str, Notifier], dict[str, str]]] = environment_notifiers
     memory: MemoryOps = field(default_factory=MemoryOps)  # D58; used only when a policy is selected
+    face_backend: Callable[[Path | None], Any] | None = None  # has load(), compatibility(), faces(), weight_files
+    identity_store: Callable[[Path], Any] | None = None  # has exists(), load(secret)
 
 
 @dataclass
@@ -812,6 +910,71 @@ def scene_admission(
     return None, status.manifest.producer_revision
 
 
+def face_admission(
+    config: SentinelConfig,
+    face: FaceOptions,
+    *,
+    profiles: Mapping[str, ResourceProfile] = RESOURCE_PROFILES,
+    admissions: Mapping[str, FaceAdmission] = FACE_ADMISSIONS,
+    policy: MemoryPolicy = DEFAULT_POLICY,
+    weights_dir: Path,
+) -> str | None:
+    """None if ``--face`` may run: an enabled face adapter whose face admission record allows this run (PENDING_VALIDATION
+    only with --face-validation), on the memory policy its profile measured, at the measured cadence, with the
+    measured weights (SHA-256 up to STARTUP_HASH_LIMIT_BYTES, else name, size and modification time)."""
+    statuses = [s for s in resolve(config.adapters, profiles=profiles, face_admissions=admissions)
+                if s.manifest.adapter_id == FACE_ADAPTER_ID]
+    if not statuses:
+        return f"no {FACE_ADAPTER_ID} adapter in the configuration"
+    status = statuses[0]
+    if status.state is not AdapterState.ENABLED:
+        return f"{FACE_ADAPTER_ID} {status.state.value}: {status.reason}"
+    profile_id = status.manifest.resource_profile_id
+    problem = face_admission_problem(profile_id, validation_run=face.validation_run, profiles=profiles,
+                                     admissions=admissions)
+    if problem is not None:
+        return f"{FACE_ADAPTER_ID}: {problem}"
+    profile, admission = profiles[profile_id], admissions[profile_id]  # type: ignore[index]  # checked above
+    if profile.memory_policy != policy:
+        return (f"{FACE_ADAPTER_ID}: resource profile {profile_id} measured memory policy "
+                f"({profile.memory_policy.describe()}), not the runtime's ({policy.describe()})")
+    if abs(config.identity.face_interval_s * admission.face_hz - 1.0) > 1e-9:
+        return (f"{FACE_ADAPTER_ID}: the face admission measured {admission.face_hz:g} Hz, not the configured "
+                f"{config.identity.face_interval_s:g} s interval")
+    for label, recorded in (("face model weights", admission.model_weights),
+                            ("face detector weights", admission.detector_weights)):
+        problem = _identity_problem(label, Path(weights_dir) / recorded.name, recorded)
+        if problem is not None:
+            return f"{FACE_ADAPTER_ID}: {problem}"
+    return None
+
+
+def _weights_dir(backend: Any, requested: Path | None) -> Path:
+    files = getattr(backend, "weight_files", None)
+    if files:
+        return Path(next(iter(files.values()))).parent
+    from .identity.legacy_deepface import default_weights_dir
+
+    return default_weights_dir() if requested is None else Path(requested)
+
+
+def open_gallery(store: Any, secret: Secret) -> tuple[GalleryDocument | None, str | None]:
+    """(document, face problem): a missing or empty gallery or a pinned-field mismatch leaves face recognition
+    unavailable (nothing to load). A sealing error (wrong passphrase, tampering, permissions) raises StartupRefused."""
+    if not store.exists():
+        return None, "no_identities_enrolled"
+    try:
+        document = store.load(secret)
+    except VaultError as exc:
+        raise StartupRefused(f"identity_gallery: {exc.label}") from None
+    if not document.identities:
+        return None, "no_identities_enrolled"
+    field_name = static_difference(document.compatibility)
+    if field_name is not None:
+        return None, f"gallery_incompatible:{field_name}"
+    return document, None
+
+
 def assemble(
     config: SentinelConfig,
     options: RunOptions,
@@ -819,6 +982,7 @@ def assemble(
     clock: Clock,
     *,
     profiles: Mapping[str, ResourceProfile] = RESOURCE_PROFILES,
+    face_admissions: Mapping[str, FaceAdmission] = FACE_ADMISSIONS,
 ) -> Assembly:
     """Check, open and load everything ``sentinel run`` needs, then build the runtime (not started).
 
@@ -858,6 +1022,20 @@ def assemble(
         problem, revision = scene_admission(config, options.scene, profiles=profiles, policy=policy)
         if problem is not None:
             raise StartupRefused(f"scene_not_admitted: {problem}")
+    gallery: GalleryDocument | None = None
+    face_problem: str | None = None
+    face_backend = None
+    face_weights: Path | None = None
+    if options.face is not None:
+        if devices.face_backend is None or devices.identity_store is None:
+            raise StartupRefused("face_not_admitted: no face backend on this runtime")
+        face_backend = devices.face_backend(options.face.weights_dir)
+        face_weights = _weights_dir(face_backend, options.face.weights_dir)
+        problem = face_admission(config, options.face, profiles=profiles, admissions=face_admissions, policy=policy,
+                                 weights_dir=face_weights)
+        if problem is not None:
+            raise StartupRefused(f"face_not_admitted: {problem}")
+        gallery, face_problem = open_gallery(devices.identity_store(options.face.identity_dir), options.face.secret)
     startup: dict[str, Any] = {"memory_policy": policy.labels()}
     if thp_off:
         before_launch = {"runtime": ops.thp_enabled("self")}
@@ -934,11 +1112,40 @@ def assemble(
         startup["scene_problem"] = scene_problem
         startup["notifier_problems"] = notifier_problems
 
+        face = None
+        if options.face is not None:
+            startup["face"] = {"validation_run": options.face.validation_run,
+                               "identities_enrolled": 0 if gallery is None else len(gallery.identities)}
+            if face_problem is None and gallery is not None:
+                face_problem, memory = memfree_problem(devices.meminfo, options.face.min_free_bytes)
+                startup["face_memory_before"] = memory
+            if face_problem is None and gallery is not None:
+                try:
+                    face_backend.load()  # the weights' SHA-256, the CPU pin and the DeepFace version first
+                except FaceBackendError as exc:
+                    face_problem = exc.label + (f" ({exc.error_type})" if exc.error_type else "")
+                else:
+                    difference = face_backend.compatibility().first_difference(gallery.compatibility)
+                    if difference is not None:
+                        face_problem = f"gallery_incompatible:{difference}"
+                    elif releasing:  # D58: after the face model's load and settle, as the profile released it
+                        startup.setdefault("releases", {})["face"] = post_load_release(
+                            ops, "face", face_backend.weight_files)
+            if face_problem is None and gallery is not None:
+                backend = face_backend
+                worker = FaceWorker(
+                    lambda frame, image: backend.faces(frame.key, frame.native_width, frame.native_height, image),
+                    clock, interval_ns=config.identity.face_interval_ns,
+                    pending_max_age_ns=config.identity.face_pending_max_age_ns)
+                face = FaceRuntime(worker, len(gallery.identities), options.face.validation_run)
+            startup["face_problem"] = face_problem
+
         slot = LatestFrame()
         capture = CaptureWorker(source, FrameStamper(config.camera.id, clock), slot, config.capture)
         runtime = DemoRuntime(
             config, clock, capture=capture, slot=slot, incidents=incidents, outbox=outbox,
             tracker=tracker, detector_problem=detector_problem, scene=scene, scene_problem=scene_problem,
+            face=face, face_problem=face_problem, enrollment=None if gallery is None else gallery.enrollment(),
             notifier_problems=notifier_problems,
         )
     except BaseException:
