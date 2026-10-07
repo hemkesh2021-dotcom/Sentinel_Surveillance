@@ -17,6 +17,9 @@ llama-server, which runs in its own session. That happens when:
 If the runtime has not exited ``--stop-grace-s`` after that, its process group gets SIGTERM and then SIGKILL. Any
 llama-server left afterwards is stopped and reported; none may run before launch.
 
+With ``--step4-headroom`` it also refuses before launch unless operator_check's step-4 admission headroom holds
+(pressure below 2.0 GB, MemFree at least 3.5 GB, MemAvailable at least 4.0 GB; ``baseline_problem``, unchanged).
+
 At each ``--status-at SECONDS:NAME`` offset it saves ``status-NAME.json`` from the loopback status page, and it
 classifies the listeners on 18090 and 18081 as loopback, any or other. ``result.json`` holds numbers and fixed labels
 only. No stream URL, token, chat ID, address or environment value is read or written; the command's own output goes
@@ -272,7 +275,7 @@ def last_error_label(path: Path) -> str | None:
 # ---------------------------------------------------------------- supervision
 
 
-def preflight(backend, out: Path) -> str | None:
+def preflight(backend, out: Path, step4_headroom: bool = False) -> str | None:
     if out.exists():
         return "out_exists"
     if backend.thp_self() != 1:
@@ -281,25 +284,31 @@ def preflight(backend, out: Path) -> str | None:
         return "llama_server_running"
     if backend.listeners():
         return "port_in_use"
-    if oc.memory_problem(backend.sample()):
+    sample = backend.sample()
+    if oc.memory_problem(sample):
         return "memory_guard_already_met"
+    if step4_headroom and oc.baseline_problem(sample):  # step 4's admission headroom, its values unchanged
+        return "initial_headroom_refused"
     return None
 
 
 def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: bool = False,
               ready_timeout_s: float = READY_TIMEOUT_S, stop_grace_s: float = STOP_GRACE_S,
-              status_at: tuple[tuple[float, str], ...] = (), backend=None, interrupted=lambda: False) -> dict:
+              status_at: tuple[tuple[float, str], ...] = (), step4_headroom: bool = False, backend=None,
+              interrupted=lambda: False) -> dict:
     backend = backend or SystemBackend()
     result: dict[str, Any] = {"schema_version": 1, "mode": "step5_guard", "status": None,
                               "parameters": {"duration_s": duration_s, "from_launch": from_launch,
                                              "ready_timeout_s": ready_timeout_s, "stop_grace_s": stop_grace_s,
+                                             "step4_headroom": step4_headroom,
                                              "status_at": [{"at_s": at, "name": name} for at, name in status_at]},
                               "limits": {"pressure_stop_bytes": oc.PRESSURE_STOP, "mem_free_floor_bytes": oc.FREE_FLOOR,
                                          "mem_available_floor_bytes": oc.AVAILABLE_FLOOR,
                                          "swap_counters": "unchanged", "max_sample_gap_s": 0.5}}
-    refused = preflight(backend, out)
+    refused = preflight(backend, out, step4_headroom)
     if refused:
         result["status"] = f"refused:{refused}"
+        result["preflight_sample"] = oc.safe_sample(backend.sample())
         return result
     out.mkdir(mode=0o700, parents=False)
     baseline = backend.sample()
@@ -462,6 +471,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ready-timeout-s", type=_seconds(MAX_DURATION_S), default=READY_TIMEOUT_S)
     parser.add_argument("--stop-grace-s", type=_seconds(300.0), default=STOP_GRACE_S)
     parser.add_argument("--status-at", type=_status_at, action="append", default=[], metavar="SECONDS:NAME")
+    parser.add_argument("--step4-headroom", action="store_true",
+                        help="also refuse before launch unless step 4's admission headroom holds (operator_check: "
+                             "pressure below 2.0 GB, MemFree at least 3.5 GB, MemAvailable at least 4.0 GB)")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="-- then the sentinel run command")
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -476,7 +488,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = supervise(command, args.out, duration_s=args.duration_s, from_launch=args.from_launch,
                            ready_timeout_s=args.ready_timeout_s, stop_grace_s=args.stop_grace_s,
-                           status_at=tuple(args.status_at), interrupted=lambda: flag["set"])
+                           status_at=tuple(args.status_at), step4_headroom=args.step4_headroom,
+                           interrupted=lambda: flag["set"])
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)

@@ -352,3 +352,33 @@ def test_a_real_runtime_stand_in_stops_on_sigint_and_leaves_nothing(mod, tmp_pat
     assert result["captures"][0]["status"] == "unavailable:URLError" and not (out / "status-start.json").exists()
     assert result["stop"]["exited_after_stop_s"] < 5 and result["cleanup_clear"] is True
     assert sorted(p.name for p in out.iterdir()) == ["guard.jsonl", "result.json", "run.err", "run.jsonl"]
+
+
+FRESH_BOOT = {"MemTotal": 7_990_009_856, "MemFree": 5_600_000_000, "MemAvailable": 6_900_000_000, "pswpin": 8,
+              "pswpout": 22}
+
+
+@pytest.mark.parametrize(("changes", "admitted"), [
+    ({}, True),
+    ({"MemAvailable": 5_990_009_856}, False),  # pressure exactly 2.0 GB
+    ({"MemFree": 3_499_999_999}, False),
+    ({"MemAvailable": 3_999_999_999}, False),
+])
+def test_step4_headroom_refuses_before_launch_with_the_unchanged_admission_values(mod, tmp_path, monkeypatch,
+                                                                                  changes, admitted) -> None:
+    backend = FakeBackend(ready_s=1.0, stop_s=1.0)
+    monkeypatch.setattr(backend, "sample", lambda: {"t_mono": backend.now, **FRESH_BOOT, **changes})
+    result, out = run(mod, tmp_path, backend, duration_s=2.0, step4_headroom=True)
+    if admitted:
+        assert result["status"] == "duration_stop" and result["parameters"]["step4_headroom"] is True
+    else:
+        assert result["status"] == "refused:initial_headroom_refused" and backend.children == [] and not out.exists()
+        assert result["preflight_sample"]["MemFree"] == {**FRESH_BOOT, **changes}["MemFree"]  # recorded, numbers only
+
+
+def test_without_step4_headroom_only_the_guard_limits_apply_before_launch(mod, tmp_path) -> None:
+    backend = FakeBackend(ready_s=1.0, stop_s=1.0)  # HEALTHY: pressure 2.99 GB, under the guard's 4.8 GB
+    assert run(mod, tmp_path, backend, duration_s=2.0)[0]["status"] == "duration_stop"
+    backend = FakeBackend(ready_s=1.0, stop_s=1.0)
+    assert run(mod, tmp_path / "x", backend, duration_s=2.0, step4_headroom=True)[0]["status"] == (
+        "refused:initial_headroom_refused")
