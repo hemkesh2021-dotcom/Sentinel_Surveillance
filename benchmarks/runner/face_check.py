@@ -61,6 +61,10 @@ MIN_APPLIED = 30
 MIN_MATCHES_FACING = 10
 MIN_CONTINUITY = 0.9  # share of the away window's offered ticks that list the retained track
 MIN_COMPLETION = 0.95  # approved 2026-10-08 for this bounded check: completed / offered, with 0 processing errors
+# F1's package minimum (maintainer, 2026-10-08): at least 3 usable photos. The enrollment API's own minimum
+# (sentinel.identity.enroll.MIN_PHOTOS, 2) is separate and unchanged; this check is stricter.
+MIN_USABLE_PHOTOS = 3
+MAX_USABLE_PHOTOS = 8  # MAX_PROTOTYPES
 STATE_TOLERANCE_S = 2.0  # a state change may lag its cause by the loop's step and a capture
 EXACT_S = 0.01  # a state change never precedes its cause (rounding only)
 CUE_TOLERANCE_S = 0.5
@@ -561,25 +565,27 @@ def read_f1(directory: Path, identity_dir: Path) -> Reading:
     supplied = prov.get("photos_supplied")
     supplied_n = int(supplied) if supplied and supplied.isdigit() else MISSING
     dry = s5._load(directory / "dryrun.json")
-    r.item("dry run: photos reported by index, at least 2 usable, nothing written",
+    r.item(f"dry run: photos reported by index, at least {MIN_USABLE_PHOTOS} usable, nothing written",
            {"photos": s5._get(dry, "photos"), "accepted": s5._get(dry, "accepted"),
             "dry_run": s5._get(dry, "dry_run"), "supplied": supplied_n,
             "gallery_before": prov.get("gallery_before_dryrun", MISSING),
             "gallery_after": prov.get("gallery_after_dryrun", MISSING)},
            s5._get(dry, "dry_run") is True and "identity_id" not in (dry if isinstance(dry, dict) else {})
            and s5._get(dry, "photos") == supplied_n and isinstance(s5._get(dry, "accepted"), int)
-           and s5._get(dry, "accepted") >= 2
+           and s5._get(dry, "accepted") >= MIN_USABLE_PHOTOS
            and [x.get("photo") for x in s5._list(s5._get(dry, "results"))] == list(range(1, (supplied_n or 0) + 1))
            and prov.get("gallery_before_dryrun") == "absent" and prov.get("gallery_after_dryrun") == "absent")
     enroll = s5._load(directory / "enroll.json")
     identity_id = s5._get(enroll, "identity_id")
-    r.item("enrollment verified; exactly the supplied copies deleted; the folder removed",
+    r.item(f"enrollment verified from {MIN_USABLE_PHOTOS}-{MAX_USABLE_PHOTOS} usable photos; exactly the supplied "
+           "copies deleted; the folder removed",
            {k: s5._get(enroll, k) for k in ("verified", "identity_id", "photos", "accepted", "photos_deleted",
                                              "photos_changed_not_deleted", "folder_entries_left")},
            s5._get(enroll, "verified") is True and isinstance(identity_id, str) and bool(ID.match(identity_id))
            and s5._get(enroll, "photos") == supplied_n and s5._get(enroll, "photos_deleted") == supplied_n
            and s5._get(enroll, "photos_changed_not_deleted") == 0 and s5._get(enroll, "folder_entries_left") == 0
-           and isinstance(s5._get(enroll, "accepted"), int) and 2 <= s5._get(enroll, "accepted") <= 8
+           and isinstance(s5._get(enroll, "accepted"), int)
+           and MIN_USABLE_PHOTOS <= s5._get(enroll, "accepted") <= MAX_USABLE_PHOTOS
            and "refused" not in (enroll if isinstance(enroll, dict) else {}))
     listing = s5._get(s5._load(directory / "list.json"), "identities")
     r.item("the gallery holds exactly the enrolled identity, its prototypes and consent date", listing,

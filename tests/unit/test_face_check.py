@@ -575,10 +575,35 @@ def test_f1_deviations_fail(mods, tmp_path, monkeypatch, capsys, break_step, ite
     assert not result.ok and line_for("\n".join(result.lines), item).startswith("FAIL")
 
 
+def test_two_usable_photos_fail_this_package_and_three_pass(mods, tmp_path, monkeypatch, capsys) -> None:
+    """The package needs 3 usable photos (maintainer, 2026-10-08), although the enrollment API accepts 2."""
+    from sentinel.identity.enroll import MIN_PHOTOS
+
+    assert (MIN_PHOTOS, mods.check.MIN_USABLE_PHOTOS) == (2, 3)
+    two = tmp_path / "two"
+    two.mkdir()
+    f1, identity_dir = run_f1(mods, two, monkeypatch, capsys, kinds=("1", "2", "none"))
+    assert json.loads((f1 / "enroll.json").read_text())["verified"] is True  # the API itself accepted 2
+    result = mods.check.read_f1(f1, identity_dir)
+    text = "\n".join(result.lines)
+    assert not result.ok
+    assert line_for(text, "dry run").startswith("FAIL") and line_for(text, "enrollment verified").startswith("FAIL")
+    assert '"accepted": 2' in line_for(text, "dry run")
+    others = [line for line in text.splitlines()[:-1]
+              if not line.split(" ", 1)[1].startswith(("dry run", "enrollment verified"))]
+    assert all(line.startswith("PASS") for line in others), text  # every other condition holds
+    for kinds in (("1", "2", "3"), ("1", "2", "3", "none")):
+        root = tmp_path / f"three-{len(kinds)}"
+        root.mkdir()
+        f1, identity_dir = run_f1(mods, root, monkeypatch, capsys, kinds=kinds)
+        result = mods.check.read_f1(f1, identity_dir)
+        assert result.ok, "\n".join(result.lines)
+
+
 def test_f1_fails_if_a_supplied_copy_was_left_or_storage_is_not_private(mods, tmp_path, monkeypatch, capsys) -> None:
-    f1, identity_dir = run_f1(mods, tmp_path, monkeypatch, capsys, kinds=("1", "2", "none"))
+    f1, identity_dir = run_f1(mods, tmp_path, monkeypatch, capsys, kinds=("1", "2", "3", "none"))
     text = "\n".join(mods.check.read_f1(f1, identity_dir).lines)
-    assert line_for(text, "dry run").startswith("PASS")  # 2 usable of 3 is enough
+    assert line_for(text, "dry run").startswith("PASS")  # 3 usable of 4
     (identity_dir / "gallery.sealed").chmod(0o644)
     (identity_dir / "inbox" / "stray.jpg").write_text("x")
     text = "\n".join(mods.check.read_f1(f1, identity_dir).lines)
