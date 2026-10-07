@@ -174,7 +174,9 @@ class ResourceProfile:
     Entries are static code. Nothing at runtime creates, edits or accepts one:
     a profile becomes ACCEPTED only through a separate, maintainer-approved
     commit that adds its entry with the run directory, commit, boot ID and its
-    recorded pass against STEP4_CRITERIA_ID (status record, D46).
+    recorded pass against an admissible identity (status record, D46, D59).
+    Each candidate result needs its own such commit; none is admitted by its
+    identity alone.
     """
 
     profile_id: str
@@ -223,13 +225,17 @@ class ResourceProfile:
     # D58: the memory policy the run measured (manifest ``memory_policy``; earlier runs: the default, which is what
     # they ran). It must be the one its criteria identity's procedure measures, and the runtime's selected one.
     memory_policy: MemoryPolicy = DEFAULT_POLICY
+    # D59: the run's evidence that a non-default policy held (the step-4 report's R inputs): every release recorded
+    # and returned 0 (post_load); the disable verified before the detector load, THP_enabled as expected at every
+    # checkpoint, no AnonHugePages above the value at the check and the THP settings unchanged (workload_disabled).
+    memory_policy_verified: bool | None = None
 
 
 # Step-4 criteria (D47; the same values as benchmarks/runner/step4_criteria.py, which a test enforces).
 # Demo criteria only: they do not establish the guide's 1080p beta gates.
 STEP4_CRITERIA_ID = "step4-combined-cache-off-v2"
-# D54's PLR variant and D58's candidate: the same rules and thresholds under their own identities, which D46 does not
-# admit (accepted_profile_problem requires STEP4_CRITERIA_ID); each identity's procedure measures one memory policy.
+# D54's PLR variant and D58's candidate: the same rules and thresholds under their own identities; each identity's
+# procedure measures one memory policy.
 STEP4PLR_CRITERIA_ID = "step4plr-combined-cache-off-v2"
 STEP4_CANDIDATE_CRITERIA_ID = "step4cand-wtd-plr-combined-cache-off-v2"
 CRITERIA_MEMORY_POLICIES: Mapping[str, MemoryPolicy] = MappingProxyType({
@@ -237,6 +243,10 @@ CRITERIA_MEMORY_POLICIES: Mapping[str, MemoryPolicy] = MappingProxyType({
     STEP4PLR_CRITERIA_ID: MemoryPolicy(THP_SYSTEM, RELEASE_POST_LOAD),
     STEP4_CANDIDATE_CRITERIA_ID: CANDIDATE_POLICY,
 })
+# D59: the identities whose accepted profile can admit scene analysis. Each admits only with the memory policy its
+# procedure measures, and `sentinel run` must select and establish that policy (profile_mismatch, assemble).
+# The PLR identity (D54) and every diagnostic stay non-admissible.
+SCENE_ADMISSIBLE_CRITERIA_IDS: tuple[str, ...] = (STEP4_CRITERIA_ID, STEP4_CANDIDATE_CRITERIA_ID)
 STEP4_TARGET_STEADY_BYTES = 5_000_000_000
 STEP4_MAX_PEAK_BYTES = 5_400_000_000
 STEP4_MAX_STEADY_SLOPE_BYTES_PER_MIN = 10_000_000
@@ -254,6 +264,15 @@ STARTUP_IDENTITY_LIMITATION = (
     "startup hashes the llama-server binary and build libraries up to 32,000,000 B; larger libraries "
     "(libggml-cuda) and the model files are checked by name, size and modification time only, so a "
     "same-size replacement that keeps its modification time is not detected at startup (demo limitation)"
+)
+# D59: what an accepted candidate-identity profile does not measure about `sentinel run`. Such a profile must carry it.
+CANDIDATE_RUNTIME_LIMITATION = (
+    "measured by the profiler's replay workload, not by sentinel run: the runtime applies the same memory policy "
+    "through the same code (THP disabled in the detector process alone, verified; each loaded model's files released "
+    "after a 15 s settle) but runs no face model and releases no face files, adds camera capture, rules, incidents, "
+    "the outbox and the status page, spawns llama-server as its child (the profiler: a sibling; both before the "
+    "disable), waits no 5 s after a release, and has no steady-end THP checkpoint or THP-settings read; measured "
+    "headless with no dev tools, over one 600 s steady interval on one boot (demo limitation)"
 )
 _RUN_DIR = re.compile(r"^demo-profile-\d{8}T\d{6}Z$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -297,7 +316,9 @@ def accepted_profile_problem(
     profile_id: str | None, profiles: Mapping[str, ResourceProfile] = RESOURCE_PROFILES
 ) -> str | None:
     """None if ``profile_id`` is an ACCEPTED combined profile measured with --cache-ram 0 whose
-    recorded evidence passes the step-4 criteria; otherwise the first missing prerequisite."""
+    recorded evidence passes the step-4 criteria under an admissible identity (D59: step 4, or
+    the D58 candidate with its policy evidence and runtime limitation); otherwise the first
+    missing prerequisite. The runtime's policy is matched separately (profile_mismatch)."""
     if profile_id is None:
         return "the manifest names no resource_profile_id; scene needs an accepted combined profile"
     profile = profiles.get(profile_id)
@@ -312,14 +333,17 @@ def accepted_profile_problem(
     if profile.cache_ram_mib != 0:
         cache = "the default prompt cache" if profile.cache_ram_mib is None else f"--cache-ram {profile.cache_ram_mib}"
         return f"resource profile {profile_id} was measured with {cache}, not --cache-ram 0"
-    if profile.criteria_id != STEP4_CRITERIA_ID:
-        return f"resource profile {profile_id} was not judged against {STEP4_CRITERIA_ID}"
-    measured = CRITERIA_MEMORY_POLICIES[STEP4_CRITERIA_ID]
+    if profile.criteria_id not in SCENE_ADMISSIBLE_CRITERIA_IDS:  # D59: step 4 or the D58 candidate
+        return (f"resource profile {profile_id} was not judged against an admissible identity "
+                f"({' or '.join(SCENE_ADMISSIBLE_CRITERIA_IDS)})")
+    measured = CRITERIA_MEMORY_POLICIES[profile.criteria_id]
     if profile.memory_policy != measured:  # D58: an identity and its record must agree
         return (f"resource profile {profile_id} records memory policy ({profile.memory_policy.describe()}), not the "
-                f"one {STEP4_CRITERIA_ID} measures ({measured.describe()})")
+                f"one {profile.criteria_id} measures ({measured.describe()})")
+    if profile.memory_policy != DEFAULT_POLICY and profile.memory_policy_verified is not True:  # D59
+        return f"resource profile {profile_id} has no recorded evidence that its memory policy held"
     if profile.criteria_passed is not True:
-        return f"resource profile {profile_id} has no recorded pass against {STEP4_CRITERIA_ID}"
+        return f"resource profile {profile_id} has no recorded pass against {profile.criteria_id}"
     if not _RUN_DIR.match(profile.run_dir):
         return f"resource profile {profile_id} lacks its run directory"
     if not _COMMIT.match(profile.commit):
@@ -370,6 +394,8 @@ def accepted_profile_problem(
         return f"resource profile {profile_id} lacks its scene request fingerprint"
     if STARTUP_IDENTITY_LIMITATION not in profile.limitations:
         return f"resource profile {profile_id} does not carry the startup identity limitation"
+    if profile.criteria_id == STEP4_CANDIDATE_CRITERIA_ID and CANDIDATE_RUNTIME_LIMITATION not in profile.limitations:
+        return f"resource profile {profile_id} does not carry the candidate's runtime limitation"
     return None
 
 

@@ -146,7 +146,8 @@ def test_a_profile_judged_under_the_plr_identity_never_admits_scene(accepted_sce
     assert adapters.accepted_profile_problem(passing.profile.profile_id, passing.profiles) is None
     fixture = accepted_scene(criteria_id=mods.criteria.PLR_CRITERIA_ID)
     problem = adapters.accepted_profile_problem(fixture.profile.profile_id, fixture.profiles)
-    assert problem == f"resource profile {fixture.profile.profile_id} was not judged against step4-combined-cache-off-v2"
+    assert problem == (f"resource profile {fixture.profile.profile_id} was not judged against an admissible "
+                       "identity (step4-combined-cache-off-v2 or step4cand-wtd-plr-combined-cache-off-v2)")
     (status,) = adapters.resolve([adapters.AdapterManifest(**fixture.manifest)], profiles=fixture.profiles)
     assert status.state is adapters.AdapterState.UNAVAILABLE and "not judged against" in status.reason
     assert all(p.criteria_id != mods.criteria.PLR_CRITERIA_ID for p in adapters.RESOURCE_PROFILES.values())

@@ -616,11 +616,13 @@ def test_on_this_kernel_only_children_started_after_the_disable_inherit_it_and_t
 # ---------------------------------------------------------------- the profile's identity, matching and admission
 
 
-def test_every_registry_profile_records_the_default_policy_and_none_has_a_variant_identity() -> None:
+def test_every_registry_profile_records_its_identitys_policy_and_none_has_the_plr_identity() -> None:
     assert adapters.ResourceProfile.__dataclass_fields__["memory_policy"].default == DEFAULT_POLICY
     for profile in RESOURCE_PROFILES.values():
-        assert profile.memory_policy == DEFAULT_POLICY
-        assert profile.criteria_id not in (adapters.STEP4PLR_CRITERIA_ID, adapters.STEP4_CANDIDATE_CRITERIA_ID)
+        expected = adapters.CRITERIA_MEMORY_POLICIES.get(profile.criteria_id, DEFAULT_POLICY)  # provisional: none
+        assert profile.memory_policy == expected
+        assert profile.criteria_id != adapters.STEP4PLR_CRITERIA_ID
+    assert adapters.SCENE_ADMISSIBLE_CRITERIA_IDS == (STEP4_CRITERIA_ID, adapters.STEP4_CANDIDATE_CRITERIA_ID)
 
 
 def test_the_identity_and_policy_tables_agree_between_the_runtime_and_the_runner(runners) -> None:
@@ -641,17 +643,85 @@ def test_a_step4_profile_that_records_another_policy_is_refused_as_an_identity_m
                            f"not the one {STEP4_CRITERIA_ID} measures (THP system, model-file release none)")
 
 
-def test_a_candidate_identity_profile_is_never_admitted_while_d46_is_unchanged(tmp_path, accepted_scene) -> None:
-    fixture = accepted_scene(criteria_id=adapters.STEP4_CANDIDATE_CRITERIA_ID, memory_policy=CANDIDATE_POLICY)
-    problem = accepted_profile_problem(fixture.profile.profile_id, fixture.profiles)
-    assert problem == f"resource profile {fixture.profile.profile_id} was not judged against {STEP4_CRITERIA_ID}"
+def admitted_candidate(accepted_scene, **changes):
+    """The SYNTHETIC accepted profile under the D58 candidate identity, as D59 admits it (a fixture only)."""
+    fields = dict(criteria_id=adapters.STEP4_CANDIDATE_CRITERIA_ID, memory_policy=CANDIDATE_POLICY,
+                  memory_policy_verified=True,
+                  limitations=(adapters.STARTUP_IDENTITY_LIMITATION, adapters.CANDIDATE_RUNTIME_LIMITATION))
+    return accepted_scene(**{**fields, **changes})
+
+
+def test_a_candidate_identity_profile_is_admitted_and_the_runtime_establishes_its_policy(tmp_path,
+                                                                                          accepted_scene) -> None:
+    fixture = admitted_candidate(accepted_scene)
+    assert accepted_profile_problem(fixture.profile.profile_id, fixture.profiles) is None
     (status,) = resolve([adapters.AdapterManifest(**fixture.manifest)], profiles=fixture.profiles)
-    assert status.state is adapters.AdapterState.UNAVAILABLE
+    assert status.state is adapters.AdapterState.ENABLED
+    world = World(tmp_path)  # the real admission, no stand-in
+    assembly = build(world, tmp_path, CANDIDATE_POLICY, fixture.options, scene_config(fixture), fixture.profiles)
+    assert world.log.index("scene_start") < world.log.index("disable_thp") < world.log.index("detector_load")
+    assert assembly.startup["memory_policy"] == {"thp": "workload_disabled", "model_file_release": "post_load"}
+    assert assembly.startup["thp_scope"]["workload_verified"] == {"runtime": 0, "scene_server": 1}
+    assert assembly.runtime.snapshot()["components"]["scene"]["state"] == "available"
+    assembly.database.close()
+
+
+@pytest.mark.parametrize("policy", [DEFAULT_POLICY, MemoryPolicy("workload_disabled", "none"),
+                                    MemoryPolicy("system", "post_load")])
+def test_a_candidate_profile_with_another_runtime_policy_is_refused_before_anything_starts(tmp_path, accepted_scene,
+                                                                                            policy) -> None:
+    fixture = admitted_candidate(accepted_scene)
+    world = World(tmp_path)
+    with pytest.raises(StartupRefused) as error:
+        build(world, tmp_path, policy, fixture.options, scene_config(fixture), fixture.profiles)
+    assert error.value.label == (
+        f"scene_not_admitted: llama-lfm2-vl-scene: resource profile {fixture.profile.profile_id} measured memory "
+        f"policy (THP workload_disabled, model-file release post_load), not the runtime's ({policy.describe()})")
+    assert world.log == [] and not (tmp_path / "data" / "sentinel.db").exists()
+
+
+@pytest.mark.parametrize(("changes", "reason"), [
+    ({"memory_policy": DEFAULT_POLICY}, "records memory policy (THP system, model-file release none), not the one "
+                                        "step4cand-wtd-plr-combined-cache-off-v2 measures"),
+    ({"memory_policy": MemoryPolicy("system", "post_load")}, "records memory policy"),
+    ({"memory_policy_verified": None}, "has no recorded evidence that its memory policy held"),
+    ({"memory_policy_verified": False}, "has no recorded evidence that its memory policy held"),
+    ({"limitations": (adapters.STARTUP_IDENTITY_LIMITATION,)}, "does not carry the candidate's runtime limitation"),
+    ({"criteria_passed": None}, "has no recorded pass against step4cand-wtd-plr-combined-cache-off-v2"),
+    ({"steady_slope_bytes_per_min": 10_000_001}, "steady slope per minute 10000001 exceeds 10000000"),
+    ({"status": adapters.ProfileStatus.PENDING}, "is pending, not accepted"),
+    ({"status": adapters.ProfileStatus.FAILED}, "is failed, not accepted"),
+    ({"status": adapters.ProfileStatus.PROVISIONAL}, "is provisional"),
+])
+def test_a_candidate_profile_needs_its_own_acceptance_policy_evidence_limitation_and_thresholds(
+    tmp_path, accepted_scene, changes, reason,
+) -> None:
+    """D59 admits a candidate result only through its own accepted entry, never by its identity alone."""
+    fixture = admitted_candidate(accepted_scene, **changes)
+    problem = accepted_profile_problem(fixture.profile.profile_id, fixture.profiles)
+    assert problem is not None and reason in problem
     world = World(tmp_path)
     with pytest.raises(StartupRefused) as error:
         build(world, tmp_path, CANDIDATE_POLICY, fixture.options, scene_config(fixture), fixture.profiles)
-    assert error.value.label.startswith("scene_not_admitted: ") and "not judged against" in error.value.label
-    assert world.log == [] and not (tmp_path / "data" / "sentinel.db").exists()
+    assert error.value.label.startswith("scene_not_admitted: ") and world.log == []
+
+
+def test_the_plr_and_diagnostic_identities_stay_excluded(tmp_path, accepted_scene, runners) -> None:
+    profile, criteria = runners.profile, runners.criteria
+    for identity in (criteria.PLR_CRITERIA_ID, profile.PLR_LABEL, profile.MA1_LABEL, profile.THP_LABEL,
+                     profile.WTD_LABEL, profile.CANDIDATE_LABEL, profile.LABEL):
+        for policy in (DEFAULT_POLICY, CANDIDATE_POLICY, MemoryPolicy("system", "post_load")):
+            fixture = admitted_candidate(accepted_scene, criteria_id=identity, memory_policy=policy)
+            problem = accepted_profile_problem(fixture.profile.profile_id, fixture.profiles)
+            assert problem == (f"resource profile {fixture.profile.profile_id} was not judged against an admissible "
+                               "identity (step4-combined-cache-off-v2 or step4cand-wtd-plr-combined-cache-off-v2)")
+    assert adapters.SCENE_ADMISSIBLE_CRITERIA_IDS == (criteria.CRITERIA_ID, criteria.CANDIDATE_CRITERIA_ID)
+
+
+def test_a_step4_profile_needs_no_policy_evidence_because_it_measures_the_default(accepted_scene) -> None:
+    fixture = accepted_scene()  # step 4's identity, the default policy, memory_policy_verified unset
+    assert fixture.profile.memory_policy_verified is None
+    assert accepted_profile_problem(fixture.profile.profile_id, fixture.profiles) is None
 
 
 @pytest.mark.parametrize("policy", [CANDIDATE_POLICY, MemoryPolicy("workload_disabled", "none"),
