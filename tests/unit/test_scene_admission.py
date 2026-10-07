@@ -34,6 +34,7 @@ from sentinel.demo_runtime import Devices, RunOptions, StartupRefused, assemble
 from sentinel.media.clock import FakeClock
 
 PROVISIONAL = "provisional-demo-20261003T085010Z"
+CANDIDATE_PROFILE = "step4cand-demo-20261007T090339Z"  # accepted under D59
 REPORT = '{"persons_visible": 0}'
 
 
@@ -292,15 +293,22 @@ def test_a_valid_synthetic_accepted_profile_admits_scene(tmp_path, accepted_scen
 # ---------------------------------------------------------------- the runtime registry
 
 
-def test_the_runtime_registry_holds_no_synthetic_and_no_admissible_scene_profile() -> None:
-    """Acceptance only by a maintainer-approved commit that adds an entry with step-4 evidence (D46).
-    That commit is expected to change the second assertion; nothing at runtime can."""
+def test_the_runtime_registry_holds_no_synthetic_profile_and_admits_only_the_d59_candidate() -> None:
+    """Acceptance only by a maintainer-approved commit that adds an entry with step-4 evidence (D46). D59's acceptance
+    commit added the D58 candidate run; nothing at runtime can add or accept a profile."""
     for profile_id, profile in RESOURCE_PROFILES.items():
         assert profile.profile_id == profile_id
         assert "synthetic" not in profile_id and "SYNTHETIC" not in profile.note
         assert re.match(r"^demo-profile-\d{8}T\d{6}Z$", profile.run_dir)
         assert profile.commit != "0" * 40
-    assert [pid for pid in RESOURCE_PROFILES if accepted_profile_problem(pid) is None] == []
+    assert [pid for pid in RESOURCE_PROFILES if accepted_profile_problem(pid) is None] == [CANDIDATE_PROFILE]
+    candidate = RESOURCE_PROFILES[CANDIDATE_PROFILE]
+    assert candidate.status is ProfileStatus.ACCEPTED and candidate.run_dir == "demo-profile-20261007T090339Z"
+    assert candidate.criteria_id == adapters.STEP4_CANDIDATE_CRITERIA_ID
+    assert candidate.memory_policy == adapters.CRITERIA_MEMORY_POLICIES[candidate.criteria_id]
+    assert candidate.memory_policy_verified is True
+    assert adapters.CANDIDATE_RUNTIME_LIMITATION in candidate.limitations
+    assert adapters.STARTUP_IDENTITY_LIMITATION in candidate.limitations
     with pytest.raises(TypeError):
         RESOURCE_PROFILES["x"] = RESOURCE_PROFILES[PROVISIONAL]  # type: ignore[index]
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -308,7 +316,7 @@ def test_the_runtime_registry_holds_no_synthetic_and_no_admissible_scene_profile
 
 
 def test_the_provisional_profile_still_admits_the_detector_and_config_validate_explains_scene(capsys) -> None:
-    assert known_profile_ids() == adapters.KNOWN_RESOURCE_PROFILES == frozenset({PROVISIONAL})
+    assert known_profile_ids() == adapters.KNOWN_RESOURCE_PROFILES == frozenset({PROVISIONAL, CANDIDATE_PROFILE})
     detector = {"adapter_id": "legacy-yolov8n-bytetrack", "contract_version": 1, "implementation_revision": "1",
                 "enabled": True, "input_kinds": ["frame"], "output_kinds": ["person.track"],
                 "resource_profile_id": PROVISIONAL, "timeout_ms": 1000}

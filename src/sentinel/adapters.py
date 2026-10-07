@@ -279,6 +279,7 @@ _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _BOOT_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 _CHECK8_LLAMA_FLAGS = ("--n-gpu-layers", "999", "--ctx-size", "2048", "--parallel", "1")
+_STEP4_LLAMA_FLAGS = _CHECK8_LLAMA_FLAGS + ("--cache-ram", "0")
 
 RESOURCE_PROFILES: Mapping[str, ResourceProfile] = MappingProxyType({
     # Check 8 (session 5): admitted as the provisional demo profile with its exceedance recorded (D28, D33).
@@ -298,6 +299,74 @@ RESOURCE_PROFILES: Mapping[str, ResourceProfile] = MappingProxyType({
                          "65ec437db88d65fff93f472d00c145e09880769ac67fedff5cd1c0f8d8301d87"),
         engine_sha256="08370639f961d2c67148c19562718ef80527c7085e88d2d923176180f1b98637",
         note="check 8, face at 2 Hz, default prompt cache; steady median 5.036 GB, p95 5.347 GB, peak 5.350 GB",
+    ),
+    # The D58 candidate run (session 46), accepted by the maintainer under D59 (session 47): it admits scene analysis
+    # only for `sentinel run --scene --workload-thp-disable --post-load-release`, which must establish both policies.
+    "step4cand-demo-20261007T090339Z": ResourceProfile(
+        profile_id="step4cand-demo-20261007T090339Z",
+        status=ProfileStatus.ACCEPTED,
+        run_dir="demo-profile-20261007T090339Z",
+        commit="269de8670f117c8a72e725a5b799ec53372250e5",
+        boot_id="83d3fc26-6543-4697-834f-924a23152605",
+        llama_flags=_STEP4_LLAMA_FLAGS,
+        cache_ram_mib=0,
+        scene_interval_s=4.0,
+        llm=FileFacts("LFM2-VL-1.6B-Q4_0.gguf", 695_750_048, "2026-04-25T18:45:52+00:00",
+                      "ce0d4b122d328d14390ef160785da3a51a527f96844f392a04cb2db96f134e5d"),
+        mmproj=FileFacts("mmproj-LFM2-VL-1.6B-Q8_0.gguf", 564_115_648, "2026-04-25T18:39:39+00:00",
+                         "65ec437db88d65fff93f472d00c145e09880769ac67fedff5cd1c0f8d8301d87"),
+        engine_sha256="08370639f961d2c67148c19562718ef80527c7085e88d2d923176180f1b98637",
+        criteria_id=STEP4_CANDIDATE_CRITERIA_ID,
+        criteria_passed=True,
+        gpu_guard_ok=True,
+        cache_verdict="disabled_verified",
+        steady_status="complete",
+        steady_coverage=0.9993,
+        steady_max_bytes=4_297_113_600,
+        steady_seconds_above_target=0.0,
+        peak_bytes=4_297_113_600,
+        steady_slope_bytes_per_min=4_024_059,
+        unique_fps=15.0,
+        min_window_fps=15.0,
+        schedule_age_p95_ms=59.1,
+        schedule_age_p99_ms=72.5,
+        face_hz=1.0,
+        face_errors=0,
+        scene_attempts=150,
+        scene_valid=150,
+        scene_truncated=0,
+        scene_errors=0,
+        scene_over_deadline=0,
+        kernel_coverage="observed",
+        oom_candidates=0,
+        nvmap_candidates=0,
+        identity_status="verified",
+        replay_clip_verified=True,
+        llama_server=FileFacts("llama-server", 9_080_480, "2026-04-25T19:41:59+00:00",
+                              "3d6cbfe061043d6c3bf09e20b61f998cbf80e23a5c59e94049e9142269bc0f85"),
+        llama_libraries=(
+            FileFacts("libggml-base.so.0.10.0", 805_336, "2026-04-25T19:21:01+00:00",
+                      "afc19920f759337f8f983c09263f66bf7e5cbbd2cc4f99c64ad729fcb8b5a155"),
+            FileFacts("libggml-cpu.so.0.10.0", 995_032, "2026-04-25T19:21:22+00:00",
+                      "b6b3a68a0d1c06a0f2f457469f6d39be848d2276e3e5061edb43646d4c2a6545"),
+            FileFacts("libggml-cuda.so.0.10.0", 199_749_520, "2026-04-25T19:35:35+00:00",
+                      "7a85864039b9a9980e2b9308302ce15146d732ae03f0d88d51ae7a604f38c54b"),
+            FileFacts("libggml.so.0.10.0", 77_880, "2026-04-25T19:35:39+00:00",
+                      "ccb98bd7f02198d6345e469c1e1aafa2cd9735791e80eec526eb8952c8e90b74"),
+            FileFacts("libllama-common.so.0.0.8932", 5_086_776, "2026-04-25T19:38:56+00:00",
+                      "1588061895ad551b4360b24037624fc408cf24e02159c0cfbe4eecd62b9f238c"),
+            FileFacts("libllama.so.0.0.8932", 3_033_896, "2026-04-25T19:37:19+00:00",
+                      "4f6c659419ee77c8002bc928867327093edaab101201370cb12f1c2d9ab4b629"),
+            FileFacts("libmtmd.so.0.0.8932", 1_171_384, "2026-04-25T19:38:04+00:00",
+                      "b66ff78faedf3c69ef50645f9e08232a3d4531e2f49cecd1518e5c25a3cee76c"),
+        ),
+        scene_request_sha256="3057dacd4c0ed54193b36b10cfccbac65efaae38ab40e7a6bb142be341595045",
+        limitations=(STARTUP_IDENTITY_LIMITATION, CANDIDATE_RUNTIME_LIMITATION),
+        note=("D58 candidate run step4cand-20261007T082510Z: all 15 criteria of "
+              "step4cand-wtd-plr-combined-cache-off-v2 pass (status record, session 46); accepted by the maintainer "
+              "under D59 (session 47) for the bounded 640x480 replay demo profile only"),
+        memory_policy=CANDIDATE_POLICY,
+        memory_policy_verified=True,
     ),
 })
 
