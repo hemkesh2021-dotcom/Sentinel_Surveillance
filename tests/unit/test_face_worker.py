@@ -75,7 +75,8 @@ def test_ticks_follow_frame_time_and_empty_ticks_are_skipped(clock, next_frame) 
         offered.append(worker.consider(frame, [person(frame)] if index >= 10 else [], Image([index])))
     assert worker.counters["ticks"] == 3  # at frames 0, 15 and 30: one per second of frame time
     assert worker.counters["skipped_no_person"] == 1 and worker.counters["offered"] == 2
-    assert sum(offered) == 2
+    assert [o for o in offered if o is not None] == ["skipped_no_person", "offered", "offered"]
+    assert offered.count(None) == 42  # not a tick
 
 
 def test_the_worker_analyses_a_private_read_only_copy(clock, next_frame, gate) -> None:
@@ -192,7 +193,7 @@ def test_stop_drops_the_waiting_job_and_reports_a_busy_thread(clock, next_frame,
     assert worker.stop(0.05) is False  # the running analysis cannot be interrupted
     assert worker.counters["abandoned_at_stop"] == 1
     third = next_frame(dt=1.0)
-    assert worker.consider(third, [person(third)], Image([3])) is False  # nothing new after stop
+    assert worker.consider(third, [person(third)], Image([3])) == "stopping"  # nothing new after stop
     gate.release.release()
     assert worker.stop(5.0) is True and worker.status()["state"] == "stopped"
     assert [seq for seq, _, _ in gate.seen] == [first.frame_seq]

@@ -37,6 +37,9 @@ from ..contracts import FrameRef, TrackObservation
 from ..media.clock import NS_PER_SECOND, Clock
 
 LATENCIES_KEPT = 600
+TICK_OFFERED = "offered"
+TICK_SKIPPED_NO_PERSON = "skipped_no_person"
+TICK_STOPPING = "stopping"  # a tick after stop(): nothing is offered
 
 
 def private_copy(image: Any) -> Any:
@@ -95,18 +98,19 @@ class FaceWorker:
 
     # ------------------------------------------------------------ loop thread
 
-    def consider(self, frame: FrameRef, persons: Sequence[TrackObservation], image: Any) -> bool:
-        """Called for each processed live frame; True if the frame was offered to the worker."""
+    def consider(self, frame: FrameRef, persons: Sequence[TrackObservation], image: Any) -> str | None:
+        """Called for each processed live frame. None if it is not a tick; otherwise TICK_OFFERED,
+        TICK_SKIPPED_NO_PERSON or TICK_STOPPING."""
         if self._next_tick_ns is not None and frame.ingest_mono_ns < self._next_tick_ns:
-            return False
+            return None
         self._next_tick_ns = frame.ingest_mono_ns + self._interval_ns
         with self._condition:
             self.counters["ticks"] += 1
             if not persons:
                 self.counters["skipped_no_person"] += 1
-                return False
+                return TICK_SKIPPED_NO_PERSON
             if self._stopping:
-                return False
+                return TICK_STOPPING
         job = FaceJob(frame, tuple(persons), self._copy(image))
         with self._condition:
             if self._pending is not None:
@@ -114,7 +118,7 @@ class FaceWorker:
             self._pending = job
             self.counters["offered"] += 1
             self._condition.notify()
-        return True
+        return TICK_OFFERED
 
     def drain(self) -> FaceResult | None:
         with self._condition:

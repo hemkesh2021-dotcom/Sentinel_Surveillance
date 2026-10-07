@@ -14,6 +14,7 @@ Not thread-safe: call it from one loop thread.
 
 from __future__ import annotations
 
+import dataclasses
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -22,7 +23,7 @@ from .config import SentinelConfig
 from .contracts import Evidence, FrameRef, StreamIdentity, TrackKey, TrackObservation, TrackStatus
 from .identity.association import AssociationGeometry, FaceObservation, associate
 from .identity.matching import Enrollment
-from .identity.state import IdentityPolicy, IdentityResolver, IdentityState, TrackIdentity
+from .identity.state import UNKNOWN_VOTE, IdentityPolicy, IdentityResolver, IdentityState, TrackIdentity
 from .jobs import WorkerOutcome
 from .live_state import Capability, LiveState, Occupancy, PersonState, SceneStatus
 from .media.clock import Clock, MonoInstant
@@ -43,6 +44,40 @@ class RoutedEvidence:
     routing: Routing
 
 
+IDENTITY_RECORD_SCHEMA = 1  # the "identity" stdout records: tick, result and transition
+
+
+def tick_record(frame: FrameRef, persons: Sequence[TrackObservation], tick: str) -> dict[str, object]:
+    """One 1 Hz face tick: its frame, the track IDs on that frame, and what the worker did with it."""
+    return {"identity": "tick", "schema": IDENTITY_RECORD_SCHEMA, "stream_epoch": frame.stream_epoch,
+            "frame_seq": frame.frame_seq, "frame_mono_ns": frame.ingest_mono_ns, "tick": tick,
+            "tracks": sorted(p.track_id for p in persons)}
+
+
+@dataclass(frozen=True)
+class FaceResultRecord:
+    """One face result and what became of it; votes carry the time of the frame they came from."""
+
+    stream_epoch: int
+    frame_seq: int
+    frame_mono_ns: int
+    applied_mono_ns: int
+    outcome: str  # applied, failed, rejected_not_live, rejected_boot, rejected_age, ignored_face_unavailable
+    faces: int | None
+    persons: tuple[tuple[int, str, str, str | None, str], ...]  # track ID, ownership, vote kind, identity ID, label
+    processing_ms: float | None = None
+    error: str | None = None
+
+    def record(self) -> dict[str, object]:
+        return {"identity": "result", "schema": IDENTITY_RECORD_SCHEMA, "stream_epoch": self.stream_epoch,
+                "frame_seq": self.frame_seq, "frame_mono_ns": self.frame_mono_ns,
+                "applied_mono_ns": self.applied_mono_ns, "outcome": self.outcome, "faces": self.faces,
+                "processing_ms": None if self.processing_ms is None else round(self.processing_ms, 1),
+                "error": self.error,
+                "persons": [{"track_id": track, "ownership": ownership, "vote": vote, "identity_id": identity,
+                             "label": label} for track, ownership, vote, identity, label in self.persons]}
+
+
 @dataclass(frozen=True)
 class IdentityTransition:
     """A change of one track's identity state, identity ID or basis: opaque IDs and numbers only."""
@@ -58,7 +93,8 @@ class IdentityTransition:
     mono_ns: int
 
     def record(self) -> dict[str, object]:
-        return {"identity": "transition", "stream_epoch": self.stream_epoch, "track_id": self.track_id,
+        return {"identity": "transition", "schema": IDENTITY_RECORD_SCHEMA, "stream_epoch": self.stream_epoch,
+                "track_id": self.track_id,
                 "from": self.from_state, "to": self.to_state, "identity_id": self.identity_id, "basis": self.basis,
                 "last_vote_age_ms": self.last_vote_age_ms, "reason": self.reason, "mono_ns": self.mono_ns}
 
@@ -70,6 +106,7 @@ class CoreOutput:
     candidates: tuple[HazardCandidate, ...] = ()
     zones: tuple[ZoneObservation, ...] = ()  # zone rule observations from this step
     identity_transitions: tuple[IdentityTransition, ...] = ()
+    face_result: FaceResultRecord | None = None  # set by on_face_outcome
 
 
 class EdgeCore:
@@ -179,6 +216,9 @@ class EdgeCore:
         persons: Sequence[TrackObservation],
         faces: Sequence[FaceObservation] | None,
         connected: StreamIdentity | None,
+        *,
+        processing_ms: float | None = None,
+        error: str | None = None,
     ) -> CoreOutput:
         """A face result for an earlier sampled frame, with the tracker's people on that same frame.
 
@@ -190,23 +230,32 @@ class EdgeCore:
         """
         freshness = self._freshness.assess(connected)
         now = self._clock.mono()
+        votes: list = []
         if self._face_recognition is not Capability.AVAILABLE:
-            self.face_counters["results_ignored_face_unavailable"] += 1
+            outcome = "ignored_face_unavailable"
         elif faces is None:
-            self.face_counters["results_failed"] += 1
+            outcome = "failed"
         elif connected is None or frame.stream != connected:
-            self.face_counters["results_rejected_not_live"] += 1
+            outcome = "rejected_not_live"
         elif frame.boot_id != now.boot_id:
-            self.face_counters["results_rejected_boot"] += 1
+            outcome = "rejected_boot"
         elif now.ns - frame.ingest_mono_ns > self._face_result_max_age_ns:
-            self.face_counters["results_rejected_age"] += 1
+            outcome = "rejected_age"
         else:
+            outcome = "applied"
             association = associate(persons, faces, self._geometry)
             for ownership in association.face_ownership:
                 self.face_counters[f"faces_{ownership.value}"] += 1
-            self._identities.observe(persons, faces, association)
-            self.face_counters["results_applied"] += 1
-        return self._finish(freshness, [])
+            votes = self._identities.observe(persons, faces, association)
+        self.face_counters[f"results_{outcome}"] += 1
+        record = FaceResultRecord(
+            frame.stream_epoch, frame.frame_seq, frame.ingest_mono_ns, now.ns, outcome,
+            None if faces is None else len(faces),
+            tuple((v.key.track_id, v.ownership.value,
+                   "none" if v.vote is None else "unknown" if v.vote == UNKNOWN_VOTE else "match",
+                   v.vote if v.vote else None, v.label) for v in votes),
+            processing_ms, error)
+        return dataclasses.replace(self._finish(freshness, []), face_result=record)
 
     def on_scene_outcome(
         self, job_id: str, outcome: WorkerOutcome, connected: StreamIdentity | None

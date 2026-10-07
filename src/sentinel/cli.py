@@ -626,7 +626,7 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
         next_line = time.monotonic()
         while not runtime.stop_requested:
             runtime.step()
-            for record in runtime.drain_identity_transitions():  # opaque IDs and numbers only
+            for record in runtime.drain_identity_records():  # opaque IDs, numbers and fixed labels only
                 print(json.dumps(record), file=out, flush=True)
             if time.monotonic() >= next_line:
                 print(json.dumps(status_line(runtime.snapshot())), file=out, flush=True)
@@ -639,7 +639,7 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
         closed = assembly.close(shutdown)
         for sig, handler in handlers.items():
             signal.signal(sig, handler)
-    for record in runtime.drain_identity_transitions():
+    for record in runtime.drain_identity_records():
         print(json.dumps(record), file=out, flush=True)
     print(json.dumps({"run": "stopped", "shutdown": shutdown, "database_closed": closed,
                       "status": status_line(runtime.snapshot())}), file=out, flush=True)

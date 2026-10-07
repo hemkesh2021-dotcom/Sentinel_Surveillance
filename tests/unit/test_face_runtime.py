@@ -165,9 +165,17 @@ def test_the_loop_samples_live_frames_and_reports_opaque_identity_transitions(tm
     loop = Loop(tmp_path)
     for _ in range(40):  # about 2.7 s at 15 fps: three face ticks
         loop.frame()
-    transitions = loop.runtime.drain_identity_transitions()
+    records = loop.runtime.drain_identity_records()
+    transitions = [r for r in records if r["identity"] == "transition"]
     assert [(t["from"], t["to"], t["identity_id"], t["basis"]) for t in transitions] == [
         ("unresolved", "known", "idn-00000000000a", "fresh")]
+    ticks = [r for r in records if r["identity"] == "tick"]
+    results = [r for r in records if r["identity"] == "result"]
+    assert [(r["tick"], r["tracks"]) for r in ticks] == [("offered", [1])] * 3
+    assert [r["outcome"] for r in results] == ["applied"] * 3
+    assert [r["frame_mono_ns"] for r in results] == [r["frame_mono_ns"] for r in ticks]  # votes at their frame time
+    assert all(r["persons"][0]["vote"] == "match" and r["processing_ms"] is not None for r in results)
+    assert records.index(transitions[0]) > records.index(results[1])  # known only after the second match
     snapshot = loop.runtime.snapshot()
     face = snapshot["components"]["face"]
     assert face["state"] == "available" and face["identities_enrolled"] == 1 and face["validation_run"] is True
@@ -176,7 +184,7 @@ def test_the_loop_samples_live_frames_and_reports_opaque_identity_transitions(tm
     assert snapshot["live"]["identity"]["known"] == 1 and snapshot["live"]["identity"]["fresh"] == 1
     text = json.dumps(snapshot)
     assert "embedding" not in text and "0.97" not in text and "idn-00000000000a" not in text  # counts only
-    assert loop.runtime.drain_identity_transitions() == []
+    assert loop.runtime.drain_identity_records() == []
     assert loop.close()["stopped"]["face_worker"] is True
 
 
@@ -189,13 +197,13 @@ def test_an_empty_room_runs_no_face_analysis(tmp_path) -> None:
     loop.close()
 
 
-def test_transition_records_are_capped_and_counted(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(demo_runtime, "MAX_TRANSITION_RECORDS", 0)
+def test_identity_records_are_capped_and_counted(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(demo_runtime, "MAX_IDENTITY_RECORDS", 4)
     loop = Loop(tmp_path)
     for _ in range(40):
         loop.frame()
-    assert loop.runtime.drain_identity_transitions() == []
-    assert loop.runtime.snapshot()["components"]["face"]["transitions"] == {"kept": 0, "dropped": 1}
+    assert len(loop.runtime.drain_identity_records()) == 4
+    assert loop.runtime.snapshot()["components"]["face"]["records"] == {"kept": 4, "dropped": 3, "limit": 4}
     loop.close()
 
 

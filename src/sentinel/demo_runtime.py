@@ -44,11 +44,11 @@ provisional MemFree precheck (U18 stays open). A component that fails is shown
 unavailable; nothing is restarted or re-admitted at runtime (V2-19, V2-29).
 Face recognition (V2-25 demo form, ``--face``; off by default): the 1 Hz FaceWorker analyses a private copy of a
 processed live frame that has people, and EdgeCore applies each result to that frame's own people
-(``on_face_outcome``). The gallery is sealed (sentinel.identity.vault) and opened at startup with a passphrase the
+(``on_face_outcome``); each tick, each result (with every person's vote and its frame time) and each identity
+transition is kept as an opaque record (``drain_identity_records``). The gallery is sealed (sentinel.identity.vault) and opened at startup with a passphrase the
 operator types; startup refuses on a sealing error, and a missing or empty gallery leaves face recognition
 unavailable without loading the model. The face adapter needs its own admission record, which starts
-PENDING_VALIDATION: only ``--face-validation`` runs may use it. Identity transitions are kept as opaque records
-(``drain_identity_transitions``); nothing here shows names, photos or embeddings.
+PENDING_VALIDATION: only ``--face-validation`` runs may use it. Nothing here shows names, photos or embeddings.
 
 Memory policies (D58; opt-in, off by default, see ``assemble``): this process
 can disable transparent huge pages for itself before the detector loads, and
@@ -113,7 +113,7 @@ from .memory_policy import (
     release_file_cache,
 )
 from .rules.zones import ZonePhase
-from .runtime import CoreOutput, EdgeCore
+from .runtime import CoreOutput, EdgeCore, tick_record
 from .scene.analyzer import IMAGES_KEPT, RecentImages, ThreadedSceneAnalyzer
 from .scene.llama_server import PROFILED_FLAGS, PROMPT_CACHE_FLAGS, SCENE_REQUEST_SHA256
 from .storage.database import Database, DatabaseError
@@ -129,7 +129,7 @@ PENDING_DURABILITY = (
 RECORD_RETRY_NS = NS_PER_SECOND
 RATE_WINDOW_NS = 10 * NS_PER_SECOND
 FACE_STOP_TIMEOUT_S = 2.0  # a DeepFace call cannot be interrupted; p99 989 ms in the replay profile
-MAX_TRANSITION_RECORDS = 10_000  # identity transition records kept for output per run; more are counted, not kept
+MAX_IDENTITY_RECORDS = 10_000  # identity records (ticks, results, transitions) per run; more are counted, not kept
 
 
 class Capture(Protocol):
@@ -274,7 +274,7 @@ class DemoRuntime:
             enrollment=enrollment if face is not None else None,
             scene_problem=self._scene_problem,
         )
-        self._transitions: deque[dict[str, Any]] = deque()
+        self._identity_records: deque[dict[str, Any]] = deque()
         self._frames: OrderedDict[FrameKey, FrameRef] = OrderedDict()
         self._pending: deque[tuple[IncidentSignal, FrameKey | None]] = deque()
         self._retry_at_ns = 0
@@ -367,7 +367,8 @@ class DemoRuntime:
             result = self._face.worker.drain()
             if result is not None:
                 self._handle(self._core.on_face_outcome(result.frame, result.persons, result.faces,
-                                                        self._capture.connected))
+                                                        self._capture.connected, processing_ms=result.processing_ms,
+                                                        error=result.error))
         if self._pending:
             self._handle(None)
         self._refresh_status()
@@ -392,7 +393,9 @@ class DemoRuntime:
             self._core.set_detector(Capability.AVAILABLE)
             output = self._core.on_frame(frame, result.persons, connected)
             if self._face is not None:
-                self._face.worker.consider(frame, result.persons, captured.image)  # copies it if offered
+                tick = self._face.worker.consider(frame, result.persons, captured.image)  # copies it if offered
+                if tick is not None:
+                    self._keep_record(tick_record(frame, result.persons, tick))
             return output
         if result.outcome is FrameOutcome.FAILED:
             self.counters["frames_failed"] += 1
@@ -409,7 +412,10 @@ class DemoRuntime:
             current = outputs.popleft()
             if current is not None:
                 self._live = current.state
-                self._keep_transitions(current)
+                if current.face_result is not None:
+                    self._keep_record(current.face_result.record())
+                for transition in current.identity_transitions:
+                    self._keep_record(transition.record())
                 self._annotate(current)
                 for zone in current.zones:
                     enrich = zone.last_source if zone.phase is ZonePhase.ENTERED else None
@@ -419,18 +425,17 @@ class DemoRuntime:
             for frame, incident_id in self._flush():
                 outputs.append(self._core.request_enrichment(frame, incident_id, self._capture.connected))
 
-    def _keep_transitions(self, output: CoreOutput) -> None:
-        for transition in output.identity_transitions:
-            if self.counters["identity_transitions_kept"] >= MAX_TRANSITION_RECORDS:
-                self.counters["identity_transitions_dropped"] += 1
-                continue
-            self.counters["identity_transitions_kept"] += 1
-            self._transitions.append(transition.record())
+    def _keep_record(self, record: dict[str, Any]) -> None:
+        if self.counters["identity_records_kept"] >= MAX_IDENTITY_RECORDS:
+            self.counters["identity_records_dropped"] += 1
+            return
+        self.counters["identity_records_kept"] += 1
+        self._identity_records.append(record)
 
-    def drain_identity_transitions(self) -> list[dict[str, Any]]:
-        """Opaque identity transition records since the last call (loop thread)."""
-        records = list(self._transitions)
-        self._transitions.clear()
+    def drain_identity_records(self) -> list[dict[str, Any]]:
+        """Opaque identity records (ticks, results, transitions) since the last call, in order (loop thread)."""
+        records = list(self._identity_records)
+        self._identity_records.clear()
         return records
 
     def _annotate(self, output: CoreOutput) -> None:
@@ -587,8 +592,8 @@ class DemoRuntime:
             "identities_enrolled": self._face.identities,
             "worker": self._face.worker.status(),
             "results": self._core.identity_counters,
-            "transitions": {"kept": self.counters["identity_transitions_kept"],
-                            "dropped": self.counters["identity_transitions_dropped"]},
+            "records": {"kept": self.counters["identity_records_kept"],
+                        "dropped": self.counters["identity_records_dropped"], "limit": MAX_IDENTITY_RECORDS},
         }
 
     def _notification_status(self) -> dict[str, Any]:

@@ -75,6 +75,16 @@ class TrackIdentity:
 
 
 @dataclass(frozen=True)
+class VoteRecord:
+    """One person's outcome from one face result: numbers, fixed labels and an opaque identity ID only."""
+
+    key: TrackKey
+    ownership: Ownership
+    vote: str | None  # an enrolled identity ID, UNKNOWN_VOTE, or None (no vote)
+    label: str  # match, unknown, margin, low_quality, incompatible, no_enrollment, no_face, ambiguous
+
+
+@dataclass(frozen=True)
 class _Vote:
     at_ns: int
     identity: str  # identity ID, or UNKNOWN_VOTE
@@ -95,8 +105,9 @@ class IdentityResolver:
         persons: Sequence[TrackObservation],
         faces: Sequence[FaceObservation],
         association: Association,
-    ) -> None:
-        """Record one frame's face evidence for its people."""
+    ) -> list[VoteRecord]:
+        """Record one frame's face evidence for its people; returns each person's outcome."""
+        records = []
         for person in persons:
             key = person.key
             ownership = association.person_ownership.get(key, Ownership.NO_FACE)
@@ -106,13 +117,16 @@ class IdentityResolver:
                     Ownership.NO_FACE: "no face visible",
                     Ownership.AMBIGUOUS: "face ownership ambiguous",
                 }.get(ownership, ownership.value)
+                records.append(VoteRecord(key, ownership, None, ownership.value))
                 continue
             vote, note = self._vote(faces[association.face_of[key]])
             self.counters[_NOTE_COUNTERS[note]] += 1
             self._last_note[key] = note
+            records.append(VoteRecord(key, ownership, vote, _NOTE_LABELS[note]))
             if vote is not None:
                 votes = self._votes.setdefault(key, deque(maxlen=VOTES_KEPT))
                 votes.append(_Vote(person.observed_mono_ns, vote))
+        return records
 
     def identity(self, key: TrackKey, now: MonoInstant) -> TrackIdentity:
         note = self._last_note.get(key, "no face observed yet")
@@ -175,4 +189,12 @@ _NOTE_COUNTERS = {
     "face quality too low": "no_vote_low_quality",
     "embedding from an incompatible model": "no_vote_incompatible",
     "no identities enrolled": "no_vote_no_enrollment",
+}
+_NOTE_LABELS = {
+    "face matched": "match",
+    "face matched nobody": "unknown",
+    "face matches more than one identity": "margin",
+    "face quality too low": "low_quality",
+    "embedding from an incompatible model": "incompatible",
+    "no identities enrolled": "no_enrollment",
 }

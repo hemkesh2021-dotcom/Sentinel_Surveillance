@@ -3,6 +3,8 @@ live, with identity retention, clearing and opaque transition records. Synthetic
 
 from __future__ import annotations
 
+import pytest
+
 from sentinel.config import parse_config
 from sentinel.contracts import FrameRef, NormalizedBox, PixelFormat, TrackObservation, TrackStatus
 from sentinel.identity.association import FaceObservation
@@ -193,6 +195,43 @@ def test_transition_records_hold_opaque_ids_and_numbers_only() -> None:
         frame, persons = world.frame((1, LEFT), dt=1.0)
         world.faces(frame, persons, (head(LEFT), A_FACE))
     (record,) = world.transitions
-    assert set(record) == {"identity", "stream_epoch", "track_id", "from", "to", "identity_id", "basis",
+    assert set(record) == {"identity", "schema", "stream_epoch", "track_id", "from", "to", "identity_id", "basis",
                            "last_vote_age_ms", "reason", "mono_ns"}
-    assert record["identity"] == "transition" and record["identity_id"] == "idn-00000000000a"
+    assert record["identity"] == "transition" and record["identity_id"] == "idn-00000000000a" and record["schema"] == 1
+
+
+def test_each_face_result_is_recorded_with_its_frame_time_and_each_persons_vote() -> None:
+    world = World()
+    frame, persons = world.frame((1, LEFT), (2, RIGHT), dt=1.0)
+    world.clock.advance(0.4)
+    output = world.faces(frame, persons, (head(LEFT), A_FACE))
+    record = output.face_result.record()
+    assert set(record) == {"identity", "schema", "stream_epoch", "frame_seq", "frame_mono_ns", "applied_mono_ns",
+                           "outcome", "faces", "processing_ms", "error", "persons"}
+    assert (record["identity"], record["schema"], record["outcome"], record["faces"]) == ("result", 1, "applied", 1)
+    assert record["frame_mono_ns"] == frame.ingest_mono_ns
+    assert record["applied_mono_ns"] - record["frame_mono_ns"] == 400_000_000
+    assert record["persons"] == [
+        {"track_id": 1, "ownership": "assigned", "vote": "match", "identity_id": "idn-00000000000a", "label": "match"},
+        {"track_id": 2, "ownership": "no_face", "vote": "none", "identity_id": None, "label": "no_face"}]
+    frame, persons = world.frame((1, LEFT), dt=1.0)
+    nobody = world.faces(frame, persons, (head(LEFT), NOBODY)).face_result.record()
+    assert nobody["persons"][0] | {} == {"track_id": 1, "ownership": "assigned", "vote": "unknown",
+                                         "identity_id": None, "label": "unknown"}
+    low = world.faces(frame, persons, (head(LEFT), A_FACE), quality=0.2).face_result.record()
+    assert low["persons"][0]["vote"] == "none" and low["persons"][0]["label"] == "low_quality"
+
+
+@pytest.mark.parametrize(("make", "outcome"), [
+    (lambda w, f, p: w.faces(f, p, None), "failed"),
+    (lambda w, f, p: w.faces(f, p, (head(LEFT), A_FACE), connected=None), "rejected_not_live"),
+])
+def test_a_rejected_or_failed_result_is_recorded_without_votes(make, outcome) -> None:
+    world = World()
+    frame, persons = world.frame((1, LEFT), dt=1.0)
+    record = make(world, frame, persons).face_result.record()
+    assert record["outcome"] == outcome and record["persons"] == []
+    stale = World()
+    frame, persons = stale.frame((1, LEFT), dt=1.0)
+    stale.frame((1, LEFT), dt=3.5)
+    assert stale.faces(frame, persons, (head(LEFT), A_FACE)).face_result.record()["outcome"] == "rejected_age"
