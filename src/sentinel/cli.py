@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
+from datetime import date
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -20,7 +21,14 @@ from .adapters import resolve
 from .config import CaptureConfig, ConfigError, SentinelConfig, load_config
 from .demo_runtime import DATABASE_NAME, Devices, FaceOptions, RunOptions, SceneOptions, StartupRefused, assemble
 from .identity.gallery import DEFAULT_IDENTITY_DIR
-from .identity.vault import SECRET_ENV, take_secret_from_environment
+from .identity.vault import (
+    MIN_NEW_SECRET_CHARS,
+    SECRET_ENV,
+    Secret,
+    VaultError,
+    prompt_secret,
+    take_secret_from_environment,
+)
 from .media.capture import CaptureWorker, LatestFrame, SourceError, VideoSource
 from .media.clock import SystemClock
 from .media.frames import FrameStamper
@@ -158,6 +166,8 @@ def main(
     tracker_backend: Callable[[Path], Any] = _legacy_tracker,
     meminfo: Callable[[], dict[str, int] | None] = read_meminfo,
     devices: Devices | None = None,
+    face_backend: Callable[[Path | None], Any] = _face_backend,
+    identity_store: Callable[[Path], Any] = _identity_store,
     preview_port: int | None = None,
     preview_render: Callable[[Any], bytes] | None = None,
 ) -> int:
@@ -205,6 +215,31 @@ def main(
         help="add multi_person_frames to the JSON: numbers-only records of frames with two or more persons "
         "(frame identity, times, track IDs, boxes, confidences, pairwise overlap), at most 64 records",
     )
+    identity_parser = commands.add_parser(
+        "identity", help="the sealed identity gallery (V2-25 demo form): consented enrollment, list, revoke, purge")
+    identity_commands = identity_parser.add_subparsers(dest="identity_command", required=True)
+    enroll_parser = identity_commands.add_parser(
+        "enroll",
+        help="enroll one consenting person from 2-8 photos in a folder inside <identity dir>/inbox/ (one face each); "
+        f"the gallery passphrase comes from {SECRET_ENV} or a hidden prompt; the photos are deleted afterwards",
+    )
+    enroll_parser.add_argument("path", help="YAML configuration file (its identity section)")
+    enroll_parser.add_argument("photos", type=Path, help="the photo folder, inside <identity dir>/inbox/")
+    enroll_parser.add_argument("--consent-confirmed", action="store_true",
+                               help="the person explicitly consented to this enrollment (required)")
+    enroll_parser.add_argument("--consent-date", required=True, help="the date of that consent, YYYY-MM-DD")
+    enroll_parser.add_argument("--dry-run", action="store_true", help="report each photo; write and delete nothing")
+    list_parser = identity_commands.add_parser("list", help="opaque IDs, prototype counts and dates (no names)")
+    list_parser.add_argument("path", help="YAML configuration file")
+    revoke_parser = identity_commands.add_parser("revoke", help="remove one identity from the gallery")
+    revoke_parser.add_argument("path", help="YAML configuration file")
+    revoke_parser.add_argument("identity_id", help="the opaque ID (idn-...)")
+    purge_parser = identity_commands.add_parser("purge", help="delete the gallery and the inbox")
+    purge_parser.add_argument("path", help="YAML configuration file")
+    purge_parser.add_argument("--yes", action="store_true", help="required: confirms the deletion")
+    for sub_parser in (enroll_parser, list_parser, revoke_parser, purge_parser):
+        sub_parser.add_argument("--identity-dir", type=Path, default=DEFAULT_IDENTITY_DIR,
+                                help=f"the private (0700) identity directory (default {DEFAULT_IDENTITY_DIR})")
     run = commands.add_parser(
         "run",
         help="run the demo runtime (D-1): camera (SENTINEL_RTSP_URL) -> detector/tracker -> rules -> "
@@ -277,6 +312,9 @@ def main(
                 meminfo, out, preview=args.preview, box_summary=args.box_summary,
                 multi_person_frames=args.multi_person_frames, preview_port=preview_port, preview_render=preview_render,
             )
+    if args.command == "identity":
+        with _json_stdout() as out:
+            return _identity(config, args, face_backend, identity_store, out)
     if args.command == "run":
         devices = devices or Devices(
             capture_source=capture_source,
@@ -454,6 +492,71 @@ def _track_probe(
         return 130
     tracking = summary["tracking"]
     return 0 if tracking["processed"] and not tracking["failed"] and summary["worker"]["stopped"] else 1
+
+
+def _identity_secret(store: Any) -> Secret:
+    """The gallery passphrase: SENTINEL_IDENTITY_PASSPHRASE (removed at once) or a hidden prompt, confirmed for a new
+    gallery, which also needs MIN_NEW_SECRET_CHARS."""
+    new = not store.exists()
+    secret = take_secret_from_environment()
+    if secret is None:
+        return prompt_secret(confirm=new)
+    if new and len(secret.reveal()) < MIN_NEW_SECRET_CHARS:
+        raise VaultError("secret_too_short")
+    return secret
+
+
+def _identity(config: SentinelConfig, args: argparse.Namespace, face_backend: Callable[[Path | None], Any],
+              identity_store: Callable[[Path], Any], out: TextIO) -> int:
+    """``sentinel identity``: JSON on stdout (opaque IDs, counts and labels); errors as one label on stderr."""
+    from .identity.enroll import EnrollmentRefused, enroll
+    from .identity.legacy_deepface import FaceBackendError
+
+    store = identity_store(args.identity_dir.expanduser())
+    command = args.identity_command
+    try:
+        if command == "purge":
+            if not args.yes:
+                print("identity: purge needs --yes", file=sys.stderr)
+                return 1
+            print(json.dumps({"identity": "purge", **store.purge()}), file=out)
+            return 0
+        if command == "enroll":
+            if not args.consent_confirmed:
+                print("identity: consent_not_confirmed (the person must explicitly consent; pass --consent-confirmed)",
+                      file=sys.stderr)
+                return 1
+            try:
+                date.fromisoformat(args.consent_date)
+            except ValueError:
+                print("identity: consent_date_invalid (use YYYY-MM-DD)", file=sys.stderr)
+                return 1
+        if command == "list" and not store.exists():
+            print(json.dumps({"identity": "list", "identities": []}), file=out)
+            return 0
+        secret = _identity_secret(store)
+        if command == "enroll":
+            report = enroll(store, face_backend(None), args.photos, secret=secret, consent_date=args.consent_date,
+                            min_quality=config.identity.min_quality, match_threshold=config.identity.match_threshold,
+                            dry_run=args.dry_run)
+            print(json.dumps({"identity": "enroll", **report}), file=out)
+            return 0
+        if command == "list":
+            document = store.load(secret)
+            print(json.dumps({"identity": "list", "identities": [
+                {"identity_id": i.identity_id, "prototypes": len(i.prototypes), "consent_date": i.consent_date,
+                 "enrolled_utc": i.enrolled_utc.isoformat()} for i in document.identities]}), file=out)
+            return 0
+        revoked = store.revoke(args.identity_id, secret)
+        print(json.dumps({"identity": "revoke", "identity_id": args.identity_id, "revoked": revoked}), file=out)
+        return 0 if revoked else 1
+    except EnrollmentRefused as refused:
+        print(json.dumps({"identity": "enroll", "refused": refused.label, **refused.report}), file=out)
+        print(f"identity: {refused.label}", file=sys.stderr)
+        return 1
+    except (VaultError, FaceBackendError) as exc:
+        print(f"identity: {exc.label}", file=sys.stderr)
+        return 1
 
 
 def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out: TextIO) -> int:
