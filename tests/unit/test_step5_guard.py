@@ -160,13 +160,15 @@ def run(mod, tmp_path, backend, **kwargs):
 def test_preflight_refuses_before_anything_starts(mod, tmp_path, script, reason) -> None:
     backend = FakeBackend(ready_s=1, stop_s=1, **script)
     result, out = run(mod, tmp_path, backend)
-    assert result["status"] == f"refused:{reason}" and backend.children == [] and not out.exists()
+    assert result["status"] == f"refused:{reason}" and backend.children == []
+    assert out.is_dir() and list(out.iterdir()) == []  # the directory holds the refusal's result.json (main)
 
 
 def test_preflight_refuses_an_existing_directory_and_a_guard_already_met(mod, tmp_path, monkeypatch) -> None:
     (tmp_path / "part").mkdir()
     backend = FakeBackend(ready_s=1, stop_s=1)
     assert run(mod, tmp_path, backend)[0]["status"] == "refused:out_exists"
+    assert list((tmp_path / "part").iterdir()) == []
     (tmp_path / "part").rmdir()
     monkeypatch.setattr(backend, "sample", lambda: {"t_mono": 1.0, **HEALTHY, "MemAvailable": 1 * GB})
     assert run(mod, tmp_path, backend)[0]["status"] == "refused:memory_guard_already_met"
@@ -372,7 +374,7 @@ def test_step4_headroom_refuses_before_launch_with_the_unchanged_admission_value
     if admitted:
         assert result["status"] == "duration_stop" and result["parameters"]["step4_headroom"] is True
     else:
-        assert result["status"] == "refused:initial_headroom_refused" and backend.children == [] and not out.exists()
+        assert result["status"] == "refused:initial_headroom_refused" and backend.children == [] and out.is_dir()
         assert result["preflight_sample"]["MemFree"] == {**FRESH_BOOT, **changes}["MemFree"]  # recorded, numbers only
 
 
@@ -380,5 +382,21 @@ def test_without_step4_headroom_only_the_guard_limits_apply_before_launch(mod, t
     backend = FakeBackend(ready_s=1.0, stop_s=1.0)  # HEALTHY: pressure 2.99 GB, under the guard's 4.8 GB
     assert run(mod, tmp_path, backend, duration_s=2.0)[0]["status"] == "duration_stop"
     backend = FakeBackend(ready_s=1.0, stop_s=1.0)
+    (tmp_path / "x").mkdir()
     assert run(mod, tmp_path / "x", backend, duration_s=2.0, step4_headroom=True)[0]["status"] == (
         "refused:initial_headroom_refused")
+
+
+def test_main_saves_a_refusal_but_never_writes_into_an_existing_directory(mod, tmp_path, monkeypatch, capsys) -> None:
+    class Refusing(FakeBackend):
+        def __init__(self):
+            super().__init__(thp=0)
+
+    monkeypatch.setattr(mod, "SystemBackend", Refusing)
+    out = tmp_path / "part"
+    assert mod.main(["--out", str(out), "--duration-s", "5", "--", "true"]) == 1
+    assert json.loads((out / "result.json").read_text())["status"] == "refused:thp_enabled_not_1"
+    (out / "result.json").write_text("earlier evidence")
+    monkeypatch.setattr(mod, "SystemBackend", lambda: FakeBackend())
+    assert mod.main(["--out", str(out), "--duration-s", "5", "--", "true"]) == 1
+    assert (out / "result.json").read_text() == "earlier evidence"

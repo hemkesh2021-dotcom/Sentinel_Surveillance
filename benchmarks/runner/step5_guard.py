@@ -309,6 +309,8 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
     if refused:
         result["status"] = f"refused:{refused}"
         result["preflight_sample"] = oc.safe_sample(backend.sample())
+        if refused != "out_exists":  # keep the refusal as evidence; never write into an existing directory
+            out.mkdir(mode=0o700, parents=False)
         return result
     out.mkdir(mode=0o700, parents=False)
     baseline = backend.sample()
@@ -494,7 +496,7 @@ def main(argv: list[str] | None = None) -> int:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
     text = json.dumps(result, indent=2)
-    if args.out.is_dir():
+    if result["status"] != "refused:out_exists" and args.out.is_dir():
         (args.out / "result.json").write_text(text + "\n")
     print(text)
     clean = result.get("cleanup_clear") is True and (
