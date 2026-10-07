@@ -156,17 +156,41 @@ class HazardConfig(_Section):
 class IdentityConfig(_Section):
     """Face association and identity policy. Starting values; calibrate on held-out identities (V2-25)."""
 
-    match_threshold: Annotated[float, Field(ge=-1, le=1, allow_inf_nan=False)] = 0.5  # cosine
-    margin: Annotated[float, Field(ge=0, le=2, allow_inf_nan=False)] = 0.05
-    min_quality: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)] = 0.6
+    # Cosine similarity, not a probability. 0.70 is DeepFace 0.0.99's pretuned Facenet512 value (cosine distance
+    # 0.30, config/threshold.py, verified when distance <= threshold); uncalibrated for this camera and these people.
+    match_threshold: Annotated[float, Field(ge=-1, le=1, allow_inf_nan=False)] = 0.70
+    margin: Annotated[float, Field(ge=0, le=2, allow_inf_nan=False)] = 0.05  # uncalibrated starting value
+    min_quality: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)] = 0.6  # YuNet confidence; uncalibrated
     confirmations: Annotated[int, Field(ge=1, le=5)] = 2
     vote_ttl_s: Seconds = 30.0
     head_fraction: Annotated[float, Field(gt=0, le=1, allow_inf_nan=False)] = 0.4
     min_face_inside: Annotated[float, Field(gt=0, le=1, allow_inf_nan=False)] = 0.6
+    # The 1 Hz face path (V2-25 demo form, D34); starting values: face p99 was 989 ms in the replay profile.
+    face_interval_s: Seconds = 1.0  # between face ticks, in frame time
+    face_pending_max_age_s: Seconds = 2.0  # a waiting frame older than this is not analysed
+    face_result_max_age_s: Seconds = 3.0  # a result for an older frame is rejected; also the "fresh" window
+
+    @model_validator(mode="after")
+    def _face_bounds(self) -> IdentityConfig:
+        if not self.face_pending_max_age_s <= self.face_result_max_age_s:
+            raise ValueError("face_pending_max_age_s must not exceed face_result_max_age_s")
+        return self
 
     @property
     def vote_ttl_ns(self) -> int:
         return round(self.vote_ttl_s * NS_PER_SECOND)
+
+    @property
+    def face_interval_ns(self) -> int:
+        return round(self.face_interval_s * NS_PER_SECOND)
+
+    @property
+    def face_pending_max_age_ns(self) -> int:
+        return round(self.face_pending_max_age_s * NS_PER_SECOND)
+
+    @property
+    def face_result_max_age_ns(self) -> int:
+        return round(self.face_result_max_age_s * NS_PER_SECOND)
 
 
 ZoneId = Annotated[str, Field(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")]

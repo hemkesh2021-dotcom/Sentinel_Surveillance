@@ -14,14 +14,15 @@ Not thread-safe: call it from one loop thread.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .config import SentinelConfig
-from .contracts import Evidence, FrameRef, StreamIdentity, TrackObservation, TrackStatus
+from .contracts import Evidence, FrameRef, StreamIdentity, TrackKey, TrackObservation, TrackStatus
 from .identity.association import AssociationGeometry, FaceObservation, associate
 from .identity.matching import Enrollment
-from .identity.state import IdentityPolicy, IdentityResolver, IdentityState
+from .identity.state import IdentityPolicy, IdentityResolver, IdentityState, TrackIdentity
 from .jobs import WorkerOutcome
 from .live_state import Capability, LiveState, Occupancy, PersonState, SceneStatus
 from .media.clock import Clock, MonoInstant
@@ -43,11 +44,32 @@ class RoutedEvidence:
 
 
 @dataclass(frozen=True)
+class IdentityTransition:
+    """A change of one track's identity state, identity ID or basis: opaque IDs and numbers only."""
+
+    stream_epoch: int
+    track_id: int
+    from_state: str
+    to_state: str  # an IdentityState value, or "cleared" when the track is no longer current
+    identity_id: str | None  # the opaque gallery ID, only for KNOWN
+    basis: str | None
+    last_vote_age_ms: int | None
+    reason: str
+    mono_ns: int
+
+    def record(self) -> dict[str, object]:
+        return {"identity": "transition", "stream_epoch": self.stream_epoch, "track_id": self.track_id,
+                "from": self.from_state, "to": self.to_state, "identity_id": self.identity_id, "basis": self.basis,
+                "last_vote_age_ms": self.last_vote_age_ms, "reason": self.reason, "mono_ns": self.mono_ns}
+
+
+@dataclass(frozen=True)
 class CoreOutput:
     state: LiveState
     evidence: tuple[RoutedEvidence, ...] = ()  # new evidence, with where it may go
     candidates: tuple[HazardCandidate, ...] = ()
     zones: tuple[ZoneObservation, ...] = ()  # zone rule observations from this step
+    identity_transitions: tuple[IdentityTransition, ...] = ()
 
 
 class EdgeCore:
@@ -94,8 +116,12 @@ class EdgeCore:
                 min_quality=identity.min_quality,
                 confirmations=identity.confirmations,
                 vote_ttl_ns=identity.vote_ttl_ns,
+                fresh_window_ns=identity.face_result_max_age_ns,
             ),
         )
+        self._face_result_max_age_ns = identity.face_result_max_age_ns
+        self.face_counters: Counter[str] = Counter()  # face results: applied or rejected, and why
+        self._reported: dict[TrackKey, tuple[str, str | None, str | None]] = {}
         self._last_detected: FrameRef | None = None
         self._sequence = 0
 
@@ -110,7 +136,12 @@ class EdgeCore:
             "identity_tracks": self._identities.tracked,
             "scene_jobs_in_flight": int(self._lane is not None and self._lane.in_flight is not None),
             "zone_episodes": self._zones.active_episodes,
+            "identity_reported": len(self._reported),
         }
+
+    @property
+    def identity_counters(self) -> dict[str, int]:
+        return dict(sorted((self.face_counters + self._identities.counters).items()))
 
     def set_detector(self, capability: Capability) -> None:
         self._detector = capability
@@ -141,6 +172,41 @@ class EdgeCore:
         elif self._lane is not None:
             new += self._lane.poll(freshness.live)
         return self._finish(freshness, new)
+
+    def on_face_outcome(
+        self,
+        frame: FrameRef,
+        persons: Sequence[TrackObservation],
+        faces: Sequence[FaceObservation] | None,
+        connected: StreamIdentity | None,
+    ) -> CoreOutput:
+        """A face result for an earlier sampled frame, with the tracker's people on that same frame.
+
+        Its faces are associated with those people only, and its votes carry that frame's time. It is
+        rejected, and counted, when face recognition is not available, the analysis failed, the frame's
+        stream (camera, boot, run, epoch) is not the live one, or the frame is older than
+        ``identity.face_result_max_age_s``. Votes for tracks that are no longer current are dropped by
+        the next ``_finish``.
+        """
+        freshness = self._freshness.assess(connected)
+        now = self._clock.mono()
+        if self._face_recognition is not Capability.AVAILABLE:
+            self.face_counters["results_ignored_face_unavailable"] += 1
+        elif faces is None:
+            self.face_counters["results_failed"] += 1
+        elif connected is None or frame.stream != connected:
+            self.face_counters["results_rejected_not_live"] += 1
+        elif frame.boot_id != now.boot_id:
+            self.face_counters["results_rejected_boot"] += 1
+        elif now.ns - frame.ingest_mono_ns > self._face_result_max_age_ns:
+            self.face_counters["results_rejected_age"] += 1
+        else:
+            association = associate(persons, faces, self._geometry)
+            for ownership in association.face_ownership:
+                self.face_counters[f"faces_{ownership.value}"] += 1
+            self._identities.observe(persons, faces, association)
+            self.face_counters["results_applied"] += 1
+        return self._finish(freshness, [])
 
     def on_scene_outcome(
         self, job_id: str, outcome: WorkerOutcome, connected: StreamIdentity | None
@@ -176,18 +242,47 @@ class EdgeCore:
         view = self._scene.view(live, now)
         tracks = self._tracks.current(live, now)
         self._identities.retain_only(t.key for t in tracks)
+        identities = {t.key: self._identity(t, now) for t in tracks}
+        transitions = self._transitions(tracks, identities, now)
         occupancy, reason = self._occupancy(freshness, tracks, now)
         people_count = None if occupancy is Occupancy.UNKNOWN else _confirmed(tracks)
         candidate = self._hazard.evaluate(view, people_count=people_count)
         # Zone rules read tracks only: no identity, no scene verdict (guide ch. 9).
         zones = self._zones.evaluate(tracks, live, now)
-        state = self._publish(freshness, tracks, occupancy, reason, view, now)
+        state = self._publish(freshness, tracks, identities, occupancy, reason, view, now)
         return CoreOutput(
             state=state,
             evidence=routed,
             candidates=(candidate,) if candidate is not None else (),
             zones=tuple(zones),
+            identity_transitions=transitions,
         )
+
+    def _transitions(
+        self, tracks: tuple[TrackObservation, ...], identities: dict[TrackKey, TrackIdentity], now: MonoInstant
+    ) -> tuple[IdentityTransition, ...]:
+        """Changes since the last step; only while face recognition is available (otherwise all is unresolved)."""
+        if self._face_recognition is not Capability.AVAILABLE:
+            return ()
+        unresolved = (IdentityState.UNRESOLVED.value, None, None)
+        changes = []
+        current: dict[TrackKey, tuple[str, str | None, str | None]] = {}
+        for track in tracks:
+            resolved = identities[track.key]
+            value = (resolved.state.value, resolved.identity_id, None if resolved.basis is None else resolved.basis.value)
+            current[track.key] = value
+            before = self._reported.get(track.key, unresolved)
+            if value != before:
+                changes.append(IdentityTransition(
+                    track.key.stream_epoch, track.key.track_id, before[0], value[0], value[1], value[2],
+                    None if resolved.last_vote_age_ns is None else resolved.last_vote_age_ns // NS_PER_MS,
+                    resolved.reason, now.ns))
+        for key, before in self._reported.items():
+            if key not in current and before[0] != IdentityState.UNRESOLVED.value:
+                changes.append(IdentityTransition(key.stream_epoch, key.track_id, before[0], "cleared", None, None,
+                                                  None, "track no longer current", now.ns))
+        self._reported = {key: value for key, value in current.items() if value != unresolved}
+        return tuple(changes)
 
     def _occupancy(
         self,
@@ -217,6 +312,7 @@ class EdgeCore:
         self,
         freshness: VideoFreshness,
         tracks: tuple[TrackObservation, ...],
+        identities: dict[TrackKey, TrackIdentity],
         occupancy: Occupancy,
         occupancy_reason: str,
         view: SceneView,
@@ -264,7 +360,7 @@ class EdgeCore:
                     status=t.status,
                     predicted=t.predicted,
                     last_measured_age_ms=(now.ns - t.last_measured_mono_ns) // NS_PER_MS,
-                    **self._identity_fields(t, now),
+                    **self._identity_fields(identities[t.key]),
                 )
                 for t in tracks
             ),
@@ -279,15 +375,20 @@ class EdgeCore:
             return Capability.AVAILABLE
         return Capability.DISABLED if self._scene_problem is None else Capability.UNAVAILABLE
 
-    def _identity_fields(self, track: TrackObservation, now: MonoInstant) -> dict[str, object]:
+    def _identity(self, track: TrackObservation, now: MonoInstant) -> TrackIdentity:
         if self._face_recognition is not Capability.AVAILABLE:
-            reason = f"face recognition {self._face_recognition.value}"
-            return {"identity": IdentityState.UNRESOLVED, "identity_id": None, "identity_reason": reason}
-        resolved = self._identities.identity(track.key, now)
+            return TrackIdentity(IdentityState.UNRESOLVED, None, f"face recognition {self._face_recognition.value}")
+        return self._identities.identity(track.key, now)
+
+    @staticmethod
+    def _identity_fields(resolved: TrackIdentity) -> dict[str, object]:
+        age = resolved.last_vote_age_ns
         return {
             "identity": resolved.state,
             "identity_id": resolved.identity_id,
             "identity_reason": resolved.reason,
+            "identity_basis": resolved.basis,
+            "identity_vote_age_ms": None if age is None else age // NS_PER_MS,
         }
 
 

@@ -21,7 +21,7 @@ from .contracts import (
     TrackStatus,
     UtcDatetime,
 )
-from .identity.state import IdentityState
+from .identity.state import Basis, IdentityState
 from .media.health import VideoState
 from .scene.report import SceneReport
 
@@ -54,6 +54,8 @@ class PersonState(Contract):
     identity: IdentityState  # context only: never an access decision by itself
     identity_id: Identifier | None  # set only when KNOWN
     identity_reason: str
+    identity_basis: Basis | None = None  # KNOWN/UNKNOWN: a fresh decision or one retained on the same track
+    identity_vote_age_ms: NonNegativeInt | None = None  # the newest current vote's age
 
 
 class LiveState(Contract):

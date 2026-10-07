@@ -15,11 +15,19 @@ matched against a non-empty enrollment. There is no stored label to go stale.
 Votes expire after ``vote_ttl_ns`` and are scoped to their TrackKey, so a
 track in a new stream epoch inherits nothing. Identity is context for rules,
 never an access decision by itself.
+
+Retention (V2-25 demo form): a face sample without a usable face (turned
+away, too small, ambiguous) adds no vote and clears nothing, so KNOWN or
+UNKNOWN is retained on the same track until the older of its confirming
+votes is ``vote_ttl_ns`` old; a contradicting vote makes it UNCERTAIN at
+once; a track that is no longer current loses its votes (``retain_only``),
+even if the tracker later reuses its ID. ``basis`` tells a fresh decision
+(its newest vote at most ``fresh_window_ns`` old) from a retained one.
 """
 
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -49,6 +57,12 @@ class IdentityPolicy:
     min_quality: float = 0.6
     confirmations: int = 2
     vote_ttl_ns: int = 30_000_000_000
+    fresh_window_ns: int = 3_000_000_000  # a decision whose newest vote is at most this old is "fresh"
+
+
+class Basis(str, Enum):
+    FRESH = "fresh"  # the newest confirming vote is at most fresh_window_ns old
+    RETAINED = "retained"  # no newer usable face; kept until the older confirming vote expires
 
 
 @dataclass(frozen=True)
@@ -56,6 +70,8 @@ class TrackIdentity:
     state: IdentityState
     identity_id: str | None  # only when KNOWN
     reason: str
+    basis: Basis | None = None  # KNOWN and UNKNOWN only
+    last_vote_age_ns: int | None = None  # the newest current vote's age, when there is one
 
 
 @dataclass(frozen=True)
@@ -72,6 +88,7 @@ class IdentityResolver:
         self._policy = policy
         self._votes: dict[TrackKey, deque[_Vote]] = {}
         self._last_note: dict[TrackKey, str] = {}
+        self.counters: Counter[str] = Counter()  # ownership and vote outcomes, numbers only
 
     def observe(
         self,
@@ -83,6 +100,7 @@ class IdentityResolver:
         for person in persons:
             key = person.key
             ownership = association.person_ownership.get(key, Ownership.NO_FACE)
+            self.counters[f"persons_{ownership.value}"] += 1
             if ownership is not Ownership.ASSIGNED:
                 self._last_note[key] = {
                     Ownership.NO_FACE: "no face visible",
@@ -90,6 +108,7 @@ class IdentityResolver:
                 }.get(ownership, ownership.value)
                 continue
             vote, note = self._vote(faces[association.face_of[key]])
+            self.counters[_NOTE_COUNTERS[note]] += 1
             self._last_note[key] = note
             if vote is not None:
                 votes = self._votes.setdefault(key, deque(maxlen=VOTES_KEPT))
@@ -101,16 +120,18 @@ class IdentityResolver:
             return TrackIdentity(IdentityState.UNRESOLVED, None, "no identities enrolled")
         votes = self._current_votes(key, now)
         needed = self._policy.confirmations
+        age = now.ns - votes[-1].at_ns if votes else None
         if len(votes) >= needed:
             recent = {vote.identity for vote in votes[-needed:]}
             if len(recent) == 1:
                 (value,) = recent
+                basis = Basis.FRESH if age is not None and age <= self._policy.fresh_window_ns else Basis.RETAINED
                 if value == UNKNOWN_VOTE:
-                    return TrackIdentity(IdentityState.UNKNOWN, None, "consistent faces matched nobody")
-                return TrackIdentity(IdentityState.KNOWN, value, f"{needed} consistent matches")
+                    return TrackIdentity(IdentityState.UNKNOWN, None, "consistent faces matched nobody", basis, age)
+                return TrackIdentity(IdentityState.KNOWN, value, f"{needed} consistent matches", basis, age)
         if len({vote.identity for vote in votes}) > 1:
-            return TrackIdentity(IdentityState.UNCERTAIN, None, "contradictory face evidence")
-        return TrackIdentity(IdentityState.UNRESOLVED, None, note)
+            return TrackIdentity(IdentityState.UNCERTAIN, None, "contradictory face evidence", None, age)
+        return TrackIdentity(IdentityState.UNRESOLVED, None, note, None, age)
 
     @property
     def tracked(self) -> int:
@@ -145,3 +166,13 @@ class IdentityResolver:
             return []
         votes = self._votes.get(key, ())
         return [v for v in votes if 0 <= now.ns - v.at_ns < self._policy.vote_ttl_ns]
+
+
+_NOTE_COUNTERS = {
+    "face matched": "votes_match",
+    "face matched nobody": "votes_unknown",
+    "face matches more than one identity": "no_vote_margin",
+    "face quality too low": "no_vote_low_quality",
+    "embedding from an incompatible model": "no_vote_incompatible",
+    "no identities enrolled": "no_vote_no_enrollment",
+}
