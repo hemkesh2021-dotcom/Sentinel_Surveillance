@@ -1,6 +1,8 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-08, session 50 (Claude), fourth part. **The V2-25 device-check package is re-pinned to `95ce253` in `~/sentinel-prep/face-95ce253/`** (manifest SHA-256 `a8b57657d90737b432c289dde3f6e38910fbc914c49227561e80e7c0f8e8c2a9`), PENDING the maintainer's go-ahead; nothing ran. F1 now needs at least 3 usable photos, consistently in the checker, protocol and blocks; the enrollment API keeps its minimum of 2. Two usable photos fail and three pass, tested and dry-run. **D63:** F2's sampling minimums, the 15 s movement buffer and 90 % turned-away continuity are approved as uncalibrated starting criteria for this bounded test only. The `2686815` package is superseded, kept unchanged, and refuses at this code. 1483 portable tests pass.
+Last updated 2026-10-08, session 50 (Claude), fifth part. **F1 ran once (`face-20261007T215900Z`, USER-SUPPLIED): every non-privacy item passed, and F1f's name count flagged the maintainer's genuine family initial in fixed key names.** The counting is corrected in `0f7855e` (D64). Short names are now told apart by structure, every term reaches the counter on stdin, and nonconforming evidence fails closed. An offline F1 recheck of that run, the maintainer's typed acceptance and the F1 gate for F2 are prepared in `~/sentinel-prep/face-0f7855e/` (manifest SHA-256 `c19d9ec97a69708ba151ddcad7ce3467e3c10f70ea3912e51eb83a21bd68141e`). PENDING: session R, with the maintainer's names, and the maintainer's decision; nothing ran. The run keeps `F1_exit=1`. 1529 portable tests pass.
+
+Session 50's fourth part: **The V2-25 device-check package is re-pinned to `95ce253` in `~/sentinel-prep/face-95ce253/`** (manifest SHA-256 `a8b57657d90737b432c289dde3f6e38910fbc914c49227561e80e7c0f8e8c2a9`), PENDING the maintainer's go-ahead; nothing ran. F1 now needs at least 3 usable photos, consistently in the checker, protocol and blocks; the enrollment API keeps its minimum of 2. Two usable photos fail and three pass, tested and dry-run. **D63:** F2's sampling minimums, the 15 s movement buffer and 90 % turned-away continuity are approved as uncalibrated starting criteria for this bounded test only. The `2686815` package is superseded, kept unchanged, and refuses at this code. 1483 portable tests pass.
 
 Session 50's third part: **The V2-25 device check is finalized as a pinned package, PENDING the maintainer's go-ahead; nothing ran.** It is F1 (consented enrollment) and F2 (a guarded 10-minute live validation with scene and face, T0 at runtime readiness, the operator's locked account before any result). It comes with runtime evidence records (`c259acd`), guard cues (`febda01`), F1 hardening (`e806fbd`), and `face_account` and `face_check` (`2686815`). The package is in `~/sentinel-prep/face-2686815/`, with exact criteria and stop conditions in the session 50 log, part 3. **D62:** completed ÷ offered ≥ 0.95 with 0 processing errors is approved for this bounded check, not as the replay profile's 0.95 Hz. 1482 portable tests pass. Telegram stays disabled; the guards, the accepted profile and `PENDING_VALIDATION` are unchanged.
 
@@ -62,7 +64,7 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 | Session 12 (Claude, 2026-10-03) | `ed26dc9`: record of the maintainer's Check 9/S1 runs at `84f15ec` (S1 did not run). `e9af7f4`: V2-05 demo-form capture adapter, tests and status record. See the session 12 log. |
 | Session 13 (Claude, 2026-10-04) | `f6f9d5b` record of the Check 9, S1 and capture runs at `e9af7f4`, S1 comparison and V2-05 evaluation (docs only) · `8836929` PTS follow-up · `cd1c201` V2-09/V2-10 demo form (D40). See the session 13 log. |
 | Session 14 (Claude, 2026-10-04) | `ea95571`: S1 evaluation and D41 adoption, D42, V2-26 demo form (portable), Ultralytics privacy item. See the session 14 log. |
-| Session 50 (Claude, 2026-10-07) | Step 5's run reviewed (USER-SUPPLIED; the saved files verified by checksum, both secret-count files all 0). Part 3's one failing item was traced, condition by condition, to a checker defect and fixed in `026b481` with regression tests, and the corrected offline reading was saved apart from the run. The maintainer then confirmed exactly one alert and accepted the corrected reading for this bounded test (D60). Step 5 is recorded as validated for its bounded test, with the original `S5g_exit=1` and the procedural gap kept. Checklist step 4 was reconciled with D59. The run directory, its `check.txt` files and checksums, and the session 47 package are unchanged. Three local commits (`026b481`, `00fa9a7` and the D60 record), not pushed; no hardware run. **Part 2:** the maintainer approved the revised V2-25 proposal (D61), and its demo form was implemented portably in nine local commits (`3de67dc`…`c9241ac`), not pushed. No enrollment, photo access or hardware run. **Part 3:** the device check finalized (D62): four local commits (`c259acd`, `febda01`, `e806fbd`, `2686815`) and the pinned package `~/sentinel-prep/face-2686815/`; nothing ran. **Part 4:** D63; F1's 3-photo minimum (`95ce253`); the package re-pinned as `~/sentinel-prep/face-95ce253/`, the earlier one superseded. See the session 50 log, parts 2–4. |
+| Session 50 (Claude, 2026-10-07) | Step 5's run reviewed (USER-SUPPLIED; the saved files verified by checksum, both secret-count files all 0). Part 3's one failing item was traced, condition by condition, to a checker defect and fixed in `026b481` with regression tests, and the corrected offline reading was saved apart from the run. The maintainer then confirmed exactly one alert and accepted the corrected reading for this bounded test (D60). Step 5 is recorded as validated for its bounded test, with the original `S5g_exit=1` and the procedural gap kept. Checklist step 4 was reconciled with D59. The run directory, its `check.txt` files and checksums, and the session 47 package are unchanged. Three local commits (`026b481`, `00fa9a7` and the D60 record), not pushed; no hardware run. **Part 2:** the maintainer approved the revised V2-25 proposal (D61), and its demo form was implemented portably in nine local commits (`3de67dc`…`c9241ac`), not pushed. No enrollment, photo access or hardware run. **Part 3:** the device check finalized (D62): four local commits (`c259acd`, `febda01`, `e806fbd`, `2686815`) and the pinned package `~/sentinel-prep/face-2686815/`; nothing ran. **Part 4:** D63; F1's 3-photo minimum (`95ce253`); the package re-pinned as `~/sentinel-prep/face-95ce253/`, the earlier one superseded. **Part 5:** F1 ran once (USER-SUPPLIED; `face-20261007T215900Z`, F1_exit=1 from the privacy counts' defect); D64; the counting corrected (`0f7855e`); the package `~/sentinel-prep/face-0f7855e/` (offline recheck, acceptance, F1 gate); nothing ran. See the session 50 log, parts 2–5. |
 | Session 49 (Claude, 2026-10-07) | The Drive 2 migration recorded (USER-SUPPLIED; session 48 made no commit). Read-only verification of the repository, the pin, the checksums, the mounts and scene admission after the migration. Session 47's Step 5 package extracted unchanged into `~/sentinel-prep/step5-29cbbec/`, checked by two extractions and `bash -n`. Docs only, one local commit, not pushed; Step 5 not launched. See the session 49 log. |
 | Session 48 (Claude, 2026-10-07) | Step 5 paused at the maintainer's request; Sentinel's data staged on a second internal drive with a bind-mount cutover tool outside the repository, which the maintainer then ran. No repository change. Recorded in the session 49 log. |
 | Session 47 (Claude, 2026-10-07) | The maintainer approved D59, accepted `step4cand-demo-20261007T090339Z` as the bounded 640×480 replay demo profile and approved D58's runtime behaviour for that scope. Applied as separate local commits: `8943bf0` (admission) and `4d99839` (the entry). Step 5 tooling: `e7fcf9a`, `d63f6bb`, `2d449dd`, `29cbbec`. Operator package S5a–S5h pinned to `29cbbec`, dry-run with stubs (three dry runs and fault cases). Then this record. Not pushed; Step 5 not launched. See the session 47 log. |
@@ -101,15 +103,15 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 | Working tree | At session 15 start (10:46 IST): HEAD `ea95571`, equal to the local `origin/v2-beta` (the maintainer pushed after session 14; no fetch ran). The tree was clean. The session-start snapshot had listed `BUILD.md` as modified (session 12's trailing blank line), but by 10:43:07 IST, before Claude's first command, `BUILD.md` matched HEAD again. No other agent process was running; the maintainer's VS Code session was. Claude did not touch `BUILD.md`. Earlier: at session 13 start: HEAD `e9af7f4`, two commits ahead of the local `origin/v2-beta` (`84f15ec`; nothing pushed since session 11). The only change was session 12's unrelated trailing blank line in `BUILD.md` (not Claude's), which stays uncommitted. |
 | Known limitation (D-1, D43) | **Pending incident writes are buffered in memory, not in a crash-safe spool.** Rule observations waiting for a failed `record()` to be retried (at most 256) are lost if the process stops abruptly; overflow is counted as lost. The status page states this beside the pending count. A durable spool belongs to the runtime/core split (guide ch. 4, V2-11). |
 | Local-only files | `AGENTS.md`, the v2 guide, the audit review and `docs/LOCAL_NOTES.md` (device-specific notes), excluded through `.git/info/exclude`; none included in session 6–11 increments. A fresh clone does not contain them, although CLAUDE.md names the guide and audit. |
-| Selected package | **V2-25 device check (F1/F2) pinned to `95ce253` in `~/sentinel-prep/face-95ce253/` (session 50, part 4; D62, D63); PENDING the maintainer's go-ahead.** Before it: the same package pinned to `2686815` (part 3), superseded. Before it: **V2-25 interim face adapter, demo form: implemented portably (session 50, part 2; D61).** Before it: **Step 5's run reviewed; part 3's failing item traced to a checker defect and fixed in `026b481`; the corrected offline reading accepted for this bounded test (D60); checklist step 4 reconciled with D59** (session 50). Step 5 is validated for its bounded test; the run's own result stays `S5g_exit=1`, and the procedural gap is recorded. The next package is the maintainer's choice. Before it: **Session 47's Step 5 package extracted unchanged for the run, after the Drive 2 migration** (session 49; Step 5 then PENDING the maintainer's go-ahead; it ran once, session 50). Before it: **D59 applied; `step4cand-demo-20261007T090339Z` accepted for the bounded replay demo profile; the Step 5 package prepared** (session 47; Step 5 PENDING the maintainer's go-ahead). Before it: **The D58 candidate run recorded (eligible for maintainer review: all 15 criteria pass); acceptance recommended; D59 and the registry entry proposed** (session 46, docs only; nothing accepted or admitted). Before it: **D58 implemented (portable, opt-in): the shared workload-only THP disable and post-load release in `sentinel run` and the profiler, and the non-instrumented candidate mode with its operator package** (session 45; the candidate run PENDING the maintainer's go-ahead). Before it: **The MA1-WTD run recorded (valid execution; intervention verified; D57 reading supported; D56's THP reading inconclusive, no steady steps) and the next step toward a non-instrumented acceptance candidate recommended** (session 44, docs only; D58 approved for the portable implementation in session 45). Before it: **The MA1-THP run recorded (valid execution; THP reading inconclusive, mixed) and the MA1-WTD workload-only THP-disable diagnostic (D57) implemented (portable, opt-in) with its predeclared reading and operator package** (session 43; MA1-WTD run once, recorded in session 44). Before it: **The MA1 run recorded (valid execution, attribution recorded) and the MA1-THP observation diagnostic (D56) implemented (portable, opt-in, read-only) with its predeclared reading and operator package** (session 42; MA1-THP run once, recorded in session 43). Before it: **The step-4 PLR run recorded (not eligible: M3) and the MA1 memory-attribution diagnostic (D55) implemented (portable, opt-in) with its protocol and operator blocks** (session 41; MA1 run once, recorded in session 42). Before it: **Step-4 PLR variant (D54) implemented (portable, opt-in) with its protocol and operator blocks** (session 40; run once, recorded in session 41). Before it: **The MR1 run recorded** (session 40): a valid execution, smoke checks passed, releases descriptive; no sustained or step-4 evidence. Before it: **MR1 implemented (portable, opt-in) with its protocol and operator blocks** (session 39, third part; run once, recorded in session 40). Before it: **Step 4 run 1 reviewed (not eligible) and the diagnostic fix** (session 39, portable; device behaviour PENDING). Before it: **Step 4 prepared for operator review** (session 38, docs and a private preparation directory). Its blocks are extracted unchanged and syntax-checked, with D43–D47 verbatim and the run order. The run is PENDING and needs the maintainer's go-ahead. Before it: **Step 3 passed for its defined demo scope** (D53, the maintainer's confirmation, session 38). Before it: **Review of 3TC run 3** (session 38, docs only). The run is established, and 3T's detection conditions are met under the declared current conditions. Step 3's detection-correctness item is recorded as met for current conditions. Before it: **3TC revised** (session 37, docs only): pinned to `ee8dc76`, with its blocks extracted to a private preparation directory; PENDING (maintainer-run). Before it: **Session 36 diagnostic increment** (portable): `--multi-person-frames` and the account helper, with the CR and 3TC run 2 records. Before it: **Review of the first 3TC run** (session 34, docs only): no frames, because the camera's address was unreachable from the Jetson after a power cut and reboot. The run is not established, and detection is not tested. The camera reachability diagnostic CR is prepared and PENDING (maintainer-run). Before it: **Current-condition transition check 3TC** (session 33, docs only; D52): prepared, dry-run and PENDING (maintainer-run). It keeps 3T's detection conditions; a pass completes step 3's detection-correctness item for current conditions, pending the maintainer's confirmation. Before it: **Timer-based empty-scene check 3ET** (session 32, docs only; D51): prepared, dry-run and PENDING (maintainer-run). `3e-timer` is reconciled as a successful diagnostic; the account recorded before the counts is the only criterion that needs a new run. Before it: **Review of the timer-based empty-scene run** (session 31, docs only). Zero person detections. Execution is met on the saved evidence, except the exact userinfo count. 3E's window is not established, so formal 3E stays PENDING. U23 is unresolved. Before it: **The 3V review completed by evidence source** (session 30, docs only). Execution is not fully established as predeclared: the after-run counts are the maintainer's report only, and the exact secret counts were not supplied. Viewer delivery stays verified, its account condition by the maintainer's report. Unrecorded checklist fields stay unrecorded. Before it: **Review of the 3V run** (session 29, docs only). Viewer delivery is verified on the device. The visible maintainer was boxed in three screenshots (the maintainer's report), never with two counted boxes in one frame. Movement was not assessed, and no empty scene was tested. Before it: **Attended viewer check 3V** (session 28, docs only): prepared and dry-run. The first 3P attempt was reviewed: box numbers, no viewer evidence. Before it: **Review of the delayed-start 3P retry** (session 27, docs only): execution met; no person reported, a conditional non-reproduction; preview delivery unverified; 3P PENDING. Before it: **Preview P1** (session 26, D49): portable part done; device check 3P PENDING. Before it: **Review of the 3E run** (session 25, docs only): a partially usable diagnostic; the empty-scene window is not established, so formal 3E acceptance is PENDING; preview diagnostic P1 proposed, not implemented. Before it: **3E empty-room control** (session 24, docs only): blocks prepared and checked portably; the run is PENDING (maintainer). Before it: **Review of the first 3T run** (session 23, docs only; corrected in session 24): execution, coverage and D48 met; detection conditions not met as written, cause undetermined; detection correctness PENDING; 3E proposed. Before it: **Track-probe timeline and check 3T** (session 22, `7a4d408`): portable part done; one run reviewed in session 23. Before it: **D48 stdout/JSON separation for `track probe` and `run`** (session 21): a narrow CLI fix for the defect checklist step 3 found; portable part done, device verification PENDING. Before it: **Step-4 criteria v2 and guarded mode** (session 17, D47; reviewed and corrected in session 18): portable part done; the run is PENDING (checklist step 4). Before it: **`--scene` admission fix** (session 16, D46): a narrow amendment to D-1, done portably; no device check of its own. Before it: **D-2 loopback status page, demo form** (session 15): portable part done, device check PENDING (checklist step 5). Before it in session 15: **D-1 `sentinel run`, demo form**, portable part done (`537557c`), device run PENDING. Before that: **V2-09/V2-10 demo form** (session 13): the legacy detector + ByteTrack parity adapter. Portable part complete (D40); device check PENDING; partial at most (D23). V2-05's demo form is evaluated (session 13 log). Its outage and read-timeout checks are now met too (USER-SUPPLIED, session 20 log). It stays partial under D23. S1 (D38) ran; adopting `--cache-ram 0` is the maintainer's decision. U20 and U19/U21 instrumentation remain portable-complete only; D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. |
+| Selected package | **V2-25: the F1 privacy-count correction (`0f7855e`, D64) and the package `~/sentinel-prep/face-0f7855e/` (session R, an offline recheck of `face-20261007T215900Z`; RA, the maintainer's acceptance; F2 through the F1 gate); PENDING the maintainer (session 50, part 5).** Before it: the device check pinned to `95ce253` (part 4; D62, D63), whose F1 ran once (`face-20261007T215900Z`, F1_exit=1), superseded. Before it: the same package pinned to `2686815` (part 3), superseded. Before it: **V2-25 interim face adapter, demo form: implemented portably (session 50, part 2; D61).** Before it: **Step 5's run reviewed; part 3's failing item traced to a checker defect and fixed in `026b481`; the corrected offline reading accepted for this bounded test (D60); checklist step 4 reconciled with D59** (session 50). Step 5 is validated for its bounded test; the run's own result stays `S5g_exit=1`, and the procedural gap is recorded. The next package is the maintainer's choice. Before it: **Session 47's Step 5 package extracted unchanged for the run, after the Drive 2 migration** (session 49; Step 5 then PENDING the maintainer's go-ahead; it ran once, session 50). Before it: **D59 applied; `step4cand-demo-20261007T090339Z` accepted for the bounded replay demo profile; the Step 5 package prepared** (session 47; Step 5 PENDING the maintainer's go-ahead). Before it: **The D58 candidate run recorded (eligible for maintainer review: all 15 criteria pass); acceptance recommended; D59 and the registry entry proposed** (session 46, docs only; nothing accepted or admitted). Before it: **D58 implemented (portable, opt-in): the shared workload-only THP disable and post-load release in `sentinel run` and the profiler, and the non-instrumented candidate mode with its operator package** (session 45; the candidate run PENDING the maintainer's go-ahead). Before it: **The MA1-WTD run recorded (valid execution; intervention verified; D57 reading supported; D56's THP reading inconclusive, no steady steps) and the next step toward a non-instrumented acceptance candidate recommended** (session 44, docs only; D58 approved for the portable implementation in session 45). Before it: **The MA1-THP run recorded (valid execution; THP reading inconclusive, mixed) and the MA1-WTD workload-only THP-disable diagnostic (D57) implemented (portable, opt-in) with its predeclared reading and operator package** (session 43; MA1-WTD run once, recorded in session 44). Before it: **The MA1 run recorded (valid execution, attribution recorded) and the MA1-THP observation diagnostic (D56) implemented (portable, opt-in, read-only) with its predeclared reading and operator package** (session 42; MA1-THP run once, recorded in session 43). Before it: **The step-4 PLR run recorded (not eligible: M3) and the MA1 memory-attribution diagnostic (D55) implemented (portable, opt-in) with its protocol and operator blocks** (session 41; MA1 run once, recorded in session 42). Before it: **Step-4 PLR variant (D54) implemented (portable, opt-in) with its protocol and operator blocks** (session 40; run once, recorded in session 41). Before it: **The MR1 run recorded** (session 40): a valid execution, smoke checks passed, releases descriptive; no sustained or step-4 evidence. Before it: **MR1 implemented (portable, opt-in) with its protocol and operator blocks** (session 39, third part; run once, recorded in session 40). Before it: **Step 4 run 1 reviewed (not eligible) and the diagnostic fix** (session 39, portable; device behaviour PENDING). Before it: **Step 4 prepared for operator review** (session 38, docs and a private preparation directory). Its blocks are extracted unchanged and syntax-checked, with D43–D47 verbatim and the run order. The run is PENDING and needs the maintainer's go-ahead. Before it: **Step 3 passed for its defined demo scope** (D53, the maintainer's confirmation, session 38). Before it: **Review of 3TC run 3** (session 38, docs only). The run is established, and 3T's detection conditions are met under the declared current conditions. Step 3's detection-correctness item is recorded as met for current conditions. Before it: **3TC revised** (session 37, docs only): pinned to `ee8dc76`, with its blocks extracted to a private preparation directory; PENDING (maintainer-run). Before it: **Session 36 diagnostic increment** (portable): `--multi-person-frames` and the account helper, with the CR and 3TC run 2 records. Before it: **Review of the first 3TC run** (session 34, docs only): no frames, because the camera's address was unreachable from the Jetson after a power cut and reboot. The run is not established, and detection is not tested. The camera reachability diagnostic CR is prepared and PENDING (maintainer-run). Before it: **Current-condition transition check 3TC** (session 33, docs only; D52): prepared, dry-run and PENDING (maintainer-run). It keeps 3T's detection conditions; a pass completes step 3's detection-correctness item for current conditions, pending the maintainer's confirmation. Before it: **Timer-based empty-scene check 3ET** (session 32, docs only; D51): prepared, dry-run and PENDING (maintainer-run). `3e-timer` is reconciled as a successful diagnostic; the account recorded before the counts is the only criterion that needs a new run. Before it: **Review of the timer-based empty-scene run** (session 31, docs only). Zero person detections. Execution is met on the saved evidence, except the exact userinfo count. 3E's window is not established, so formal 3E stays PENDING. U23 is unresolved. Before it: **The 3V review completed by evidence source** (session 30, docs only). Execution is not fully established as predeclared: the after-run counts are the maintainer's report only, and the exact secret counts were not supplied. Viewer delivery stays verified, its account condition by the maintainer's report. Unrecorded checklist fields stay unrecorded. Before it: **Review of the 3V run** (session 29, docs only). Viewer delivery is verified on the device. The visible maintainer was boxed in three screenshots (the maintainer's report), never with two counted boxes in one frame. Movement was not assessed, and no empty scene was tested. Before it: **Attended viewer check 3V** (session 28, docs only): prepared and dry-run. The first 3P attempt was reviewed: box numbers, no viewer evidence. Before it: **Review of the delayed-start 3P retry** (session 27, docs only): execution met; no person reported, a conditional non-reproduction; preview delivery unverified; 3P PENDING. Before it: **Preview P1** (session 26, D49): portable part done; device check 3P PENDING. Before it: **Review of the 3E run** (session 25, docs only): a partially usable diagnostic; the empty-scene window is not established, so formal 3E acceptance is PENDING; preview diagnostic P1 proposed, not implemented. Before it: **3E empty-room control** (session 24, docs only): blocks prepared and checked portably; the run is PENDING (maintainer). Before it: **Review of the first 3T run** (session 23, docs only; corrected in session 24): execution, coverage and D48 met; detection conditions not met as written, cause undetermined; detection correctness PENDING; 3E proposed. Before it: **Track-probe timeline and check 3T** (session 22, `7a4d408`): portable part done; one run reviewed in session 23. Before it: **D48 stdout/JSON separation for `track probe` and `run`** (session 21): a narrow CLI fix for the defect checklist step 3 found; portable part done, device verification PENDING. Before it: **Step-4 criteria v2 and guarded mode** (session 17, D47; reviewed and corrected in session 18): portable part done; the run is PENDING (checklist step 4). Before it: **`--scene` admission fix** (session 16, D46): a narrow amendment to D-1, done portably; no device check of its own. Before it: **D-2 loopback status page, demo form** (session 15): portable part done, device check PENDING (checklist step 5). Before it in session 15: **D-1 `sentinel run`, demo form**, portable part done (`537557c`), device run PENDING. Before that: **V2-09/V2-10 demo form** (session 13): the legacy detector + ByteTrack parity adapter. Portable part complete (D40); device check PENDING; partial at most (D23). V2-05's demo form is evaluated (session 13 log). Its outage and read-timeout checks are now met too (USER-SUPPLIED, session 20 log). It stays partial under D23. S1 (D38) ran; adopting `--cache-ram 0` is the maintainer's decision. U20 and U19/U21 instrumentation remain portable-complete only; D-1 and hardware acceptance are not complete. V2-28 remains demo form, full acceptance pending. |
 | Other branches | `origin/Yogeshvar425-patch-1` (teammate) is **not merged**: a single commit `6755796` that adds @Yogeshvar425 to `.github/CODEOWNERS` (merge base `c66ebde`). `origin/codex/github-audit-fixes-2026-09-19` is already in `master` via PR #4. |
 | Effort | Per-package estimates are in the package table (given to the maintainer on 2026-09-29). The re-estimate of optimization effort still waits for V2-01's B0 run. |
 | v1 on this device | Historically **not running** (maintainer, 2026-09-29); current state must be inspected, not inferred. This workflow never terminates existing v1 processes. |
-| Waiting on the maintainer | **A go-ahead (or not) for F1 and F2 with the package `~/sentinel-prep/face-95ce253/` (manifest SHA-256 `a8b57657d90737b432c289dde3f6e38910fbc914c49227561e80e7c0f8e8c2a9`; session 50 log, parts 3–4).** Its criteria are approved (D62, D63; F1 at least 3 usable photos). V2-25's demo form is implemented portably (D61). Step 5 is validated for its bounded test (session 50, D60), with the original `S5g_exit=1` and the procedural gap recorded. D59 is approved and the candidate accepted (session 47). The D58 candidate ran once (session 46: eligible for review). The session 44 MA1-WTD record; U26; U25; the session 43 MA1-THP record and D57 (MA1-WTD ran once, session 44); the session 42 MA1 record and D56 (MA1-THP ran once, session 43); the session 41 PLR record and D55 (MA1 ran once, session 42); the session 40 MR1 record and D54. The PLR ran once (session 41: not eligible, M3). MR1 ran once (session 40). The session 39 review and fix. Step 4 ran once (run 1, not eligible); no rerun is prepared. **The session 15 operator checklist:** step 4's written, default-policy form has no passing result, but its demo purpose is served by D59's accepted profile and no rerun is proposed (session 50); step 5 is validated for its bounded test (session 50, D60). Step 3 passed for its defined demo scope (D53, session 38). Step 1, the Ultralytics setting, is done (USER-SUPPLIED, session 19); its optional 1b `yolo settings sync=False` was not performed. Step 2, the V2-05 physical outage, is done (USER-SUPPLIED, session 20). Step 3, the V2-09/V2-10 device check, is recorded in part (USER-SUPPLIED, session 21): the guard and stability criteria are met. Its observations are unknown (session 22). The timed check 3T ran once (session 23): execution was met, but its detection conditions were not met as written and the cause is undetermined (U23). Detection correctness waits on U23. The empty-room control 3E ran once after a reboot (session 25). It is partially usable as a diagnostic, but its empty-scene window is not established, so formal 3E acceptance is PENDING. The preview diagnostic P1 is implemented portably (session 26, D49). A delayed-start 3P retry ran once (session 27). Execution was met, and no person was reported in any frame: a non-reproduction, conditional on the maintainer's account. No viewer connected, so 3P stays PENDING. The first 3P attempt (reviewed in session 28) had no viewer request either. It recorded one persistent confirmed track, and what that track covered is not recorded. The Mac cannot leave the room, so the attended viewer check 3V was prepared (session 28). It ran in session 29: viewer delivery is verified on the device, and the boxes lay on the visible maintainer in three screenshots (the maintainer's report). Its execution criterion is not fully established (session 30). It tests no empty scene. The maintainer then ran their own timer-based empty-scene run (session 31). It reported zero persons in 2,634 frames, but 3E's window is not established: the scene was undeclared and there is no account file. That makes a second conditional non-reproduction, and U23 is unresolved. The timer design is authorized (D51, session 32), and the physical-setup question is withdrawn. 3ET, the formal current-condition empty-scene check, is prepared (optional under D52). Route A (D52, session 33): 3T's conditions are retained, and the current-condition transition check 3TC is prepared. 3TC ran once, after a power cut and reboot (session 34). It received no frames: every open failed with `No route to host`, so detection was not tested. CR then ran twice (recorded in session 36): nothing answered at the configured address, and after the maintainer changed the address in the URL the camera delivered frames. 3TC's second run received frames and met execution, but it is not established: its account is `unknown` in every field. It showed two boxes at once on 11 frames (U24; reported, not judged). 3TC was revised (session 37, pinned to `ee8dc76`). Its third run (session 38) is established and meets 3T's detection conditions under the declared current conditions. Step 3's detection-correctness item is recorded as met for current conditions, and the maintainer confirmed step 3 as passed for its defined demo scope (D53). U23's history and U24 stay open. Steps 4 and 5: see above. Scene admission for D-1 was decided by D59 (session 47). The review of D43–D47 is still open. Still open from earlier: why S1 arm b #1 was interrupted; U18's runtime policy, U19 unload, U20 real-model/demo-exception evidence, the 30-minute U21 rerun (not approved) and consent/figure labels. D36 provisionally retains b8932; beta still requires a tested compatible schema-fix descendant. E-1 reported Ollama inactive and disabled (USER-SUPPLIED). The full empty-room-clip review and the deletion of review images are not confirmed. |
+| Waiting on the maintainer | **Session R (RK → FN → RC) with `~/sentinel-prep/face-0f7855e/` (manifest SHA-256 `c19d9ec97a69708ba151ddcad7ce3467e3c10f70ea3912e51eb83a21bd68141e`), then your decision whether the corrected F1 reading stands (RA); F2 only after an acceptance (session 50 log, part 5).** F1 ran once (`face-20261007T215900Z`); its own result stays `F1_exit=1`. Criteria: D62, D63, D64. V2-25's demo form is implemented portably (D61). Step 5 is validated for its bounded test (session 50, D60), with the original `S5g_exit=1` and the procedural gap recorded. D59 is approved and the candidate accepted (session 47). The D58 candidate ran once (session 46: eligible for review). The session 44 MA1-WTD record; U26; U25; the session 43 MA1-THP record and D57 (MA1-WTD ran once, session 44); the session 42 MA1 record and D56 (MA1-THP ran once, session 43); the session 41 PLR record and D55 (MA1 ran once, session 42); the session 40 MR1 record and D54. The PLR ran once (session 41: not eligible, M3). MR1 ran once (session 40). The session 39 review and fix. Step 4 ran once (run 1, not eligible); no rerun is prepared. **The session 15 operator checklist:** step 4's written, default-policy form has no passing result, but its demo purpose is served by D59's accepted profile and no rerun is proposed (session 50); step 5 is validated for its bounded test (session 50, D60). Step 3 passed for its defined demo scope (D53, session 38). Step 1, the Ultralytics setting, is done (USER-SUPPLIED, session 19); its optional 1b `yolo settings sync=False` was not performed. Step 2, the V2-05 physical outage, is done (USER-SUPPLIED, session 20). Step 3, the V2-09/V2-10 device check, is recorded in part (USER-SUPPLIED, session 21): the guard and stability criteria are met. Its observations are unknown (session 22). The timed check 3T ran once (session 23): execution was met, but its detection conditions were not met as written and the cause is undetermined (U23). Detection correctness waits on U23. The empty-room control 3E ran once after a reboot (session 25). It is partially usable as a diagnostic, but its empty-scene window is not established, so formal 3E acceptance is PENDING. The preview diagnostic P1 is implemented portably (session 26, D49). A delayed-start 3P retry ran once (session 27). Execution was met, and no person was reported in any frame: a non-reproduction, conditional on the maintainer's account. No viewer connected, so 3P stays PENDING. The first 3P attempt (reviewed in session 28) had no viewer request either. It recorded one persistent confirmed track, and what that track covered is not recorded. The Mac cannot leave the room, so the attended viewer check 3V was prepared (session 28). It ran in session 29: viewer delivery is verified on the device, and the boxes lay on the visible maintainer in three screenshots (the maintainer's report). Its execution criterion is not fully established (session 30). It tests no empty scene. The maintainer then ran their own timer-based empty-scene run (session 31). It reported zero persons in 2,634 frames, but 3E's window is not established: the scene was undeclared and there is no account file. That makes a second conditional non-reproduction, and U23 is unresolved. The timer design is authorized (D51, session 32), and the physical-setup question is withdrawn. 3ET, the formal current-condition empty-scene check, is prepared (optional under D52). Route A (D52, session 33): 3T's conditions are retained, and the current-condition transition check 3TC is prepared. 3TC ran once, after a power cut and reboot (session 34). It received no frames: every open failed with `No route to host`, so detection was not tested. CR then ran twice (recorded in session 36): nothing answered at the configured address, and after the maintainer changed the address in the URL the camera delivered frames. 3TC's second run received frames and met execution, but it is not established: its account is `unknown` in every field. It showed two boxes at once on 11 frames (U24; reported, not judged). 3TC was revised (session 37, pinned to `ee8dc76`). Its third run (session 38) is established and meets 3T's detection conditions under the declared current conditions. Step 3's detection-correctness item is recorded as met for current conditions, and the maintainer confirmed step 3 as passed for its defined demo scope (D53). U23's history and U24 stay open. Steps 4 and 5: see above. Scene admission for D-1 was decided by D59 (session 47). The review of D43–D47 is still open. Still open from earlier: why S1 arm b #1 was interrupted; U18's runtime policy, U19 unload, U20 real-model/demo-exception evidence, the 30-minute U21 rerun (not approved) and consent/figure labels. D36 provisionally retains b8932; beta still requires a tested compatible schema-fix descendant. E-1 reported Ollama inactive and disabled (USER-SUPPLIED). The full empty-room-clip review and the deletion of review images are not confirmed. |
 
 ## Next concrete task
 
-1. **Decide on F1 and F2 (maintainer).** The package is `~/sentinel-prep/face-95ce253/`. First, `cd ~/sentinel-prep/face-95ce253 && sha256sum SHA256SUMS && sha256sum -c SHA256SUMS`: the first hash must be `a8b57657d90737b432c289dde3f6e38910fbc914c49227561e80e7c0f8e8c2a9`, then every file OK. Its protocol, criteria (D62, D63, F1 ≥ 3 usable photos), stop conditions and run order are in the session 50 log, parts 3–4. The `2686815` package is superseded and refuses at this code. F1 needs 3–8 fresh photos of yourself on the Mac (copied, never moved; 4 or more recommended); F2 needs a fresh boot right before, and the camera. The earlier text of this item, kept for the record: **Finalize the V2-25 device protocol (maintainer review, then Claude), before any hardware run.** The proposal is in the session 50 log, part 2: F1 (consented enrollment of the maintainer from fresh photos, with a dry run first) and F2 (a guarded live run with scene and face under the accepted profile's memory policy and `--face-validation`, with timed segments). Finalizing it means the maintainer's review of its criteria and stop conditions, including the proposed new criterion completed ÷ offered ≥ 0.95, then Claude's pinned operator package and a checker for F2's evidence. No photo is accessed and nothing runs before that. Nothing about Step 5 is pending.
+1. **Run session R, then decide (maintainer).** The package is `~/sentinel-prep/face-0f7855e/`. First, `cd ~/sentinel-prep/face-0f7855e && sha256sum SHA256SUMS && sha256sum -c SHA256SUMS`: the first hash must be `c19d9ec97a69708ba151ddcad7ce3467e3c10f70ea3912e51eb83a21bd68141e`, then every file OK. Then `source face-RK.sh`, type `face-FN.sh`'s two lines, `source face-RC.sh`, and read `$R/check.txt` and `$R/README.txt`. Whether the corrected F1 reading stands is your decision (`face-RA.sh`, typed); F2 (session 2) needs it. See the session 50 log, part 5. The earlier text of this item, kept for the record: **Decide on F1 and F2 (maintainer).** The package is `~/sentinel-prep/face-95ce253/`. First, `cd ~/sentinel-prep/face-95ce253 && sha256sum SHA256SUMS && sha256sum -c SHA256SUMS`: the first hash must be `a8b57657d90737b432c289dde3f6e38910fbc914c49227561e80e7c0f8e8c2a9`, then every file OK. Its protocol, criteria (D62, D63, F1 ≥ 3 usable photos), stop conditions and run order are in the session 50 log, parts 3–4. The `2686815` package is superseded and refuses at this code. F1 needs 3–8 fresh photos of yourself on the Mac (copied, never moved; 4 or more recommended); F2 needs a fresh boot right before, and the camera. The earlier text of this item, kept for the record: **Finalize the V2-25 device protocol (maintainer review, then Claude), before any hardware run.** The proposal is in the session 50 log, part 2: F1 (consented enrollment of the maintainer from fresh photos, with a dry run first) and F2 (a guarded live run with scene and face under the accepted profile's memory policy and `--face-validation`, with timed segments). Finalizing it means the maintainer's review of its criteria and stop conditions, including the proposed new criterion completed ÷ offered ≥ 0.95, then Claude's pinned operator package and a checker for F2's evidence. No photo is accessed and nothing runs before that. Nothing about Step 5 is pending.
    - Runs so far: Step 5 once (session 50, validated for its bounded test under D60), MR1 once (session 40), the PLR once (session 41), MA1 once (session 42), MA1-THP once (session 43), MA1-WTD once (session 44) and the D58 candidate once (session 46). Step 4 run 1's kernel window was not recovered.
    - Cosmetic, for the next runner change: two stale labels in the candidate's generated output (session 46 log), and the runner's `CANDIDATE_ADMISSION` text (session 47 log).
    - Still open from session 38: whether the descriptive 3TC account items should gate future 3TC runs; U23 (D52) and U24 stay open. Optional and unscheduled: 3ET, the retrospective userinfo count on `3e-timer`, 3V's movement check.
@@ -181,7 +183,7 @@ Estimates as given to the maintainer on 2026-09-29. V2-49 has since been done.
 | V2-22 | Retention and consistent backup | not started | Portable + device check | no | 1 | 0.5 | 14, 21 |
 | V2-23 | Installer alpha and first-run flow | not started | Jetson | no | 1.5 | 3 | 17, 19 |
 | V2-24 | Alpha replay/soak report | not started | Jetson | no | 1 | 3 | 16, 18, 22, 23 |
-| V2-25 | Face association/alignment/runtime adapter | partial: demo form implemented portably (session 50, part 2; D61); face admission PENDING_VALIDATION; device check F1/F2 pinned (`95ce253`, `~/sentinel-prep/face-95ce253/`, session 50 part 4), PENDING the go-ahead | Jetson | yes: **demo form, full acceptance pending** | 2 | 4 | 20, 24 |
+| V2-25 | Face association/alignment/runtime adapter | partial: demo form implemented portably (session 50, part 2; D61); face admission PENDING_VALIDATION; device check: F1 ran once (`face-20261007T215900Z`, USER-SUPPLIED; F1_exit=1 from the privacy counts' defect, corrected in `0f7855e`); the offline recheck and F2 prepared (`~/sentinel-prep/face-0f7855e/`, session 50 part 5), PENDING the maintainer | Jetson | yes: **demo form, full acceptance pending** | 2 | 4 | 20, 24 |
 | V2-26 | Small VLM vs existing model comparison | partial: demo form (loopback llama-server adapter, bounded worker) portable part done (session 14); device check with D-1 (Step 5 part 3: the scene server ran 10 min under the accepted bounded profile, validated by D60's reading, session 50; no model comparison or accuracy evaluated) | Jetson | yes: **demo form, full acceptance pending** | 2 | 5 | 09, 24 |
 | V2-27 | Enrollment/revoke screens | not started | Portable + device check | no | 1 | 0.5 | 20, 25 |
 | V2-28 | Evidence enrichment isolation | partial: demo form done (scene and store sides) | Portable | yes: **demo form, full acceptance pending** | 0.5 | 0 | 14, 26 |
@@ -242,6 +244,344 @@ Notes on partial and in-progress rows:
   - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Session 50: Step 5 ran it on the device (camera, detector, scene server, Telegram; see the session 50 log). Not done: the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Not done: viewing it over the SSH forward (not recorded); it stands in for, and does not replace, V2-17/V2-18 (no sessions, roles, API, media or live video).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 50 log, part 5 (Claude, 2026-10-08): F1 ran once (`face-20261007T215900Z`, USER-SUPPLIED) and passed everything but its privacy counts; the counts' defect traced and corrected (`0f7855e`, D64); an offline F1 recheck, the maintainer's acceptance and the F1 gate for F2 prepared in `~/sentinel-prep/face-0f7855e/`; no recheck, acceptance or F2 ran
+
+### USER-SUPPLIED (the maintainer's reports, 2026-10-08)
+
+- **F1 ran once**, with `~/sentinel-prep/face-95ce253/`, as `~/sentinel-runs/d1-checklist/face-20261007T215900Z`. Enrollment and every non-privacy F1 check passed: one identity, seven prototypes, a verified save, the seven supplied copies deleted, an empty inbox, correct permissions and the audit entry. F1f failed: its case-insensitive substring search counted the maintainer's genuine one-character family initial as a name leak. The first-name, passphrase and photo-file-name counts were all 0.
+- **The maintainer's own local diagnostic** (the initial not revealed): occurrences in key names in every counted file, in a string value in three of them, and no string value equal to the initial. The per-file figures are kept out of this public record, because together with the schema they narrow the letter.
+- **Claude's privacy-preserving diagnostic** (`f1_initial_diagnostic.py`, SHA-256 `552da73756f704677f58c815955ab07a9728c3a7a6bb860533a1f593b3a3906d`; read only; the initial on stdin; prints counts, classes and schema paths only), checksum-verified and run locally by the maintainer: `verdict: every occurrence is in fixed schema text, every key and value fits its field, and the whole-token count is 0 in every file: yes`, `diag_exit=0`, and every file `other=0`, `nonconforming=0`.
+- **The earlier failed photo attempt** (the maintainer's words) is `face-20261007T213532Z`, with two folders named after it in the identity directory. This session did not open, list or change them.
+
+### Saved run evidence (Claude's retrospective check, read only)
+
+- The run's `SHA256SUMS` (SHA-256 `9f6752c0385cf1ff9e561824afe14f48ce4692d3a65dc65111f65e8fa7e36f31`) verifies all 10 files, before and after this session. `provenance.txt` has `FB_exit=0` and `F1_exit=1`; `f1/check.txt` (SHA-256 `f192d7cc0517d8590e2be95e7bb40df638212caa989ef7d436bc64097625cc04`) ends `face-f1: not validated`, its only FAIL the privacy item.
+- `f1/secret-counts-identity.txt`: `name=` above 0 for all five counted files (grep counts lines; each identity command writes one JSON line), every passphrase and file-name count 0. The per-file values are not recorded here, for the same reason.
+
+### Diagnosis
+
+- F1f counted each name with `grep -ciF`. A one-character term matches that letter anywhere, including the fixed key names of every evidence file; on the test suite's real-CLI F1 evidence, 25 of 26 letters appear in at least one line. The checker was not at fault: it only requires every count to be 0. F2e had the same name loop, so F2 would have failed the same way.
+- From the code (`sentinel.cli._identity`, `sentinel.identity.enroll`, `IdentityStore.audit` and the F1 blocks), these files can hold only fixed labels, the opaque `idn-` ID, ISO dates and times, the run's folder name, `absent`/`present` and numbers. The maintainer's diagnostic run established that every occurrence of the initial was in such fixed schema text.
+
+### Decisions recorded (the maintainer's, 2026-10-08)
+
+- **D64.** Correct the privacy counting for both F1 and F2:
+  - handle genuine initials and short names without counting fixed schema text as leaks; never merely skip short names or special-case one initial;
+  - validate exempted keys, enumerated values and structured identifiers by their field; unexpected fields and content stay detectable, and malformed or unsupported evidence fails closed;
+  - keep the protections for longer names, passphrases and photo file names;
+  - take every sensitive search term off process command lines in the counting blocks, FH included (stdin or another private channel), and never print one;
+  - test the actual counting workflow on representative F1 and F2 evidence;
+  - keep `face-20261007T215900Z`, its `SHA256SUMS`, `F1_exit=1`, its `check.txt`, the earlier photo attempt and both existing packages unchanged;
+  - prepare a separate offline recheck and a newly pinned package; carry the original zero passphrase and file-name counts forward only with explicit provenance and verified unchanged sources, never as freshly scanned;
+  - any F2 resume needs an explicitly accepted corrected F1 reading tied to this run and the enrolled identity; Claude does not bypass that gate or record an acceptance;
+  - pause before device execution or acceptance.
+
+### What changed: `0f7855ef94668659f9472f008121e097a2fe3b53` (code and tests; local, not pushed)
+
+- **`benchmarks/runner/face_evidence.py`** (new): a field-by-field profile of every F1 and F2 evidence file (the enrollment reports, the listing, F1's provenance and the audit log; the guard's `result.json` and samples, the runtime's stdout, the status captures, F2's provenance, the account and the runtime's stderr). Declared keys, closed vocabularies (tied to the code's enums by a test), structured identifiers and fixed templates are schema text, and a template's variable parts are content. Free text is content: the scene model's summary, problem and error labels, log messages, the account's notes and any answer as typed. Anything else is **nonconforming**: an unexpected key, value or line, a duplicate key, malformed JSON, bytes that are not UTF-8, or a file without a profile. It is counted, and its text becomes content.
+- **`benchmarks/runner/face_privacy.py`** (new): reads NUL-terminated `kind=value` terms on stdin and prints `<file> <key>=<n>`.
+  - Passphrase, photo file names, camera userinfo and names of 3 or more letters and digits: substrings in every byte, as before (names case-insensitively), and in every JSON string whose encoding differs from its text.
+  - Shorter names: whole tokens in content only.
+  - `nonconforming` comes with every name count.
+  - It refuses (exit 2, no counts) on a missing, empty or malformed term, a name without a letter, or a URL without userinfo. `--explain` prints locations only.
+- **`benchmarks/runner/face_counts.sh`** (new, sourced by the blocks): F1f's, F2e's and FH's counts and the recheck. Every term goes to the counter through bash's printf builtin on stdin, never as an argument.
+- **`benchmarks/runner/face_check.py`**: each counts file must cover every evidence file with each of its keys (`nonconforming` included), all 0. New:
+  - `f1-recheck`, a corrected F1 reading made afterwards;
+  - `gate`, which lets F2 build on a run only if its own F1 validated, or if exactly one corrected F1 reading of it has the maintainer's acceptance and still matches the run's manifest, the identity and the audit log, and still validates;
+  - `f2 … --run … --identity-dir … --recheck-root …`, which adds that F1 basis as an item.
+- **`benchmarks/runner/face_recheck.py`** (new):
+  - `run` writes a recheck directory and changes nothing of the run. The names are recounted. The passphrase and file-name counts are carried forward from the run's own counts file, verified by the run's manifest and not rescanned. The other F1 items are reproduced from the same files and compared with the run's `check.txt`. It also writes provenance, a README and a manifest.
+  - `accept` is the maintainer's typed decision: it writes `acceptance.txt` (mode 600, never overwritten) only after the exact line `ACCEPT <run> <identity>`.
+- **Tests** (`tests/unit/test_face_check.py`, 46 new): every letter and two-letter names against real-CLI F1 evidence and real-runtime F2 evidence (0, while free text does count); injected leaks; long names, passphrases and file names (escaped and non-ASCII included); malformed evidence; unexpected fields; refusals; terms only on stdin (a recorder in place of the interpreter, FH included); vocabularies against the code's enums; the recheck, its failures, the acceptance and the gate. The existing helpers now take their counts from the real bash workflow, with realistic fixture provenance.
+
+### Session 50, part 5: exact commands and results
+
+- `.venv/bin/python -m pytest tests/unit/test_face_check.py -q` → 70 passed; `.venv/bin/python -m pytest -q` → **1529 passed**; `git diff --check` → clean; the commit message checked (no attribution).
+- The profiles against real device evidence: Step 5's `run.jsonl`, `guard.jsonl`, `result.json`, `run.err` and status captures read as F2 files → nonconforming 0, except Step 5's own capture and cue names (not F2's).
+- Read only on `face-20261007T215900Z`, with no names: the manifest verifies and lists every required file; the 6 non-privacy F1 items reproduce identically and pass; the carried counts are complete, all 0, and their source is verified by the manifest; every F1 file fits its profile (nonconforming 0, no content); `gate` → `f1_gate_reason=no_accepted_recheck`. `RK` as written → `RK passed` (nothing created).
+- The package: `sha256sum -c SHA256SUMS` → 24 OK; `bash -n` on the 22 blocks → clean; the directory 700, the files 600.
+- Dry runs on synthetic copies made by the test suite's real-CLI and real-runtime builders, in a scratch `HOME`. The only modification was a scratch copy of `RK` with the synthetic run's two hashes.
+  - Session R: `RK` passed; `RC` → `face-f1-recheck: validated`; `RA` refused a wrong line (nothing written), then accepted the exact line.
+  - Session 2: `FR`'s gate passed (`f1_basis=accepted_recheck`) and created `W`. The F2 stand-in was the simulated F2 evidence plus F2c's provenance lines with the gate's output; F2c itself was not run. `F2e` → F1 basis PASS and both counts PASS (12 files, all 0). Its identity items FAIL, as expected for the stand-in, whose enrolled identity is the simulation's. `FH` sealed `W` (17 files) and refused to reseal it. The synthetic run was unchanged throughout.
+  - Refusals: the package's `RK` on the synthetic run stopped (not the prepared manifest); `FR` without an acceptance (gate refused, nothing created); `F2c` and `F2e` without `FR`'s directory (stopped before any write); `FH` without a session directory (nothing written to the repository).
+- Preserved and checked:
+  - `face-20261007T215900Z`: 10 OK, `F1_exit=1`, `check.txt` unchanged;
+  - `~/sentinel-prep/face-95ce253/`: 21 OK, manifest `a8b57657…`, with a note `face-95ce253.SUPERSEDED.txt` beside it;
+  - `~/sentinel-prep/face-2686815/`: 21 OK;
+  - the earlier attempt and its folders: not touched.
+- **Not run:** the recheck with the maintainer's names, any acceptance, F2, the camera, any model, enrollment, photo access, gallery decryption, a system change, a deletion, a push.
+
+### The package (PENDING: session R is the maintainer's to run; acceptance is the maintainer's decision; F2 only after it)
+
+**Location:** `~/sentinel-prep/face-0f7855e/` (mode 700): 22 blocks, `PROTOCOL.md`, `SOURCE.txt` and `SHA256SUMS` (manifest SHA-256 `c19d9ec97a69708ba151ddcad7ce3467e3c10f70ea3912e51eb83a21bd68141e`). It is pinned to `0f7855ef94668659f9472f008121e097a2fe3b53`.
+- `RK` requires the run's manifest to hash to `9f6752c0…` and the identity audit log to `a4572dbec83b6871b5a23a3f4b2fdc4e3a650ff55ee2435c3eb6c1cf48bde3e7`, as found today.
+- In session 2, F2 writes only to its own session directory (`~/sentinel-runs/d1-checklist/f2-face-20261007T215900Z-<UTC>/`, never the run), after FR's gate.
+- `PROTOCOL.md` adds session R, the recheck's criteria, the acceptance and gate, the counting method, and F2's F1-basis item. It also states the sampling minimums as approved (D63).
+
+  | File | SHA-256 | Against `face-95ce253` |
+  |---|---|---|
+  | `PROTOCOL.md` | `8cfd4ac3a047bcb265280a45e69a008ed15012d4ce89ada01b4eddec26f2f391` | changed |
+  | `SOURCE.txt` | `90923b4b4160b6f71ad381a6d26d2fd0b2c1a07501563fe5c2b9f96299515cf4` | changed |
+  | `face-F1-mac.sh` | `8b9308e9642e14e7df605d1081d506819dfbc93e1bf466a60586ab08ebb9c25a` | unchanged |
+  | `face-F1a.sh` | `aaec503ca6fc39ef34d011880ba703272ff9f334eb3d41234db297131779d9fe` | unchanged |
+  | `face-F1b.sh` | `23c1579e85117d295cf4e6be00e0f1b7386d702099a47e352bb39739e9b3c357` | unchanged |
+  | `face-F1c.sh` | `656b60c16ab6545fc3798573c6444038f67d4c226c15eeb5470778fcce9e2b25` | unchanged |
+  | `face-F1d.sh` | `287c70f9bb16b3e3a78025ee6d37849b5ff1edec1baa74caafa75e426520ead8` | unchanged |
+  | `face-F1e.sh` | `1bb96cc107ea8890a773c0c140b3ba763732914349eae3aad1f227b71c15ff8e` | unchanged |
+  | `face-F1f.sh` | `38290304dd276c87a983da27bf21fe0763af297a9b1a3b1e9568665eac963f26` | changed |
+  | `face-F2a-check.sh` | `70d3eb58f3e1c2eddecf3617b3f02f8b08680561cf03a13fff5c2ca731c39441` | changed |
+  | `face-F2a.sh` | `61c273c3b7c1a2a36c6132520d57fd44fcb65d17c953170d1a0b1c4b1ffdc639` | changed |
+  | `face-F2b.sh` | `a3acac4545effdb5ba8c4963ede491776fca7db429327cc30bb3dffbad774ab1` | changed |
+  | `face-F2c.sh` | `6ea35d28f064da187528274d06c7045c6c0595c85c7b82c4b26308d6676a5f40` | changed |
+  | `face-F2d.sh` | `961775624658cbf4115f0fafe3995a5f83a4363fcd896771b1c1c84f52869982` | unchanged |
+  | `face-F2e.sh` | `f2ebe1366be47435c7b786934faf02bfced2f0addfb17d0af63f9034a935d975` | changed |
+  | `face-F2p.sh` | `987c1ec429bad8b17c07d833337229ab3349376a5f09c4188f5a2a8deccddc38` | unchanged |
+  | `face-FA.sh` | `fd018754656da47914dd12689f1503a6037014c77df4b68cabc0c331e6afb8a0` | changed |
+  | `face-FB.sh` | `961e7074b71f143e497993c7d2de8660bd5d2c17779045a3132be7fe466ff50a` | changed |
+  | `face-FH.sh` | `de179c15e58658fe151497a765bc2cb27308ce889cf0df41f1e31ca5de18a2ce` | changed |
+  | `face-FN.sh` | `95bd3c57ff1e35c9d0040d7fb1c10e4b4d8b451ba93e5a85ffc837ed1c99955d` | changed |
+  | `face-FR.sh` | `a29e49cc73f29f31d8d63bb2bf4d11cdaf5bbbc75b4c18b6ade2a214d8a13290` | changed |
+  | `face-RA.sh` | `940881e3cf0c4c39781d6dfee301990a7a5c5b837bf8b2ccd50fcb3bfd3aaa4b` | new |
+  | `face-RC.sh` | `8e9b9de83789cec805e8adad8d4127fab3c9149c43b352d2e25d2331586b1324` | new |
+  | `face-RK.sh` | `668c61bc0f0ccb8249a5180f75d00e06d5218553a0f05879dba6c424b74fdd22` | new |
+
+#### New and changed blocks (verbatim)
+
+- `face-F1f.sh` (changed):
+
+  ```bash
+  ( set -uo pipefail
+    [ -n "${N1:-}" ] && [ -n "${SENTINEL_IDENTITY_PASSPHRASE:-}" ] && [ -n "${PHOTO_NAMES+x}" ] && [ "${#PHOTO_NAMES[@]}" -ge 3 ] || { echo "STOP: FN, F1b or F1c is missing in this shell"; exit 1; }
+    source benchmarks/runner/face_counts.sh
+    face_counts_f1 "$D/f1" "$IDENT/audit.jsonl" > "$D/f1/secret-counts-identity.txt" || { echo "STOP: the counts were refused (the reason is above)"; exit 1; }
+    "${C[@]}" f1 "$D/f1" --identity-dir "$IDENT" | tee "$D/f1/check.txt"
+  ); echo "F1_exit=$?" | tee -a "$D/provenance.txt"
+  ```
+
+- `face-F2a-check.sh` (changed):
+
+  ```bash
+  printf 'dev_or_desktop_procs=%s vscode_server_procs=%s display_manager=%s v1_procs=%s llama_server_procs=%s ollama=%s\n' "$(ps -eo comm= | grep -cx -E 'claude|codex|node|code|code-insiders|Xorg|Xwayland|gnome-shell|Xtigervnc|Xvnc|xfwm4|xfce4-session')" "$(pgrep -fc '[.]vscode-server/')" "$(systemctl is-active display-manager)" "$(pgrep -fc '[s]urveillance4_1[.]py|[d]ashboard(_1)?[.]py')" "$(pgrep -xc llama-server)" "$(systemctl is-active ollama || true)" | tee -a "${O:?the F2 session directory is not set: run FR}/provenance.txt"
+  ```
+
+- `face-F2a.sh` (changed):
+
+  ```bash
+  sudo -v
+  DM_BEFORE="$(systemctl is-active display-manager || true)"; echo "display_manager_before=$DM_BEFORE" | tee -a "${O:?the F2 session directory is not set: run FR}/provenance.txt"
+  sudo systemctl stop display-manager
+  ```
+
+- `face-F2b.sh` (changed):
+
+  ```bash
+  read -rsp 'camera substream URL: ' SENTINEL_RTSP_URL; echo; export SENTINEL_RTSP_URL
+  "${RT[@]}" capture probe "${O:?the F2 session directory is not set: run FR}/face.yaml" --seconds 10 > "$O/camera-probe.json"; echo "camera_probe_exit=$?" | tee -a "$O/provenance.txt"
+  ```
+
+- `face-F2c.sh` (changed):
+
+  ```bash
+  ( set -uo pipefail
+    [ -z "${SENTINEL_TELEGRAM_BOT_TOKEN:-}${SENTINEL_TELEGRAM_CHAT_ID:-}" ] || { echo "STOP: unset the Telegram variables first"; exit 1; }
+    [ -n "${SENTINEL_IDENTITY_PASSPHRASE:-}" ] && [ -n "${SENTINEL_RTSP_URL:-}" ] || { echo "STOP: the passphrase or the camera URL is not set in this shell"; exit 1; }
+    [ -n "${W:-}" ] && [ "${O:-}" = "$W" ] && [ -d "$W" ] && [ -n "${DATA2:-}" ] || { echo "STOP: FR has not prepared F2's session directory in this shell"; exit 1; }
+    GATE="$("${C[@]}" gate "$D" --identity-dir "$IDENT" --recheck-root "$RR")" || { printf '%s\n' "$GATE"; echo "STOP: F2 cannot build on $D's F1"; exit 1; }
+    [ ! -e "$F2" ] || { echo "STOP: $F2 exists"; exit 1; }
+    { echo "f2_launch_utc=$(date -u +%FT%TZ)"; echo "boot_id=$(cat /proc/sys/kernel/random/boot_id)"
+      echo "commit=$(git rev-parse HEAD)"; echo "pin_commit=$PIN"; printf '%s\n' "$GATE"; } > "$O/f2-provenance.txt"
+    echo "F2 started $(date -u +%T) UTC: the models load first (about 1-2 min). Stay seated at the Mac; type nothing; wait for T0."
+    "${G[@]}" --out "$F2" --step4-headroom --duration-s 600 --ready-timeout-s 300 \
+      --status-at 60:e1 --status-at 180:k1 --status-at 300:a --status-at 420:e2 --status-at 540:k2 --status-at 590:end \
+      --cue-at "0:t0:T0 - START THE STOPWATCH NOW, then leave the camera view (be out of view by 0:20)" \
+      --cue-at "110:k1:at 2:00 come back and sit at the Mac facing the camera" \
+      --cue-at "230:a:at 4:00 turn your face away from the camera, stay seated, until 6:00" \
+      --cue-at "350:e2:at 6:00 stand up and leave the camera view until 8:00" \
+      --cue-at "470:k2:at 8:00 come back and sit facing the camera until the stop" \
+      --cue-at "595:stop:stopping at 10:00 - stay seated; read no result until your account is saved" -- \
+      "${RT[@]}" run "$O/face.yaml" --data-dir "$DATA2/f2" --engine "$ENGINE" --scene --face --face-validation \
+        --identity-dir "$IDENT" --workload-thp-disable --post-load-release > /dev/null
+    echo "F2_guard_exit=$?"
+    [ -d "$F2" ] && mv "$O/f2-provenance.txt" "$F2/provenance.txt"
+  ); echo "F2c_exit=$?" | tee -a "${O:?the F2 session directory is not set: run FR}/provenance.txt"
+  ```
+
+- `face-F2e.sh` (changed):
+
+  ```bash
+  ( set -uo pipefail
+    [ -n "${N1:-}" ] && [ -n "${SENTINEL_IDENTITY_PASSPHRASE:-}" ] && [ -n "${SENTINEL_RTSP_URL:-}" ] || { echo "STOP: FN, the passphrase or the camera URL is missing in this shell"; exit 1; }
+    grep -q '^account_sha256=' "$F2/provenance.txt" 2>/dev/null || { echo "STOP: save the account first (F2d)"; exit 1; }
+    source benchmarks/runner/face_counts.sh
+    face_counts_camera "$F2" > "$F2/secret-counts-camera.txt" || { echo "STOP: the camera counts were refused (the reason is above)"; exit 1; }
+    face_counts_f2 "$F2" > "$F2/secret-counts-identity.txt" || { echo "STOP: the identity counts were refused (the reason is above)"; exit 1; }
+    "${C[@]}" f2 "$F2" --f1 "$D/f1" --run "$D" --identity-dir "$IDENT" --recheck-root "$RR" | tee "$F2/check.txt"
+  ); echo "F2_exit=$?" | tee -a "${O:?the F2 session directory is not set: run FR}/provenance.txt"
+  ```
+
+- `face-FA.sh` (changed):
+
+  ```bash
+  cd /home/villain8001/sentinel-surveillance && set -o pipefail
+  PIN=0f7855ef94668659f9472f008121e097a2fe3b53
+  RUN="face-$(date -u +%Y%m%dT%H%M%SZ)"
+  D="$HOME/sentinel-runs/d1-checklist/$RUN"; O="$D"; DATA="$HOME/sentinel-data/$RUN"
+  ENGINE="$HOME/yolov8n.engine"; IDENT="$HOME/sentinel-data/identity"; RR="$HOME/sentinel-runs/recheck"
+  RT=(env LD_PRELOAD=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1 PYTHONPATH=src "$HOME/onvif_env/bin/python" -m sentinel.cli)
+  G=(.venv/bin/python benchmarks/runner/step5_guard.py); C=(.venv/bin/python benchmarks/runner/face_check.py); A=(.venv/bin/python benchmarks/runner/face_account.py)
+  mkdir -p -m 700 "$HOME/sentinel-runs/d1-checklist" "$HOME/sentinel-data" && mkdir -m 700 "$D" "$D/f1" "$DATA" && echo "artifacts: $D"
+  ```
+
+- `face-FB.sh` (changed):
+
+  ```bash
+  ( set -euo pipefail
+    [ -n "${O:-}" ] && [ -d "$O" ] || { echo "STOP: run FA (session 1) or FR (session 2) first"; exit 1; }
+    [ "$(git status --porcelain --untracked-files=no | wc -l)" -eq 0 ] || { echo "tracked changes present"; exit 1; }
+    git merge-base --is-ancestor "$PIN" HEAD || { echo "HEAD does not contain $PIN"; exit 1; }
+    git diff --quiet "$PIN" HEAD -- benchmarks src tests config pyproject.toml || { echo "code differs from $PIN"; exit 1; }
+    sha256sum -c --quiet - <<'SUMS' || { echo "checksum mismatch"; exit 1; }
+  4885d5e40aa4fe81a4d2eea50b558b2fc1b08cd93aca92a37ad4144254f3c1f2  benchmarks/runner/step5_guard.py
+  e844001b95000a84a02b529a56c95612b59a8a802789cd8ec5582bfdf0e7fa92  benchmarks/runner/face_check.py
+  4669454e71f536935aa4d1054ce901864ac3179131a4ee4788e009828349f31f  benchmarks/runner/face_account.py
+  42a8ce05addc378b70af9d5bfe182420695fb02460544ad5178e32a73d9372ca  benchmarks/runner/face_evidence.py
+  f580900c215d36d7241f663e37df645b493fc21be6300929280120ceaf729c7c  benchmarks/runner/face_privacy.py
+  0136be3231451fa29ce3aa7b8c6bda6b83cdcfbdb3ce3ef1527857105f8d7a0d  benchmarks/runner/face_recheck.py
+  4e206171da584f5cba2a57182abcbb5953c91593565576305e1953bcb80eae99  benchmarks/runner/face_counts.sh
+  02a5b9fe6d5a5f55a08e33c835acb3876c0419be1707f630c3d54a89b0613fa2  benchmarks/runner/operator_account.py
+  4221c5fd94e4d2c687b062123f08672fd6bf8000cddc0dca6799fe217ad27ff2  benchmarks/runner/operator_check.py
+  f8a579cc23991542d726c6a90e3a03a5b3ddc105ed99856e19969b10e6ec41d6  benchmarks/runner/step5_check.py
+  619b9d1db97c1138b2dd533a193fcdf2bf311cec00981d849c6b3dc8f2ce7d23  src/sentinel/adapters.py
+  db41f9fa6cdcbbf145c672781f0cb666dc2b3c6213fbbed9af7682f66c3afa88  src/sentinel/demo_runtime.py
+  455503dd6ab16fe74609af61b033fa9bff1cfcc35529442bf94e1f44fb545bf9  src/sentinel/cli.py
+  9ffeb1b4b4d058edcf1e8e7769dfd9b94736ad5b1f09675612b5157e1c2395a7  src/sentinel/runtime.py
+  d68f46b6fd15c4ae3bef48c46ad71124696425c8c9085d629de56054687b735b  src/sentinel/config.py
+  645b13b2c935640bec0948db96ce7df3667c5dda8bd7acbec79886d222d72822  src/sentinel/memory_policy.py
+  134cd4369fe680c45d990f6d1512655aed7107609b447760e7ab3c746e03b9d6  src/sentinel/status_page.py
+  d212a5dc0adcbbe4288d64720fd207fa84e735a4cabd9083ece22b271e1d1d53  src/sentinel/scene/server.py
+  4fd5c6c8a5f1a7358270f04748cfe8c25163753df1021b68be5b056814a85d17  src/sentinel/identity/sealer.py
+  03a3c615d1e4a01385c949aaad3e9d86b396029b47b9781073a2431408838622  src/sentinel/identity/vault.py
+  26360ebbf243cb09e28d1dc9f607eae8d2e21a1d197060b96e1489b58ffd980c  src/sentinel/identity/gallery.py
+  c7cafbc6c50ca90249c5bb61c1cdf7c91e6a096cb38c63ac8df148498a8e5d10  src/sentinel/identity/enroll.py
+  1df354f72c4a92e6dc27ca712425ab2ccd1ce0213a39f55d5a26903d90cb74f0  src/sentinel/identity/legacy_deepface.py
+  9f4d300ea46f7e39989c839874214c1aa9a0d232f109358bdcc3eaf967162889  src/sentinel/identity/worker.py
+  3d9bf813aa91dbad6f4d73ace727cdf61ed5bc66dcd84fb79477c993d8d20084  src/sentinel/identity/state.py
+  28244a4097df28e7e966c545e045e888ce15658e6f5423f15b4373a93217501b  src/sentinel/identity/association.py
+  2cc2479f15df541a3ec62dafe88cdc95ff2b52cbf26f0e03730fb3fc00835163  src/sentinel/identity/matching.py
+  SUMS
+    SHELL_THP="$(awk '/^THP_enabled:/ {print $2}' /proc/self/status)"
+    [ "$SHELL_THP" = 1 ] || { echo "this shell's THP_enabled is ${SHELL_THP:-unreadable}, not 1: open a new SSH session"; exit 1; }
+    [ -f "$ENGINE" ] || { echo "engine not found at $ENGINE"; exit 1; }
+    SCENE='{adapter_id: llama-lfm2-vl-scene, contract_version: 1, implementation_revision: "1", enabled: true, input_kinds: [frame], output_kinds: [scene.report], model_revision: lfm2-vl-1.6b-q4_0, resource_profile_id: step4cand-demo-20261007T090339Z, timeout_ms: 8000}'
+    FACE='{adapter_id: legacy-deepface-facenet512-yunet, contract_version: 1, implementation_revision: "1", enabled: true, input_kinds: [frame], output_kinds: [face.observation], model_revision: facenet512-yunet-deepface-0.0.99, resource_profile_id: step4cand-demo-20261007T090339Z, timeout_ms: 3000}'
+    printf '%s\n' 'config_version: 1' 'camera: {id: cam-1}' 'adapters:' "  - $SCENE" "  - $FACE" > "$O/face.yaml.new"
+    if [ -e "$O/face.yaml" ]; then cmp -s "$O/face.yaml" "$O/face.yaml.new" || { echo "face.yaml differs"; exit 1; }; rm "$O/face.yaml.new"; else mv "$O/face.yaml.new" "$O/face.yaml"; fi
+    [ "$O" = "$D" ] || cmp -s "$D/face.yaml" "$O/face.yaml" || { echo "face.yaml differs from the run's"; exit 1; }
+    "${RT[@]}" config validate "$O/face.yaml" > "$O/validate.txt"
+    grep -qxF '  adapter llama-lfm2-vl-scene: enabled (enabled)' "$O/validate.txt" || { echo "scene adapter not admitted"; exit 1; }
+    grep -qxF '  adapter legacy-deepface-facenet512-yunet: enabled (enabled for guarded --face-validation runs only (admission pending validation))' "$O/validate.txt" || { echo "face adapter not as expected"; exit 1; }
+    CRYPTO="$(printf '{"op": "check"}' | /usr/bin/python3 -I src/sentinel/identity/sealer.py)"
+    [ "$CRYPTO" = '{"ok": true, "cryptography": "41.0.7"}' ] || { echo "the sealer is not usable here"; exit 1; }
+    { echo "session_utc=$(date -u +%FT%TZ)"; echo "boot_id=$(cat /proc/sys/kernel/random/boot_id)"; echo "boot_started=$(uptime -s)"
+      echo "run=$RUN"; echo "commit=$(git rev-parse HEAD)"; echo "pin_commit=$PIN"; echo "checksums=verified"; echo "shell_thp_enabled=$SHELL_THP"
+      echo "thp_enabled_setting=$(cat /sys/kernel/mm/transparent_hugepage/enabled)"; echo "sealer=$CRYPTO"
+      awk '/^(MemTotal|MemFree|MemAvailable|Cached):/ {printf "%s_kb=%s\n", substr($1, 1, length($1) - 1), $2}' /proc/meminfo; } >> "$O/provenance.txt"
+    echo "FB passed"
+  ); echo "FB_exit=$?" | tee -a "${O:?run FA or FR first}/provenance.txt"
+  ```
+
+- `face-FH.sh` (changed):
+
+  ```bash
+  ( set -uo pipefail
+    [ -n "${O:-}" ] && [ -d "$O" ] || { echo "STOP: O is not set (FA or FR)"; exit 1; }
+    [ ! -e "$O/SHA256SUMS" ] || { echo "STOP: $O is already sealed; nothing is resealed"; exit 1; }
+    source benchmarks/runner/face_counts.sh
+    face_counts_top "$O" > "$O/secret-counts-top.txt" || echo "the top-level counts were refused (the reason is above)"
+    cd "$O" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS && ls -l "$O" "$O"/*/
+  ); echo "FH_exit=$?"; unset SENTINEL_RTSP_URL SENTINEL_IDENTITY_PASSPHRASE N1 N2 PHOTO_NAMES CONSENT_DATE
+  ```
+
+- `face-FN.sh` (changed):
+
+  ```bash
+  read -rsp 'your first name, as it might be written anywhere (for the counts only; never saved): ' N1; echo
+  read -rsp 'your family name or its initial, as it might be written (or press Enter): ' N2; echo
+  [ -n "$N1" ] && echo "names set for the counts" || echo "STOP: the first name is empty"
+  ```
+
+- `face-FR.sh` (changed):
+
+  ```bash
+  cd /home/villain8001/sentinel-surveillance && set -o pipefail
+  PIN=0f7855ef94668659f9472f008121e097a2fe3b53
+  D="$(ls -d "$HOME"/sentinel-runs/d1-checklist/face-*/ 2>/dev/null | sort | tail -n 1)"; D="${D%/}"; RUN="${D##*/}"
+  DATA="$HOME/sentinel-data/$RUN"; ENGINE="$HOME/yolov8n.engine"; IDENT="$HOME/sentinel-data/identity"; RR="$HOME/sentinel-runs/recheck"
+  RT=(env LD_PRELOAD=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1 PYTHONPATH=src "$HOME/onvif_env/bin/python" -m sentinel.cli)
+  G=(.venv/bin/python benchmarks/runner/step5_guard.py); C=(.venv/bin/python benchmarks/runner/face_check.py); A=(.venv/bin/python benchmarks/runner/face_account.py)
+  unset W O F2 DATA2
+  if [ -n "$RUN" ] && "${C[@]}" gate "$D" --identity-dir "$IDENT" --recheck-root "$RR"; then
+    W="$HOME/sentinel-runs/d1-checklist/f2-$RUN-$(date -u +%Y%m%dT%H%M%SZ)"; O="$W"; F2="$W/f2"; DATA2="$HOME/sentinel-data/${W##*/}"
+    mkdir -m 700 "$W" "$DATA2" && echo "F2 builds on $D; everything F2 writes goes to $W (the run directory is not changed)"
+  else echo "STOP: F2 cannot build on ${D:-any face run} (the gate's reason is above)"; fi
+  ```
+
+- `face-RA.sh` (new):
+
+  ```bash
+  cd /home/villain8001/sentinel-surveillance && .venv/bin/python benchmarks/runner/face_recheck.py accept "${R:?set R to the recheck directory RC printed}" --run "$HOME/sentinel-runs/d1-checklist/face-20261007T215900Z" --identity-dir "$HOME/sentinel-data/identity"
+  ```
+
+- `face-RC.sh` (new):
+
+  ```bash
+  ( set -uo pipefail
+    [ -n "${N1:-}" ] || { echo "STOP: FN is not done in this shell"; exit 1; }
+    [ -n "${R:-}" ] && [ ! -e "$R" ] || { echo "STOP: run RK first (R is unset or already exists)"; exit 1; }
+    source benchmarks/runner/face_counts.sh
+    face_recheck_f1 "$D" "$IDENT" "$R" "$PIN"
+  ); echo "RC_exit=$?"; unset N1 N2
+  ```
+
+- `face-RK.sh` (new):
+
+  ```bash
+  cd /home/villain8001/sentinel-surveillance && set -o pipefail
+  PIN=0f7855ef94668659f9472f008121e097a2fe3b53
+  RUN=face-20261007T215900Z
+  D="$HOME/sentinel-runs/d1-checklist/$RUN"; IDENT="$HOME/sentinel-data/identity"; RR="$HOME/sentinel-runs/recheck"
+  R="$RR/$RUN-f1-${PIN:0:7}-$(date -u +%Y%m%dT%H%M%SZ)"
+  C=(.venv/bin/python benchmarks/runner/face_check.py)
+  ( set -euo pipefail
+    [ "$(git status --porcelain --untracked-files=no | wc -l)" -eq 0 ] || { echo "tracked changes present"; exit 1; }
+    git merge-base --is-ancestor "$PIN" HEAD || { echo "HEAD does not contain $PIN"; exit 1; }
+    git diff --quiet "$PIN" HEAD -- benchmarks src tests config pyproject.toml || { echo "code differs from $PIN"; exit 1; }
+    sha256sum -c --quiet - <<'SUMS' || { echo "checksum mismatch"; exit 1; }
+  e844001b95000a84a02b529a56c95612b59a8a802789cd8ec5582bfdf0e7fa92  benchmarks/runner/face_check.py
+  42a8ce05addc378b70af9d5bfe182420695fb02460544ad5178e32a73d9372ca  benchmarks/runner/face_evidence.py
+  f580900c215d36d7241f663e37df645b493fc21be6300929280120ceaf729c7c  benchmarks/runner/face_privacy.py
+  0136be3231451fa29ce3aa7b8c6bda6b83cdcfbdb3ce3ef1527857105f8d7a0d  benchmarks/runner/face_recheck.py
+  4e206171da584f5cba2a57182abcbb5953c91593565576305e1953bcb80eae99  benchmarks/runner/face_counts.sh
+  4669454e71f536935aa4d1054ce901864ac3179131a4ee4788e009828349f31f  benchmarks/runner/face_account.py
+  02a5b9fe6d5a5f55a08e33c835acb3876c0419be1707f630c3d54a89b0613fa2  benchmarks/runner/operator_account.py
+  f8a579cc23991542d726c6a90e3a03a5b3ddc105ed99856e19969b10e6ec41d6  benchmarks/runner/step5_check.py
+  SUMS
+    (cd "$D" && sha256sum -c --quiet SHA256SUMS) || { echo "STOP: the run's SHA256SUMS does not verify"; exit 1; }
+    [ "$(sha256sum < "$D/SHA256SUMS" | cut -d' ' -f1)" = 9f6752c0385cf1ff9e561824afe14f48ce4692d3a65dc65111f65e8fa7e36f31 ] || { echo "STOP: the run's SHA256SUMS is not the one this package was prepared for"; exit 1; }
+    [ "$(sha256sum < "$IDENT/audit.jsonl" | cut -d' ' -f1)" = a4572dbec83b6871b5a23a3f4b2fdc4e3a650ff55ee2435c3eb6c1cf48bde3e7 ] || { echo "STOP: the identity audit log changed since this package was prepared"; exit 1; }
+    [ ! -e "$R" ] || { echo "STOP: $R exists"; exit 1; }
+    echo "RK passed: the recheck will be written to $R; the run is read only"
+  ); echo "RK_exit=$?"
+  ```
+
+### Pending
+
+- **Session R** (the maintainer; any boot; about 2 min; no camera, model, photo or gallery). First, `cd ~/sentinel-prep/face-0f7855e && sha256sum SHA256SUMS && sha256sum -c SHA256SUMS`: the first hash must be `c19d9ec97a69708ba151ddcad7ce3467e3c10f70ea3912e51eb83a21bd68141e`, then every file OK. Then `source face-RK.sh`, type `face-FN.sh`'s two `read` lines, and `source face-RC.sh`. Then read `$R/check.txt` and `$R/README.txt`.
+- **The maintainer's decision.** If you accept the corrected reading, the one line `face-RA.sh` records it, and it belongs here as your decision. Without it, F2 cannot build on this run.
+- **F2** (session 2) only after an acceptance: `FR` → `FB` → `FN` → `F2p` → `F2a` → `F2a-check` → `F2b` → `F2c` → `F2d` → `F2e` → `FH`.
+- **Limitations, by design:** free text is counted. A standalone one- or two-letter name in the scene model's summary, the account's notes or a log message counts and fails closed; an initial that is also an English one-letter word may do so in F2's scene summary. `face_privacy.py … --explain` locates hits privately. F2's real face-model log lines have not been observed; their known log prefixes alone are schema text.
+- Unchanged and unrelated: `face_check.py`'s comment above the D63 constants still says "proposed"; the new `PROTOCOL.md` says approved.
 
 ## Session 50 log, part 4 (Claude, 2026-10-08): F1 requires at least 3 usable photos; the package re-pinned to `95ce253` (`~/sentinel-prep/face-95ce253/`); the 2686815 package superseded; nothing ran
 
