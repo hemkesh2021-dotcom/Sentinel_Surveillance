@@ -14,9 +14,13 @@ Checks, all before anything is written:
   ``identity.match_threshold`` (``inconsistent_photos``: a wrong or poor photo);
 - the new person is not close to anyone already enrolled (``close_to_enrolled_identity``).
 
-``--dry-run`` reports the result per photo and writes nothing. Otherwise the gallery is saved, reloaded to verify
-that the new identity is in it, the event is audited (counts and the opaque ID only), and the photo folder is
-deleted. Reports name photos by index only (file names can contain names) and never contain embeddings.
+The photos are copies the operator put into one dedicated folder directly inside the inbox; a folder holding
+anything but regular, non-hidden files (a link, a subfolder) is refused before any model loads. ``--dry-run``
+reports the result per photo and writes and deletes nothing. Otherwise the gallery is saved and reloaded, and the
+reloaded gallery must equal exactly what was saved; only then is the event audited (counts and the opaque ID only)
+and are exactly the listed copies deleted, each only if it is still the same file (inode, size, mtime). The folder
+is removed only if it is then empty. Nothing outside it is ever touched. Reports name photos by index only (file
+names can contain names) and never contain embeddings.
 """
 
 from __future__ import annotations
@@ -47,14 +51,6 @@ def _cosine(a: tuple[float, ...], b: tuple[float, ...]) -> float:
     return math.fsum(x * y for x, y in zip(a, b, strict=True))  # both are unit length
 
 
-def _photos(store: IdentityStore, folder: Path) -> list[Path]:
-    folder = Path(folder)
-    inbox = store.inbox.resolve()
-    if folder.is_symlink() or not folder.is_dir() or inbox not in folder.resolve().parents:
-        raise VaultError("photos_not_in_inbox")
-    return sorted(p for p in folder.iterdir() if p.is_file() and not p.is_symlink() and not p.name.startswith("."))
-
-
 def enroll(
     store: IdentityStore,
     backend: Any,
@@ -70,7 +66,8 @@ def enroll(
 ) -> dict[str, Any]:
     date.fromisoformat(consent_date)  # ValueError for an invalid date
     store.ensure_directory()
-    photos = _photos(store, folder)
+    entries = store.enrollment_folder(folder)
+    photos = [path for path, _ in entries]
     report: dict[str, Any] = {"photos": len(photos), "dry_run": dry_run, "results": []}
     if len(photos) > MAX_PROTOTYPES:
         raise EnrollmentRefused("too_many_photos", report)
@@ -111,9 +108,10 @@ def enroll(
     identity_id = new_id({i.identity_id for i in document.identities})
     identity = GalleryIdentity(identity_id=identity_id, enrolled_utc=utc_now(), consent_date=consent_date,
                                consent_scope=CONSENT_SCOPE, prototypes=tuple(e for _, e in accepted))
-    store.save(document.with_identity(identity), secret)
-    if identity_id not in {i.identity_id for i in store.load(secret).identities}:
+    saved = document.with_identity(identity)
+    store.save(saved, secret)
+    if store.load(secret) != saved:  # decrypt the file just written and compare everything, not just the ID
         raise VaultError("enrollment_not_verified")
     store.audit("enroll", identity_id, photos_used=len(accepted), photos_rejected=len(photos) - len(accepted))
-    report.update(identity_id=identity_id, verified=True, photos_deleted=store.remove_tree(folder))
+    report.update(identity_id=identity_id, verified=True, **store.delete_supplied_copies(folder, entries))
     return report

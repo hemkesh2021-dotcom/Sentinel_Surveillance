@@ -167,18 +167,39 @@ def test_the_identity_directory_must_be_private(store) -> None:
     store.directory.chmod(0o700)
 
 
-def test_only_a_folder_inside_the_inbox_can_be_removed(store, tmp_path) -> None:
+def test_only_plain_copies_in_a_folder_directly_inside_the_inbox_are_listed_and_deleted(store, tmp_path) -> None:
     outside = tmp_path / "elsewhere"
     outside.mkdir()
     (outside / "keep.jpg").write_bytes(b"x")
-    with pytest.raises(VaultError, match="photos_not_in_inbox"):
-        store.remove_tree(outside)
+    nested = store.inbox / "a" / "b"
+    nested.mkdir(parents=True)
     link = store.inbox / "link"
     link.symlink_to(outside)
-    with pytest.raises(VaultError, match="photos_not_in_inbox"):
-        store.remove_tree(link)
-    assert (outside / "keep.jpg").exists()
+    for folder in (outside, nested, link, store.inbox):
+        with pytest.raises(VaultError, match="photos_not_in_inbox"):
+            store.enrollment_folder(folder)
+    for odd in ("sub", ".hidden", "link.jpg"):
+        batch = store.inbox / f"batch-{odd.strip('.')}"
+        batch.mkdir()
+        (batch / "a.jpg").write_bytes(b"x")
+        if odd == "sub":
+            (batch / odd).mkdir()
+        elif odd == ".hidden":
+            (batch / odd).write_bytes(b"x")
+        else:
+            (batch / odd).symlink_to(outside / "keep.jpg")
+        with pytest.raises(VaultError, match="photos_folder_not_plain"):
+            store.enrollment_folder(batch)
     batch = store.inbox / "batch"
     batch.mkdir()
-    (batch / "a.jpg").write_bytes(b"x")
-    assert store.remove_tree(batch) == 1 and not batch.exists()
+    for name in ("a.jpg", "b.jpg", "c.jpg"):
+        (batch / name).write_bytes(name.encode())
+    entries = store.enrollment_folder(batch)
+    (batch / "b.jpg").unlink()
+    (batch / "b.jpg").write_bytes(b"a different file under the same name")
+    assert store.delete_supplied_copies(batch, entries) == {
+        "photos_deleted": 2, "photos_changed_not_deleted": 1, "folder_entries_left": 1}
+    assert [p.name for p in batch.iterdir()] == ["b.jpg"] and (outside / "keep.jpg").exists()
+    (batch / "b.jpg").unlink()
+    entries = [(batch / "gone.jpg", (0, 0, 0))]
+    assert store.delete_supplied_copies(batch, entries)["folder_entries_left"] == 0 and not batch.exists()

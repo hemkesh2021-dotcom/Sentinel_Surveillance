@@ -84,7 +84,8 @@ def run(store, folder, **kwargs):
 def test_a_consistent_set_enrolls_one_opaque_identity_and_deletes_the_photos(store) -> None:
     folder = photos(store, "a:1", "a:2", "a:3")
     report = run(store, folder)
-    assert report["accepted"] == 3 and report["verified"] is True and report["photos_deleted"] == 3
+    assert report["accepted"] == 3 and report["verified"] is True
+    assert (report["photos_deleted"], report["photos_changed_not_deleted"], report["folder_entries_left"]) == (3, 0, 0)
     assert not folder.exists()
     (identity,) = store.load(SECRET).identities
     assert identity.identity_id == report["identity_id"] and len(identity.prototypes) == 3
@@ -216,3 +217,43 @@ def test_a_refused_enrollment_reports_by_photo_index(store, tmp_path, monkeypatc
     report = json.loads(captured.out)
     assert report["refused"] == "too_few_usable_photos" and [r["photo"] for r in report["results"]] == [1, 2, 3]
     assert "Alice" not in captured.out and "Alice" not in captured.err
+
+
+def test_photos_in_a_nested_folder_or_with_extras_are_refused_before_the_model_loads(store) -> None:
+    nested = store.inbox / "outer" / "inner"
+    nested.mkdir(parents=True)
+    (nested / "x.jpg").write_text("a:1")
+    pipeline = Pipeline()
+    with pytest.raises(VaultError, match="photos_not_in_inbox"):
+        run(store, nested, pipeline=pipeline)
+    folder = photos(store, "a:1", "a:2")
+    (folder / "sub").mkdir()
+    with pytest.raises(VaultError, match="photos_folder_not_plain"):
+        run(store, folder, pipeline=pipeline)
+    assert pipeline.loads == 0 and len(list(folder.iterdir())) == 3
+
+
+def test_nothing_is_deleted_unless_the_reloaded_gallery_equals_what_was_saved(store, monkeypatch) -> None:
+    folder = photos(store, "a:1", "a:2")
+    real_load = store.load
+    monkeypatch.setattr(store, "load", lambda secret: real_load(secret).without(
+        next(iter(i.identity_id for i in real_load(secret).identities))))
+    with pytest.raises(VaultError, match="enrollment_not_verified"):
+        run(store, folder)
+    assert len(list(folder.iterdir())) == 2 and not store.audit_path.exists()
+
+
+def test_a_file_added_during_enrollment_is_kept_with_its_folder(store, monkeypatch) -> None:
+    folder = photos(store, "a:1", "a:2")
+    pipeline = Pipeline()
+    real = pipeline.enrollment_photo
+
+    def add_one(path):
+        if not (folder / "late.jpg").exists():
+            (folder / "late.jpg").write_text("a:9")
+        return real(path)
+
+    monkeypatch.setattr(pipeline, "enrollment_photo", add_one)
+    report = run(store, folder, pipeline=pipeline)
+    assert (report["photos_deleted"], report["folder_entries_left"]) == (2, 1)
+    assert [p.name for p in folder.iterdir()] == ["late.jpg"]

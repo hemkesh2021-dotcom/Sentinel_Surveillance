@@ -30,7 +30,7 @@ import json
 import math
 import os
 import secrets
-import shutil
+import stat
 from collections.abc import Callable
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -270,12 +270,35 @@ class IdentityStore:
         self.audit("purge", None, **removed)
         return removed
 
-    def remove_tree(self, directory: Path) -> int:
-        """Delete one enrollment's photo folder inside the inbox (never anything outside it); returns files removed."""
-        directory = Path(directory)
-        inbox = self.inbox.resolve()
-        if directory.is_symlink() or inbox not in directory.resolve().parents:
+    def enrollment_folder(self, folder: Path) -> list[tuple[Path, tuple[int, int, int]]]:
+        """The photo copies of one enrollment: a folder directly inside the inbox (not a link) holding regular,
+        non-hidden files only; returns each file with its (inode, size, mtime_ns). Anything else is refused."""
+        folder = Path(folder)
+        if folder.is_symlink() or not folder.is_dir() or folder.resolve().parent != self.inbox.resolve():
             raise VaultError("photos_not_in_inbox")
-        files = sum(1 for path in directory.rglob("*") if not path.is_dir())
-        shutil.rmtree(directory)
-        return files
+        entries = []
+        for path in sorted(folder.iterdir()):
+            info = os.lstat(path)
+            if path.name.startswith(".") or not stat.S_ISREG(info.st_mode):
+                raise VaultError("photos_folder_not_plain")  # a link, folder, hidden or special file
+            entries.append((path, (info.st_ino, info.st_size, info.st_mtime_ns)))
+        return entries
+
+    def delete_supplied_copies(self, folder: Path, entries: list[tuple[Path, tuple[int, int, int]]]) -> dict[str, int]:
+        """Delete exactly the listed copies, each only if it is still the same file, then the folder if empty."""
+        deleted = changed = 0
+        for path, identity in entries:
+            try:
+                info = os.lstat(path)
+            except FileNotFoundError:
+                changed += 1
+                continue
+            if not stat.S_ISREG(info.st_mode) or (info.st_ino, info.st_size, info.st_mtime_ns) != identity:
+                changed += 1
+                continue
+            path.unlink()
+            deleted += 1
+        remaining = sum(1 for _ in Path(folder).iterdir())
+        if remaining == 0:
+            Path(folder).rmdir()
+        return {"photos_deleted": deleted, "photos_changed_not_deleted": changed, "folder_entries_left": remaining}
