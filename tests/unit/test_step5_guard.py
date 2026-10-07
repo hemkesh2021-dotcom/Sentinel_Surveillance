@@ -3,6 +3,7 @@ runtime's own Ctrl-C path, leftover cleanup and numbers-only evidence. Fake back
 
 from __future__ import annotations
 
+import argparse
 import importlib
 import json
 import signal
@@ -399,3 +400,54 @@ def test_main_saves_a_refusal_but_never_writes_into_an_existing_directory(mod, t
     monkeypatch.setattr(mod, "SystemBackend", lambda: FakeBackend())
     assert mod.main(["--out", str(out), "--duration-s", "5", "--", "true"]) == 1
     assert (out / "result.json").read_text() == "earlier evidence"
+
+
+def test_cues_print_at_offsets_from_readiness_and_record_when(mod, tmp_path) -> None:
+    backend = FakeBackend(ready_s=5, stop_s=1)
+    said = []
+    result, _ = run(mod, tmp_path, backend, duration_s=10.0,
+                    cues=((0.0, "t0", "START THE STOPWATCH"), (4.0, "turn", "turn away"), (30.0, "late", "never")),
+                    say=said.append)
+    ready = result["child"]["ready_mono_s"]
+    assert ready == pytest.approx(100.0 + result["child"]["ready_after_s"], abs=1e-6)
+    assert [line.split("] ", 1)[1] for line in said] == ["START THE STOPWATCH", "turn away"]
+    assert said[0].startswith("\a[0:00] ") and said[1].startswith("\a[0:04] ")
+    t0, turn, late = result["cues"]
+    assert t0["name"] == "t0" and 0 <= t0["printed_mono_s"] - ready < 0.25
+    assert 4.0 <= turn["printed_mono_s"] - ready < 4.25
+    assert late == {"name": "late", "at_s": 30.0, "printed_after_launch_s": None, "printed_mono_s": None}
+    assert result["parameters"]["cues"] == [{"at_s": 0.0, "name": "t0"}, {"at_s": 4.0, "name": "turn"},
+                                            {"at_s": 30.0, "name": "late"}]
+    assert "START" not in json.dumps(result)  # cue texts are printed, not stored
+
+
+def test_no_cue_before_readiness_and_none_without_cues(mod, tmp_path) -> None:
+    said = []
+    result, _ = run(mod, tmp_path, FakeBackend(stop_s=1), ready_timeout_s=3.0, cues=((0.0, "t0", "go"),),
+                    say=said.append)
+    assert said == [] and result["status"] == "ready_timeout" and result["cues"][0]["printed_mono_s"] is None
+    (tmp_path / "plain").mkdir()
+    plain, _ = run(mod, tmp_path / "plain", FakeBackend(ready_s=1, stop_s=1))
+    assert plain["cues"] == [] and plain["parameters"]["cues"] == []
+
+
+@pytest.mark.parametrize("bad", ["5:t0", "5::text", "x:t0:text", "5:t 0:text", "5:t0:" + "x" * 161,
+                                 "5:t0:café", "901:t0:late"])
+def test_cue_arguments_are_checked(mod, bad) -> None:
+    with pytest.raises(argparse.ArgumentTypeError):
+        mod._cue_at(bad)
+    assert mod._cue_at("120:k1:sit at the Mac, facing the camera") == (120.0, "k1", "sit at the Mac, facing the camera")
+
+
+def test_the_starting_summary_keeps_the_face_fields(mod, tmp_path) -> None:
+    path = tmp_path / "run.jsonl"
+    startup = {**STARTING["startup"], "face": {"validation_run": True, "identities_enrolled": 1},
+               "face_problem": None, "face_memory_before": {"MemFree": 5}, "releases": {
+                   **STARTING["startup"]["releases"],
+                   "face": {"files": {"facenet512_weights.h5": {"result": "returned_0"},
+                                      "face_detection_yunet_2023mar.onnx": {"result": "returned_0"}}}}}
+    path.write_text(json.dumps({"run": "starting", "startup": startup}) + "\n")
+    starting = mod.read_run_output(path)["starting"]
+    assert starting["face"] == {"validation_run": True, "identities_enrolled": 1} and starting["face_problem"] is None
+    assert starting["releases"]["face"] == {"facenet512_weights.h5": "returned_0",
+                                            "face_detection_yunet_2023mar.onnx": "returned_0"}

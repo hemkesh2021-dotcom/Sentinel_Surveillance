@@ -20,6 +20,11 @@ llama-server left afterwards is stopped and reported; none may run before launch
 With ``--step4-headroom`` it also refuses before launch unless operator_check's step-4 admission headroom holds
 (pressure below 2.0 GB, MemFree at least 3.5 GB, MemAvailable at least 4.0 GB; ``baseline_problem``, unchanged).
 
+At each ``--cue-at SECONDS:NAME:TEXT`` offset (counted like the duration) it prints TEXT with a bell to its own
+stderr, the operator's terminal, and records when: the guard's monotonic clock is CLOCK_MONOTONIC, the runtime's
+too, so ``child.ready_mono_s`` and each cue's ``printed_mono_s`` place the runtime's records relative to the cue
+the operator's stopwatch started from. Cue texts are fixed protocol text, never a secret.
+
 At each ``--status-at SECONDS:NAME`` offset it saves ``status-NAME.json`` from the loopback status page, and it
 classifies the listeners on 18090 and 18081 as loopback, any or other. ``result.json`` holds numbers and fixed labels
 only. No stream URL, token, chat ID, address or environment value is read or written; the command's own output goes
@@ -229,6 +234,9 @@ def _starting_summary(startup: dict) -> dict[str, Any]:
         if isinstance(server, dict) else None,
         "scene_problem": startup.get("scene_problem"),
         "detector_problem": startup.get("detector_problem"),
+        "face": startup.get("face"),  # sentinel run --face: validation_run and identities_enrolled (a count)
+        "face_problem": startup.get("face_problem"),
+        "face_memory_before": startup.get("face_memory_before"),
         "notifier_problems": startup.get("notifier_problems"),
         "scene_memory_before": startup.get("scene_memory_before"),
         "detector_memory_before": startup.get("detector_memory_before"),
@@ -295,13 +303,15 @@ def preflight(backend, out: Path, step4_headroom: bool = False) -> str | None:
 def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: bool = False,
               ready_timeout_s: float = READY_TIMEOUT_S, stop_grace_s: float = STOP_GRACE_S,
               status_at: tuple[tuple[float, str], ...] = (), step4_headroom: bool = False, backend=None,
-              interrupted=lambda: False) -> dict:
+              interrupted=lambda: False, cues: tuple[tuple[float, str, str], ...] = (),
+              say=lambda text: (sys.stderr.write(text + "\n"), sys.stderr.flush())) -> dict:
     backend = backend or SystemBackend()
     result: dict[str, Any] = {"schema_version": 1, "mode": "step5_guard", "status": None,
                               "parameters": {"duration_s": duration_s, "from_launch": from_launch,
                                              "ready_timeout_s": ready_timeout_s, "stop_grace_s": stop_grace_s,
                                              "step4_headroom": step4_headroom,
-                                             "status_at": [{"at_s": at, "name": name} for at, name in status_at]},
+                                             "status_at": [{"at_s": at, "name": name} for at, name in status_at],
+                                             "cues": [{"at_s": at, "name": name} for at, name, _ in cues]},
                               "limits": {"pressure_stop_bytes": oc.PRESSURE_STOP, "mem_free_floor_bytes": oc.FREE_FLOOR,
                                          "mem_available_floor_bytes": oc.AVAILABLE_FLOOR,
                                          "swap_counters": "unchanged", "max_sample_gap_s": 0.5}}
@@ -325,6 +335,8 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
     read_offset = 0
     stop = {"requested_by": None, "requested_at_s": None, "exited_after_stop_s": None, "forced": False}
     pending = sorted(status_at)
+    cue_queue = sorted(cues)
+    printed: list[dict[str, Any]] = []
     captures: list[dict[str, Any]] = []
     workers: list[threading.Thread] = []
     returncode = None
@@ -366,6 +378,7 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
                     if isinstance(item, dict) and item.get("run") == "starting":
                         ready_at = now
                         result["child"]["ready_after_s"] = round(now - launch, 3)
+                        result["child"]["ready_mono_s"] = round(now, 6)
                         break
             returncode = child.poll()
             if returncode is not None:
@@ -391,6 +404,12 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
                 while child.group_alive() and backend.clock() < deadline:
                     backend.sleep(0.1)
                 child.signal_group(signal.SIGKILL)
+            while cue_queue and base is not None and stop["requested_by"] is None and now - base >= cue_queue[0][0]:
+                at, name, text = cue_queue.pop(0)
+                elapsed = int(now - base)
+                say(f"\a[{elapsed // 60}:{elapsed % 60:02d}] {text}")
+                printed.append({"name": name, "at_s": at, "printed_after_launch_s": round(now - launch, 3),
+                                "printed_mono_s": round(now, 6)})
             while pending and base is not None and stop["requested_by"] is None and now - base >= pending[0][0]:
                 at, name = pending.pop(0)
                 worker = threading.Thread(target=capture, args=(at, name, round(now - launch, 3)), daemon=True)
@@ -407,6 +426,8 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
     result["child"].update(returncode=returncode, exited_utc=backend.utc(), ran_s=round(ended - launch, 3))
     for at, name in pending:
         captures.append({"name": name, "at_s": at, "status": "not_reached", "bytes": 0, "listeners": None})
+    for at, name, _ in cue_queue:
+        printed.append({"name": name, "at_s": at, "printed_after_launch_s": None, "printed_mono_s": None})
     orphans = backend.llama_pids()
     for signum in (signal.SIGTERM, signal.SIGKILL):
         for pid in orphans:
@@ -424,6 +445,7 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
                "min_mem_available_bytes": min_available, "trigger": guard.trigger,
                "trigger_after_stop_request": bool(guard.trigger and stop["requested_by"] not in (None, "guard_stop"))},
         captures=captures,
+        cues=printed,
         run_output=read_run_output(stdout),
         run_error_label=last_error_label(stderr),
         leftovers={"llama_server_after_exit": len(orphans), "llama_server_left": len(left),
@@ -455,6 +477,22 @@ def _status_at(text: str) -> tuple[float, str]:
     return value, name
 
 
+def _cue_at(text: str) -> tuple[float, str, str]:
+    seconds, sep, rest = text.partition(":")
+    name, sep2, words = rest.partition(":")
+    if not (sep and sep2) or not name.replace("-", "").isalnum() or len(name) > 32:
+        raise argparse.ArgumentTypeError("use SECONDS:NAME:TEXT with a short alphanumeric name")
+    if not words or len(words) > 160 or not all(32 <= ord(ch) < 127 for ch in words):
+        raise argparse.ArgumentTypeError("TEXT: 1-160 printable ASCII characters")
+    try:
+        value = float(seconds)
+    except ValueError:
+        raise argparse.ArgumentTypeError("SECONDS must be a number") from None
+    if not 0 <= value <= MAX_DURATION_S:
+        raise argparse.ArgumentTypeError(f"SECONDS must be within 0-{MAX_DURATION_S:g}")
+    return value, name, words
+
+
 def _seconds(limit: float):
     def parse(text: str) -> float:
         value = float(text)
@@ -473,6 +511,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ready-timeout-s", type=_seconds(MAX_DURATION_S), default=READY_TIMEOUT_S)
     parser.add_argument("--stop-grace-s", type=_seconds(300.0), default=STOP_GRACE_S)
     parser.add_argument("--status-at", type=_status_at, action="append", default=[], metavar="SECONDS:NAME")
+    parser.add_argument("--cue-at", type=_cue_at, action="append", default=[], metavar="SECONDS:NAME:TEXT",
+                        help="print TEXT to the operator's terminal at this offset (counted like the duration)")
     parser.add_argument("--step4-headroom", action="store_true",
                         help="also refuse before launch unless step 4's admission headroom holds (operator_check: "
                              "pressure below 2.0 GB, MemFree at least 3.5 GB, MemAvailable at least 4.0 GB)")
@@ -491,7 +531,7 @@ def main(argv: list[str] | None = None) -> int:
         result = supervise(command, args.out, duration_s=args.duration_s, from_launch=args.from_launch,
                            ready_timeout_s=args.ready_timeout_s, stop_grace_s=args.stop_grace_s,
                            status_at=tuple(args.status_at), step4_headroom=args.step4_headroom,
-                           interrupted=lambda: flag["set"])
+                           interrupted=lambda: flag["set"], cues=tuple(args.cue_at))
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
