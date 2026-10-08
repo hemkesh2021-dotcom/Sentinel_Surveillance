@@ -20,15 +20,41 @@ are never printed.
 
 **F2's time base.** T0 is the moment the guard printed its ``t0`` cue, which it does when the runtime's ``starting``
 line appears, i.e. once every model is loaded and released (``result.json`` ``cues``, CLOCK_MONOTONIC like the
-runtime's records). The operator started the stopwatch at that cue, and the account gives the observed times on it.
-Judged windows come from the account, never from the schedule, with a washout of WASHOUT_S after each observed
-movement and before the next (an assumption, not a measurement; it also absorbs the stopwatch's start delay):
+runtime's records). Judged windows come from the account, never from the schedule, with a washout of WASHOUT_S
+(an assumption, not a measurement). The account's header names its format (face_account):
 
-    E1 empty     out_of_view_1 + W .. seated_facing_1 - W
-    K1 facing    seated_facing_1 + W .. turned_away - W
-    A  away      turned_away + W .. stood_up - W          (the same track, face turned away)
-    E2 empty     out_of_view_2 + W .. seated_facing_2 - W
-    K2 return    seated_facing_2 + W .. duration - W
+- **Format 1** (the face-0f7855e package and earlier), read exactly as it always was: the operator answered whether
+  the stopwatch was started at the cue, and each reading is taken as the exact time of its movement after T0 (the
+  washout also absorbed the stopwatch's start delay). Each movement is the interval [t, t].
+- **Format 2** (D66; uncalibrated, for this bounded test only): the stopwatch was started d s after the cue, give
+  or take v s, and each reading r may be off by u s (u and v whole seconds 1..5). The delay lies in
+  [max(0, d - v), d + v]; the clamp at 0 assumes the stopwatch cannot be started before a cue that comes at
+  readiness. A movement then lies in the interval [r - u + max(0, d - v), r + u + d + v] after T0. The account's
+  times are aligned to T0 here, never by the operator. Item 15 needs the delay's upper end d + v <= DELAY_MAX_S.
+
+With lo and hi each movement's interval ends (lo = hi = t in format 1), every window starts W after the latest
+time its opening movement could have happened and ends W before the earliest time its closing movement could have
+happened, so that, if the account's bounds hold, every judged instant is at least W from every movement:
+
+    E1 empty     hi(out_of_view_1) + W .. lo(seated_facing_1) - W
+    K1 facing    hi(seated_facing_1) + W .. lo(turned_away) - W
+    A  away      hi(turned_away) + W .. lo(stood_up) - W          (the same track, face turned away)
+    E2 empty     hi(out_of_view_2) + W .. lo(seated_facing_2) - W
+    K2 return    hi(seated_facing_2) + W .. duration - W
+
+The bounds describe the operator's timing only. The camera-to-ingest delay is not measured or bounded by them, and
+the washout remains an assumption for it and for the movements themselves.
+
+The uncertainty enters every item that uses an account time, and only those:
+- 16, 19-21, 25 and 26 and retention's continuity and window end: the windows above;
+- 27: every identity known on an interval that starts before hi(out_of_view_2), the latest possible leaving time,
+  must end before E2 starts;
+- 28: an identity known in K2 must start at or after hi(out_of_view_2), and the votes that made it known must all
+  have frame times at or after it;
+- 29: exactly one known interval of the enrolled identity overlaps the turn interval [lo, hi](turned_away), and it
+  covers all of it; otherwise retention is NOT_EXERCISED. Its timing is judged from vote frame times, unchanged;
+  match votes are counted (descriptively) from hi(turned_away), and those inside the turn interval apart;
+- the time to known after sitting down (descriptive) is reported from hi and from lo of the seated interval.
 
 Ticks and votes are placed by their frame's time; a result applied after its frame (in flight across a boundary)
 counts where its frame was. Whether a state was justified at a moment uses only results applied by that moment.
@@ -77,6 +103,9 @@ MAX_USABLE_PHOTOS = 8  # MAX_PROTOTYPES
 STATE_TOLERANCE_S = 2.0  # a state change may lag its cause by the loop's step and a capture
 EXACT_S = 0.01  # a state change never precedes its cause (rounding only)
 CUE_TOLERANCE_S = 0.5
+# D66 (maintainer, 2026-10-08), format-2 accounts only; uncalibrated, for this bounded test only: the stopwatch
+# start delay's upper end (delay + its uncertainty). Each uncertainty is 1..5 s (face_account.UNCERTAINTY_S).
+DELAY_MAX_S = 5
 MAX_IDENTITY_RECORDS = 10_000  # the runtime's cap
 FACE_RELEASES = {"facenet512_weights.h5": "returned_0", "face_detection_yunet_2023mar.onnx": "returned_0"}
 SCENE_SCOPE = {"before_launch": {"runtime": 1}, "llama_ready": {"runtime": 1, "scene_server": 1},
@@ -248,29 +277,58 @@ class Timeline:
 # ---------------------------------------------------------------- F2 reading
 
 
-def _account(directory: Path) -> tuple[dict[str, str] | None, str | None]:
+def _account(directory: Path) -> tuple[dict[str, str] | None, str | None, int | None]:
+    """(the values, a problem, the format: 1, 2 or None for an unrecognised header)."""
     path = directory / face_account.ACCOUNT
     if not path.is_file():
-        return None, "no account.txt"
+        return None, "no account.txt", None
     data = path.read_bytes()
     locked = face_account.lock_state(directory)
     if locked is None:
-        return None, "the account is not locked (no account_sha256 in provenance.txt)"
+        return None, "the account is not locked (no account_sha256 in provenance.txt)", None
     if hashlib.sha256(data).hexdigest() != locked:
-        return None, "account.txt differs from its recorded SHA-256"
-    return parse_account(data.decode("utf-8", "replace")), None
+        return None, "account.txt differs from its recorded SHA-256", None
+    text = data.decode("utf-8", "replace")
+    known = face_account.account_format(text)
+    return parse_account(text), None, None if known is None else known[0]
 
 
-def _windows(account: dict[str, str], duration_s: float) -> dict[str, tuple[float, float]] | None:
-    s = {key: stopwatch_seconds(account.get(key)) for key in face_account.TIMES}
-    if any(value is None for value in s.values()):
+def _delay(account: dict[str, str]) -> tuple[int, int] | None:
+    """Format 2: the stopwatch start delay's interval [max(0, d - v), d + v], or None if either value is unknown."""
+    d = face_account.delay_seconds(account.get(face_account.DELAY))
+    v = face_account.uncertainty_seconds(account.get(face_account.DELAY_UNCERTAINTY))
+    return None if d is None or v is None else (max(0, d - v), d + v)
+
+
+def _bounds(account: dict[str, str], fmt: int) -> dict[str, tuple[int, int]] | None:
+    """Each movement's interval (lo, hi) in seconds after T0; None if any reading, uncertainty or the delay is
+    unknown or malformed. Format 1: [t, t], the reading taken as exact, as it always was."""
+    if fmt == 1:
+        s = {key: stopwatch_seconds(account.get(key)) for key in face_account.TIMES}
+        return None if any(value is None for value in s.values()) else {k: (v, v) for k, v in s.items()}
+    delay = _delay(account)
+    if delay is None:
         return None
+    bounds = {}
+    for key in face_account.TIMES:
+        reading = stopwatch_seconds(account.get(key))
+        u = face_account.uncertainty_seconds(account.get(face_account.uncertainty_key(key)))
+        if reading is None or u is None:
+            return None
+        bounds[key] = (reading - u + delay[0], reading + u + delay[1])
+    return bounds
+
+
+def _windows(bounds: dict[str, tuple[int, int]], duration_s: float) -> dict[str, tuple[float, float]]:
+    """Each window from the far edges of its movements' intervals (see the time base above)."""
     w = WASHOUT_S
-    return {"E1": (s["out_of_view_1"] + w, s["seated_facing_1"] - w),
-            "K1": (s["seated_facing_1"] + w, s["turned_away"] - w),
-            "A": (s["turned_away"] + w, s["stood_up"] - w),
-            "E2": (s["out_of_view_2"] + w, s["seated_facing_2"] - w),
-            "K2": (s["seated_facing_2"] + w, duration_s - w)}
+    lo = {key: b[0] for key, b in bounds.items()}
+    hi = {key: b[1] for key, b in bounds.items()}
+    return {"E1": (hi["out_of_view_1"] + w, lo["seated_facing_1"] - w),
+            "K1": (hi["seated_facing_1"] + w, lo["turned_away"] - w),
+            "A": (hi["turned_away"] + w, lo["stood_up"] - w),
+            "E2": (hi["out_of_view_2"] + w, lo["seated_facing_2"] - w),
+            "K2": (hi["seated_facing_2"] + w, duration_s - w)}
 
 
 def _enrolled_id(f1: Path) -> str | None:
@@ -366,20 +424,34 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
     printed = s5._get(cue, "printed_mono_s")
     r.item("T0: the t0 cue printed when the runtime was ready", {"printed_mono_s": printed, "ready_mono_s": ready},
            isinstance(printed, float) and isinstance(ready, float) and 0 <= printed - ready <= CUE_TOLERANCE_S)
-    account, problem = _account(directory)
+    account, problem, fmt = _account(directory)
     r.item("account saved and locked before any result was shown", problem or "locked",
            account is not None)
     if account is None:
         return r
-    review = face_account.review(account)
+    if fmt is None:
+        r.item("account complete and in order", "the account's header names neither format 1 nor format 2", False)
+        return r
+    review = face_account.review(account, face_account.FIELDS_V1 if fmt == 1 else face_account.FIELDS)
     r.item("account complete and in order", review, review[-1] == "Complete and in order: yes")
-    declared = {k: account.get(k) for k in ("stopwatch_started_at_t0", "stayed_until_stop", "other_faces_in_view")}
-    r.item("stopwatch started at the T0 cue; stayed until the stop; no other face in view", declared,
-           declared == {"stopwatch_started_at_t0": "yes", "stayed_until_stop": "yes", "other_faces_in_view": "no"})
+    if fmt == 1:
+        declared = {k: account.get(k) for k in ("stopwatch_started_at_t0", "stayed_until_stop", "other_faces_in_view")}
+        r.item("stopwatch started at the T0 cue; stayed until the stop; no other face in view", declared,
+               declared == {"stopwatch_started_at_t0": "yes", "stayed_until_stop": "yes", "other_faces_in_view": "no"})
+    else:
+        _declared(r, account)
     duration = s5._get(result, "parameters", "duration_s")
-    windows = _windows(account, duration) if isinstance(duration, (int, float)) else None
-    r.item(f"judged windows from the account (washout {WASHOUT_S:g} s), each at least {MIN_WINDOW_S:g} s",
-           {k: [round(a, 1), round(b, 1)] for k, (a, b) in windows.items()} if windows else MISSING,
+    bounds = _bounds(account, fmt)
+    windows = _windows(bounds, duration) if bounds is not None and isinstance(duration, (int, float)) else None
+    if fmt == 2 and bounds is not None:
+        r.describe("account times aligned to T0: stopwatch reading, its uncertainty (s), the interval it allows "
+                   "(s after T0)", {"stopwatch_start_delay_s": list(_delay(account)),
+                                    **{k: [account[k], int(account[face_account.uncertainty_key(k)]), *bounds[k]]
+                                       for k in face_account.TIMES}})
+    name = (f"judged windows from the account (washout {WASHOUT_S:g} s), each at least {MIN_WINDOW_S:g} s" if fmt == 1
+            else f"judged windows from the account's intervals (washout {WASHOUT_S:g} s after the latest and before "
+                 f"the earliest possible time of each movement), each at least {MIN_WINDOW_S:g} s")
+    r.item(name, {k: [round(a, 1), round(b, 1)] for k, (a, b) in windows.items()} if windows else MISSING,
            windows is not None and all(b - a >= MIN_WINDOW_S for a, b in windows.values()))
     enrolled = _enrolled_id(f1)
     r.item("the enrolled identity, from F1's list", enrolled if enrolled else MISSING, enrolled is not None)
@@ -389,10 +461,25 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
     line = Timeline(records, t0_ns, float(duration))
     _completion(r, line)
     _sampling(r, line, windows, enrolled)
-    _identity(r, line, windows, enrolled, account)
+    _identity(r, line, windows, enrolled, account, bounds, fmt)
     _counts_items(r, directory)
-    _describe(r, result, line, windows, last)
+    _describe(r, result, line, windows, last, bounds, fmt)
     return r
+
+
+def _declared(r: Reading, account: dict[str, str]) -> None:
+    """Item 15 for a format-2 account (D66): the start delay known, with its upper end at most DELAY_MAX_S."""
+    d = face_account.delay_seconds(account.get(face_account.DELAY))
+    v = face_account.uncertainty_seconds(account.get(face_account.DELAY_UNCERTAINTY))
+    upper = None if d is None or v is None else d + v
+    value = {face_account.DELAY: account.get(face_account.DELAY),
+             face_account.DELAY_UNCERTAINTY: account.get(face_account.DELAY_UNCERTAINTY), "delay_upper_s": upper,
+             "stayed_until_stop": account.get("stayed_until_stop"),
+             "other_faces_in_view": account.get("other_faces_in_view")}
+    r.item(f"stopwatch start delay known, its upper end (delay + uncertainty) at most {DELAY_MAX_S} s; stayed until "
+           "the stop; no other face in view", value,
+           upper is not None and upper <= DELAY_MAX_S and value["stayed_until_stop"] == "yes"
+           and value["other_faces_in_view"] == "no")
 
 
 def _completion(r: Reading, line: Timeline) -> None:
@@ -423,7 +510,8 @@ def _sampling(r: Reading, line: Timeline, windows: dict, enrolled: str) -> None:
                matches >= MIN_MATCHES_FACING)
 
 
-def _identity(r: Reading, line: Timeline, windows: dict, enrolled: str, account: dict[str, str]) -> None:
+def _identity(r: Reading, line: Timeline, windows: dict, enrolled: str, account: dict[str, str], bounds: dict,
+              fmt: int) -> None:
     others = sorted({p["identity_id"] for x in line.results for p in x["persons"]
                      if p["vote"] == "match" and p["identity_id"] != enrolled}
                     | {t["identity_id"] for t in line.transitions if t["to"] == "known" and t["identity_id"] != enrolled})
@@ -446,43 +534,63 @@ def _identity(r: Reading, line: Timeline, windows: dict, enrolled: str, account:
                    if i["identity_id"] == enrolled and i["basis_changes"][0][1] == "fresh"]
         r.item(f"{name}: the enrolled identity becomes known (fresh) while facing the camera",
                [(list(k), round(i["start"], 1)) for k, i in reached], bool(reached))
-    _return(r, line, windows, account)
-    _retention(r, line, windows, enrolled, account)
+    _return(r, line, windows, bounds, fmt)
+    _retention(r, line, windows, enrolled, account, bounds, fmt)
 
 
-def _return(r: Reading, line: Timeline, windows: dict, account: dict[str, str]) -> None:
-    left = stopwatch_seconds(account["out_of_view_2"])
+def _return(r: Reading, line: Timeline, windows: dict, bounds: dict, fmt: int) -> None:
+    """Items 27-28 at ``left``: the latest time the operator could have left (format 1: the reading itself)."""
+    left = bounds["out_of_view_2"][1]
     before = [(k, i) for k, intervals in line.known.items() for i in intervals if i["start"] < left]
     carried = [(list(k), round(i["start"], 1)) for k, i in before
                if i["end"] is None or i["end"] >= windows["E2"][0]]
-    r.item("every identity known before leaving is cleared before the empty window E2", carried, not carried)
+    r.item("every identity known before leaving is cleared before the empty window E2" if fmt == 1 else
+           "every identity known before the latest possible leaving time is cleared before the empty window E2",
+           carried, not carried)
     late = []
     for key, interval in line.known_overlapping(windows["K2"]):
         votes = line.votes_known_by(key, interval["start"])[-CONFIRMATIONS:]
         if interval["start"] < left or any(v["t"] < left for v in votes):
             late.append((list(key), round(interval["start"], 1)))
-    r.item("K2: nothing carried over: known again only from votes after the return", late, not late)
+    r.item("K2: nothing carried over: known again only from votes after the return" if fmt == 1 else
+           "K2: nothing carried over: known again only from votes after the latest possible leaving time",
+           late, not late)
 
 
-def _retention(r: Reading, line: Timeline, windows: dict, enrolled: str, account: dict[str, str]) -> None:
-    turned = stopwatch_seconds(account["turned_away"])
+def _retention(r: Reading, line: Timeline, windows: dict, enrolled: str, account: dict[str, str], bounds: dict,
+               fmt: int) -> None:
+    """Item 29. The turn is the interval [lo, hi] of turned_away (format 1: [t, t], the reading itself): exactly one
+    known interval of the enrolled identity may overlap it, and it must cover all of it."""
+    lo, hi = bounds["turned_away"]
     away = windows["A"]
-    held = [(key, interval) for key, intervals in line.known.items() for interval in intervals
-            if interval["identity_id"] == enrolled and interval["start"] <= turned
-            and (interval["end"] is None or interval["end"] > turned)]
+    overlapping = [(key, interval) for key, intervals in line.known.items() for interval in intervals
+                   if interval["identity_id"] == enrolled and interval["start"] <= hi
+                   and (interval["end"] is None or interval["end"] > lo)]
+    held = [(key, interval) for key, interval in overlapping
+            if interval["start"] <= lo and (interval["end"] is None or interval["end"] > hi)]
     name = "A: a known identity is retained on the same track, then cleared when its older confirming vote is " \
            f"{VOTE_TTL_S:g} s old"
     if account.get("face_hidden_while_turned") != "yes":
         r.not_exercised(name, "the account does not say the face was hidden while turned away")
         return
-    if len(held) != 1:
+    if fmt == 1 and len(held) != 1:
         r.not_exercised(name, f"{len(held)} tracks known at the turn")
+        return
+    if fmt != 1 and (len(overlapping) != 1 or len(held) != 1):
+        r.not_exercised(name, {"turn_interval_s": [lo, hi], "known_throughout_it": len(held),
+                               "known_in_part_of_it": len(overlapping) - len(held)})
         return
     key, interval = held[0]
     offered = [t for t in line.in_window(line.ticks, away) if t["tick"] == "offered"]
     continuity = sum(1 for t in offered if key[1] in t["tracks"]) / len(offered) if offered else 0.0
-    matches = [v for v in line.votes.get(key, ()) if v["vote"] == "match" and turned <= v["t"] < away[1]]
-    r.describe("A: new matching evidence on the retained track after the turn (match votes)", len(matches))
+    matches = [v for v in line.votes.get(key, ()) if v["vote"] == "match" and hi <= v["t"] < away[1]]
+    if fmt == 1:
+        r.describe("A: new matching evidence on the retained track after the turn (match votes)", len(matches))
+    else:
+        r.describe("A: new matching evidence on the retained track after the latest possible turn time (match votes)",
+                   len(matches))
+        r.describe("A: match votes on the retained track inside the turn interval",
+                   sum(1 for v in line.votes.get(key, ()) if v["vote"] == "match" and lo <= v["t"] < hi))
     if continuity < MIN_CONTINUITY or interval["end_to"] == "cleared":
         r.not_exercised(name, {"track": list(key), "continuity": round(continuity, 3), "ended": interval["end_to"]})
         return
@@ -540,14 +648,16 @@ def _counts_items(r: Reading, directory: Path) -> None:
         r.item(f"{label} counts: every evidence file counted with each, all 0", value, passed)
 
 
-def _describe(r: Reading, result: Any, line: Timeline, windows: dict, last: Any) -> None:
+def _describe(r: Reading, result: Any, line: Timeline, windows: dict, last: Any, bounds: dict, fmt: int) -> None:
     r.describe("guard peak pressure, min MemFree, min MemAvailable (B)",
                [s5._get(result, "guard", k) for k in s5.GUARD_FIGURES])
     r.describe("face processing ms at the last capture", s5._get(last, "components", "face", "worker", "processing_ms"))
     span = max(line.end_s, 1e-9)
     r.describe("scheduling rate: ticks per second over the run, and per window (s^-1)",
                {"run": round(len([t for t in line.ticks if 0 <= t["t"] < span]) / span, 3),
-                **{k: round(len(line.in_window(line.ticks, w)) / (w[1] - w[0]), 3) for k, w in windows.items()}})
+                **{k: round(len(line.in_window(line.ticks, w)) / (w[1] - w[0]), 3)
+                   if w[1] > w[0] or (fmt == 1 and w[1] != w[0]) else None  # format 1 as before; never / 0
+                   for k, w in windows.items()}})
     r.describe("results by outcome", {o: sum(1 for x in line.results if x["outcome"] == o) for o in sorted(OUTCOMES)})
     r.describe("offered ticks in the empty windows (person detections while nobody was in view)",
                {k: sum(1 for t in line.in_window(line.ticks, windows[k]) if t["tick"] == "offered")
@@ -561,8 +671,14 @@ def _describe(r: Reading, result: Any, line: Timeline, windows: dict, last: Any)
     firsts = {}
     for k, start_key in (("K1", "seated_facing_1"), ("K2", "seated_facing_2")):
         known = sorted(i["start"] for _, i in line.known_overlapping((windows[k][0] - WASHOUT_S, windows[k][1])))
-        firsts[k] = None if not known else round(known[0] - (windows[k][0] - WASHOUT_S), 1)
-    r.describe("time to known after sitting down facing the camera (s)", firsts)
+        if fmt == 1:
+            firsts[k] = None if not known else round(known[0] - (windows[k][0] - WASHOUT_S), 1)
+        else:  # from the latest and from the earliest possible sitting time
+            lo, hi = bounds[start_key]
+            firsts[k] = None if not known else [round(known[0] - hi, 1), round(known[0] - lo, 1)]
+    r.describe("time to known after sitting down facing the camera (s)" if fmt == 1 else
+               "time to known after sitting down facing the camera, from the latest and the earliest possible "
+               "sitting time (s)", firsts)
 
 
 # ---------------------------------------------------------------- F1 reading

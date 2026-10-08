@@ -28,7 +28,6 @@ from pathlib import Path
 from typing import Any
 
 import face_account
-from operator_account import accepted
 
 # Files written after the counts, or the counts themselves; never counted (face_check uses the same set).
 NOT_COUNTED = frozenset({"SHA256SUMS", "check.txt", "secret-counts-camera.txt", "secret-counts-identity.txt"})
@@ -251,7 +250,8 @@ class KeyValueProfile:
 
 @dataclass(frozen=True)
 class AccountProfile:
-    """F2's account.txt, as face_account renders it: its header, then ``key=value   # comment`` per field."""
+    """F2's account.txt, as face_account renders it: its header, then ``key=value   # comment`` per field. The
+    header names the format (1, read only, or 2), and each value is checked against that format's field."""
 
 
 @dataclass(frozen=True)
@@ -608,9 +608,10 @@ def _read_key_values(profile: KeyValueProfile, text: str, reading: Reading) -> N
 
 def _read_account(text: str, reading: Reading) -> None:
     lines = text.splitlines()
-    if not lines or lines[0] != face_account.HEADER:
+    known = face_account.account_format(text)
+    if known is None:
         reading.bad("line 1: header", lines[0] if lines else "")
-    fields = {f.key: f for f in face_account.FIELDS}
+    fields = {f.key: f for f in (known[1] if known else face_account.FIELDS)}
     for number, line in enumerate(lines[1:], start=2):
         key, sep, rest = line.partition("=")
         item = fields.get(key) if sep else None
@@ -619,7 +620,7 @@ def _read_account(text: str, reading: Reading) -> None:
             reading.bad(f"line {number}", line)
             continue
         value = rest[:len(rest) - len(suffix)] if suffix else rest
-        if item.kind == "text" or accepted(item, value)[0] != value:
+        if item.kind == "text" or face_account.accepted(item, value)[0] != value:
             reading.content.append((f"line {number}: {key}", value))  # notes, or an answer as typed: content
 
 

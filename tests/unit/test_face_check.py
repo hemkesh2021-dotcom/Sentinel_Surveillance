@@ -320,8 +320,7 @@ def finish(mods, out: Path, *, cue_delay_s: float = 0.1, account: dict[str, str]
     (out / "result.json").write_text(json.dumps(result))
     (out / "provenance.txt").write_text(F2_PROVENANCE)
     if account is not None:
-        answers = iter([account[f.key] for f in mods.account.FIELDS] + ["SAVE"])
-        assert mods.account.enter(out, ask=lambda prompt: next(answers), say=lambda text: None) == 0
+        save_account(mods, out, account)
     if counts is None:  # F2e's counts, by the real workflow
         for function, name in (("face_counts_camera", "secret-counts-camera.txt"),
                                ("face_counts_f2", "secret-counts-identity.txt")):
@@ -334,6 +333,21 @@ def finish(mods, out: Path, *, cue_delay_s: float = 0.1, account: dict[str, str]
     (out / "secret-counts-identity.txt").write_text("".join(
         f"{n} passphrase={counts.get('passphrase', 0)}\n{n} name={counts.get('name', 0)}\n"
         f"{n} nonconforming={counts.get('nonconforming', 0)}\n" for n in names))
+
+
+def save_account(mods, out: Path, account: dict[str, str]) -> None:
+    """A format-1 account (the face-0f7855e package's) as that helper saved and locked it; a format-2 account through
+    the current helper's prompts (an unknown reading's uncertainty is not asked)."""
+    if "stopwatch_started_at_t0" in account:
+        data = mods.account.render(account, mods.account.FIELDS_V1, mods.account.HEADER_V1).encode()
+        (out / "account.txt").write_bytes(data)
+        with (out / "provenance.txt").open("a") as provenance:
+            provenance.write(f"account_sha256={hashlib.sha256(data).hexdigest()}\n")
+        return
+    answers = iter([account[f.key] for f in mods.account.FIELDS
+                    if not (f.key in mods.account.PAIRED and account[mods.account.PAIRED[f.key]] == "unknown")]
+                   + ["SAVE"])
+    assert mods.account.enter(out, ask=lambda prompt: next(answers), say=lambda text: None) == 0
 
 
 @pytest.fixture
@@ -516,23 +530,325 @@ def test_the_account_waits_for_the_run_saves_once_and_locks(mods, tmp_path) -> N
     said: list[str] = []
     assert mods.account.enter(run, ask=lambda p: "", say=said.append) == 2 and "not finished" in said[-1]
     (run / "result.json").write_text("{}")
-    answers = iter(["yes", "0:12", "unknown", "2:00", "4:00", "yes", "6:00", "6:01", "8:00", "yes", "no", "",
-                    "3", "1:58", "SAVE"])
+    # delay, its uncertainty, out_1 and its uncertainty, seated_1 unknown (its uncertainty is not asked), turned and
+    # its uncertainty, hidden, stood ..., then re-entering seated_1 (item 5) asks its uncertainty again
+    answers = iter(["2", "1", "0:12", "2", "unknown", "4:00", "1", "yes", "6:00", "1", "6:01", "3", "8:00", "1",
+                    "yes", "no", "", "5", "1:58", "4", "SAVE"])
     assert mods.account.enter(run, ask=lambda p: next(answers), say=said.append) == 0
+    assert any("seated_facing_1_uncertainty_s: unknown, because seated_facing_1 is unknown" in x for x in said)
     saved = (run / "account.txt").read_text()
-    assert "seated_facing_1=1:58" in saved and "unknown" not in saved
+    assert saved.startswith(mods.account.HEADER + "\n") and "unknown" not in saved
+    assert "seated_facing_1=1:58   #" in saved and "seated_facing_1_uncertainty_s=4   #" in saved
+    assert "stopwatch_start_delay_s=2   #" in saved and "stopwatch_start_delay_uncertainty_s=1   #" in saved
     locked = (run / "provenance.txt").read_text().splitlines()[-1]
     assert locked == "account_sha256=" + hashlib.sha256(saved.encode()).hexdigest()
     assert mods.account.enter(run, ask=lambda p: "", say=said.append) == 2  # never changed once saved
     said.clear()
     assert mods.account.check(run, say=said.append) == 0 and said[-1].startswith("Locked: yes; the file matches")
+    assert said[0].endswith("format 2:")
 
 
 def test_the_account_review_reports_order_and_unknowns(mods) -> None:
     values = {**ACCOUNT, "seated_facing_1": "5:00", "stood_up": "unknown"}
-    review = mods.account.review(values)
+    review = mods.account.review(values, mods.account.FIELDS_V1)  # a format-1 account, read as before
     assert "stood_up" in review[0] and "turned_away 4:00 should be after seated_facing_1 5:00" in review[2]
     assert review[-1] == "Complete and in order: no"
+
+
+# ---------------------------------------------------------------- F2 timing: account format 2 (D66)
+
+# The scripted operator's account in format 2: started at the cue (0, give or take 1 s), every reading within 1 s.
+ACCOUNT_V2 = {"stopwatch_start_delay_s": "0", "stopwatch_start_delay_uncertainty_s": "1",
+              "out_of_view_1": "0:12", "out_of_view_1_uncertainty_s": "1",
+              "seated_facing_1": "2:00", "seated_facing_1_uncertainty_s": "1",
+              "turned_away": "4:00", "turned_away_uncertainty_s": "1", "face_hidden_while_turned": "yes",
+              "stood_up": "6:00", "stood_up_uncertainty_s": "1",
+              "out_of_view_2": "6:01", "out_of_view_2_uncertainty_s": "1",
+              "seated_facing_2": "8:00", "seated_facing_2_uncertainty_s": "1",
+              "stayed_until_stop": "yes", "other_faces_in_view": "no", "notes": "a note that is never printed"}
+# The proposal's examples (session 50, part 9): a stopwatch started 2 s late, readings 2 s behind T0.
+LATE = {**ACCOUNT_V2, "stopwatch_start_delay_s": "2", "out_of_view_1": "0:18", "seated_facing_1": "1:58",
+        "turned_away": "3:58", "stood_up": "5:58", "out_of_view_2": "6:18", "seated_facing_2": "7:58"}
+# The face-0f7855e helper's own rendering of ACCOUNT (generated with that pin's face_account.render): format 1, pinned.
+LEGACY_TEXT = (
+    "# F2 account entered with benchmarks/runner/face_account.py; values as typed\n"
+    "stopwatch_started_at_t0=yes   # yes / no: you started the stopwatch when the T0 cue appeared\n"
+    "out_of_view_1=0:12   # m:ss from which you were sure the camera could not see you (schedule: by 0:20)\n"
+    "seated_facing_1=2:00   # m:ss from which you sat at the Mac with your face toward the camera (schedule 2:00)\n"
+    "turned_away=4:00   # m:ss from which your face was turned away from the camera, still seated (schedule 4:00)\n"
+    "face_hidden_while_turned=yes   # yes / no: the camera could not see your face at all while turned away\n"
+    "stood_up=6:00   # m:ss when you stood up to leave (schedule 6:00)\n"
+    "out_of_view_2=6:01   # m:ss from which you were sure the camera could not see you again\n"
+    "seated_facing_2=8:00   # m:ss from which you sat facing the camera again (schedule 8:00)\n"
+    "stayed_until_stop=yes   # yes / no: you stayed seated facing the camera until the stop cue (10:00)\n"
+    "other_faces_in_view=no   # yes / no: anyone else, or a photo or screen showing a face, was in the camera's view "
+    "at any time\n"
+    "notes=a note that is never printed\n")
+
+
+def windows_of(mods, account: dict[str, str], fmt: int = 2):
+    bounds = mods.check._bounds(account, fmt)
+    return bounds, None if bounds is None else mods.check._windows(bounds, 600.0)
+
+
+def test_format_1_is_kept_read_only_and_renders_as_the_old_helper_did(mods, tmp_path) -> None:
+    assert mods.account.render(ACCOUNT, mods.account.FIELDS_V1, mods.account.HEADER_V1) == LEGACY_TEXT
+    assert mods.account.account_format(LEGACY_TEXT)[0] == 1
+    assert mods.account.account_format(mods.account.render(ACCOUNT_V2))[0] == 2
+    assert mods.account.account_format("# something else\nx=1\n") is None
+    bounds, windows = windows_of(mods, ACCOUNT, fmt=1)  # each reading taken as exact, as it always was
+    assert bounds == {"out_of_view_1": (12, 12), "seated_facing_1": (120, 120), "turned_away": (240, 240),
+                      "stood_up": (360, 360), "out_of_view_2": (361, 361), "seated_facing_2": (480, 480)}
+    assert windows == {"E1": (27.0, 105.0), "K1": (135.0, 225.0), "A": (255.0, 345.0), "E2": (376.0, 465.0),
+                       "K2": (495.0, 585.0)}
+    run = tmp_path / "f2"
+    run.mkdir()
+    (run / "provenance.txt").write_text("part=f2\n")
+    save_account(mods, run, ACCOUNT)
+    said: list[str] = []
+    assert mods.account.check(run, say=said.append) == 0
+    assert said[0].endswith("format 1:") and said[-2] == "Complete and in order: yes" and said[-1].startswith("Locked: yes")
+
+
+def test_the_proposals_examples_align_to_t0_and_window_from_the_far_edges(mods) -> None:
+    bounds, windows = windows_of(mods, LATE)  # delay 2 +/- 1: [1, 3] s
+    assert bounds["seated_facing_1"] == (118, 122) and bounds["turned_away"] == (238, 242)
+    assert windows == {"E1": (37.0, 103.0), "K1": (137.0, 223.0), "A": (257.0, 343.0), "E2": (397.0, 463.0),
+                       "K2": (497.0, 585.0)}
+    bounds, windows = windows_of(mods, {**LATE, "out_of_view_2": "6:24", "out_of_view_2_uncertainty_s": "5"})
+    assert bounds["out_of_view_2"] == (380, 392) and windows["E2"] == (407.0, 463.0)  # 56 s
+    _, windows = windows_of(mods, {**LATE, "out_of_view_2": "6:24", "out_of_view_2_uncertainty_s": "5",
+                                   "seated_facing_2": "7:45", "seated_facing_2_uncertainty_s": "5"})
+    assert windows["E2"] == (407.0, 446.0) and windows["K2"] == (488.0, 585.0)  # E2 39 s: too short
+    worst = {**ACCOUNT_V2, "stopwatch_start_delay_s": "0", "stopwatch_start_delay_uncertainty_s": "5",
+             "out_of_view_1": "0:20", "out_of_view_2": "6:20",
+             **{mods.account.uncertainty_key(k): "5" for k in mods.account.TIMES}}
+    _, windows = windows_of(mods, worst)  # the delay clamped at 0: [0, 5]
+    assert {k: b - a for k, (a, b) in windows.items()} == {"E1": 55.0, "K1": 75.0, "A": 75.0, "E2": 55.0, "K2": 80.0}
+
+
+@pytest.mark.parametrize(("delay", "uncertainty", "label"), [
+    ("0", "5", "PASS"), ("4", "1", "PASS"), ("2", "3", "PASS"),  # the upper end exactly 5 s
+    ("4", "2", "FAIL"), ("5", "1", "FAIL"), ("1", "5", "FAIL"), ("7", "1", "FAIL"),  # over 5 s
+    ("unknown", "unknown", "FAIL"), ("2", "unknown", "FAIL"),
+])
+def test_the_stopwatch_delays_upper_end_must_be_at_most_5_s(mods, tmp_path, startup, f1_list, delay, uncertainty,
+                                                            label) -> None:
+    out = simulate(tmp_path, startup, duration=10.0)
+    finish(mods, out, account={**ACCOUNT_V2, "stopwatch_start_delay_s": delay,
+                               "stopwatch_start_delay_uncertainty_s": uncertainty})
+    result, text = reading(mods, out, f1_list)
+    item = line_for(text, "stopwatch start delay known, its upper end (delay + uncertainty) at most 5 s")
+    assert item.startswith(label) and not result.ok, item
+    assert "stopwatch started at the T0 cue" not in text  # format 1's item is not used for format 2
+    windows = line_for(text, "judged windows from the account's intervals")
+    assert windows.startswith("MISSING") == (delay == "unknown" or uncertainty == "unknown"), windows
+
+
+@pytest.mark.parametrize("change", [
+    {"turned_away": "unknown"},  # its uncertainty then is unknown without being asked
+    {"turned_away_uncertainty_s": "unknown"},  # a reading the operator cannot bound within 5 s
+    {"stopwatch_start_delay_s": "unknown"},
+])
+def test_unknown_readings_uncertainties_and_delays_leave_no_windows(mods, tmp_path, startup, f1_list, change) -> None:
+    out = simulate(tmp_path, startup, duration=10.0)
+    account = {**ACCOUNT_V2, **change}
+    if account["turned_away"] == "unknown":
+        account["turned_away_uncertainty_s"] = "unknown"
+    if account["stopwatch_start_delay_s"] == "unknown":
+        account["stopwatch_start_delay_uncertainty_s"] = "unknown"
+    finish(mods, out, account=account)
+    saved = (out / "account.txt").read_text()
+    assert all(f"{key}=unknown   #" in saved for key, value in account.items() if value == "unknown")
+    result, text = reading(mods, out, f1_list)
+    assert line_for(text, "account complete and in order").startswith("FAIL")
+    assert line_for(text, "judged windows from the account's intervals").startswith("MISSING")
+    assert "completion" not in text and "aligned to T0" not in text
+
+
+def test_invalid_uncertainties_and_delays_are_refused_at_entry(mods, tmp_path) -> None:
+    run = tmp_path / "f2"
+    run.mkdir()
+    (run / "provenance.txt").write_text("part=f2\n")
+    (run / "result.json").write_text("{}")
+    said: list[str] = []
+    answers = iter(["-1", "60", "1.5", "+2", "02",  # the delay: refused four times, then 2 (written as 2)
+                    "0", "6", "-1", "2.5", "x", "+2", "±2", "1",  # its uncertainty: refused seven times
+                    "0:12", "1", "2:00", "1", "4:00", "1", "yes", "6:00", "1", "6:01", "1", "8:00", "1",
+                    "yes", "no", "", "SAVE"])
+    assert mods.account.enter(run, ask=lambda p: next(answers), say=said.append) == 0
+    refused = [x for x in said if x.startswith("  not accepted")]
+    assert len(refused) == 11
+    assert sum("whole seconds from 0 to 59" in x for x in refused) == 4
+    assert sum("whole seconds from 1 to 5" in x for x in refused) == 7
+    saved = mods.account.parse((run / "account.txt").read_text())
+    assert saved["stopwatch_start_delay_s"] == "2" and saved["stopwatch_start_delay_uncertainty_s"] == "1"
+
+
+def test_a_stored_uncertainty_out_of_range_is_not_an_accepted_value(mods, tmp_path, startup, f1_list) -> None:
+    out = simulate(tmp_path, startup, duration=10.0)
+    finish(mods, out, account=None)
+    data = mods.account.render({**ACCOUNT_V2, "turned_away_uncertainty_s": "7"}).encode()  # never written by enter
+    (out / "account.txt").write_bytes(data)
+    with (out / "provenance.txt").open("a") as provenance:
+        provenance.write(f"account_sha256={hashlib.sha256(data).hexdigest()}\n")
+    result, text = reading(mods, out, f1_list)
+    assert "turned_away_uncertainty_s=7" in line_for(text, "account complete and in order")
+    assert line_for(text, "judged windows from the account's intervals").startswith("MISSING")
+
+
+@pytest.mark.parametrize(("change", "item", "label"), [
+    ({"turned_away": "1:59"}, "account complete and in order", "FAIL"),  # readings out of order
+    ({"seated_facing_1": "2:00", "turned_away": "2:10", "seated_facing_1_uncertainty_s": "5",
+      "turned_away_uncertainty_s": "5"}, "judged windows from the account's intervals", "FAIL"),  # intervals overlap
+    ({"stood_up": "6:01", "out_of_view_2": "6:01"}, "account complete and in order", "PASS"),  # equal: allowed
+    ({"seated_facing_1": "2:42"}, "judged windows from the account's intervals", "PASS"),  # K1 exactly 45 s
+    ({"seated_facing_1": "2:43"}, "judged windows from the account's intervals", "FAIL"),  # K1 44 s
+])
+def test_order_overlap_and_the_45_s_minimum(mods, tmp_path, startup, f1_list, change, item, label) -> None:
+    out = simulate(tmp_path, startup, duration=10.0)
+    finish(mods, out, account={**ACCOUNT_V2, **change})
+    _, text = reading(mods, out, f1_list)
+    assert line_for(text, item).startswith(label), line_for(text, item)
+    if change.get("seated_facing_1") in ("2:42", "2:43"):  # K1 = hi(2:42 + 1 + 1) + 15 .. lo(4:00 - 1 + 0) - 15
+        assert ('"K1": [179.0, 224.0]' if change["seated_facing_1"] == "2:42" else '"K1": [180.0, 224.0]') in text
+
+
+def test_the_scripted_run_validates_with_a_format_2_account(mods, tmp_path, startup, f1_list) -> None:
+    out = simulate(tmp_path, startup)
+    finish(mods, out, account=ACCOUNT_V2)
+    result, text = reading(mods, out, f1_list)
+    assert result.ok, text
+    assert line_for(text, "stopwatch start delay known").startswith("PASS")
+    assert '"turned_away": ["4:00", 1, 239, 242]' in text  # the aligned interval, shown
+    assert line_for(text, "A: a known identity is retained").startswith("PASS")
+    assert "DESCRIPTIVE A: match votes on the retained track inside the turn interval" in text
+
+
+def test_a_2_s_late_start_is_aligned_and_validates(mods, tmp_path, startup, f1_list) -> None:
+    out = simulate(tmp_path, startup)
+    finish(mods, out, account={**LATE, "out_of_view_1": "0:10", "out_of_view_2": "5:59"})
+    result, text = reading(mods, out, f1_list)
+    assert result.ok, text
+    assert '"seated_facing_1": ["1:58", 1, 118, 122]' in text and '"stopwatch_start_delay_s": [1, 3]' in text
+    assert '"K1": [137.0, 223.0]' in text
+
+
+def test_old_format_accounts_keep_their_original_reading(mods, tmp_path, startup, f1_list) -> None:
+    out = simulate(tmp_path, startup)
+    finish(mods, out)  # ACCOUNT: format 1
+    result, text = reading(mods, out, f1_list)
+    assert result.ok, text
+    assert line_for(text, "stopwatch started at the T0 cue").startswith("PASS")
+    assert line_for(text, "judged windows from the account (washout 15 s)").startswith("PASS")
+    assert '"K1": [135.0, 225.0]' in text
+    assert "aligned to T0" not in text and "inside the turn interval" not in text
+    assert "DESCRIPTIVE A: new matching evidence on the retained track after the turn (match votes)" in text
+
+
+def test_both_formats_are_schema_text_to_the_privacy_profile(mods, tmp_path) -> None:
+    for text, notes_line in ((LEGACY_TEXT, 12), (mods.account.render(ACCOUNT_V2), 19)):
+        path = tmp_path / "account.txt"
+        path.write_text(text)
+        read = mods.evidence.read(path, "f2")
+        assert read.nonconforming == [] and read.content == [(f"line {notes_line}: notes",
+                                                              "a note that is never printed")], read.content
+    path.write_text(mods.account.render({**ACCOUNT_V2, "turned_away_uncertainty_s": "7"}))
+    read = mods.evidence.read(path, "f2")  # an answer as typed outside its field: content, as before
+    assert read.nonconforming == [] and ("line 9: turned_away_uncertainty_s", "7") in read.content
+    path.write_text("# another header\n" + mods.account.render(ACCOUNT_V2).split("\n", 1)[1])
+    assert mods.evidence.read(path, "f2").nonconforming == ["line 1: header"]
+
+
+# ---------------------------------------------------------------- the turn and the departure as intervals
+
+def synthetic(mods, *, votes=(), known=(), ticks=(), end: float = 600.0):
+    """A Timeline from hand-made records (seconds after T0): votes (t, track, vote), applied 1 s after their frame;
+    known (track, start, [(t, basis), ...], end, end_to); ticks (t, tracks) offered."""
+    ns = lambda t: round(t * 1e9)  # noqa: E731
+    results = [{"frame_mono_ns": ns(t), "applied_mono_ns": ns(t + 1.0), "outcome": "applied", "stream_epoch": 1,
+                "persons": [{"track_id": track, "vote": vote, "identity_id": ENROLLED if vote == "match" else None}]}
+               for t, track, vote in votes]
+    transitions = []
+    for track, start, bases, stop, end_to in known:
+        transitions += [{"mono_ns": ns(t), "stream_epoch": 1, "track_id": track, "from": "known" if n else "unknown",
+                         "to": "known", "identity_id": ENROLLED, "basis": basis, "reason": "votes"}
+                        for n, (t, basis) in enumerate([(start, "fresh"), *bases])]
+        if stop is not None:
+            transitions.append({"mono_ns": ns(stop), "stream_epoch": 1, "track_id": track, "from": "known",
+                                "to": end_to, "identity_id": None, "basis": None, "reason": "votes"})
+    records = {"tick": [{"frame_mono_ns": ns(t), "tick": "offered", "tracks": list(tracks)} for t, tracks in ticks],
+               "result": results, "transition": transitions}
+    return mods.check.Timeline(records, 0, end)
+
+
+RETAINED_TICKS = tuple((float(t), (1,)) for t in range(200, 420))
+
+
+def retention(mods, account: dict[str, str], fmt: int, line) -> tuple[str, list[str]]:
+    bounds, windows = windows_of(mods, account, fmt)
+    r = mods.check.Reading()
+    mods.check._retention(r, line, windows, ENROLLED, account, bounds, fmt)
+    item = next(x for x in r.lines if "A: a known identity is retained" in x)
+    return item, r.lines
+
+
+def test_retention_needs_the_identity_known_throughout_the_turn_interval(mods) -> None:
+    # turned_away 4:00 +/- 1 with the delay 0 +/- 1: the turn lies in [239, 242]
+    held = synthetic(mods, votes=[(236.0, 1, "match"), (237.0, 1, "match"), (238.0, 1, "match"), (239.0, 1, "match")],
+                     known=[(1, 238.0, [(242.0, "retained")], 268.0, "unresolved")], ticks=RETAINED_TICKS)
+    item, lines = retention(mods, ACCOUNT_V2, 2, held)
+    assert item.startswith("PASS"), lines
+    assert "DESCRIPTIVE A: match votes on the retained track inside the turn interval: 1" in lines
+    # a match inside the turn interval: retention is timed from it (newest 240.5 + 3; older 239 + 30)
+    later = synthetic(mods, votes=[(236.0, 1, "match"), (237.0, 1, "match"), (239.0, 1, "match"),
+                                   (240.5, 1, "match")],
+                      known=[(1, 238.0, [(243.5, "retained")], 269.0, "unresolved")], ticks=RETAINED_TICKS)
+    item, lines = retention(mods, ACCOUNT_V2, 2, later)
+    assert item.startswith("PASS") and "DESCRIPTIVE A: match votes on the retained track inside the turn interval: 2" \
+        in lines, lines
+    # a contradicting vote inside the turn interval ends KNOWN at 241, within [239, 242]: known in part only
+    cut = synthetic(mods, votes=[(236.0, 1, "match"), (237.0, 1, "match"), (240.0, 1, "unknown")],
+                    known=[(1, 238.0, [], 241.0, "uncertain")], ticks=RETAINED_TICKS)
+    item, _ = retention(mods, ACCOUNT_V2, 2, cut)
+    assert item.startswith("NOT_EXERCISED") and '"known_throughout_it": 0' in item and '"known_in_part_of_it": 1' in item
+    item, _ = retention(mods, ACCOUNT, 1, cut)  # format 1, the turn exactly at 240: the contradicting vote ends it
+    assert item.startswith("NOT_EXERCISED") and "a contradicting vote ended it" in item
+    # a second track known in part of the turn interval: which track was held at the turn is ambiguous
+    two = synthetic(mods, votes=[(236.0, 1, "match"), (237.0, 1, "match"), (238.0, 1, "match"), (239.0, 1, "match")],
+                    known=[(1, 238.0, [(242.0, "retained")], 268.0, "unresolved"),
+                           (2, 240.5, [], 250.0, "unresolved")], ticks=RETAINED_TICKS)
+    item, _ = retention(mods, ACCOUNT_V2, 2, two)
+    assert item.startswith("NOT_EXERCISED") and '"known_in_part_of_it": 1' in item
+    item, _ = retention(mods, ACCOUNT, 1, two)  # format 1: at 240 exactly, only track 1 was known
+    assert item.startswith("PASS")
+
+
+def departure(mods, account: dict[str, str], fmt: int, line) -> list[str]:
+    bounds, windows = windows_of(mods, account, fmt)
+    r = mods.check.Reading()
+    mods.check._return(r, line, windows, bounds, fmt)
+    return r.lines
+
+
+# out_of_view_2 at 6:20 +/- 5 (delay 0 +/- 1): the departure lies in [375, 386]; seated again at 6:40 +/- 1
+DEPARTING = {**ACCOUNT_V2, "out_of_view_2": "6:20", "out_of_view_2_uncertainty_s": "5", "seated_facing_2": "6:40"}
+DEPARTING_V1 = {**ACCOUNT, "out_of_view_2": "6:20", "seated_facing_2": "6:40"}  # the same readings, as exact
+
+
+def test_an_identity_known_inside_the_departure_interval_counts_as_known_before_leaving(mods) -> None:
+    line = synthetic(mods, known=[(3, 381.0, [], 405.0, "unresolved")])  # known from 381, inside [375, 386]
+    carried = departure(mods, DEPARTING, 2, line)[0]
+    assert carried.startswith("FAIL every identity known before the latest possible leaving time") and "381" in carried
+    assert departure(mods, DEPARTING_V1, 1, line)[0].startswith("PASS every identity known before leaving")
+
+
+def test_k2_knowledge_from_a_vote_inside_the_departure_interval_is_carried_over(mods) -> None:
+    line = synthetic(mods, votes=[(384.0, 4, "match"), (395.0, 4, "match")],  # 384 lies in [375, 386]
+                     known=[(4, 410.0, [], None, None)])
+    late = departure(mods, DEPARTING, 2, line)[1]
+    assert late.startswith("FAIL K2: nothing carried over: known again only from votes after the latest possible"), late
+    assert departure(mods, DEPARTING_V1, 1, line)[1].startswith("PASS K2: nothing carried over")
 
 
 # ---------------------------------------------------------------- F1
