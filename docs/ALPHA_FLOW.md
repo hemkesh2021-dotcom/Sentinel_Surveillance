@@ -110,8 +110,9 @@ flow. Without them, nothing below exists and the outputs are as before.
   old; a picture that could not be loaded, or a frame that is no longer live,
   is marked `OLD FRAME` with its time. Only a valid, newer update brings the
   current claims back, and only when its own report is current; updates are
-  retried automatically, backing off to 15 s. Without JavaScript the page is
-  read-only: it turns NOT CURRENT after 5 s, and reloading updates it.
+  retried automatically, backing off to 15 s. A chat answer (below) never
+  restarts any of this. Without JavaScript the page is read-only: it turns NOT
+  CURRENT after 5 s, and reloading updates it.
 - **Snapshots** (`--snapshots`): each new incident gets one JPEG. It is the frame
   that the observation that opened the incident came from, saved by a writer
   thread in `<data-dir>/snapshots/` (folder 0700, files 0600). If that frame was
@@ -129,6 +130,36 @@ flow. Without them, nothing below exists and the outputs are as before.
   Telegram. Keep `--data-dir` outside the repository; `.gitignore` also lists
   `sentinel.db*`, `snapshots/` and `snap-*.jpg`.
 - **Not measured:** the CPU, memory and disk cost of either on the device.
+
+## Chat about the live picture (D74; opt-in, unavailable in this build)
+
+`--chat` adds a panel beside the live view (below the incidents on a narrow
+window) for questions about the picture the camera is showing. In this build it
+says `Unavailable` and why: chat is not admitted, because concurrent scene
+analysis and chat have not passed the operator-run resource and interference
+checks. Ask stays disabled, the runtime keeps no frames for it, and no question
+reaches a model. Without `--chat` the panel says chat is off.
+
+Once admitted (a recorded decision after those checks; it also needs `--scene`):
+
+- a question goes to the same scene model, on the scene worker, only while that
+  worker is idle. Scene jobs go first; one question at a time, one per 4 s,
+  never queued: a busy system says so;
+- it is about one identified frame, the newest live one. The answer names its
+  stream epoch, frame and ingest time, with its age when asked and when
+  answered, and is marked historical once that frame was no longer live. With
+  no live frame, the answer says so and the model is not asked;
+- it is advisory: chat cannot acknowledge incidents, change rules, control the
+  camera, run commands or say who anyone is. Text in the question, the picture
+  or an answer is treated as data;
+- only this page can ask (same origin, a token from the server that sent the
+  page). The conversation stays in the browser tab, and after a runtime
+  restart the page asks for a reload before the next question.
+- **Not yet:** cancelling a question that is already running (a running one is
+  bounded by 120 tokens and the 20 s request timeout), and stopping new
+  questions under memory pressure (V2-29). The guide requires both, or chat
+  disabled where the latency target cannot tolerate it; both are conditions for
+  admitting it.
 
 ## Limits
 
