@@ -1,4 +1,4 @@
-"""D-2: the loopback-only, read-only status page (stdlib HTTP on 127.0.0.1; fake runtime data, real SQLite)."""
+"""D-2: the loopback-only, read-only status page and incident detail (fake runtime data, real SQLite)."""
 
 from __future__ import annotations
 
@@ -13,11 +13,24 @@ import pytest
 
 from sentinel.alerts.outbox import DeliveryResult, DeliveryStatus, OutboxWorker
 from sentinel.config import IncidentsConfig, NotificationsConfig
-from sentinel.incidents.service import IncidentService
-from sentinel.incidents.signals import IncidentSignal, SignalPhase
+from sentinel.contracts import Applicability, Evidence, EvidenceStatus, FrameKey, FrameRef, PixelFormat, TrackKey
+from sentinel.incidents.service import IncidentService, IncidentStatus
+from sentinel.incidents.signals import IncidentSignal, SignalPhase, signal_from_zone
 from sentinel.media.clock import NS_PER_SECOND, FakeClock
+from sentinel.media.frames import FrameStamper
 from sentinel.rules.scene_hazard import Severity
-from sentinel.status_page import StatusServer, build_status, delivery_state, read_store, render_html
+from sentinel.rules.zones import ZoneObservation, ZonePhase
+from sentinel.status_page import (
+    MAX_ANNOTATIONS,
+    MAX_EVIDENCE,
+    StatusServer,
+    build_status,
+    delivery_state,
+    read_incident,
+    read_store,
+    render_html,
+    render_incident_html,
+)
 from sentinel.storage.database import Database
 
 T0 = datetime(2026, 10, 4, 6, 0, tzinfo=timezone.utc)
@@ -262,3 +275,233 @@ def test_face_recognition_and_identity_counts_are_shown_without_ids(page) -> Non
     assert "<td>face</td>" in text.replace("<td>face recognition</td>", "")
     assert "known 1 (fresh 1, retained 0) · unknown 0 · uncertain 0 · unresolved 1" in text
     assert "idn-" not in text
+
+
+# ---------------------------------------------------------------- incident detail (guide ch. 15, V2-28 display)
+
+REPORT = {"persons_visible": 1, "fire_or_smoke": False, "threat": "low", "observations": ["one person"],
+          "uncertainty": "low", "summary": "One person stands by the door."}
+
+
+def zone_observation(phase: ZonePhase, *, episode: str = "zone-door-ep1", at_s: float = 2.0, track_id: int = 4,
+                     epoch: int = 2, first_seq: int = 10, last_seq: int = 40) -> ZoneObservation:
+    def key(seq: int) -> FrameKey:
+        return FrameKey(camera_id="cam-1", boot_id="boot-1", run_id="run-1", stream_epoch=epoch, frame_seq=seq)
+
+    return ZoneObservation(
+        observation_id=f"{episode}.{phase.value}", episode_id=episode, kind="zone.restricted_entry", phase=phase,
+        zone_id="door", zone_revision="door-r1", severity=Severity.WARNING,
+        track=TrackKey(camera_id="cam-1", boot_id="boot-1", run_id="run-1", stream_epoch=epoch, track_id=track_id),
+        first_source=key(first_seq), last_source=key(last_seq), first_mono_ns=NS_PER_SECOND,
+        last_mono_ns=round(at_s * NS_PER_SECOND), observed_utc=T0 + timedelta(seconds=at_s),
+        duration_ms=round((at_s - 1.0) * 1000), reason=f"confirmed track {track_id} in restricted zone 'door'",
+    )
+
+
+def source_frame() -> FrameRef:
+    stamper = FrameStamper("cam-1", FakeClock(utc=T0))
+    stamper.connect()
+    return stamper.stamp(native_width=640, native_height=480, pixel_format=PixelFormat.BGR)
+
+
+def scene(incident_id: str, job: str, *, status: EvidenceStatus = EvidenceStatus.OBSERVED, value: object = REPORT,
+          kind: str = "scene.report", late: bool = True) -> Evidence:
+    observed = status is EvidenceStatus.OBSERVED
+    return Evidence.observed_on(
+        source_frame(), evidence_id=f"{job}.{status.value}" + (".late" if late else ""), kind=kind, status=status,
+        value=value if observed else None, producer="scene.stub", producer_revision="1+stub",
+        ttl_ns=10 * NS_PER_SECOND, correlation_group="scene:cam-1",
+        reason="stub result" if observed else "job timed out", incident_id=incident_id,
+    )
+
+
+def one_incident_with_its_evidence_chain(tmp_path: Path) -> tuple[Path, str]:
+    """A zone incident (ENTERED, ENDED), a timeout and a late report, and an alert sent on its second attempt."""
+    clock = FakeClock(utc=T0)
+    db = Database.open(tmp_path / "sentinel.db")
+    service = IncidentService(db, clock, incidents=IncidentsConfig(), notifications=SETTINGS)
+    incident_id = service.record(signal_from_zone(zone_observation(ZonePhase.ENTERED))).incident_id
+    assert incident_id is not None
+    clock.advance(1.0)
+    assert service.annotate(scene(incident_id, "job-1", status=EvidenceStatus.TIMEOUT, late=False),
+                            Applicability.CURRENT).outcome.value == "annotated"
+    clock.advance(11.5)
+    assert service.annotate(scene(incident_id, "job-1"), Applicability.EXPIRED).outcome.value == "annotated"
+    service.record(signal_from_zone(zone_observation(ZonePhase.ENDED, at_s=6.0, last_seq=95)))
+    worker = OutboxWorker(db, clock, {"telegram": Scripted(
+        DeliveryResult(DeliveryStatus.RETRY, f"HTTP 502 for https://api.telegram.org/bot{FAKE_TOKEN}/sendMessage"),
+        DeliveryResult(DeliveryStatus.SENT, "sent", provider_message_id="7"),
+    )}, SETTINGS)
+    worker.run_once()
+    clock.advance(3600)
+    worker.run_once()
+    db.close()
+    return tmp_path / "sentinel.db", incident_id
+
+
+def test_an_incident_page_shows_rule_evidence_lifecycle_scene_evidence_and_alert_attempts(tmp_path) -> None:
+    db_path, incident_id = one_incident_with_its_evidence_chain(tmp_path)
+    detail = read_incident(db_path, incident_id)
+    assert detail["state"] == "available"
+    assert detail["incident"]["status"] == "open" and detail["incident"]["severity"] == "warning"
+    entered, ended = detail["evidence"]["shown"]
+    assert detail["evidence"]["total"] == 2
+    assert (entered["phase"], ended["phase"], entered["episode"], ended["episode"]) == ("entered", "ended", 1, 1)
+    assert entered["source"] == {"track_id": 4, "stream_epoch": 2, "first_frame_seq": 10, "last_frame_seq": 40,
+                                 "in_zone_s": 1.0, "zone_revision": "door-r1"}
+    assert ended["source"]["last_frame_seq"] == 95 and entered["observed_utc"] == "2026-10-04T06:00:02.000000Z"
+    assert "payload" not in entered  # never the stored payload itself
+    (opened,) = detail["transitions"]["shown"]
+    assert (opened["from_status"], opened["to_status"], opened["revision"]) == (None, "open", 1)
+    timeout, late = detail["annotations"]["shown"]
+    assert (timeout["status"], timeout["applicability"], timeout["details"]["report"]) == ("timeout", "current", None)
+    assert (late["status"], late["applicability"]) == ("observed", "expired")
+    assert late["details"]["report"]["summary"] == "One person stands by the door."
+    assert late["recorded_after_source_s"] == 12.5 and late["details"]["frame_seq"] == 0
+    (alert,) = detail["deliveries"]["shown"]
+    assert (alert["state"], alert["attempts"], alert["provider_confirmed"]) == ("delivered", 2, True)
+    first, second = alert["attempt_log"]["shown"]
+    assert (first["attempt"], second["attempt"], second["outcome"]) == (1, 2, "sent")
+    assert FAKE_TOKEN not in json.dumps(detail) and "bot<redacted>" in first["detail"]
+    assert "provider_message_id" not in alert  # whether the provider confirmed it, never its message ID
+    text = render_incident_html({"generated_utc": T0.isoformat(), **detail})
+    for phrase in ("Person in restricted zone &#x27;door&#x27;", "<td>entered</td>", "<td>ended</td>",
+                   "<td>10–40</td>", "<td>expired</td>", "One person stands by the door.", "threat low",
+                   "not available here: this page is read only (D45)", "none: event clips are not implemented yet",
+                   "Only &#x27;current&#x27; could have changed the live scene", "<td>delivered</td>",
+                   'href="/"'):
+        assert phrase in text, phrase
+    assert FAKE_TOKEN not in text
+
+
+def test_the_status_page_links_incidents_to_pages_served_as_html_and_json(tmp_path) -> None:
+    db_path, incident_id = one_incident_with_its_evidence_chain(tmp_path)
+    server = StatusServer(0, lambda: SNAPSHOT, db_path, now=lambda: T0 + timedelta(seconds=1))
+    server.start()
+    try:
+        main_page = get(server, "/")[2].decode()
+        assert f'<a href="/incidents/{incident_id}">{incident_id}</a>' in main_page
+        status, headers, body = get(server, f"/incidents/{incident_id}")
+        assert status == 200 and headers["Content-Type"] == "text/html; charset=utf-8"
+        assert headers["Cache-Control"] == "no-store" and "default-src 'none'" in headers["Content-Security-Policy"]
+        assert f"Incident {incident_id}" in body.decode()
+        status, headers, body = get(server, f"/incidents/{incident_id}.json")
+        document = json.loads(body)
+        assert status == 200 and headers["Content-Type"] == "application/json"
+        assert document["incident"]["incident_id"] == incident_id and document["generated_utc"].startswith("2026")
+        for method in ("POST", "PUT", "DELETE"):
+            assert get(server, f"/incidents/{incident_id}", method=method)[0] == 405
+        assert get(server, f"/incidents/{incident_id}", host="evil.example")[0] == 421
+    finally:
+        assert server.stop(2.0)
+
+
+@pytest.mark.parametrize("path", [
+    "/incidents/inc-gone", "/incidents/inc-gone.json", "/incidents/", "/incidents/a.b", "/incidents/a:b",
+    "/incidents/<script>", "/incidents/%2E%2E", "/incidents/x/y", "/incidents/x.json.json", "/incidents/" + "a" * 129,
+    "/incidents/..%2Fsentinel.db",
+])
+def test_unknown_or_malformed_incident_paths_are_not_found_and_never_echoed(page, path: str) -> None:
+    status, _, body = get(page, path)
+    assert (status, body) == (404, b"not found\n")
+
+
+def test_an_unreadable_database_gives_a_fixed_answer_and_is_never_created(tmp_path) -> None:
+    missing = tmp_path / "absent.db"
+    assert read_incident(missing, "inc-1") == {
+        "state": "unavailable", "problem": "database_unreadable:OperationalError"}
+    server = StatusServer(0, lambda: SNAPSHOT, missing)
+    server.start()
+    try:
+        for path in ("/incidents/inc-1", "/incidents/inc-1.json"):
+            status, _, body = get(server, path)
+            assert (status, body) == (503, b"incident database unavailable\n")
+    finally:
+        assert server.stop(2.0)
+    assert not missing.exists()
+
+
+def test_the_incident_page_reads_without_writing_while_the_runtime_owns_the_database(tmp_path) -> None:
+    db_path, incident_id = one_incident_with_its_evidence_chain(tmp_path)
+    writer = Database.open(db_path)  # holds the single-writer lock, as the runtime does
+    try:
+        before = db_path.read_bytes()
+        assert read_incident(db_path, incident_id)["state"] == "available"
+        assert db_path.read_bytes() == before
+    finally:
+        writer.close()
+
+
+def test_only_validated_scene_evidence_is_detailed_and_other_kinds_show_nothing_of_their_value(tmp_path) -> None:
+    clock = FakeClock(utc=T0)
+    db = Database.open(tmp_path / "sentinel.db")
+    service = IncidentService(db, clock, incidents=IncidentsConfig(), notifications=NotificationsConfig())
+    incident_id = service.record(signal("door")).incident_id  # payload "{}": not a zone observation
+    hostile = {**REPORT, "summary": "<script>alert(1)</script>"}
+    service.annotate(scene(incident_id, "job-1", value=hostile), Applicability.SUPERSEDED_EPOCH)
+    service.annotate(scene(incident_id, "job-2", kind="identity.face", value={"identity_id": "idn-0123456789ab"}),
+                     Applicability.CURRENT)
+    service.annotate(scene(incident_id, "job-3", value={"not": "a scene report"}), Applicability.EXPIRED)
+    db.close()
+    detail = read_incident(tmp_path / "sentinel.db", incident_id)
+    (rule,) = detail["evidence"]["shown"]
+    assert rule["source"] is None
+    report, face, malformed = detail["annotations"]["shown"]
+    assert report["applicability"] == "superseded_epoch" and report["details"]["report"]["summary"].startswith("<")
+    assert (face["details"], face["details_problem"]) == (None, "not_scene_evidence")
+    assert malformed["details"]["report"] is None  # not a valid SceneReport: no report shown, the rest is
+    assert (malformed["details"]["report_problem"], malformed["details"]["reason"]) == (
+        "not_a_valid_scene_report", "stub result")
+    text = render_incident_html(detail)
+    assert "idn-0123456789ab" not in text and "idn-0123456789ab" not in json.dumps(detail)
+    assert "not shown (not_scene_evidence)" in text and "(source fields not readable)" in text
+    assert "not shown (not_a_valid_scene_report)" in text and "a scene report" not in text
+    assert "<script>" not in text and "&lt;script&gt;alert(1)&lt;/script&gt;" in text
+
+
+def test_incident_lists_are_bounded_to_the_latest_rows_with_their_totals(tmp_path) -> None:
+    clock = FakeClock(utc=T0)
+    db = Database.open(tmp_path / "sentinel.db")
+    service = IncidentService(db, clock, incidents=IncidentsConfig(), notifications=NotificationsConfig())
+    incident_id = None
+    for n in range(MAX_EVIDENCE + 10):  # one episode per tracker ID switch: each joins the incident
+        observation = zone_observation(ZonePhase.ENTERED, episode=f"zone-door-ep{n}", at_s=2.0 + n, track_id=n)
+        incident_id = service.record(signal_from_zone(observation)).incident_id
+    for n in range(MAX_ANNOTATIONS + 5):
+        service.annotate(scene(incident_id, f"job-{n}"), Applicability.EXPIRED)
+    revision = service.incident(incident_id).revision
+    service.transition(incident_id, IncidentStatus.ACKNOWLEDGED, expected_revision=revision, actor="test", reason="seen")
+    db.close()
+    detail = read_incident(tmp_path / "sentinel.db", incident_id)
+    evidence, annotations = detail["evidence"], detail["annotations"]
+    assert (evidence["total"], len(evidence["shown"])) == (MAX_EVIDENCE + 10, MAX_EVIDENCE)
+    assert [e["source"]["track_id"] for e in evidence["shown"]] == list(range(10, MAX_EVIDENCE + 10))
+    assert [e["episode"] for e in evidence["shown"]][:3] == [1, 2, 3]
+    assert (annotations["total"], len(annotations["shown"])) == (MAX_ANNOTATIONS + 5, MAX_ANNOTATIONS)
+    assert annotations["shown"][-1]["details"]["reason"] == "stub result"
+    assert [t["to_status"] for t in detail["transitions"]["shown"]] == ["open", "acknowledged"]
+    text = render_incident_html(detail)
+    assert f"{MAX_EVIDENCE} of {MAX_EVIDENCE + 10} shown (the latest)" in text
+    assert "<td>acknowledged</td>" in text and "<td>test</td>" in text
+
+
+def test_linked_incidents_point_to_each_other_and_ids_without_a_page_are_not_linked(tmp_path) -> None:
+    clock = FakeClock(utc=T0)
+    db = Database.open(tmp_path / "sentinel.db")
+    ids = iter(["inc-first", "inc-second", "inc.dotted"])
+    service = IncidentService(db, clock, incidents=IncidentsConfig(merge_window_s=10.0),
+                              notifications=NotificationsConfig(), new_id=lambda now: next(ids))
+    service.record(signal_from_zone(zone_observation(ZonePhase.ENTERED, episode="ep-a", at_s=2.0)))
+    service.record(signal_from_zone(zone_observation(ZonePhase.ENTERED, episode="ep-b", at_s=30.0)))
+    service.record(signal("garage"))  # another zone: its own incident, with an ID that has no page
+    db.close()
+    first = read_incident(tmp_path / "sentinel.db", "inc-first")
+    second = read_incident(tmp_path / "sentinel.db", "inc-second")
+    assert (first["linked"], second["linked"]) == ({"previous": None, "later": ["inc-second"]},
+                                                   {"previous": "inc-first", "later": []})
+    assert '<a href="/incidents/inc-second">inc-second</a>' in render_incident_html(first)
+    assert '<a href="/incidents/inc-first">inc-first</a>' in render_incident_html(second)
+    assert read_incident(tmp_path / "sentinel.db", "inc.dotted") == {"state": "not_found"}
+    main_page = render_html(build_status(SNAPSHOT, read_store(tmp_path / "sentinel.db"), T0))
+    assert "<td>inc.dotted</td>" in main_page and 'href="/incidents/inc.dotted"' not in main_page
+    assert '<a href="/incidents/inc-first">' in main_page

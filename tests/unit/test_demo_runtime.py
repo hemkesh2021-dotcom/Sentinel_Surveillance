@@ -46,6 +46,7 @@ from sentinel.media.capture import CapturedFrame, CaptureState, CaptureStatus, D
 from sentinel.media.clock import FakeClock, SystemClock
 from sentinel.media.frames import FrameStamper
 from sentinel.scene.analyzer import RecentImages, ThreadedSceneAnalyzer
+from sentinel.status_page import read_incident, render_incident_html
 from sentinel.storage.database import Database
 from sentinel.tracking.tracker import PersonTracker, RawTrack, TrackerError
 
@@ -339,6 +340,45 @@ def test_a_late_scene_result_only_annotates_its_incident(tmp_path) -> None:
     assert live["scene"] != SceneStatus.REPORTED.value  # a late report is history, never current
     assert len(h.outbox_rows()) == 1  # enrichment never notifies
     assert h.rows("SELECT status, severity FROM incidents") == [("open", "warning")]
+
+
+def test_the_incident_page_shows_the_runtime_s_own_evidence_chain(tmp_path) -> None:
+    """D-2's incident detail on what the real wiring stored: rule source, late scene result, alert attempt."""
+    images = RecentImages()
+    analyzer = ThreadedSceneAnalyzer(lambda job, image: WorkerOutcome.completed(job.job_id, REPORT), images,
+                                     revision="1+lfm2")
+    h = Harness(tmp_path, scene=SceneRuntime(analyzer, images))
+    h.runtime.start()
+    try:
+        first = h.frame()
+        wait_for(lambda: analyzer.counters["delivered"] >= 1)
+        h.until_incident()
+        wait_for(lambda: analyzer.counters["delivered"] >= 2)
+        h.idle(9.0)  # the enrichment result is collected after its deadline: history only
+        h.runtime.step(timeout_s=0)
+        wait_for(lambda: h.outbox_rows()[0][1] == "sent")
+        (incident_id,) = [row[0] for row in h.rows("SELECT incident_id FROM incidents")]
+        detail = read_incident(tmp_path / "sentinel.db", incident_id)  # read only, while the runtime owns writes
+    finally:
+        h.runtime.shutdown()
+    assert detail["state"] == "available"
+    entered = detail["evidence"]["shown"][0]
+    assert entered["phase"] == "entered" and entered["kind"] == "zone.restricted_entry"
+    assert entered["source"]["track_id"] is not None and entered["source"]["in_zone_s"] >= 0.2
+    assert entered["source"]["first_frame_seq"] <= entered["source"]["last_frame_seq"]
+    assert entered["source"]["stream_epoch"] == first.stream_epoch  # no reconnect in this run
+    # Collected after 9 s without frames: the video is stale, so neither could be current; both are history here.
+    timeout, late = detail["annotations"]["shown"]
+    assert [(a["status"], a["applicability"], a["recorded_after_source_s"]) for a in (timeout, late)] == [
+        ("timeout", "no_live_stream", 9.0), ("observed", "no_live_stream", 9.0)]
+    assert late["details"]["reason"] == "scene report arrived after the job deadline"
+    assert late["details"]["report"]["summary"] == "One person stands in the room."
+    (alert,) = detail["deliveries"]["shown"]
+    assert (alert["state"], alert["attempts"], alert["provider_confirmed"]) == ("delivered", 1, True)
+    assert [a["outcome"] for a in alert["attempt_log"]["shown"]] == ["sent"]
+    assert [t["to_status"] for t in detail["transitions"]["shown"]] == ["open"]
+    text = render_incident_html(detail)
+    assert "One person stands in the room." in text and FAKE_URL not in text and FAKE_TOKEN not in text
 
 
 # ---------------------------------------------------------------- dependency failures
