@@ -32,7 +32,7 @@ import os
 import re
 import stat
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +58,7 @@ PROVENANCE = {"tracked_changes": "0", "data_dir_entries_before": "0", "RHa_exit"
               "display_manager": "inactive", "v1_procs": "0", "llama_server_procs": "0", "RHd_exit": "0",
               "RHe_exit": "0", "RHf_exit": "0"}
 SNAPSHOT_KEYS = ("state", "stream_epoch", "frame_seq", "sha256", "recorded_utc")
+GUARD_RESOLUTION = timedelta(seconds=1)  # step5_guard records launch and exit times in whole seconds, truncated
 USERINFO = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s@]+@")
 
 
@@ -292,11 +293,15 @@ def _acknowledgment(r: s5.Reading, run_dir: Path, results: dict[str, Any], statu
     stopped = _utc(s5._get(results["run1"], "child", "exited_utc"))
     restarted = _utc(s5._get(results["run2"], "child", "launched_utc"))
     at = _utc(s5._get(first, "acknowledged_utc"))
-    r.item("while monitoring was stopped: after run 1 exited and before run 2 was launched", {
+    # The acknowledgment succeeded only because no runtime held the database's writer lock (D68); its time is then
+    # checked against the guard's records, which are whole seconds: no earlier than run 1's exit second, and before
+    # the end of run 2's launch second.
+    r.item("while monitoring was stopped: between run 1's exit and run 2's launch (to the guard's whole seconds)", {
         "run1_exited_utc": s5._get(results["run1"], "child", "exited_utc"),
         "acknowledged_utc": s5._get(first, "acknowledged_utc"),
         "run2_launched_utc": s5._get(results["run2"], "child", "launched_utc")},
-           None not in (stopped, at, restarted) and stopped < at < restarted)  # type: ignore[operator]
+           None not in (stopped, at, restarted)
+           and stopped <= at < restarted + GUARD_RESOLUTION)  # type: ignore[operator]
     r.item("a repeat changed nothing and reported the first acknowledgment",
            {key: s5._get(repeat, key) for key in ("outcome", "acknowledged_utc")},
            s5._get(repeat, "outcome") == "already_acknowledged"

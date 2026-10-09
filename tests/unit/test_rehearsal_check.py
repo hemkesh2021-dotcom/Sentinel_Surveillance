@@ -221,9 +221,13 @@ def _tamper(r: SimpleNamespace) -> None:
     picture.write_bytes(picture.read_bytes() + b"\x00")
 
 
-def _late_ack(r: SimpleNamespace) -> None:  # run 2 was launched before the acknowledgment
+def _late_ack(r: SimpleNamespace) -> None:  # run 2 was launched (whole seconds) a second before the acknowledgment
     edit(r.run / "run2" / "result.json",
-         lambda d: d["child"].update(launched_utc=utc(T0 + timedelta(minutes=5, seconds=30))))
+         lambda d: d["child"].update(launched_utc=utc(T0 + timedelta(minutes=5, seconds=59))))
+
+
+def _early_ack(r: SimpleNamespace) -> None:  # run 1 exited (whole seconds) a second after the acknowledgment
+    edit(r.run / "run1" / "result.json", lambda d: d["child"].update(exited_utc=utc(T0 + timedelta(minutes=6, seconds=1))))
 
 
 CASES = {
@@ -261,6 +265,7 @@ CASES = {
     "another incident was acknowledged": (lambda r: (r.run / "incident-id.txt").write_text("inc-other\n"),
                                           "the acknowledged incident is the first one"),
     "acknowledged while run 2 was running": (_late_ack, "while monitoring was stopped"),
+    "acknowledged before run 1 had exited": (_early_ack, "while monitoring was stopped"),
     "the repeat acknowledged again": (lambda r: edit(r.run / "ack-2.json", lambda d: d.update(outcome="acknowledged")),
                                       "a repeat changed nothing"),
     "run 2 showed it open": (_capture("run2", "live2", lambda d: d["incidents"]["recent"][0].update(status="open")),
@@ -281,6 +286,16 @@ def test_each_item_fails_when_its_evidence_says_otherwise(mod, rehearsal: Simple
                and not line.split(" ", 1)[1].startswith(item)) or case in {
         "the snapshot is of another frame", "the snapshot file changed", "an older schema",
         "another incident was acknowledged"}  # these also fail the items that rest on the same evidence
+
+
+def test_the_acknowledgment_time_is_compared_at_the_guards_whole_seconds(mod, rehearsal: SimpleNamespace) -> None:
+    """Exit and launch times are whole seconds, truncated: an acknowledgment in run 1's exit second, or in run 2's
+    launch second, is consistent with monitoring having been stopped (the writer lock is what proves it)."""
+    second = utc(T0 + timedelta(minutes=6))  # the acknowledgment was at T0 + 6 min exactly
+    edit(rehearsal.run / "run1" / "result.json", lambda d: d["child"].update(exited_utc=second))
+    edit(rehearsal.run / "run2" / "result.json", lambda d: d["child"].update(launched_utc=second))
+    ok, out = lines(mod, rehearsal)
+    assert ok and any(line.startswith("PASS while monitoring was stopped") for line in out), "\n".join(out)
 
 
 @pytest.mark.parametrize("name", ["ack-2.json", "decoded.json", "incident-id.txt", "run2/status-live2.json",
