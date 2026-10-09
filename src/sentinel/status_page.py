@@ -13,6 +13,19 @@ no sessions, roles, API or media. It is reached over an SSH port forward.
   database is read through a new read-only SQLite connection per request
   (``connect_reader``), in one short read transaction, so the page never
   writes, migrates or holds the writer's lock.
+- **Live view (D69; only with ``sentinel run --live-preview``).** The main
+  page shows the newest frame the runtime already reads, with its state
+  (live, stale, offline, starting), its age and its ingest time, and a
+  picture only while that frame is live, at GET ``/preview/<epoch>-<seq>.jpg``
+  (``live_preview``). The picture refreshes with the page. If the page stops
+  refreshing (a stalled tunnel or a stopped runtime), CSS alone dims it and
+  marks it not current after PREVIEW_EXPIRY_S, so a frozen frame is never
+  shown as current. At most MAX_PICTURE_RESPONSES pictures are sent at once.
+- **Bounded connections.** At most MAX_CONNECTIONS at once (more get 503 and
+  are closed); each connection's reads and writes time out after
+  HANDLER_TIMEOUT_S, and its kernel send buffer is fixed, so a slow or
+  stalled browser holds one thread for a bounded time and never touches the
+  runtime loop. Connection errors are counted, never printed.
 - **What it shows.** Component readiness, capture and reconnect state, video
   freshness, processing rates, degradation reasons, recent incidents and
   delivery state. Delivery separates *queued* (never attempted), *attempted*
@@ -32,7 +45,7 @@ no sessions, roles, API or media. It is reached over an SSH port forward.
   ack``, run while monitoring is stopped (D68). There is no clip: the page says
   so instead of hiding it.
 - **What it never shows.** Credentials, tokens, chat IDs, stream URLs, hosts,
-  images or exception text. The runtime snapshot holds numbers and fixed
+  exception text, or any image other than the live view's current picture. The runtime snapshot holds numbers and fixed
   labels only; stored delivery errors were redacted when written; every value
   is HTML-escaped. Stored payloads are shown only as fields of a contract this
   build validates (zone and hazard observations, scene evidence); the details
@@ -48,6 +61,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import socket
 import sqlite3
 import threading
 from collections.abc import Callable, Mapping
@@ -61,6 +75,7 @@ from pydantic import ValidationError
 
 from .contracts import Evidence, EvidenceStatus
 from .incidents.service import UNRESOLVED, latest_acknowledgment
+from .live_preview import LivePreview, PreviewPicture
 from .rules.scene_hazard import FIRE_SMOKE_CANDIDATE, HazardCandidate
 from .rules.zones import ZONE_KINDS, ZoneObservation
 from .scene.report import SceneReport
@@ -75,6 +90,15 @@ REFRESH_S = 2
 INCIDENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 INCIDENT_PATH = re.compile(r"/incidents/(?P<id>[A-Za-z0-9][A-Za-z0-9_-]{0,127})(?P<json>\.json)?")
 DETAIL_REFRESH_S = 10
+PREVIEW_PATH = re.compile(r"/preview/(?P<token>[0-9]{1,9}-[0-9]{1,12})\.jpg")
+PREVIEW_EXPIRY_S = 5  # the shown picture is dimmed and marked not current once the page is this old
+PREVIEW_OFF = {"enabled": False, "state": "off",
+               "reason": "the live view is off; start sentinel run with --live-preview to show it"}
+PREVIEW_STARTING = {"enabled": True, "state": "starting", "reason": "the runtime is starting"}
+MAX_CONNECTIONS = 16
+MAX_PICTURE_RESPONSES = 2
+HANDLER_TIMEOUT_S = 10.0  # per connection: a request must arrive, and each response be written, within this
+SEND_BUFFER_BYTES = 262_144
 MAX_EVIDENCE = 50
 MAX_TRANSITIONS = 20
 MAX_ANNOTATIONS = 20
@@ -94,7 +118,8 @@ SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
     "Content-Security-Policy": (
-        "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; "
+        "frame-ancestors 'none'"
     ),
 }
 DELIVERY_STATES = ("queued", "attempted", "delivered", "failed")
@@ -339,8 +364,10 @@ def _seconds_between(earlier: str, later: str) -> float | None:
         return None
 
 
-def build_status(snapshot: Mapping[str, Any], store: Mapping[str, Any], now: datetime) -> dict[str, Any]:
-    """The /status.json document: the runtime snapshot plus the stored incidents and deliveries."""
+def build_status(
+    snapshot: Mapping[str, Any], store: Mapping[str, Any], now: datetime, preview: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """The /status.json document: the runtime snapshot, the stored incidents and deliveries, and the live view."""
     runtime = dict(snapshot.get("runtime") or {"state": "starting"})
     degraded = list(snapshot.get("degraded") or [])
     age = _age_s(runtime.get("updated_utc"), now)
@@ -359,6 +386,7 @@ def build_status(snapshot: Mapping[str, Any], store: Mapping[str, Any], now: dat
         "database": {"state": store.get("state"), "problem": store.get("problem")},
         "incidents": store.get("incidents"),
         "delivery": store.get("delivery"),
+        **({"preview": dict(preview)} if preview is not None else {}),  # absent while off: the document is unchanged
     }
 
 
@@ -402,7 +430,12 @@ h1{font-size:20px;margin:0 0 4px} h2{font-size:16px;margin:20px 0 6px} a{color:v
 table{border-collapse:collapse;margin:4px 0} th,td{border-bottom:1px solid var(--line);padding:3px 10px 3px 0;text-align:left;vertical-align:top}
 table.list{width:100%} .muted{color:var(--muted)} .banner{padding:8px 12px;border-radius:6px;margin:10px 0}
 .ok{background:var(--ok)} .bad{background:var(--bad)} .grid{display:flex;flex-wrap:wrap;gap:24px}
-.wrap{overflow-x:auto} ul{margin:4px 0 0 18px;padding:0}"""
+.wrap{overflow-x:auto} ul{margin:4px 0 0 18px;padding:0}
+.pv{position:relative;display:inline-block;margin:4px 0;max-width:100%}
+.pv img{display:block;max-width:100%;height:auto;animation:pv-old .1s linear EXPIRYs forwards}
+.pv figcaption{visibility:hidden;position:absolute;left:0;right:0;top:0;padding:8px;background:var(--bad);
+font-weight:bold;animation:pv-show .1s linear EXPIRYs forwards}
+@keyframes pv-old{to{opacity:.12}} @keyframes pv-show{to{visibility:visible}}""".replace("EXPIRY", str(PREVIEW_EXPIRY_S))
 
 
 def _document(title: str, refresh_s: int, body: str) -> str:
@@ -435,6 +468,48 @@ def _table(headers: list[str], rows: list[list[object]], empty: str) -> str:
     head = "".join(f"<th>{_e(h)}</th>" for h in headers)
     body = "".join("<tr>" + "".join(f"<td>{_e(c)}</td>" for c in row) + "</tr>" for row in rows)
     return f"<table class=list><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+
+
+PREVIEW_LABELS = {"live": "LIVE", "stale": "STALE: not current", "offline": "OFFLINE", "starting": "STARTING"}
+
+
+def _seconds(ms: object) -> str | None:
+    return None if not isinstance(ms, int) else f"{ms / 1000:.1f} s"
+
+
+def _preview_html(view: Mapping[str, Any] | None) -> str:
+    """The live view: state, age, ingest time, and a picture only while its frame is live."""
+    view = view or PREVIEW_OFF
+    if not view.get("enabled"):
+        return f"<section><h2>Live view</h2><p class=muted>{_e(view.get('reason'))}.</p></section>"
+    state = view.get("state")
+    picture = view.get("picture")
+    shown = picture or view.get("frame")
+    banner = (f"<div class='banner {'ok' if state == 'live' and picture else 'bad'}'>"
+              f"<strong>{_e(PREVIEW_LABELS.get(str(state), str(state).upper()))}</strong>: {_e(view.get('reason'))}</div>")
+    if picture:
+        body = (f'<figure class=pv><img src="{_e(picture["url"])}" width="{_e(picture["width"])}" '
+                f'height="{_e(picture["height"])}" alt="camera picture, stream epoch {_e(picture["stream_epoch"])} '
+                f'frame {_e(picture["frame_seq"])}"><figcaption>NOT CURRENT: this page has not refreshed for '
+                f"{PREVIEW_EXPIRY_S} s, so this picture is old.</figcaption></figure>")
+    elif state == "live":
+        body = f"<p>No picture: {_e(view.get('problem') or 'none encoded yet')}.</p>"
+    else:
+        body = "<p>No picture is shown: the last frame is not current.</p>" if shown else ""
+    facts = ""
+    if shown:
+        age = picture["age_ms"] if picture else view.get("age_ms")
+        facts = "<table>" + _rows([
+            ("frame", f"stream epoch {shown['stream_epoch']}, frame {shown['frame_seq']}"),
+            ("frame age when this page was generated", _seconds(age)),
+            ("time (UTC)", shown["ingest_utc"]),
+            ("what the time means", view.get("time_label")),
+        ]) + "</table>"
+    bounds = view.get("bounds") or {}
+    note = (f"Refreshes with the page every {REFRESH_S} s. Pictures are at most {bounds.get('max_width')}×"
+            f"{bounds.get('max_height')}, at most {bounds.get('max_encodes_per_s')} encoded per second for all "
+            "viewers, from the frames the runtime already reads; nothing is saved.")
+    return f"<section><h2>Live view</h2>{banner}{body}{facts}<p class=muted>{_e(note)}</p></section>"
 
 
 def render_html(status: Mapping[str, Any]) -> str:
@@ -486,6 +561,7 @@ def render_html(status: Mapping[str, Any]) -> str:
 <p class=muted>Runtime {_e(runtime.get("state"))}; status from {_e(runtime.get("updated_utc"))}
 ({_e(runtime.get("status_age_s"))} s old). Read-only, loopback only; refreshes every {REFRESH_S} s.</p>
 {banner}
+{_preview_html(status.get("preview"))}
 <div class=grid>
 <section><h2>Components</h2>{_table(["component", "state", "problem"], component_rows, "none")}</section>
 <section><h2>Capture</h2><table>{_rows([
@@ -634,8 +710,53 @@ Delivery is at least once: an ambiguous attempt may have reached the chat, and a
 # ---------------------------------------------------------------- server
 
 
+class _Server(ThreadingHTTPServer):
+    """At most ``max_connections`` connections at once; errors are counted, never printed."""
+
+    daemon_threads = True
+    block_on_close = False
+
+    def __init__(self, address: tuple[str, int], handler: type, max_connections: int) -> None:
+        super().__init__(address, handler)
+        self._slots = threading.BoundedSemaphore(max_connections)
+        self._counts_lock = threading.Lock()
+        self.counts = {"refused_busy": 0, "write_timeouts": 0, "connection_errors": 0}
+
+    def count(self, name: str) -> None:
+        with self._counts_lock:
+            self.counts[name] += 1
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self._slots.acquire(blocking=False):
+            self.count("refused_busy")
+            try:
+                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)  # starts the connection's thread
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+    def handle_error(self, request: Any, client_address: Any) -> None:  # a stalled or vanished browser, not a fault
+        self.count("connection_errors")
+
+
 class StatusServer:
-    """Serves the page on 127.0.0.1:``port`` from its own thread; ``port`` 0 picks a free port (tests)."""
+    """Serves the page on 127.0.0.1:``port`` from its own thread; ``port`` 0 picks a free port (tests).
+
+    ``preview`` (D69): None while the live view is off; otherwise it returns the runtime's LivePreview, or None
+    while the runtime is still starting.
+    """
 
     def __init__(
         self,
@@ -645,17 +766,25 @@ class StatusServer:
         *,
         host: str = LOOPBACK_HOST,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        preview: Callable[[], LivePreview | None] | None = None,
+        max_connections: int = MAX_CONNECTIONS,
+        handler_timeout_s: float = HANDLER_TIMEOUT_S,
     ) -> None:
         if host != LOOPBACK_HOST:
             raise ValueError(f"the status page binds {LOOPBACK_HOST} only")
         if not 0 <= port <= 65535:
             raise ValueError("port must be between 0 and 65535")
+        if not 1 <= max_connections <= MAX_CONNECTIONS:
+            raise ValueError(f"max_connections must be between 1 and {MAX_CONNECTIONS}")
+        if not 0 < handler_timeout_s <= HANDLER_TIMEOUT_S:
+            raise ValueError(f"handler_timeout_s must be above 0 and at most {HANDLER_TIMEOUT_S:g}")
         self._snapshot = snapshot
         self._db_path = Path(db_path)
         self._now = now
-        handler = type("StatusHandler", (_Handler,), {"page": self})
-        self._httpd = ThreadingHTTPServer((LOOPBACK_HOST, port), handler)
-        self._httpd.daemon_threads = True
+        self._preview = preview
+        self._picture_slots = threading.BoundedSemaphore(MAX_PICTURE_RESPONSES)
+        handler = type("StatusHandler", (_Handler,), {"page": self, "timeout": handler_timeout_s})
+        self._httpd = _Server((LOOPBACK_HOST, port), handler, max_connections)
         self._thread: threading.Thread | None = None
 
     @property
@@ -663,8 +792,25 @@ class StatusServer:
         host, port = self._httpd.server_address[:2]
         return str(host), int(port)
 
-    def status(self) -> dict[str, Any]:
-        return build_status(self._snapshot(), read_store(self._db_path), self._now())
+    def status(self, *, with_picture: bool = False) -> dict[str, Any]:
+        """``with_picture`` (the HTML page only): let the live view encode a picture if one is due."""
+        return build_status(self._snapshot(), read_store(self._db_path), self._now(),
+                            self.preview_view(with_picture=with_picture))
+
+    def preview_view(self, *, with_picture: bool = False) -> dict[str, Any] | None:
+        """The live view's state; None while it is off."""
+        if self._preview is None:
+            return None
+        preview = self._preview()
+        return dict(PREVIEW_STARTING) if preview is None else preview.view(with_picture=with_picture)
+
+    def preview_picture(self, token: str) -> PreviewPicture | None:
+        preview = None if self._preview is None else self._preview()
+        return None if preview is None else preview.picture(token)
+
+    def connection_counts(self) -> dict[str, int]:
+        with self._httpd._counts_lock:
+            return dict(self._httpd.counts)
 
     def incident(self, incident_id: str) -> dict[str, Any]:
         return {"generated_utc": self._now().isoformat(), **read_incident(self._db_path, incident_id)}
@@ -693,11 +839,22 @@ class _Handler(BaseHTTPRequestHandler):
     server_version = "sentinel-status"
     sys_version = ""
 
+    def setup(self) -> None:
+        super().setup()  # applies ``timeout`` to the connection's reads and writes
+        try:
+            self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SEND_BUFFER_BYTES)
+        except OSError:
+            pass
+
     def do_GET(self) -> None:  # noqa: N802 - http.server naming
         if not self._host_allowed():
             self._send(421, "text/plain; charset=utf-8", b"misdirected request\n")
             return
         path = urlsplit(self.path).path
+        preview = PREVIEW_PATH.fullmatch(path)
+        if preview is not None:
+            self._send_picture(preview["token"])
+            return
         incident = INCIDENT_PATH.fullmatch(path)
         if path not in ("/", "/status.json") and incident is None:
             self._send(404, "text/plain; charset=utf-8", b"not found\n")
@@ -718,11 +875,29 @@ class _Handler(BaseHTTPRequestHandler):
             elif path == "/status.json":
                 body, kind = json.dumps(self.page.status(), indent=2).encode(), "application/json"
             else:
-                body, kind = render_html(self.page.status()).encode(), "text/html; charset=utf-8"
+                body, kind = render_html(self.page.status(with_picture=True)).encode(), "text/html; charset=utf-8"
         except Exception:  # noqa: BLE001 - never show exception text
             self._send(500, "text/plain; charset=utf-8", b"status unavailable\n")
             return
         self._send(200, kind, body)
+
+    def _send_picture(self, token: str) -> None:
+        """The live view's picture named ``token``, only while its frame is live; the token is never echoed."""
+        if not self.page._picture_slots.acquire(blocking=False):
+            self._send(503, "text/plain; charset=utf-8", b"busy: too many picture requests\n")
+            return
+        try:
+            try:
+                picture = self.page.preview_picture(token)
+            except Exception:  # noqa: BLE001 - never show exception text
+                self._send(500, "text/plain; charset=utf-8", b"picture unavailable\n")
+                return
+            if picture is None:
+                self._send(404, "text/plain; charset=utf-8", b"no current picture\n")
+                return
+            self._send(200, "image/jpeg", picture.jpeg)
+        finally:
+            self.page._picture_slots.release()
 
     def _refuse(self) -> None:
         self._send(405, "text/plain; charset=utf-8", b"read-only: GET only\n", allow="GET")
@@ -741,9 +916,13 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header(name, value)
         if allow is not None:
             self.send_header("Allow", allow)
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
+        try:
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+        except TimeoutError:  # a browser that stopped reading; http.server then drops the connection silently
+            self.server.count("write_timeouts")  # type: ignore[attr-defined]
+            raise
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - no request logging to stderr
         return

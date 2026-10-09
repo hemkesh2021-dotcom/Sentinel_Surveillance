@@ -362,6 +362,12 @@ def main(
         help="read-only status page on 127.0.0.1:PORT (D-2; default 18090; 0 = none). Reach it over SSH: "
         "ssh -L 18090:127.0.0.1:18090 <device>",
     )
+    run.add_argument(
+        "--live-preview", action="store_true",
+        help="D69 (off by default): show the newest frame the runtime already reads on the status page, with its "
+        "age and live/stale/offline state; a picture only while that frame is live, at most 640x480 and 2 encoded "
+        "per second for all viewers, encoded only while someone views the page; nothing is saved. Needs the status page",
+    )
     run.add_argument("--status-interval-s", type=_positive_seconds, default=30.0,
                      help="print a numbers-only status line this often (default 30)")
     incident_parser = commands.add_parser(
@@ -648,6 +654,9 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
     if args.face_validation and not args.face:
         print("run: --face-validation needs --face", file=sys.stderr)
         return 1
+    if args.live_preview and not args.status_port:
+        print("run: --live-preview needs the status page (--status-port other than 0)", file=sys.stderr)
+        return 1
     face = None
     if args.face:
         if secret is None:
@@ -667,6 +676,7 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
         face=face,
         memory_policy=policy_from_flags(workload_thp_disable=args.workload_thp_disable,
                                         post_load_release=args.post_load_release),
+        live_preview=args.live_preview,
     )
     clock = SystemClock()
     holder: dict[str, Any] = {}
@@ -680,8 +690,13 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
             return runtime.snapshot() if runtime is not None else {
                 "runtime": {"state": "starting", "camera_id": config.camera.id}}
 
+        def preview() -> Any:
+            runtime = holder.get("runtime")
+            return None if runtime is None else runtime.preview
+
         try:
-            page = StatusServer(args.status_port, snapshot, options.data_dir / DATABASE_NAME)
+            page = StatusServer(args.status_port, snapshot, options.data_dir / DATABASE_NAME,
+                                preview=preview if args.live_preview else None)
         except OSError as exc:
             print(f"run: status_port_unavailable:{type(exc).__name__}", file=sys.stderr)
             return 1

@@ -46,6 +46,7 @@ from sentinel.live_state import Capability, Occupancy, SceneStatus
 from sentinel.media.capture import CapturedFrame, CaptureState, CaptureStatus, DecodedFrame, LatestFrame, SourceError
 from sentinel.media.clock import FakeClock, SystemClock
 from sentinel.media.frames import FrameStamper
+from sentinel.media.jpeg import EncodedJpeg
 from sentinel.rules.scene_hazard import Severity
 from sentinel.scene.analyzer import RecentImages, ThreadedSceneAnalyzer
 from sentinel.status_page import read_incident, render_incident_html
@@ -102,10 +103,10 @@ class FakeCapture:
         self.ends += 1
         self.problem = "no_frame"
 
-    def publish(self, dt: float = FRAME_S):
+    def publish(self, dt: float = FRAME_S, image: Any = None):
         self.clock.advance(dt)
         frame = self.stamper.stamp(native_width=640, native_height=480, pixel_format=PixelFormat.BGR)
-        self.slot.publish(CapturedFrame(frame, IMAGE))
+        self.slot.publish(CapturedFrame(frame, IMAGE if image is None else image))
         return frame
 
     def start(self) -> None:
@@ -181,7 +182,7 @@ class Harness:
     def __init__(self, tmp_path: Path, *, config=None, notifier: FakeNotifier | None = None, tracker: bool = True,
                  detector_problem: str | None = None, scene: SceneRuntime | None = None,
                  scene_problem: str | None = None, notifier_problems: dict[str, str] | None = None,
-                 flaky: dict[str, int] | None = None) -> None:
+                 flaky: dict[str, int] | None = None, live_preview: bool = False, picture_bytes: int = 0) -> None:
         self.clock = FakeClock(utc=T0)
         self.config = config or make_config()
         self.db = Database.open(tmp_path / "sentinel.db")
@@ -199,13 +200,14 @@ class Harness:
             self.config, self.clock, capture=self.capture, slot=self.slot, incidents=self.incidents,  # type: ignore[arg-type]
             outbox=self.outbox, tracker=PersonTracker(self.backend) if tracker else None,
             detector_problem=detector_problem, scene=scene, scene_problem=scene_problem,
-            notifier_problems=notifier_problems, status_refresh_s=0.0,
+            notifier_problems=notifier_problems, status_refresh_s=0.0, live_preview=live_preview,
+            encode=lambda image, fmt, **kw: label_encode(image, fmt, picture_bytes=picture_bytes, **kw),
         )
         self.capture.connect()
 
-    def frame(self, persons: list[RawTrack] | Exception = PERSON, dt: float = FRAME_S):
+    def frame(self, persons: list[RawTrack] | Exception = PERSON, dt: float = FRAME_S, image: Any = None):
         self.backend.script.append(persons)
-        frame = self.capture.publish(dt)
+        frame = self.capture.publish(dt, image)
         self.runtime.step(timeout_s=0)
         return frame
 
@@ -229,6 +231,13 @@ class Harness:
 
     def live(self) -> dict[str, Any]:
         return self.runtime.snapshot()["live"]
+
+
+def label_encode(image: Any, pixel_format: PixelFormat, *, max_width: int, max_height: int, quality: int,
+                 picture_bytes: int = 0) -> EncodedJpeg:
+    """A fake encoder: the JPEG's bytes name the image it was given (cv2 is never needed)."""
+    label = getattr(image, "label", "image").encode()
+    return EncodedJpeg(b"\xff\xd8" + label.ljust(max(0, picture_bytes - 4), b"\0") + b"\xff\xd9", 640, 480)
 
 
 def wait_for(predicate, timeout_s: float = 3.0) -> None:
@@ -950,3 +959,128 @@ def test_a_busy_status_port_refuses_startup_before_any_model_loads(tmp_path, cap
                     devices=fake_devices(ThreadedSource(), calls=calls))
     assert code == 1 and capsys.readouterr().err.strip() == "run: status_port_unavailable:OSError"
     assert calls == []
+
+
+# ---------------------------------------------------------------- the live view (D69)
+
+VIDEO_TO_PREVIEW = {"fresh": "live", "stale": "stale", "offline": "offline", "starting": "starting"}
+
+
+def test_the_live_view_shows_the_frames_the_loop_takes_and_follows_video_freshness(tmp_path) -> None:
+    h = Harness(tmp_path, live_preview=True)
+    preview = h.runtime.preview
+    assert preview is not None
+    seen: list[tuple[str, str]] = []
+
+    def check() -> dict[str, Any]:
+        view = preview.view(with_picture=True)
+        seen.append((h.live()["video"], view["state"]))
+        return view
+
+    first = h.frame(image=SimpleNamespace(shape=(480, 640, 3), label="first"))
+    view = check()
+    assert view["picture"]["frame_seq"] == first.frame_seq and preview.picture(f"1-{first.frame_seq}").jpeg[2:7] == b"first"
+    h.idle(2.5)  # a stall: no frame, the stream still connected
+    assert check()["picture"] is None
+    h.capture.disconnect()
+    h.idle(0.0)
+    assert check()["reason"].startswith("no new frame for 2.5 s")
+    h.idle(10.0)
+    assert check()["state"] == "offline"
+    h.capture.connect()
+    h.frame(image=SimpleNamespace(shape=(480, 640, 3), label="after"))
+    view = check()
+    assert view["picture"]["stream_epoch"] == 2 and view["picture"]["url"].startswith("/preview/2-")
+    assert [VIDEO_TO_PREVIEW[video] for video, _ in seen] == [state for _, state in seen]  # one freshness rule
+    assert [state for _, state in seen] == ["live", "stale", "stale", "offline", "live"]
+    assert h.capture.connects == 2  # the preview opened no connection of its own
+    assert preview.summary()["counters"]["encodes"] == 2
+    h.idle(0.0)  # the runtime's status, taken at its next step, carries the same numbers
+    assert h.runtime.snapshot()["components"]["preview"] == preview.summary()
+
+
+def test_the_live_view_is_off_by_default_and_keeps_no_frames(tmp_path) -> None:
+    h = Harness(tmp_path)
+    h.frame()
+    assert h.runtime.preview is None and h.runtime._recent is None  # type: ignore[attr-defined]
+    assert "preview" not in h.runtime.snapshot()["components"]  # a run without it reports exactly as before
+
+
+def test_a_stalled_browser_never_slows_the_runtime_loop(tmp_path, monkeypatch) -> None:
+    import socket
+
+    from sentinel import status_page
+    from sentinel.live_preview import PREVIEW_MAX_JPEG_BYTES
+    from sentinel.status_page import StatusServer
+
+    monkeypatch.setattr(status_page, "SEND_BUFFER_BYTES", 4096)
+    h = Harness(tmp_path, live_preview=True, picture_bytes=PREVIEW_MAX_JPEG_BYTES)
+    h.frame()
+    page = StatusServer(0, h.runtime.snapshot, tmp_path / "sentinel.db", preview=lambda: h.runtime.preview,
+                        handler_timeout_s=0.5)
+    page.start()
+    stalled = []
+    try:
+        url = h.runtime.preview.view(with_picture=True)["picture"]["url"]  # type: ignore[union-attr]
+        for _ in range(2):  # both picture slots, each request sent and its response never read
+            sock = socket.socket()
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+            sock.connect(page.address)
+            sock.sendall(f"GET {url} HTTP/1.1\r\nHost: 127.0.0.1:{page.address[1]}\r\n\r\n".encode())
+            stalled.append(sock)
+        time.sleep(0.1)
+        durations = []
+        for _ in range(30):
+            started = time.perf_counter()
+            h.frame()
+            durations.append(time.perf_counter() - started)
+        wait_for(lambda: page.connection_counts()["write_timeouts"] == 2)
+    finally:
+        for sock in stalled:
+            sock.close()
+        assert page.stop(2.0)
+    assert max(durations) < 0.05 and h.runtime.snapshot()["frames"]["processed"] == 31
+
+
+def test_sentinel_run_serves_the_live_view_only_with_its_flag(tmp_path, capsys, monkeypatch) -> None:
+    import http.client
+    import re
+
+    monkeypatch.setenv("SENTINEL_RTSP_URL", FAKE_URL)
+    config = tmp_path / "config.yaml"
+    config.write_text("config_version: 1\ncamera: {id: cam-1}\n")
+    assert main(["run", str(config), "--data-dir", str(tmp_path / "data"), "--engine", "x", "--status-port", "0",
+                 "--live-preview"], devices=fake_devices(ThreadedSource())) == 1
+    assert capsys.readouterr().err.strip() == "run: --live-preview needs the status page (--status-port other than 0)"
+
+    port = free_port()
+    fetched: list[tuple[int, str, bytes]] = []
+
+    def fetch(path: str) -> None:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", path, headers={"Host": f"127.0.0.1:{port}"})
+        response = conn.getresponse()
+        fetched.append((response.status, response.getheader("Content-Type"), response.read()))
+        conn.close()
+
+    def on_read(reads: int) -> None:
+        if reads == 15:  # in the capture thread: no new frame arrives meanwhile
+            fetch("/")
+            match = re.search(r'<img src="(/preview/1-\d+\.jpg)"', fetched[0][2].decode())
+            fetch(match.group(1) if match else "/preview/none.jpg")
+        if reads == 25:
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    devices = fake_devices(ThreadedSource(1000, on_read=on_read))
+    devices.encode = label_encode
+    code = main(["run", str(config), "--data-dir", str(tmp_path / "data"), "--engine", str(tmp_path / "x.engine"),
+                 "--status-port", str(port), "--live-preview"], devices=devices)
+    out = capsys.readouterr()
+    assert code == 0, out.err
+    assert [(status, kind) for status, kind, _ in fetched] == [(200, "text/html; charset=utf-8"), (200, "image/jpeg")]
+    assert fetched[1][2] == b"\xff\xd8image\xff\xd9" and "<strong>LIVE</strong>" in fetched[0][2].decode()
+    lines = [json.loads(line) for line in out.out.splitlines()]
+    assert lines[0]["startup"]["live_preview"]["max_width"] == 640
+    assert lines[-1]["status"]["state"] == "stopped" and lines[-1]["shutdown"]["all_stopped"] is True
+    for secret in ("hunter2", "192.0.2.10", "rtsp://"):
+        assert secret not in out.out + out.err + fetched[0][2].decode()

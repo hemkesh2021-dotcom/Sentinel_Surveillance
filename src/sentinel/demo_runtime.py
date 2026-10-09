@@ -50,6 +50,11 @@ operator types; startup refuses on a sealing error, and a missing or empty galle
 unavailable without loading the model. The face adapter needs its own admission record, which starts
 PENDING_VALIDATION: only ``--face-validation`` runs may use it. Nothing here shows names, photos or embeddings.
 
+Live view (D69, ``--live-preview``; off by default): the loop puts each frame it takes into RecentFrames (a
+reference, before inference; the last RECENT_FRAMES_KEPT only), and the status page's LivePreview encodes the newest
+one in its own request thread, bounded, only while the frame is live. Nothing else reads the camera, and the loop
+never waits on a viewer.
+
 Memory policies (D58; opt-in, off by default, see ``assemble``): this process
 can disable transparent huge pages for itself before the detector loads, and
 release each loaded model's files from the page cache after it settles. Both
@@ -98,9 +103,12 @@ from .inference.legacy_ultralytics import LEGACY_ENGINE_SHA256
 from .incidents.signals import IncidentSignal, signal_from_hazard, signal_from_zone
 from .jobs import AnalysisJob, WorkerOutcome
 from .identity.state import IdentityState
+from .live_preview import LivePreview
 from .live_state import Capability, LiveState
 from .media.capture import CapturedFrame, CaptureState, CaptureStatus, LatestFrame, SourceError, VideoSource
 from .media.clock import NS_PER_SECOND, Clock
+from .media.jpeg import Encoder, encode_jpeg
+from .media.recent import RecentFrames
 from .memory_policy import (
     DEFAULT_POLICY,
     RELEASE_POST_LOAD,
@@ -246,6 +254,8 @@ class DemoRuntime:
         notifier_problems: Mapping[str, str] | None = None,
         tick_s: float = 0.25,
         status_refresh_s: float = 0.5,
+        live_preview: bool = False,
+        encode: Encoder = encode_jpeg,
     ) -> None:
         if tracker is None and detector_problem is None:
             detector_problem = "detector_not_configured"
@@ -275,6 +285,9 @@ class DemoRuntime:
             scene_problem=self._scene_problem,
         )
         self._identity_records: deque[dict[str, Any]] = deque()
+        self._recent = RecentFrames() if live_preview else None  # D69: only when something reads it
+        self._preview = (LivePreview(self._recent, clock, config.freshness, lambda: capture.connected, encode=encode)
+                         if self._recent is not None else None)
         self._frames: OrderedDict[FrameKey, FrameRef] = OrderedDict()
         self._pending: deque[tuple[IncidentSignal, FrameKey | None]] = deque()
         self._retry_at_ns = 0
@@ -295,6 +308,11 @@ class DemoRuntime:
     @property
     def core(self) -> EdgeCore:
         return self._core
+
+    @property
+    def preview(self) -> LivePreview | None:
+        """The status page's live view (D69); None when it is off."""
+        return self._preview
 
     # ------------------------------------------------------------ lifecycle
 
@@ -376,6 +394,8 @@ class DemoRuntime:
     def _on_frame(self, captured: CapturedFrame, connected: StreamIdentity | None) -> CoreOutput:
         frame = captured.frame
         self.counters["frames_taken"] += 1
+        if self._recent is not None:
+            self._recent.put(frame, captured.image)  # a reference; the preview judges freshness itself
         self._frames[frame.key] = frame
         while len(self._frames) > IMAGES_KEPT:
             self._frames.popitem(last=False)
@@ -517,6 +537,8 @@ class DemoRuntime:
             },
             "notifications": self._notification_status(),
         }
+        if self._preview is not None:  # only when enabled: the output of a run without it is unchanged
+            components["preview"] = self._preview.summary()
         snapshot = {
             "runtime": {
                 "state": self._state.value,
@@ -730,6 +752,7 @@ class RunOptions:
     scene: SceneOptions | None = None  # None: scene analysis disabled (the default)
     face: FaceOptions | None = None  # None: face recognition disabled (the default)
     memory_policy: MemoryPolicy = DEFAULT_POLICY  # D58: opt-in; the default changes nothing
+    live_preview: bool = False  # D69: the status page's live view; off by default
 
 
 @dataclass(frozen=True)
@@ -771,6 +794,7 @@ class Devices:
     memory: MemoryOps = field(default_factory=MemoryOps)  # D58; used only when a policy is selected
     face_backend: Callable[[Path | None], Any] | None = None  # has load(), compatibility(), faces(), weight_files
     identity_store: Callable[[Path], Any] | None = None  # has exists(), load(secret)
+    encode: Encoder = encode_jpeg  # D69/D70 pictures; cv2 is imported only when it runs
 
 
 @dataclass
@@ -1151,8 +1175,10 @@ def assemble(
             config, clock, capture=capture, slot=slot, incidents=incidents, outbox=outbox,
             tracker=tracker, detector_problem=detector_problem, scene=scene, scene_problem=scene_problem,
             face=face, face_problem=face_problem, enrollment=None if gallery is None else gallery.enrollment(),
-            notifier_problems=notifier_problems,
+            notifier_problems=notifier_problems, live_preview=options.live_preview, encode=devices.encode,
         )
+        if runtime.preview is not None:  # only when enabled, as every new output key (evidence profiles are strict)
+            startup["live_preview"] = runtime.preview.bounds()
     except BaseException:
         if server is not None:
             server.stop(10.0)

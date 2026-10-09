@@ -45,18 +45,31 @@ class FreshnessMonitor:
             self._last_frame = frame
 
     def assess(self, connected: StreamIdentity | None) -> VideoFreshness:
-        now = self._clock.mono()
-        last = self._last_frame
-        if last is None or last.boot_id != now.boot_id:
-            since_start = now.ns_since(self._started) if self._started.boot_id == now.boot_id else None
-            if since_start is not None and since_start < self._config.offline_after_ns:
-                return VideoFreshness(VideoState.STARTING, None, None)
-            return VideoFreshness(VideoState.OFFLINE, None, None)
-        age = now.ns_since(MonoInstant(last.boot_id, last.ingest_mono_ns))
-        if age >= self._config.offline_after_ns:
-            state = VideoState.OFFLINE
-        elif age >= self._config.stale_after_ns or connected is None or last.stream != connected:
-            state = VideoState.STALE
-        else:
-            return VideoFreshness(VideoState.FRESH, age, connected)
-        return VideoFreshness(state, age, None)
+        return assess_frame(self._last_frame, connected, self._clock.mono(), self._started, self._config)
+
+
+def assess_frame(
+    last: FrameRef | None,
+    connected: StreamIdentity | None,
+    now: MonoInstant,
+    started: MonoInstant,
+    config: FreshnessConfig,
+) -> VideoFreshness:
+    """The freshness of ``last``, the newest frame (None if none), against the connected stream ``now``.
+
+    ``started`` is when watching began (STARTING until offline_after_s without a frame). The live preview (D69)
+    uses this for the frame it shows, so the page and the runtime use one rule.
+    """
+    if last is None or last.boot_id != now.boot_id:
+        since_start = now.ns_since(started) if started.boot_id == now.boot_id else None
+        if since_start is not None and since_start < config.offline_after_ns:
+            return VideoFreshness(VideoState.STARTING, None, None)
+        return VideoFreshness(VideoState.OFFLINE, None, None)
+    age = now.ns_since(MonoInstant(last.boot_id, last.ingest_mono_ns))
+    if age >= config.offline_after_ns:
+        state = VideoState.OFFLINE
+    elif age >= config.stale_after_ns or connected is None or last.stream != connected:
+        state = VideoState.STALE
+    else:
+        return VideoFreshness(VideoState.FRESH, age, connected)
+    return VideoFreshness(state, age, None)
