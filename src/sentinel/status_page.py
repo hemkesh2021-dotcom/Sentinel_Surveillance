@@ -27,8 +27,10 @@ no sessions, roles, API or media. It is reached over an SSH port forward.
   the applicability it was routed with on arrival (only ``current`` could have
   changed live state; anything else is history for this incident only, V2-28);
   and each alert row with its attempts. Every list is bounded (the latest
-  rows, with the total). There is no acknowledge action and no clip: the page
-  says so instead of hiding it.
+  rows, with the total). It shows whether, when and by whom the incident was
+  acknowledged, but has no acknowledge action: that is ``sentinel incident
+  ack``, run while monitoring is stopped (D68). There is no clip: the page says
+  so instead of hiding it.
 - **What it never shows.** Credentials, tokens, chat IDs, stream URLs, hosts,
   images or exception text. The runtime snapshot holds numbers and fixed
   labels only; stored delivery errors were redacted when written; every value
@@ -58,7 +60,7 @@ from urllib.parse import urlsplit
 from pydantic import ValidationError
 
 from .contracts import Evidence, EvidenceStatus
-from .incidents.service import UNRESOLVED
+from .incidents.service import UNRESOLVED, latest_acknowledgment
 from .rules.scene_hazard import FIRE_SMOKE_CANDIDATE, HazardCandidate
 from .rules.zones import ZONE_KINDS, ZoneObservation
 from .scene.report import SceneReport
@@ -79,8 +81,9 @@ MAX_ANNOTATIONS = 20
 MAX_INCIDENT_DELIVERIES = 10
 MAX_ATTEMPTS = 10  # per alert row
 MAX_LATER_INCIDENTS = 5
-ACKNOWLEDGMENT_UNAVAILABLE = (
-    "not available here: this page is read only (D45); acknowledging needs the authenticated API (V2-17)"
+ACKNOWLEDGE_HOW = (
+    "this page is read only (D45): stop monitoring, run `sentinel incident ack --data-dir DIR ID`, then start it "
+    "again (monitoring is interrupted meanwhile; D68)"
 )
 CLIP_UNAVAILABLE = "none: event clips are not implemented yet (V2-21)"
 UTC_TEXT = "%Y-%m-%dT%H:%M:%S.%fZ"  # incidents.service.utc_text
@@ -257,11 +260,15 @@ def _incident_detail(c: sqlite3.Connection, incident_id: str) -> dict[str, Any]:
         )
         deliveries.append(delivery)
     incident = dict(zip(INCIDENT_COLUMNS, row))
+    seen = latest_acknowledgment(c, incident_id)
+    acknowledgment = {"state": "not_acknowledged", "at_utc": None, "by": None, "note": None, "how": ACKNOWLEDGE_HOW}
+    if seen is not None:
+        acknowledgment.update(state="acknowledged", at_utc=seen.at_utc, by=seen.actor, note=seen.reason)
     return {
         "state": "available",
         "incident": incident,
         "linked": {"previous": incident["linked_incident_id"], "later": later},
-        "acknowledgment": ACKNOWLEDGMENT_UNAVAILABLE,
+        "acknowledgment": acknowledgment,
         "clip": CLIP_UNAVAILABLE,
         "evidence": evidence,
         "transitions": _latest(c, "incident_transitions", TRANSITION_COLUMNS, incident_id, MAX_TRANSITIONS),
@@ -533,6 +540,12 @@ def _report_text(details: Mapping[str, Any] | None) -> str | None:
             f"persons {report['persons_visible']} · uncertainty {report['uncertainty']} · {report['summary']}")
 
 
+def _acknowledgment_text(acknowledgment: Mapping[str, Any]) -> str:
+    if acknowledgment["state"] != "acknowledged":
+        return f"not acknowledged; {acknowledgment['how']}"
+    return f"acknowledged {acknowledgment['at_utc']} by {acknowledgment['by']}: {acknowledgment['note']}"
+
+
 def _frames(source: Mapping[str, Any] | None) -> str | None:
     if not source:
         return None
@@ -585,7 +598,7 @@ def render_incident_html(detail: Mapping[str, Any]) -> str:
         ("first seen (UTC)", incident["first_observed_utc"]), ("latest (UTC)", incident["last_observed_utc"]),
         ("recorded (UTC)", incident["created_utc"]), ("updated (UTC)", incident["updated_utc"]),
         ("previous linked incident", _incident_link(linked["previous"])), ("later linked incidents", later),
-        ("acknowledgment", detail["acknowledgment"]), ("clip", detail["clip"]),
+        ("acknowledgment", _acknowledgment_text(detail["acknowledgment"])), ("clip", detail["clip"]),
     ])
 
     def shown(part: Mapping[str, Any]) -> str:

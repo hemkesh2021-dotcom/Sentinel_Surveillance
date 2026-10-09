@@ -364,10 +364,11 @@ def test_an_incident_page_shows_rule_evidence_lifecycle_scene_evidence_and_alert
     assert (first["attempt"], second["attempt"], second["outcome"]) == (1, 2, "sent")
     assert FAKE_TOKEN not in json.dumps(detail) and "bot<redacted>" in first["detail"]
     assert "provider_message_id" not in alert  # whether the provider confirmed it, never its message ID
+    assert detail["acknowledgment"]["state"] == "not_acknowledged" and detail["acknowledgment"]["at_utc"] is None
     text = render_incident_html({"generated_utc": T0.isoformat(), **detail})
     for phrase in ("Person in restricted zone &#x27;door&#x27;", "<td>entered</td>", "<td>ended</td>",
                    "<td>10–40</td>", "<td>expired</td>", "One person stands by the door.", "threat low",
-                   "not available here: this page is read only (D45)", "none: event clips are not implemented yet",
+                   "not acknowledged; this page is read only (D45)", "none: event clips are not implemented yet",
                    "Only &#x27;current&#x27; could have changed the live scene", "<td>delivered</td>",
                    'href="/"'):
         assert phrase in text, phrase

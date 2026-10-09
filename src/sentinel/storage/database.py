@@ -1,7 +1,12 @@
 """SQLite database for incidents and the notification outbox (guide chapter 10).
 
 One process owns writes (an exclusive lock file next to the database), and
-every write is one short ``BEGIN IMMEDIATE`` transaction. The database runs in
+every write is one short ``BEGIN IMMEDIATE`` transaction. The lock is the
+kernel's ``flock``, taken without waiting, by the runtime and by operator
+commands alike (``sentinel incident ack``). Whichever opens the database first
+owns it until it closes it or exits (the kernel releases it even after a
+crash), and the other is refused, so a command started while the runtime
+starts, or the reverse, never writes beside it. The database runs in
 WAL mode so readers (the status page) do not block the writer, with
 ``synchronous=FULL`` so a committed incident or outbox row survives a power
 cut, a busy timeout, and foreign keys on. Migrations are numbered SQL scripts
@@ -150,6 +155,10 @@ class WriterBusy(DatabaseError):
     """Another process already owns writes to this database."""
 
 
+class MissingDatabase(DatabaseError):
+    """No database at the path, and the caller may not create one."""
+
+
 def _configure(connection: sqlite3.Connection) -> None:
     connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     connection.execute("PRAGMA foreign_keys = ON")
@@ -206,12 +215,21 @@ class Database:
         self._lock = threading.RLock()
 
     @classmethod
-    def open(cls, path: str | os.PathLike[str]) -> Database:
+    def open(cls, path: str | os.PathLike[str], *, create: bool = True) -> Database:
+        """Take the writer lock and open ``path``; with ``create=False`` (operator commands) an absent database is
+        refused, and neither it nor its directory is created."""
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        if create:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        elif not path.is_file():
+            raise MissingDatabase(f"no incident database at {path}")
         lock_fd = _acquire_writer_lock(path)
         try:
-            connection = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+            if create:
+                connection = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+            else:  # mode=rw: SQLite itself refuses to create it, should it vanish after the check above
+                connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=rw", uri=True, isolation_level=None,
+                                             check_same_thread=False)
             _configure(connection)
             mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
             if mode.lower() != "wal":
@@ -269,5 +287,7 @@ def _acquire_writer_lock(path: Path) -> int | None:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         os.close(fd)
-        raise WriterBusy(f"another process is writing to {path.name}; only one Sentinel runtime may own it") from None
+        raise WriterBusy(
+            f"another process is writing to {path.name}; only one Sentinel runtime or operator command may own it"
+        ) from None
     return fd

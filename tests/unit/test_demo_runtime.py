@@ -40,11 +40,13 @@ from sentinel.demo_runtime import (
     environment_notifiers,
 )
 from sentinel.incidents.service import IncidentService
+from sentinel.incidents.signals import IncidentSignal, SignalPhase
 from sentinel.jobs import OutcomeKind, WorkerOutcome
 from sentinel.live_state import Capability, Occupancy, SceneStatus
 from sentinel.media.capture import CapturedFrame, CaptureState, CaptureStatus, DecodedFrame, LatestFrame, SourceError
 from sentinel.media.clock import FakeClock, SystemClock
 from sentinel.media.frames import FrameStamper
+from sentinel.rules.scene_hazard import Severity
 from sentinel.scene.analyzer import RecentImages, ThreadedSceneAnalyzer
 from sentinel.status_page import read_incident, render_incident_html
 from sentinel.storage.database import Database
@@ -751,6 +753,68 @@ def test_a_second_runtime_on_the_same_database_is_refused(tmp_path) -> None:
     with pytest.raises(StartupRefused, match="only one Sentinel runtime"):
         assemble(make_config(), RunOptions(tmp_path, tmp_path / "x.engine"), fake_devices(ThreadedSource()), FakeClock())
     first.database.close()
+
+
+def stored_incident(directory: Path) -> str:
+    """A stopped runtime's database with one open incident."""
+    db = Database.open(directory / "sentinel.db")
+    service = IncidentService(db, FakeClock(utc=T0), incidents=make_config().incidents,
+                              notifications=make_config().notifications)
+    incident_id = service.record(IncidentSignal(
+        observation_id="ep-1.entered", episode_id="ep-1", camera_id="cam-1", kind="zone.restricted_entry",
+        phase=SignalPhase.ENTERED, zone_id="yard", rule_revision="rev1", severity=Severity.WARNING,
+        title="Person in restricted zone 'yard'", observed_utc=T0, boot_id="boot-1", observed_mono_ns=1,
+        reason="test", payload="{}")).incident_id
+    db.close()
+    return incident_id
+
+
+def test_a_runtime_started_during_an_acknowledgment_is_refused_and_starts_after_it(tmp_path, capsys, monkeypatch):
+    """D68's startup race, acknowledgment first: the runtime's startup finds the writer lock taken."""
+    incident_id = stored_incident(tmp_path)
+    labels: list[str] = []
+    acknowledge = IncidentService.acknowledge
+
+    def runtime_starts_meanwhile(self, *args, **kwargs):
+        try:  # inside the command, between taking the lock and acknowledging
+            started = assemble(make_config(), RunOptions(tmp_path, tmp_path / "x.engine"),
+                               fake_devices(ThreadedSource()), FakeClock())
+        except StartupRefused as exc:
+            labels.append(exc.label)
+        else:
+            started.database.close()
+            labels.append("started")
+        return acknowledge(self, *args, **kwargs)
+
+    monkeypatch.setattr(IncidentService, "acknowledge", runtime_starts_meanwhile)
+    assert main(["incident", "ack", "--data-dir", str(tmp_path), incident_id]) == 0
+    assert json.loads(capsys.readouterr().out)["outcome"] == "acknowledged"
+    assert labels == ["database: another process is writing to sentinel.db; only one Sentinel runtime or operator "
+                      "command may own it"]
+    later = assemble(make_config(), RunOptions(tmp_path, tmp_path / "x.engine"), fake_devices(ThreadedSource()),
+                     FakeClock())  # the command has exited: the runtime owns the database again
+    try:
+        with later.database.read() as c:
+            assert c.execute("SELECT status FROM incidents").fetchall() == [("acknowledged",)]
+    finally:
+        later.database.close()
+
+
+def test_an_acknowledgment_while_the_runtime_owns_the_database_is_refused_without_changes(tmp_path, capsys) -> None:
+    """D68's startup race, runtime first."""
+    incident_id = stored_incident(tmp_path)
+    running = assemble(make_config(), RunOptions(tmp_path, tmp_path / "x.engine"), fake_devices(ThreadedSource()),
+                       FakeClock())
+    try:
+        assert main(["incident", "ack", "--data-dir", str(tmp_path), incident_id]) == 1
+        captured = capsys.readouterr()
+        assert captured.out == "" and captured.err.startswith("incident ack: database_busy")
+        with running.database.read() as c:
+            assert c.execute("SELECT status, revision FROM incidents").fetchall() == [("open", 1)]
+            assert c.execute("SELECT count(*) FROM incident_transitions").fetchone() == (1,)
+    finally:
+        running.database.close()
+    assert main(["incident", "ack", "--data-dir", str(tmp_path), incident_id]) == 0  # monitoring stopped: accepted
 
 
 # ---------------------------------------------------------------- command line

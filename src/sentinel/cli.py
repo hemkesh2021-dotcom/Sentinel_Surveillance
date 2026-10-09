@@ -7,7 +7,9 @@ import contextlib
 import ctypes
 import json
 import os
+import re
 import signal
+import sqlite3
 import sys
 import threading
 import time
@@ -18,7 +20,7 @@ from typing import Any, TextIO
 
 from . import __version__
 from .adapters import resolve
-from .config import CaptureConfig, ConfigError, SentinelConfig, load_config
+from .config import CaptureConfig, ConfigError, IncidentsConfig, NotificationsConfig, SentinelConfig, load_config
 from .demo_runtime import DATABASE_NAME, Devices, FaceOptions, RunOptions, SceneOptions, StartupRefused, assemble
 from .identity.gallery import DEFAULT_IDENTITY_DIR
 from .identity.vault import (
@@ -30,7 +32,7 @@ from .identity.vault import (
     take_secret_from_environment,
 )
 from .media.capture import CaptureWorker, LatestFrame, SourceError, VideoSource
-from .media.clock import SystemClock
+from .media.clock import Clock, SystemClock
 from .media.frames import FrameStamper
 from .memory_policy import policy_from_flags
 from .media.probe import run_probe
@@ -109,6 +111,71 @@ def _positive_seconds(text: str) -> float:
     return value
 
 
+ACK_NOTE = "acknowledged with sentinel incident ack while monitoring was stopped"
+_ACTOR = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}")
+_INCIDENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")  # the contracts' Identifier
+
+
+def _actor(text: str) -> str:
+    if not _ACTOR.fullmatch(text):
+        raise argparse.ArgumentTypeError("1-32 letters, digits, '.', '_' or '-', starting with a letter or digit")
+    return text
+
+
+def _note(text: str) -> str:
+    if not 1 <= len(text) <= 200 or not text.isprintable():
+        raise argparse.ArgumentTypeError("1-200 printable characters")
+    return text
+
+
+def _incident_ack(args: argparse.Namespace, clock: Clock, out: TextIO) -> int:
+    """``sentinel incident ack``: one acknowledgment, while no runtime owns the database (D68).
+
+    Every refusal is a fixed label on stderr with exit 1, and changes nothing: an invalid ID is refused before the
+    database is touched; an absent database is never created; the writer lock (``Database.open``) refuses while a
+    runtime owns it, and the runtime refuses to start while this holds it.
+    """
+    from .incidents.service import IncidentService, InvalidTransition, UnknownIncident
+    from .storage.database import Database, DatabaseError, MissingDatabase, WriterBusy
+
+    def refuse(label: str) -> int:
+        print(f"incident ack: {label}", file=sys.stderr)
+        return 1
+
+    if not _INCIDENT_ID.fullmatch(args.incident_id):
+        return refuse("invalid_incident_id (expected the ID shown on the status page, such as inc-...)")
+    path = args.data_dir.expanduser() / DATABASE_NAME
+    try:
+        database = Database.open(path, create=False)
+    except MissingDatabase:
+        return refuse(f"no_database (no {DATABASE_NAME} in {args.data_dir}; nothing was created)")
+    except WriterBusy:
+        return refuse("database_busy (a Sentinel runtime or another command owns the database; stop monitoring "
+                      "first, then acknowledge, then start it again)")
+    except (DatabaseError, sqlite3.Error) as exc:
+        return refuse(f"database_unusable:{type(exc).__name__}")
+    try:
+        # Acknowledging reads no policy: the default sections only satisfy the constructor.
+        service = IncidentService(database, clock, incidents=IncidentsConfig(), notifications=NotificationsConfig())
+        result = service.acknowledge(args.incident_id, actor=f"operator:{args.actor}", reason=args.note)
+    except UnknownIncident:
+        return refuse(f"unknown_incident (no incident {args.incident_id} in this database; nothing changed)")
+    except InvalidTransition as exc:
+        return refuse(f"not_acknowledgeable ({exc}; nothing changed)")
+    except (DatabaseError, sqlite3.Error) as exc:
+        return refuse(f"database_unusable:{type(exc).__name__}")
+    finally:
+        database.close()
+    seen = result.acknowledgment
+    print(json.dumps({
+        "incident": "ack", "outcome": result.outcome.value, "incident_id": result.incident_id,
+        "status": "acknowledged", "revision": result.revision,
+        "acknowledged_utc": seen.at_utc if seen else None, "actor": seen.actor if seen else None,
+        "note": seen.reason if seen else None,
+    }), file=out, flush=True)
+    return 0
+
+
 def _flush_streams(*streams: TextIO) -> None:
     """Flush Python's streams and libc's stdio buffers; a failing flush never stops the caller's restore."""
     for stream in (*streams, sys.stdout, sys.stderr):
@@ -170,6 +237,7 @@ def main(
     identity_store: Callable[[Path], Any] = _identity_store,
     preview_port: int | None = None,
     preview_render: Callable[[Any], bytes] | None = None,
+    clock: Clock | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="sentinel")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -296,8 +364,24 @@ def main(
     )
     run.add_argument("--status-interval-s", type=_positive_seconds, default=30.0,
                      help="print a numbers-only status line this often (default 30)")
+    incident_parser = commands.add_parser(
+        "incident", help="operator actions on stored incidents; only while monitoring is stopped")
+    incident_commands = incident_parser.add_subparsers(dest="incident_command", required=True)
+    ack = incident_commands.add_parser(
+        "ack",
+        help="acknowledge an open incident (it stays unresolved; no alert is sent or withdrawn). Monitoring must be "
+        "stopped: while `sentinel run` owns the database this is refused, and a runtime started meanwhile is refused",
+    )
+    ack.add_argument("--data-dir", type=Path, required=True, help="the --data-dir of the runs that recorded it")
+    ack.add_argument("incident_id", help="the incident ID, as on the status page (inc-...)")
+    ack.add_argument("--actor", type=_actor, default="local",
+                     help="who acknowledges, recorded as operator:NAME (letters, digits, . _ -; default local)")
+    ack.add_argument("--note", type=_note, default=ACK_NOTE, help="why, at most 200 printable characters")
     args = parser.parse_args(argv)
 
+    if args.command == "incident":  # reads no configuration: the database holds everything it needs
+        with _json_stdout() as out:
+            return _incident_ack(args, clock or SystemClock(), out)
     try:
         config = load_config(args.path)
     except ConfigError as exc:

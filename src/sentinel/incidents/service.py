@@ -28,7 +28,8 @@ Lifecycle (guide ch. 9): candidate -> open -> acknowledged -> resolved, and
 dismissed from any unresolved state. Rule observations open incidents
 directly: their persistence already happened in the rule. Operators move
 incidents with an expected revision, so a stale screen cannot overwrite a newer
-change.
+change. ``acknowledge()`` is the operator's idempotent acknowledgment: it
+reads and moves the incident in one transaction, and a repeat changes nothing.
 
 Enrichment (V2-28): ``annotate()`` appends worker evidence (a scene report, a
 timeout, a skipped job) to the one incident it was requested for, whatever its
@@ -129,6 +130,39 @@ class Annotation:
     applicability: Applicability
     observed_utc: str
     payload: str
+
+
+@dataclass(frozen=True)
+class Acknowledgment:
+    """An operator's acknowledgment: the latest transition to acknowledged."""
+
+    at_utc: str
+    actor: str
+    reason: str
+    revision: int
+
+
+class AcknowledgeOutcome(str, Enum):
+    ACKNOWLEDGED = "acknowledged"
+    ALREADY_ACKNOWLEDGED = "already_acknowledged"  # nothing changed
+
+
+@dataclass(frozen=True)
+class AcknowledgeResult:
+    outcome: AcknowledgeOutcome
+    incident_id: str
+    revision: int
+    acknowledgment: Acknowledgment | None  # None only for a database edited outside Sentinel
+
+
+def latest_acknowledgment(c: sqlite3.Connection, incident_id: str) -> Acknowledgment | None:
+    """The incident's latest acknowledgment, from its transitions; None if it was never acknowledged."""
+    row = c.execute(
+        """SELECT at_utc, actor, reason, revision FROM incident_transitions
+           WHERE incident_id = ? AND to_status = 'acknowledged' ORDER BY transition_seq DESC LIMIT 1""",
+        (incident_id,),
+    ).fetchone()
+    return None if row is None else Acknowledgment(*row)
 
 
 @dataclass(frozen=True)
@@ -399,16 +433,48 @@ class IncidentService:
                 raise RevisionConflict(
                     f"incident {incident_id} is at revision {incident.revision}, not {expected_revision}"
                 )
-            if to not in ALLOWED_TRANSITIONS[incident.status]:
-                raise InvalidTransition(f"cannot move incident {incident_id} from {incident.status.value} to {to.value}")
-            cursor = c.execute(
-                "UPDATE incidents SET status = ?, revision = revision + 1, updated_utc = ? WHERE incident_id = ? AND revision = ?",
-                (to.value, stamp, incident_id, expected_revision),
+            return self._move(c, incident, to, actor, reason, stamp)
+
+    def acknowledge(self, incident_id: str, *, actor: str, reason: str) -> AcknowledgeResult:
+        """Record that an operator has seen an open incident; repeating it changes nothing.
+
+        One write transaction reads the incident and moves it, so nothing can change it in between; the
+        acknowledgment is its transition row (time, actor, reason). It changes only the status (open ->
+        acknowledged) and the revision: no evidence, severity, outbox row or rule state, so no alert is sent or
+        withdrawn. Acknowledged is not resolved: later observations still join the incident (guide ch. 9). An
+        already acknowledged incident is returned as it is, with its first acknowledgment; any other status
+        (candidate, resolved, dismissed) raises InvalidTransition. An unknown ID raises UnknownIncident.
+        """
+        stamp = utc_text(self._clock.utc_now())
+        with self._db.write() as c:
+            incident = self._load(c, incident_id)
+            if incident.status is IncidentStatus.ACKNOWLEDGED:
+                seen = latest_acknowledgment(c, incident_id)
+                return AcknowledgeResult(AcknowledgeOutcome.ALREADY_ACKNOWLEDGED, incident_id, incident.revision, seen)
+            if IncidentStatus.ACKNOWLEDGED not in ALLOWED_TRANSITIONS[incident.status]:
+                raise InvalidTransition(
+                    f"incident {incident_id} is {incident.status.value}; only an open incident can be acknowledged"
+                )
+            revision = self._move(c, incident, IncidentStatus.ACKNOWLEDGED, actor, reason, stamp)
+            seen = latest_acknowledgment(c, incident_id)
+        return AcknowledgeResult(AcknowledgeOutcome.ACKNOWLEDGED, incident_id, revision, seen)
+
+    def _move(
+        self, c: sqlite3.Connection, incident: Incident, to: IncidentStatus, actor: str, reason: str, stamp: str
+    ) -> int:
+        """Change the status inside the caller's transaction, with the revision check; returns the new revision."""
+        if to not in ALLOWED_TRANSITIONS[incident.status]:
+            raise InvalidTransition(
+                f"cannot move incident {incident.incident_id} from {incident.status.value} to {to.value}"
             )
-            if cursor.rowcount != 1:
-                raise RevisionConflict(f"incident {incident_id} changed during the transaction")
-            self._transition(c, incident_id, incident.status, to, expected_revision + 1, actor[:64], reason[:300], stamp)
-        return expected_revision + 1
+        cursor = c.execute(
+            "UPDATE incidents SET status = ?, revision = revision + 1, updated_utc = ? WHERE incident_id = ? AND revision = ?",
+            (to.value, stamp, incident.incident_id, incident.revision),
+        )
+        if cursor.rowcount != 1:
+            raise RevisionConflict(f"incident {incident.incident_id} changed during the transaction")
+        self._transition(c, incident.incident_id, incident.status, to, incident.revision + 1, actor[:64], reason[:300], stamp)
+        return incident.revision + 1
 
     # ------------------------------------------------------------ reads
 
