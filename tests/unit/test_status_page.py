@@ -272,7 +272,7 @@ def test_face_recognition_and_identity_counts_are_shown_without_ids(page) -> Non
             "unresolved": 1, "unknown": 0, "known": 1, "uncertain": 0, "fresh": 1, "retained": 0}},
     }
     text = get(page, "/")[2].decode()
-    assert "<td>face</td>" in text.replace("<td>face recognition</td>", "")
+    assert "<span class=name>face</span>" in text and "Face recognition: available" in text
     assert "known 1 (fresh 1, retained 0) · unknown 0 · uncertain 0 · unresolved 1" in text
     assert "idn-" not in text
 
@@ -381,11 +381,11 @@ def test_the_status_page_links_incidents_to_pages_served_as_html_and_json(tmp_pa
     server.start()
     try:
         main_page = get(server, "/")[2].decode()
-        assert f'<a href="/incidents/{incident_id}">{incident_id}</a>' in main_page
+        assert f'<a class=inc href="/incidents/{incident_id}">' in main_page and incident_id in main_page
         status, headers, body = get(server, f"/incidents/{incident_id}")
         assert status == 200 and headers["Content-Type"] == "text/html; charset=utf-8"
         assert headers["Cache-Control"] == "no-store" and "default-src 'none'" in headers["Content-Security-Policy"]
-        assert f"Incident {incident_id}" in body.decode()
+        assert f"Incident <span class=mono>{incident_id}</span>" in body.decode()
         status, headers, body = get(server, f"/incidents/{incident_id}.json")
         document = json.loads(body)
         assert status == 200 and headers["Content-Type"] == "application/json"
@@ -500,9 +500,9 @@ def test_linked_incidents_point_to_each_other_and_ids_without_a_page_are_not_lin
     second = read_incident(tmp_path / "sentinel.db", "inc-second")
     assert (first["linked"], second["linked"]) == ({"previous": None, "later": ["inc-second"]},
                                                    {"previous": "inc-first", "later": []})
-    assert '<a href="/incidents/inc-second">inc-second</a>' in render_incident_html(first)
-    assert '<a href="/incidents/inc-first">inc-first</a>' in render_incident_html(second)
+    assert '<a class=mono href="/incidents/inc-second">inc-second</a>' in render_incident_html(first)
+    assert '<a class=mono href="/incidents/inc-first">inc-first</a>' in render_incident_html(second)
     assert read_incident(tmp_path / "sentinel.db", "inc.dotted") == {"state": "not_found"}
     main_page = render_html(build_status(SNAPSHOT, read_store(tmp_path / "sentinel.db"), T0))
-    assert "<td>inc.dotted</td>" in main_page and 'href="/incidents/inc.dotted"' not in main_page
-    assert '<a href="/incidents/inc-first">' in main_page
+    assert "<span class=mono>inc.dotted</span>" in main_page and 'href="/incidents/inc.dotted"' not in main_page
+    assert '<a class=inc href="/incidents/inc-first">' in main_page

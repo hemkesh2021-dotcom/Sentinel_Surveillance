@@ -357,7 +357,7 @@ def test_the_page_shows_the_live_picture_and_serves_it(db_path: Path) -> None:
         page = body.decode()
         assert code == 200 and "img-src 'self'" in headers["Content-Security-Policy"]
         assert '<img src="/preview/1-0.jpg" width="640" height="480"' in page
-        assert "<strong>LIVE</strong>: the newest frame of the connected stream" in page
+        assert "LIVE</span><span class=muted>the newest frame of the connected stream</span>" in page
         assert "2026-10-09T12:00:00.066667Z" in page and "not when the camera captured it" in page
         code, headers, body = get(server, "/preview/1-0.jpg")
         assert (code, headers["Content-Type"], body) == (200, "image/jpeg", SOI + b"e1-f0" + EOI)
@@ -414,10 +414,11 @@ class Markup(HTMLParser):
 
 
 HEALTHY = {**SNAPSHOT, "degraded": []}
-CURRENT_CLAIMS = ("This page is current", "All components working")
+CURRENT_CLAIMS = ("This page is current", "All components working", "Page current", "Monitoring",
+                  "the newest frame of the connected stream")
 NOT_CURRENT_LABELS = (f"NOT CURRENT: this page has not refreshed for {PAGE_CURRENT_S} s",
                       "Last reported: all components working", "NOT CURRENT: last reported LIVE",
-                      "NOT CURRENT: this picture is old")
+                      "NOT CURRENT: this picture is old", "Last reported: monitoring")
 
 
 def test_every_current_claim_is_shown_only_while_the_page_is_fresh() -> None:
@@ -431,20 +432,24 @@ def test_every_current_claim_is_shown_only_while_the_page_is_fresh() -> None:
     assert markup.around("LIVE", exact=True) and all("cur" in c for c in markup.around("LIVE", exact=True))
     for label in NOT_CURRENT_LABELS:
         assert markup.around(label) and all("old" in c and "cur" not in c for c in markup.around(label)), label
-    # Each switch holds one current layer and its not-current replacement: the page, the health and LIVE.
-    assert len(markup.switches) == 3 and all(sorted("cur" in c for c in s) == [False, True] for s in markup.switches)
-    assert all(sum("old" in c for c in s) == 1 for s in markup.switches)
-    assert '<figure class=pv><img src="/preview/1-0.jpg"' in page and "<figcaption class=old>" in page
-    assert '<div class=report>' in page  # the runtime's report, dimmed once the page is not current
+    # Each switch holds one current layer and its not-current replacement; green (k-ok) appears only in current layers.
+    assert len(markup.switches) >= 5
+    assert all(sum("cur" in c for c in s) == 1 and sum("old" in c for c in s) == 1 and len(s) == 2
+               for s in markup.switches)
+    assert all("cur" in c for t, c in markup.texts if "k-ok" in c), "green outside a current layer"
+    assert '<figure class=frame><img src="/preview/1-0.jpg"' in page and "<figcaption class=old>" in page
+    assert '<main class="board report">' in page  # the runtime's report, dimmed once the page is not current
     current = f"{PAGE_CURRENT_S}s linear"
-    for rule in (f".cur{{visibility:hidden;animation:cur {current}}}", "@keyframes cur{from,to{visibility:visible}}",
-                 f".old{{animation:old {current}}}", "@keyframes old{from,to{visibility:hidden}}",
-                 f".report{{opacity:.55;animation:full {current}}}", f"opacity:.12;animation:full {current}}}",
-                 "@keyframes full{from,to{opacity:1}}"):
+    for rule in (f".cur {{ visibility: hidden; animation: cur {current}; }}",
+                 "@keyframes cur { from, to { visibility: visible; } }",
+                 f".old {{ animation: old {current}; }}", "@keyframes old { from, to { visibility: hidden; } }",
+                 f".report {{ opacity: .55; animation: full {current}; }}",
+                 f".live .frame img {{ opacity: .3; animation: full {current}; }}",
+                 "@keyframes full { from, to { opacity: 1; } }"):
         assert rule in page, rule
     assert "forwards" not in status_page.STYLE and "infinite" not in status_page.STYLE  # no state held past the window
     assert '<meta http-equiv=refresh content="2">' in page and "<script" not in page
-    assert f"generated at {T0.isoformat()}" in page  # the page's own time, apart from the runtime's last update
+    assert f'generated at <time datetime="{T0.isoformat()}">' in page  # the page's own time, apart from the runtime's
 
 
 def test_a_stale_or_degraded_report_makes_no_current_claim_even_on_a_fresh_page() -> None:
@@ -457,7 +462,9 @@ def test_a_stale_or_degraded_report_makes_no_current_claim_even_on_a_fresh_page(
     assert not markup.around("Last reported: all components working") and not markup.around("last reported LIVE")
     for shown in ("STALE: not current", "Degraded", "capture waiting (open_failed)"):  # last reported, never hidden
         assert markup.around(shown) and all("cur" not in c and "old" not in c for c in markup.around(shown)), shown
-    assert len(markup.switches) == 1  # only the page's own freshness
+    switched = {t for t, c in markup.texts if "cur" in c}
+    assert not any("LIVE" in t or "working" in t for t in switched)  # a degraded runtime is still claimed running only
+    assert "Monitoring, degraded" in switched and "This page is current" in " ".join(switched)
 
 
 def test_the_live_view_is_off_or_starting_without_a_preview(db_path: Path) -> None:
@@ -467,7 +474,7 @@ def test_the_live_view_is_off_or_starting_without_a_preview(db_path: Path) -> No
         assert get(server, "/preview/1-0.jpg")[0] == 404
         assert "preview" not in __import__("json").loads(get(server, "/status.json")[2])  # unchanged while off
     with serving(db_path, lambda: None) as server:
-        assert "<strong>STARTING</strong>: the runtime is starting" in get(server, "/")[2].decode()
+        assert "STARTING</span><span class=muted>the runtime is starting</span>" in get(server, "/")[2].decode()
 
 
 @pytest.mark.parametrize("path", [

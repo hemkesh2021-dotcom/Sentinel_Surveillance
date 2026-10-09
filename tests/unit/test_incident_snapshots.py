@@ -404,7 +404,7 @@ def test_the_incident_page_shows_and_offers_the_saved_snapshot(rig: Rig, served:
     page = body.decode()
     assert code == 200 and "img-src 'self'" in headers["Content-Security-Policy"]
     assert f'<img src="/incidents/{job.incident_id}/snapshot.jpg" width="640" height="480"' in page
-    assert f'<a href="/incidents/{job.incident_id}/snapshot/download" download>' in page
+    assert f'<a class=button href="/incidents/{job.incident_id}/snapshot/download" download>' in page
     assert "stream epoch 1, frame 0" in page and "2026-10-09T12:00:00.066667Z" in page
     assert "not when the camera captured it" in page and row["sha256"] in page
     assert "never a later one" in page and "kept for 7 days" in page

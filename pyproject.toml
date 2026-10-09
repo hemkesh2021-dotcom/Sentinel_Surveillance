@@ -25,13 +25,16 @@ sentinel = "sentinel.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"sentinel.web" = ["*.css"]
+
 [tool.pytest.ini_options]
 # The v1 dashboard tests in tests/test_dashboard.py need Flask and keep running
 # under unittest in the existing "Dashboard checks" workflow. tests/replay holds
 # synthetic-timeline regressions (no footage); they are portable like tests/unit.
 testpaths = ["tests/unit", "tests/replay"]
-# Test-only helpers such as the B0 v1 snapshot (decision D12) import by module name.
-pythonpath = ["tests/replay"]
+# Test-only helpers such as the B0 v1 snapshot (decision D12) and the browser harness import by module name.
+pythonpath = ["tests/replay", "tests/support"]
 addopts = ["--import-mode=importlib", "-ra", "--strict-markers", "--strict-config"]
 xfail_strict = true
 filterwarnings = ["error"]

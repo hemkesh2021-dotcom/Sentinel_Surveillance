@@ -40,6 +40,15 @@ no sessions, roles, API or media. It is reached over an SSH port forward.
   ``snapshots`` folder without following links or blocking, and its size and
   SHA-256 must match the row. A missing, pruned or altered snapshot is stated
   as such, and never replaced by another frame.
+- **Styling (D72).** Named colour tokens from five reference colours, light
+  and dark themes (the browser's preference, or ``?theme=light|dark``, one of
+  two exact values, kept in every link), states shown by a text label and an
+  icon as well as colour, incidents beside the live view on wide screens and
+  below it on narrow ones, technical provenance behind expandable sections.
+  Self-hosted (``sentinel.web``): the stylesheet is inlined in each page, so the
+  watchdog rules always arrive with their markup, and the CSP allows it by its
+  SHA-256 and no other inline style. Green is used for current claims only.
+  Camera frames and snapshots are never filtered or recoloured.
 - **Bounded connections.** At most MAX_CONNECTIONS at once (more get 503 and
   are closed); each connection's reads and writes time out after
   HANDLER_TIMEOUT_S, and its kernel send buffer is fixed, so a slow or
@@ -104,6 +113,7 @@ from .rules.zones import ZONE_KINDS, ZoneObservation
 from .scene.report import SceneReport
 from .scene.state import SCENE_STATE_KIND
 from .storage.database import connect_reader
+from .web import SPRITE, TAB_ICON, csp_hash, icon, stylesheet
 
 LOOPBACK_HOST = "127.0.0.1"
 MAX_INCIDENTS = 20
@@ -167,16 +177,13 @@ ACKNOWLEDGE_HOW = (
 CLIP_UNAVAILABLE = "none: event clips are not implemented yet (V2-21)"
 UTC_TEXT = "%Y-%m-%dT%H:%M:%S.%fZ"  # incidents.service.utc_text
 STALE_SNAPSHOT_S = 5.0  # an older runtime snapshot means the loop is not updating
-SECURITY_HEADERS = {
+SECURITY_HEADERS = {  # Content-Security-Policy is added per response: it names the inline stylesheet's hash
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
-    "Content-Security-Policy": (
-        "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; "
-        "frame-ancestors 'none'"
-    ),
 }
+TAB_ICON_PATH = "/assets/icon.svg"
 DELIVERY_STATES = ("queued", "attempted", "delivered", "failed")
 # Shown even before the runtime publishes its own wording (D43 limitation).
 PENDING_DURABILITY_FALLBACK = (
@@ -574,54 +581,119 @@ def _e(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
-def _incident_link(incident_id: object) -> object:
+THEMES = ("light", "dark")
+
+
+def theme_from_query(query: str) -> str | None:
+    """The theme a request asks for (``?theme=light`` or ``dark``); anything else follows the browser's preference.
+
+    Only these two exact values are used, so nothing from the query is ever echoed.
+    """
+    for part in query.split("&")[:8]:
+        key, _, value = part.partition("=")
+        if key == "theme" and value in THEMES:
+            return value
+    return None
+
+
+def _href(path: str, theme: str | None) -> str:
+    return path if theme is None else f"{path}?theme={theme}"
+
+
+def _incident_link(incident_id: object, theme: str | None = None) -> object:
     """A link to the incident's detail page; an ID with no page is plain text."""
     if isinstance(incident_id, str) and INCIDENT_ID.fullmatch(incident_id):
-        return _Markup(f'<a href="/incidents/{_e(incident_id)}">{_e(incident_id)}</a>')
+        return _Markup(f'<a class=mono href="{_e(_href(f"/incidents/{incident_id}", theme))}">{_e(incident_id)}</a>')
     return incident_id
 
 
-# The page watchdog (D71). A ``fs`` switch stacks a current layer (``cur``) on its not-current replacement (``old``).
-# ``cur`` is hidden unless its animation shows it, for PAGE_CURRENT_S from when the browser shows the page; ``old`` is
-# hidden for that time only. ``report`` (the runtime's last report) and the picture are dimmed except in that time.
-# Nothing is held past the window, so only a new page can bring the current layers back.
-STYLE = """:root{--bg:#fff;--fg:#1d1f21;--muted:#666;--line:#ddd;--ok:#e6f4ea;--bad:#fdecea;--gone:#eceff1;--link:#0b57d0}
-@media (prefers-color-scheme:dark){:root{--bg:#16181a;--fg:#e8e8e8;--muted:#9a9a9a;--line:#333;--ok:#173322;--bad:#3b1d1a;--gone:#2a2d30;--link:#8ab4f8}}
-body{background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,sans-serif;margin:16px;max-width:1100px}
-h1{font-size:20px;margin:0 0 4px} h2{font-size:16px;margin:20px 0 6px} a{color:var(--link)}
-table{border-collapse:collapse;margin:4px 0} th,td{border-bottom:1px solid var(--line);padding:3px 10px 3px 0;text-align:left;vertical-align:top}
-table.list{width:100%} .muted{color:var(--muted)} .banner{padding:8px 12px;border-radius:6px;margin:10px 0}
-.ok{background:var(--ok)} .bad{background:var(--bad)} .gone{background:var(--gone)} .info{border:1px solid var(--line)}
-.grid{display:flex;flex-wrap:wrap;gap:24px} .wrap{overflow-x:auto} ul{margin:4px 0 0 18px;padding:0}
-.fs{display:grid} .fs>*{grid-area:1/1}
-.cur{visibility:hidden;animation:cur CURRENTs linear} .old{animation:old CURRENTs linear}
-.report{opacity:.55;animation:full CURRENTs linear}
-@keyframes cur{from,to{visibility:visible}} @keyframes old{from,to{visibility:hidden}} @keyframes full{from,to{opacity:1}}
-.pv{position:relative;display:inline-block;margin:4px 0;max-width:100%}
-.snap{margin:4px 0} .snap img{display:block;max-width:100%;height:auto}
-.pv img{display:block;max-width:100%;height:auto;opacity:.12;animation:full CURRENTs linear}
-.pv figcaption{position:absolute;left:0;right:0;top:0;padding:8px;background:var(--bad);font-weight:bold}""".replace(
-    "CURRENT", str(PAGE_CURRENT_S))
+STYLE = stylesheet(PAGE_CURRENT_S)
+STYLE_SOURCE = csp_hash(STYLE)  # the CSP allows this inline stylesheet and no other inline style
+CONTENT_SECURITY_POLICY = (
+    f"default-src 'none'; img-src 'self'; style-src {STYLE_SOURCE}; base-uri 'none'; form-action 'none'; "
+    "frame-ancestors 'none'"
+)
 
 
-def _document(title: str, refresh_s: int, body: str) -> str:
+def _document(title: str, refresh_s: int, body: str, *, theme: str | None, page: str) -> str:
+    themed = f" data-theme={theme}" if theme in THEMES else ""
     return f"""<!doctype html>
-<html lang=en><head><meta charset=utf-8><meta name=viewport content="width=device-width, initial-scale=1">
+<html lang=en data-page={page}{themed}><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width, initial-scale=1"><meta name=color-scheme content="light dark">
 <meta http-equiv=refresh content="{refresh_s}"><title>{_e(title)}</title>
-<style>
-{STYLE}
-</style></head><body>
+<link rel=icon href="/assets/icon.svg" type="image/svg+xml">
+<style>{STYLE}</style></head><body>
+{SPRITE}
 {body}
 </body></html>
 """
 
 
-def _identity_counts(live: dict[str, Any]) -> str | None:
-    counts = live.get("identity") if live else None
-    if not counts:
-        return None
-    return (f"known {counts.get('known')} (fresh {counts.get('fresh')}, retained {counts.get('retained')}) · "
-            f"unknown {counts.get('unknown')} · uncertain {counts.get('uncertain')} · unresolved {counts.get('unresolved')}")
+def _themes(path: str, theme: str | None) -> str:
+    links = []
+    for value, label, glyph in ((None, "Auto", "auto"), ("light", "Light", "sun"), ("dark", "Dark", "moon")):
+        selected = ' aria-current="true"' if value == theme else ""
+        links.append(f'<a href="{_e(_href(path, value))}"{selected}>{icon(glyph)}{label}</a>')
+    return f'<nav class=themes aria-label="Colour theme">{"".join(links)}</nav>'
+
+
+def _clock(stamp: object, *, date: bool = False) -> str:
+    """A stored UTC time for display, to the millisecond, in a <time> element that keeps the stored text."""
+    if not isinstance(stamp, str) or not stamp:
+        return _e(None)
+    try:
+        when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return f"<span class=mono>{_e(stamp)}</span>"
+    if when.tzinfo is not None:
+        when = when.astimezone(timezone.utc)
+    text = when.strftime("%Y-%m-%d %H:%M:%S" if date else "%H:%M:%S") + f".{when.microsecond // 1000:03d} UTC"
+    return f'<time datetime="{_e(stamp)}">{text}</time>'
+
+
+KIND_ICONS = {"ok": "check", "warn": "warn", "crit": "crit", "off": "off", "done": "check", "stale": "clock"}
+
+
+def _badge(kind: str, text: object, *, glyph: str | None = None, big: bool = False) -> _Markup:
+    """A state label with its icon; the colour (k-*) is never the only cue."""
+    size = " big" if big else ""
+    return _Markup(f'<span class="badge k-{kind}{size}">{icon(glyph or KIND_ICONS[kind])}{_e(text)}</span>')
+
+
+def _claim(current: str, replacement: str, *, block: bool = False) -> _Markup:
+    """D71: a claim that something is current, stacked on what replaces it once the page is not current."""
+    tag, cls = ("div", "fs") if block else ("span", "fs inl")
+    return _Markup(f"<{tag} class='{cls}'><{tag} class=cur>{current}</{tag}><{tag} class=old>{replacement}</{tag}></{tag}>")
+
+
+OK_STATES = frozenset({"available", "streaming", "ok", "running", "enabled", "live"})
+WARN_STATES = frozenset({"degraded", "connecting", "waiting", "starting", "stale"})
+CRIT_STATES = frozenset({"unavailable", "failed", "offline"})
+STATE_LABELS = {
+    "available": "Available", "unavailable": "Unavailable", "disabled": "Off", "streaming": "Streaming",
+    "connecting": "Connecting", "waiting": "Waiting to reconnect", "starting": "Starting", "stopped": "Stopped",
+    "failed": "Failed", "ok": "Working", "degraded": "Degraded", "running": "Running", "not_started": "Not started",
+    "not_configured": "Not configured", "enabled": "On",
+}
+
+
+def _state_kind(state: object, problem: object = None, *, running: bool = True) -> str:
+    if state in OK_STATES:
+        return "warn" if problem else "ok"
+    if state in WARN_STATES:
+        return "warn"
+    if state in CRIT_STATES or (state == "stopped" and running):
+        return "crit"
+    return "off"
+
+
+def _state(state: object, problem: object = None, *, running: bool = True) -> _Markup:
+    """A component's state; a healthy one is a current claim (D71)."""
+    kind = _state_kind(state, problem, running=running)
+    label = STATE_LABELS.get(str(state), str(state).replace("_", " "))
+    if kind == "ok":
+        return _claim(_badge("ok", label), _badge("off", f"Was {label.lower()}", glyph="clock"))
+    return _badge(kind, label)
 
 
 def _rows(pairs: list[tuple[str, object]]) -> str:
@@ -633,57 +705,125 @@ def _table(headers: list[str], rows: list[list[object]], empty: str) -> str:
         return f"<p class=muted>{_e(empty)}</p>"
     head = "".join(f"<th>{_e(h)}</th>" for h in headers)
     body = "".join("<tr>" + "".join(f"<td>{_e(c)}</td>" for c in row) + "</tr>" for row in rows)
-    return f"<table class=list><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+    return f"<div class=wrap><table class=list><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>"
+
+
+def _details(summary: str, body: str, *, key: str) -> str:
+    """Expandable technical detail (closed by default)."""
+    return (f"<details class=tech id=d-{key}><summary>{icon('chevron', 'ic chev')}{_e(summary)}</summary>"
+            f"<div class=body>{body}</div></details>")
+
+
+def _identity_counts(live: dict[str, Any]) -> str | None:
+    counts = live.get("identity") if live else None
+    if not counts:
+        return None
+    return (f"known {counts.get('known')} (fresh {counts.get('fresh')}, retained {counts.get('retained')}) · "
+            f"unknown {counts.get('unknown')} · uncertain {counts.get('uncertain')} · unresolved {counts.get('unresolved')}")
 
 
 PREVIEW_LABELS = {"live": "LIVE", "stale": "STALE: not current", "offline": "OFFLINE", "starting": "STARTING"}
+PREVIEW_KINDS = {"live": "ok", "stale": "warn", "offline": "crit", "starting": "off"}
+SEVERITY_KINDS = {"info": "off", "warning": "warn", "critical": "crit"}
+SEVERITY_ICONS = {"info": "info", "warning": "warn", "critical": "crit"}
+STATUS_KINDS = {"candidate": "off", "open": "warn", "acknowledged": "done", "resolved": "done", "dismissed": "off"}
+STATUS_ICONS = {"candidate": "clock", "open": "bell", "acknowledged": "check", "resolved": "check", "dismissed": "off"}
 
 
 def _seconds(ms: object) -> str | None:
     return None if not isinstance(ms, int) else f"{ms / 1000:.1f} s"
 
 
+def _severity(severity: object) -> _Markup:
+    text = str(severity)
+    return _badge(SEVERITY_KINDS.get(text, "off"), text.capitalize(), glyph=SEVERITY_ICONS.get(text, "info"))
+
+
+def _status(status: object) -> _Markup:
+    text = str(status)
+    return _badge(STATUS_KINDS.get(text, "off"), text.capitalize(), glyph=STATUS_ICONS.get(text, "info"))
+
+
+def _empty_frame(glyph: str, title: str, text: object) -> str:
+    return (f"<div class=frame><div class=frame-empty>{icon(glyph)}<strong>{_e(title)}</strong>"
+            f"<p>{_e(text)}</p></div></div>")
+
+
 def _preview_html(view: Mapping[str, Any] | None) -> str:
     """The live view: state, age, ingest time, and a picture only while its frame is live."""
     view = view or PREVIEW_OFF
     if not view.get("enabled"):
-        return f"<section><h2>Live view</h2><p class=muted>{_e(view.get('reason'))}.</p></section>"
+        return (f"<div class=phead><h2>{icon('video')}Live view</h2>{_badge('off', 'Off', big=True)}</div>"
+                + _empty_frame("video", "The live view is off", f"{view.get('reason')}."))
     state = view.get("state")
     picture = view.get("picture")
     shown = picture or view.get("frame")
-    label = f"<strong>{_e(PREVIEW_LABELS.get(str(state), str(state).upper()))}</strong>: {_e(view.get('reason'))}"
+    label = PREVIEW_LABELS.get(str(state), str(state).upper())
+    reason = f"<span class=muted>{_e(view.get('reason'))}</span>"
     if state == "live":  # a claim that the video is current: only while the page is (D71)
-        banner = (f"<div class=fs><div class='banner {'ok' if picture else 'bad'} cur'>{label}</div>"
-                  f"<div class='banner bad old'><strong>NOT CURRENT: last reported LIVE</strong> when this page was "
-                  f"generated; the page has not refreshed for {PAGE_CURRENT_S} s, so what it shows is old.</div></div>")
+        head = _claim(f"<div class=row>{_badge('ok' if picture else 'warn', label, glyph='video', big=True)}{reason}</div>",
+                      f"<div class=row>{_badge('stale', 'NOT CURRENT: last reported LIVE', big=True)}<span>when this "
+                      f"page was generated; the page has not refreshed for {PAGE_CURRENT_S} s, so what it shows is "
+                      "old.</span></div>", block=True)
     else:
-        banner = f"<div class='banner bad'>{label}</div>"
+        head = f"<div class=row>{_badge(PREVIEW_KINDS.get(str(state), 'off'), label, big=True)}{reason}</div>"
     if picture:
-        body = (f'<figure class=pv><img src="{_e(picture["url"])}" width="{_e(picture["width"])}" '
-                f'height="{_e(picture["height"])}" alt="camera picture, stream epoch {_e(picture["stream_epoch"])} '
-                f'frame {_e(picture["frame_seq"])}"><figcaption class=old>NOT CURRENT: this picture is old; the page '
-                f"has not refreshed for {PAGE_CURRENT_S} s.</figcaption></figure>")
+        frame = (f'<figure class=frame><img src="{_e(picture["url"])}" width="{_e(picture["width"])}" '
+                 f'height="{_e(picture["height"])}" alt="Camera picture, stream epoch {_e(picture["stream_epoch"])}, '
+                 f'frame {_e(picture["frame_seq"])}"><figcaption class=old>{icon("clock")}NOT CURRENT: this picture '
+                 f"is old; the page has not refreshed for {PAGE_CURRENT_S} s.</figcaption></figure>")
     elif state == "live":
-        body = f"<p>No picture: {_e(view.get('problem') or 'none encoded yet')}.</p>"
+        frame = _empty_frame("image", "No picture", f"{view.get('problem') or 'none encoded yet'}.")
     else:
-        body = "<p>No picture is shown: the last frame is not current.</p>" if shown else ""
+        frame = _empty_frame(KIND_ICONS[PREVIEW_KINDS.get(str(state), "off")], label,
+                             "No picture is shown: the last frame is not current." if shown else view.get("reason"))
     facts = ""
     if shown:
         age = picture["age_ms"] if picture else view.get("age_ms")
-        facts = "<table>" + _rows([
-            ("frame", f"stream epoch {shown['stream_epoch']}, frame {shown['frame_seq']}"),
-            ("frame age when this page was generated", _seconds(age)),
-            ("time (UTC)", shown["ingest_utc"]),
-            ("what the time means", view.get("time_label")),
-        ]) + "</table>"
+        facts = ("<dl class=facts>"
+                 f"<div><dt>Frame age</dt><dd>{_e(_seconds(age))} <span class=muted>when this page was generated</span></dd></div>"
+                 f"<div><dt>Ingest time</dt><dd>{_clock(shown['ingest_utc'])}</dd></div>"
+                 f"<div><dt>Frame</dt><dd>stream epoch {_e(shown['stream_epoch'])}, frame {_e(shown['frame_seq'])}</dd></div>"
+                 "</dl>")
     bounds = view.get("bounds") or {}
     note = (f"Refreshes with the page every {REFRESH_S} s. Pictures are at most {bounds.get('max_width')}×"
             f"{bounds.get('max_height')}, at most {bounds.get('max_encodes_per_s')} encoded per second for all "
             "viewers, from the frames the runtime already reads; nothing is saved.")
-    return f"<section><h2>Live view</h2>{banner}{body}{facts}<p class=muted>{_e(note)}</p></section>"
+    about = _details("About this picture", (f"<p>{_e(view.get('time_label'))}</p>" if view.get("time_label") else "")
+                     + f"<p class=muted>{_e(note)}</p>", key="picture")
+    return (f"<div class=phead><h2>{icon('video')}Live view</h2></div>{head}{frame}{facts}"
+            f"{about}")
 
 
-def render_html(status: Mapping[str, Any]) -> str:
+def _capabilities(live: Mapping[str, Any], components: Mapping[str, Any], running: bool) -> str:
+    """What the runtime can do right now: detector, scene analysis, face recognition, alerts."""
+    if not live:
+        return ""
+    channels = (components.get("notifications") or {}).get("channels") or {}
+    alerts = ("disabled" if not channels else
+              "available" if all(c.get("state") == "available" for c in channels.values()) else "unavailable")
+    chips = []
+    for name, state in (("Detector", live.get("detector")), ("Scene analysis", live.get("scene_analysis")),
+                        ("Face recognition", live.get("face_recognition")), ("Alerts", alerts)):
+        kind = _state_kind(state, running=running)
+        word = STATE_LABELS.get(str(state), str(state)).lower()
+        label = f"{name}: {word}"
+        chips.append(_claim(_badge("ok", label), _badge("off", f"{name}: was {word}", glyph="clock"))
+                     if kind == "ok" else _badge(kind, label))
+    return f"<div class=caps aria-label=Capabilities>{''.join(chips)}</div>"
+
+
+def _monitoring(runtime: Mapping[str, Any], degraded: list[str]) -> _Markup:
+    state = runtime.get("state")
+    if state == "running":
+        current = (_badge("ok", "Monitoring", glyph="shield") if not degraded
+                   else _badge("warn", "Monitoring, degraded"))
+        return _claim(current, _badge("off", "Last reported: monitoring" if not degraded
+                                      else "Last reported: degraded", glyph="clock"))
+    return _badge("off", STATE_LABELS.get(str(state), str(state).capitalize()), glyph="clock")
+
+
+def render_html(status: Mapping[str, Any], *, theme: str | None = None) -> str:
     runtime = status["runtime"]
     components = status["components"]
     live = status.get("live") or {}
@@ -691,36 +831,39 @@ def render_html(status: Mapping[str, Any]) -> str:
     frames = status.get("frames") or {}
     degraded = status["degraded"]
     generated = status.get("generated_utc")
+    running = runtime.get("state") == "running"
     page_freshness = (  # the page's own freshness, apart from what the runtime last reported (D71)
-        f"<div class=fs><div class='banner info cur'>This page is current: shown less than {PAGE_CURRENT_S} s ago, "
-        f"generated at {_e(generated)}; it refreshes every {REFRESH_S} s.</div>"
-        f"<div class='banner bad old'><strong>NOT CURRENT: this page has not refreshed for {PAGE_CURRENT_S} s</strong>. "
-        f"Everything below is what the runtime had last reported when this page was generated at {_e(generated)}, and "
-        "may have changed since. Only a refresh that succeeds makes this page current again; reload to retry.</div></div>"
+        f"<div class=freshbar><div class=fs>"
+        f"<div class='cur now'>{icon('clock')}<p>This page is current: shown less than {PAGE_CURRENT_S} s ago, "
+        f"generated at {_clock(generated)}; it refreshes every {REFRESH_S} s. If refreshing stops, this bar turns NOT "
+        f"CURRENT within {PAGE_CURRENT_S} s and the report below is marked as last reported.</p></div>"
+        f"<div class='old gone'>{icon('clock')}<p><strong>NOT CURRENT: this page has not refreshed for "
+        f"{PAGE_CURRENT_S} s</strong>. Everything below is what the runtime had last reported when this page was "
+        f"generated at {_clock(generated)}, and may have changed since. Only a refresh that succeeds makes this page "
+        "current again; reload to retry.</p></div></div></div>"
     )
-    banner = (
-        "<div class='banner bad'><strong>Degraded</strong><ul>"
-        + "".join(f"<li>{_e(reason)}</li>" for reason in degraded) + "</ul></div>"
-        if degraded else
-        "<div class=fs><div class='banner ok cur'><strong>All components working</strong></div>"
-        "<div class='banner gone old'>Last reported: all components working. Whether they still are is not known: "
-        "this page is not current.</div></div>"
-    )
-    component_rows = []
-    for name in ("capture", "detector", "scene", "face", "incidents"):
-        item = components.get(name) or {}
-        component_rows.append([name, item.get("state"), item.get("problem")])
+    if degraded:
+        summary = _badge("warn", "Degraded", big=True)
+        problems = ("<div class='alertbox k-warn'>" + icon("warn") + "<div><strong>Degraded</strong><ul>"
+                    + "".join(f"<li>{_e(reason)}</li>" for reason in degraded) + "</ul></div></div>")
+    else:
+        summary = _claim(_badge("ok", "All components working", big=True),
+                         _badge("off", "Last reported: all components working. Whether they still are is not known: "
+                                "this page is not current.", glyph="clock", big=True))
+        problems = ""
     notifications = components.get("notifications") or {}
-    for channel, item in (notifications.get("channels") or {}).items():
-        component_rows.append([f"notifier: {channel}", item.get("state"), item.get("problem")])
-    worker = notifications.get("worker") or {}
-    component_rows.append(["delivery worker", worker.get("state"), worker.get("problem")])
-    for name, label in (("preview", "live view"), ("snapshots", "incident snapshots")):  # listed only when enabled
-        item = components.get(name)
-        if item is not None:
-            component_rows.append([label, item.get("state"), item.get("problem")])
+    parts: list[tuple[str, Mapping[str, Any]]] = [
+        (name, components.get(name) or {}) for name in ("capture", "detector", "scene", "face", "incidents")]
+    parts += [(f"notifier: {channel}", item) for channel, item in (notifications.get("channels") or {}).items()]
+    parts.append(("delivery worker", notifications.get("worker") or {}))
+    parts += [(label, components[name]) for name, label in (("preview", "live view"), ("snapshots", "incident snapshots"))
+              if components.get(name) is not None]  # listed only when enabled
     database = status.get("database") or {}
-    component_rows.append(["incident database (read)", database.get("state"), database.get("problem")])
+    parts.append(("incident database (read)", database))
+    component_rows = "".join(
+        f"<li><span class=name>{_e(name)}</span>{_state(item.get('state'), item.get('problem'), running=running)}"
+        + (f"<span class=why>{_e(item.get('problem'))}</span>" if item.get("problem") else "") + "</li>"
+        for name, item in parts)
     capture = components.get("capture") or {}
     report = live.get("scene_report") or {}
     scene_rows = [("scene", live.get("scene")), ("reason", live.get("scene_reason"))]
@@ -732,59 +875,91 @@ def render_html(status: Mapping[str, Any]) -> str:
     durability = recording.get("durability") or PENDING_DURABILITY_FALLBACK
     delivery = status.get("delivery") or {}
     totals = delivery.get("totals") or {}
-    incident_rows = [
-        [_incident_link(i["incident_id"]), i["title"], i["severity"], i["status"], i["first_observed_utc"],
-         i["last_observed_utc"], i["annotations"]]
-        for i in incidents.get("recent") or []
-    ]
+    recent = incidents.get("recent") or []
+    if recent:
+        items = []
+        for i in recent:
+            incident_id = i["incident_id"]
+            meta = (f"<span class=inc-meta><span>first {_clock(i['first_observed_utc'])}</span>"
+                    f"<span>latest {_clock(i['last_observed_utc'])}</span>"
+                    + (f"<span>{_e(i['annotations'])} scene annotation(s)</span>" if i["annotations"] else "")
+                    + "</span>")
+            body = (f"<span class=inc-meta>{_severity(i['severity'])}{_status(i['status'])}</span>"
+                    f"<span class=inc-title>{_e(i['title'])}</span>"
+                    f"<span class=inc-meta><span class=mono>{_e(incident_id)}</span></span>{meta}")
+            if isinstance(incident_id, str) and INCIDENT_ID.fullmatch(incident_id):
+                href = _href(f"/incidents/{incident_id}", theme)
+                items.append(f'<li><a class=inc href="{_e(href)}">{body}</a></li>')
+            else:  # an ID with no page is plain text
+                items.append(f"<li><div class=inc>{body}</div></li>")
+        items = "".join(items)
+        incident_list = f"<ol class=inc-list>{items}</ol>"
+    else:
+        incident_list = f"<p class=empty>{icon('check')}No incidents recorded.</p>"
     delivery_rows = [
-        [_incident_link(d["incident_id"]), d["channel"], d["message_kind"],
+        [_incident_link(d["incident_id"], theme), d["channel"], d["message_kind"],
          d["state"] + (" (in flight)" if d["in_flight"] else ""), d["attempts"],
          "may have been delivered" if d["ambiguous"] else "", d["next_attempt_utc"], d["last_error"]]
         for d in delivery.get("recent") or []
     ]
-    return _document("Sentinel status", REFRESH_S, f"""<h1>Sentinel status: camera {_e(runtime.get("camera_id"))}</h1>
-{page_freshness}
-<div class=report>
-<p class=muted>Last report from the runtime: {_e(runtime.get("state"))}, updated {_e(runtime.get("updated_utc"))}
-({_e(runtime.get("status_age_s"))} s before this page was generated). Read-only, loopback only.</p>
-{banner}
-{_preview_html(status.get("preview"))}
-<div class=grid>
-<section><h2>Components</h2>{_table(["component", "state", "problem"], component_rows, "none")}</section>
-<section><h2>Capture</h2><table>{_rows([
-        ("state", capture.get("state")), ("stream epoch", capture.get("stream_epoch")),
+    totals_html = "".join(
+        _badge(kind, f"{label} {totals.get(key) if totals.get(key) is not None else '–'}", glyph=glyph)
+        for key, label, kind, glyph in (
+            ("queued", "Queued (never attempted)", "off", "clock"),
+            ("attempted", "attempted, not confirmed", "warn", "send"),
+            ("delivered", "delivered (provider confirmed)", "done", "check"),
+            ("failed", "failed (needs operator)", "crit", "crit"),
+            ("ambiguous", "ambiguous", "warn", "warn")))
+    technical = _details("Capture, processing and live state", f"""<div class=wrap><table class=kv>{_rows([
+        ("capture state", capture.get("state")), ("stream epoch", capture.get("stream_epoch")),
         ("connects", capture.get("connects")), ("reconnects", capture.get("reconnects")),
         ("open failures", capture.get("open_failures")), ("stream ends", capture.get("stream_ends")),
-        ("retry in (s)", capture.get("retry_delay_s")), ("last problem", capture.get("problem"))])}</table></section>
-<section><h2>Processing</h2><table>{_rows([
+        ("retry in (s)", capture.get("retry_delay_s")), ("last problem", capture.get("problem")),
         ("captured fps", rates.get("captured_fps")), ("processed fps", rates.get("processed_fps")),
         ("detector failures /s", rates.get("failed_per_s")), ("window (s)", rates.get("window_s")),
         ("frames captured", frames.get("captured")), ("processed", frames.get("processed")),
         ("failed", frames.get("failed")), ("replaced (skipped by a slow loop)", frames.get("replaced")),
-        ("not live (epoch ended)", frames.get("not_live"))])}</table></section>
-<section><h2>Live</h2><table>{_rows([
+        ("not live (epoch ended)", frames.get("not_live")),
         ("video", live.get("video")), ("last frame age (ms)", live.get("last_frame_age_ms")),
         ("detector", live.get("detector")), ("occupancy", live.get("occupancy")),
         ("why", live.get("occupancy_reason")), ("people (confirmed)",
         None if not live else f"{live.get('people')} ({live.get('confirmed_people')})"),
         ("face recognition", live.get("face_recognition")), ("identities (counts only)", _identity_counts(live)),
-        ("scene analysis", live.get("scene_analysis"))])}</table>
-<table>{_rows(scene_rows)}</table></section>
-</div>
-<h2>Incidents</h2><p>{_e(incidents.get("unresolved"))} unresolved; latest {MAX_INCIDENTS} shown.
-Waiting to be recorded: {_e(recording.get("pending_signals"))}.</p>
-<p class=muted>Limitation: {_e(durability)}.</p>
-<div class=wrap>{_table(["incident", "title", "severity", "status", "first seen (UTC)", "latest (UTC)", "annotations"],
-                         incident_rows, "No incidents.")}</div>
-<h2>Alert delivery</h2>
-<p>Queued (never attempted) {_e(totals.get("queued"))} · attempted, not confirmed {_e(totals.get("attempted"))}
-· delivered (provider confirmed) {_e(totals.get("delivered"))} · failed (needs operator) {_e(totals.get("failed"))}
-· ambiguous {_e(totals.get("ambiguous"))}.
-<span class=muted>Delivery is at least once: an ambiguous attempt may have reached the chat, and a repeat carries the same incident ID.</span></p>
-<div class=wrap>{_table(["incident", "channel", "message", "state", "attempts", "ambiguous", "next attempt (UTC)", "last error"],
-                         delivery_rows, "No alerts.")}</div>
-</div>""")
+        ("scene analysis", live.get("scene_analysis")), *scene_rows])}</table></div>""", key="technical")
+    camera = runtime.get("camera_id")
+    return _document(f"Sentinel · {camera}", REFRESH_S, f"""<a class=skip href="#live">Skip to the live view</a>
+<header class=top>
+<div class=brand>{icon("logo", "ic logo")}<span>Sentinel</span></div>
+<div class=cam><span>Camera</span><strong class=mono>{_e(camera)}</strong></div>
+<div class=pills><span class=updated>Last update {_clock(runtime.get("updated_utc"))}</span>{_monitoring(runtime, degraded)}{_claim(_badge("ok", "Page current"), _badge("stale", "NOT CURRENT"))}</div>
+{_themes("/", theme)}
+</header>
+{page_freshness}
+<main class="board report">
+<section id=live class="panel live" aria-label="Live view">{_preview_html(status.get("preview"))}
+{_capabilities(live, components, running)}</section>
+<aside id=incidents class="panel incidents" aria-label=Incidents>
+<div class=phead><h2>{icon("bell")}Incidents</h2><span class=muted>{_e(incidents.get("unresolved"))} unresolved; latest {MAX_INCIDENTS} shown</span></div>
+{incident_list}
+<p class=note>Waiting to be recorded: {_e(recording.get("pending_signals"))}. Limitation: {_e(durability)}.</p>
+</aside>
+<section id=health class="panel health" aria-label="System health">
+<div class=phead><h2>{icon("shield")}System health</h2>{summary}</div>
+{problems}<ul class=comp>{component_rows}</ul>
+<p class=note>Last report from the runtime: {_e(runtime.get("state"))}, updated {_clock(runtime.get("updated_utc"))}
+({_e(runtime.get("status_age_s"))} s before this page was generated). Read-only, loopback only.</p>
+{technical}
+</section>
+<section id=delivery class="panel delivery" aria-label="Alert delivery">
+<div class=phead><h2>{icon("send")}Alert delivery</h2></div>
+<div class=totals>{totals_html}</div>
+<p class=note>Delivery is at least once: an ambiguous attempt may have reached the chat, and a repeat carries the same incident ID.</p>
+{_details("Alert rows", _table(["incident", "channel", "message", "state", "attempts", "ambiguous", "next attempt (UTC)",
+                                 "last error"], delivery_rows, "No alerts."), key="alerts")}
+</section>
+</main>
+<footer class=foot>Read-only, loopback only (D45). Generated at {_clock(generated)}.</footer>""",
+                     theme=theme, page="status")
 
 
 APPLICABILITY_NOTE = (
@@ -823,17 +998,25 @@ def _snapshot_html(snapshot: Mapping[str, Any] | None) -> str:
     state = snapshot["state"]
     if state == "saved" and snapshot.get("file") == "verified":
         frame = snapshot["frame"]
-        body = (f'<figure class=snap><img src="{_e(snapshot["view_url"])}" width="{_e(snapshot["width"])}" '
-                f'height="{_e(snapshot["height"])}" alt="snapshot: stream epoch {_e(frame["stream_epoch"])} frame '
-                f'{_e(frame["frame_seq"])}"></figure><p><a href="{_e(snapshot["download_url"])}" download>Download this '
-                f'snapshot (JPEG, {_e(snapshot["bytes"])} bytes)</a></p>')
+        body = (f'<figure class=frame><img src="{_e(snapshot["view_url"])}" width="{_e(snapshot["width"])}" '
+                f'height="{_e(snapshot["height"])}" alt="Snapshot: stream epoch {_e(frame["stream_epoch"])}, frame '
+                f'{_e(frame["frame_seq"])}"></figure><div class=row><a class=button href="{_e(snapshot["download_url"])}" '
+                f'download>{icon("download")}Download this snapshot</a><span class=muted>JPEG, {_e(snapshot["bytes"])} '
+                f'bytes, {_e(snapshot["width"])}×{_e(snapshot["height"])}</span></div>')
     elif state == "saved":
-        body = ("<div class='banner bad'>Saved, but its file is missing or does not match its record (size or "
-                "SHA-256), so it is not shown.</div>")
+        body = (f"<div class='alertbox k-crit'>{icon('crit')}<p>Saved, but its file is missing or does not match its "
+                "record (size or SHA-256), so it is not shown.</p></div>")
     else:
-        body = f"<p>{_e(snapshot['text'])}.</p>"
+        glyph = "off" if state in ("none", "pruned") else "warn"
+        body = _empty_frame(glyph, {"none": "No snapshot", "missing": "Snapshot missing",
+                                    "pruned": "Snapshot deleted"}.get(state, "No snapshot"), f"{snapshot['text']}.")
     facts = ""
     if "frame" in snapshot:
+        facts = ("<dl class=facts>"
+                 f"<div><dt>Frame</dt><dd>stream epoch {_e(snapshot['frame']['stream_epoch'])}, frame "
+                 f"{_e(snapshot['frame']['frame_seq'])}</dd></div>"
+                 f"<div><dt>Ingest time</dt><dd>{_clock(snapshot['ingest_utc'], date=True) if snapshot['ingest_utc'] else _e('not known: the frame’s record was no longer held')}</dd></div>"
+                 "</dl>")
         rows: list[tuple[str, object]] = [
             ("frame", f"stream epoch {snapshot['frame']['stream_epoch']}, frame {snapshot['frame']['frame_seq']}"),
             ("observation", snapshot["observation_id"]),
@@ -843,17 +1026,26 @@ def _snapshot_html(snapshot: Mapping[str, Any] | None) -> str:
         ]
         if snapshot["sha256"]:
             rows += [("size", f"{snapshot['width']}×{snapshot['height']}, {snapshot['bytes']} bytes"),
-                     ("SHA-256", snapshot["sha256"])]
-        facts = f"<table>{_rows(rows)}</table>"
-    return f"{body}{facts}<p class=muted>{_e(SNAPSHOT_NOTE)}</p>"
+                     ("SHA-256", _Markup(f"<span class=mono>{_e(snapshot['sha256'])}</span>"))]
+        facts += _details("Snapshot provenance", f"<div class=wrap><table class=kv>{_rows(rows)}</table></div>",
+                          key="snapshot")
+    return f"{body}{facts}<p class=note>{_e(SNAPSHOT_NOTE)}</p>"
 
 
-def render_incident_html(detail: Mapping[str, Any]) -> str:
+def _ack_tag(status: object, acknowledgment: Mapping[str, Any]) -> str:
+    """The acknowledgment beside the status, unless the status already says it."""
+    if acknowledgment["state"] == "acknowledged":
+        return "" if status == "acknowledged" else _badge("done", "Acknowledged")
+    return _badge("off", "Not acknowledged", glyph="bell")
+
+
+def render_incident_html(detail: Mapping[str, Any], *, theme: str | None = None) -> str:
     """One incident's page, from ``read_incident``'s document (state available)."""
     incident = detail["incident"]
     linked = detail["linked"]
     evidence, transitions = detail["evidence"], detail["transitions"]
     annotations, deliveries = detail["annotations"], detail["deliveries"]
+    acknowledgment = detail["acknowledgment"]
     evidence_rows = []
     for item in evidence["shown"]:
         source = item["source"] or {}
@@ -863,11 +1055,20 @@ def render_incident_html(detail: Mapping[str, Any]) -> str:
             source.get("in_zone_s") if "in_zone_s" in source else source.get("scene_reports"),
             item["reason"] if item["source"] is not None else f"{item['reason']} (source fields not readable)",
         ])
-    transition_rows = [
-        [t["at_utc"], t["from_status"], t["to_status"], t["revision"], t["actor"], t["reason"]]
-        for t in transitions["shown"]
-    ]
-    annotation_rows = []
+    opening = next((item for item in evidence["shown"] if item["phase"] == "entered"), None)
+    if opening is not None:
+        why = (f"<p class=reason>{_e(opening['reason'])}</p><p class=note>The observation that opened this incident, "
+               f"at {_clock(opening['observed_utc'], date=True)} (the ingest time of its source frame).</p>")
+    elif evidence["total"]:
+        why = "<p class=reason>The opening observation is older than the rows shown below.</p>"
+    else:
+        why = "<p class=reason>No rule observation is recorded.</p>"
+    timeline = "".join(
+        f"<li><strong>{_e(t['from_status'] or 'new')} → {_e(t['to_status'])}</strong>"
+        f"<div class=when>{_clock(t['at_utc'], date=True)} · by {_e(t['actor'])} · revision {_e(t['revision'])}</div>"
+        f"<div>{_e(t['reason'])}</div></li>"
+        for t in transitions["shown"])
+    annotation_rows, scene_cards = [], []
     for item in annotations["shown"]:
         details = item["details"] or {}
         annotation_rows.append([
@@ -877,55 +1078,101 @@ def render_incident_html(detail: Mapping[str, Any]) -> str:
             details.get("reason") if item["details"] is not None else f"not shown ({item['details_problem']})",
             _report_text(item["details"]),
         ])
-    delivery_rows, attempt_rows = [], []
+        text = _report_text(item["details"]) if item["details"] is not None else f"not shown ({item['details_problem']})"
+        scene_cards.append(
+            f"<div class=card><h3>{_badge('done' if item['applicability'] == 'current' else 'off', item['applicability'], glyph='info')}"
+            f"<span>{_e(item['status'])}</span></h3><p>{_e(text or details.get('reason'))}</p>"
+            f"<p class=note>Source frame {_clock(item['observed_utc'], date=True)}; recorded "
+            f"{_e(item['recorded_after_source_s'])} s later.</p></div>")
+    delivery_rows, attempt_rows, delivery_cards = [], [], []
     for d in deliveries["shown"]:
+        state = d["state"] + (" (in flight)" if d["in_flight"] else "")
         delivery_rows.append([
-            d["channel"], d["message_kind"], d["state"] + (" (in flight)" if d["in_flight"] else ""), d["attempts"],
+            d["channel"], d["message_kind"], state, d["attempts"],
             "may have been delivered" if d["ambiguous"] else "", d["provider_confirmed"], d["next_attempt_utc"],
             d["last_error"],
         ])
         for a in d["attempt_log"]["shown"]:
             attempt_rows.append([f"{d['channel']} {d['message_kind']}", a["attempt"], a["started_utc"],
                                  a["finished_utc"], a["outcome"], a["detail"]])
-    later = _Markup(", ".join(_e(_incident_link(i)) for i in linked["later"])) if linked["later"] else None
+        kind = {"delivered": "done", "failed": "crit", "attempted": "warn"}.get(d["state"], "off")
+        delivery_cards.append(
+            f"<div class=card><h3>{_badge(kind, state, glyph={'delivered': 'check', 'failed': 'crit'}.get(d['state'], 'send'))}"
+            f"<span>{_e(d['channel'])} · {_e(d['message_kind'])}</span></h3>"
+            f"<p>{_e(d['attempts'])} attempt(s); provider confirmed: {_e(d['provider_confirmed'])}"
+            + ("; may have been delivered" if d["ambiguous"] else "")
+            + (f"; next attempt {_clock(d['next_attempt_utc'], date=True)}" if d["next_attempt_utc"] else "")
+            + "</p>" + (f"<p class=note>Last error: {_e(d['last_error'])}</p>" if d["last_error"] else "") + "</div>")
+    later = _Markup(", ".join(_e(_incident_link(i, theme)) for i in linked["later"])) if linked["later"] else None
     summary = _rows([
-        ("title", incident["title"]), ("rule", incident["kind"]), ("zone", incident["zone_id"]),
-        ("severity", incident["severity"]), ("status", incident["status"]), ("revision", incident["revision"]),
-        ("first seen (UTC)", incident["first_observed_utc"]), ("latest (UTC)", incident["last_observed_utc"]),
-        ("recorded (UTC)", incident["created_utc"]), ("updated (UTC)", incident["updated_utc"]),
-        ("previous linked incident", _incident_link(linked["previous"])), ("later linked incidents", later),
-        ("acknowledgment", _acknowledgment_text(detail["acknowledgment"])), ("clip", detail["clip"]),
+        ("rule", incident["kind"]), ("zone", incident["zone_id"]), ("severity", incident["severity"]),
+        ("status", incident["status"]), ("revision", incident["revision"]),
+        ("first seen (UTC)", _Markup(_clock(incident["first_observed_utc"], date=True))),
+        ("latest (UTC)", _Markup(_clock(incident["last_observed_utc"], date=True))),
+        ("recorded (UTC)", _Markup(_clock(incident["created_utc"], date=True))),
+        ("updated (UTC)", _Markup(_clock(incident["updated_utc"], date=True))),
+        ("previous linked incident", _incident_link(linked["previous"], theme)), ("later linked incidents", later),
+        ("clip", detail["clip"]),
     ])
+    if acknowledgment["state"] == "acknowledged":
+        ack = (f"{_badge('done', 'Acknowledged', big=True)}<p class=reason>{_e(_acknowledgment_text(acknowledgment))}</p>")
+    else:
+        ack = (f"{_badge('off', 'Not acknowledged', glyph='bell', big=True)}"
+               f"<p class=reason>{_e(_acknowledgment_text(acknowledgment))}</p>")
 
     def shown(part: Mapping[str, Any]) -> str:
-        return f"<p class=muted>{len(part['shown'])} of {part['total']} shown (the latest).</p>"
+        return f"<p class=note>{len(part['shown'])} of {part['total']} shown (the latest).</p>"
 
     title = f"Sentinel incident {incident['incident_id']}"
-    return _document(title, DETAIL_REFRESH_S, f"""<p><a href="/">Back to status</a></p>
-<h1>Incident {_e(incident["incident_id"])}</h1>
-<p class=muted>Camera {_e(incident["camera_id"])}. Read-only, loopback only; refreshes every {DETAIL_REFRESH_S} s.
-Generated {_e(detail.get("generated_utc"))}.</p>
-<table>{summary}</table>
-<h2>Snapshot</h2>{_snapshot_html(detail.get("snapshot"))}
-<h2>Rule observations</h2>{shown(evidence)}
-<p class=muted>Source times are the ingest times of the frames each observation came from (UTC, for display).
-An episode is one continuous presence of one track; ENDED closes it and changes no status.</p>
-<div class=wrap>{_table(["source time (UTC)", "phase", "severity", "episode", "track", "stream epoch", "frames",
-                         "in zone (s) / scene reports", "reason"], evidence_rows, "No rule observations.")}</div>
-<h2>Lifecycle</h2>{shown(transitions)}
-<div class=wrap>{_table(["at (UTC)", "from", "to", "revision", "by", "reason"], transition_rows, "No transitions.")}</div>
-<h2>Scene evidence on this incident</h2>{shown(annotations)}
-<p class=muted>{_e(APPLICABILITY_NOTE)} "Recorded after source" is a wall-clock difference, for display only.</p>
-<div class=wrap>{_table(["recorded (UTC)", "source frame (UTC)", "recorded after source (s)", "applicability", "kind",
-                         "status", "producer", "stream epoch", "frame", "reason", "report"],
-                        annotation_rows, "No scene evidence.")}</div>
-<h2>Alert delivery</h2><p class=muted>{len(deliveries["shown"])} of {deliveries["total"]} alert rows shown.
-Delivery is at least once: an ambiguous attempt may have reached the chat, and a repeat carries the same incident ID.</p>
-<div class=wrap>{_table(["channel", "message", "state", "attempts", "ambiguous", "provider confirmed",
-                         "next attempt (UTC)", "last error"], delivery_rows, "No alerts for this incident.")}</div>
-<p class=muted>Attempts: the latest {MAX_ATTEMPTS} per alert row, oldest first; details were redacted when stored.</p>
-<div class=wrap>{_table(["alert", "attempt", "started (UTC)", "finished (UTC)", "outcome", "detail"], attempt_rows,
-                        "No delivery attempts.")}</div>""")
+    technical = (
+        f"<h3>Rule observations</h3>{shown(evidence)}"
+        "<p class=note>Source times are the ingest times of the frames each observation came from (UTC, for display). "
+        "An episode is one continuous presence of one track; ENDED closes it and changes no status.</p>"
+        + _table(["source time (UTC)", "phase", "severity", "episode", "track", "stream epoch", "frames",
+                  "in zone (s) / scene reports", "reason"], evidence_rows, "No rule observations.")
+        + f"<h3>Lifecycle rows</h3>{shown(transitions)}"
+        + _table(["at (UTC)", "from", "to", "revision", "by", "reason"],
+                 [[t["at_utc"], t["from_status"], t["to_status"], t["revision"], t["actor"], t["reason"]]
+                  for t in transitions["shown"]], "No transitions.")
+        + f"<h3>Scene evidence rows</h3>{shown(annotations)}<p class=note>{_e(APPLICABILITY_NOTE)} \"Recorded after "
+          "source\" is a wall-clock difference, for display only.</p>"
+        + _table(["recorded (UTC)", "source frame (UTC)", "recorded after source (s)", "applicability", "kind",
+                  "status", "producer", "stream epoch", "frame", "reason", "report"], annotation_rows,
+                 "No scene evidence.")
+        + f"<h3>Delivery attempts</h3><p class=note>Attempts: the latest {MAX_ATTEMPTS} per alert row, oldest first; "
+          "details were redacted when stored.</p>"
+        + _table(["alert", "attempt", "started (UTC)", "finished (UTC)", "outcome", "detail"], attempt_rows,
+                 "No delivery attempts.")
+        + _table(["channel", "message", "state", "attempts", "ambiguous", "provider confirmed", "next attempt (UTC)",
+                  "last error"], delivery_rows, "No alert rows.")
+    )
+    return _document(title, DETAIL_REFRESH_S, f"""<a class=skip href="#snapshot">Skip to the snapshot</a>
+<header class=top>
+<div class=brand>{icon("logo", "ic logo")}<span>Sentinel</span></div>
+<a class=back href="{_e(_href("/", theme))}">{icon("back")}Back to status</a>
+<div class=pills><span class=muted>Camera <strong class=mono>{_e(incident["camera_id"])}</strong></span></div>
+{_themes(f"/incidents/{incident['incident_id']}", theme)}
+</header>
+<div class=title-block>
+<p class=muted>Incident <span class=mono>{_e(incident["incident_id"])}</span></p>
+<h1>{_e(incident["title"])}</h1>
+<div class=tags>{_severity(incident["severity"])}{_status(incident["status"])}{_ack_tag(incident["status"], acknowledgment)}</div>
+<p class=muted>Read-only, loopback only; refreshes every {DETAIL_REFRESH_S} s. Generated {_clock(detail.get("generated_utc"), date=True)}.</p>
+</div>
+<main class=detail>
+<section id=snapshot class="panel p-snap" aria-label=Snapshot><div class=phead><h2>{icon("image")}Snapshot</h2></div>{_snapshot_html(detail.get("snapshot"))}</section>
+<section class="panel p-summary" aria-label="What happened"><div class=phead><h2>{icon("info")}What happened</h2></div>{why}<div class=wrap><table class=kv>{summary}</table></div></section>
+<section class="panel p-ack" aria-label=Acknowledgment><div class=phead><h2>{icon("check")}Acknowledgment</h2></div>{ack}</section>
+<section class="panel p-delivery" aria-label="Alert delivery"><div class=phead><h2>{icon("send")}Alert delivery</h2></div>
+<p class=note>{len(deliveries["shown"])} of {deliveries["total"]} alert rows shown. Delivery is at least once: an ambiguous attempt may have reached the chat, and a repeat carries the same incident ID.</p>
+<div class=cards>{"".join(delivery_cards) or "<p class=empty>" + icon("off") + "No alerts for this incident.</p>"}</div></section>
+<section class="panel p-lifecycle" aria-label=Lifecycle><div class=phead><h2>{icon("list")}Lifecycle</h2></div>{shown(transitions)}
+{f"<ol class=timeline>{timeline}</ol>" if timeline else "<p class=empty>" + icon("off") + "No transitions.</p>"}</section>
+<section class="panel p-scene" aria-label="Scene evidence"><div class=phead><h2>{icon("chat")}Scene evidence on this incident</h2></div>{shown(annotations)}
+<div class=cards>{"".join(scene_cards) or "<p class=empty>" + icon("off") + "No scene evidence.</p>"}</div></section>
+<section class="panel p-tech" aria-label="Technical provenance">{_details("Technical provenance: every stored row", technical, key="provenance")}</section>
+</main>
+<footer class=foot>Read-only, loopback only (D45).</footer>""", theme=theme, page="incident")
 
 
 # ---------------------------------------------------------------- server
@@ -1074,7 +1321,11 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._host_allowed():
             self._send(421, "text/plain; charset=utf-8", b"misdirected request\n")
             return
-        path = urlsplit(self.path).path
+        parts = urlsplit(self.path)
+        path, theme = parts.path, theme_from_query(parts.query)
+        if path == TAB_ICON_PATH:
+            self._send(200, "image/svg+xml", TAB_ICON)
+            return
         preview = PREVIEW_PATH.fullmatch(path)
         if preview is not None:
             self._send_picture(preview["token"])
@@ -1099,11 +1350,12 @@ class _Handler(BaseHTTPRequestHandler):
                 if incident["json"]:
                     body, kind = json.dumps(detail, indent=2).encode(), "application/json"
                 else:
-                    body, kind = render_incident_html(detail).encode(), "text/html; charset=utf-8"
+                    body, kind = render_incident_html(detail, theme=theme).encode(), "text/html; charset=utf-8"
             elif path == "/status.json":
                 body, kind = json.dumps(self.page.status(), indent=2).encode(), "application/json"
             else:
-                body, kind = render_html(self.page.status(with_picture=True)).encode(), "text/html; charset=utf-8"
+                body, kind = (render_html(self.page.status(with_picture=True), theme=theme).encode(),
+                              "text/html; charset=utf-8")
         except Exception:  # noqa: BLE001 - never show exception text
             self._send(500, "text/plain; charset=utf-8", b"status unavailable\n")
             return
@@ -1167,6 +1419,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         for name, value in SECURITY_HEADERS.items():
             self.send_header(name, value)
+        self.send_header("Content-Security-Policy", CONTENT_SECURITY_POLICY)
         if allow is not None:
             self.send_header("Allow", allow)
         for name, value in (extra or {}).items():

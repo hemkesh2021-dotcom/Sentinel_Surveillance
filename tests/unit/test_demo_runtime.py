@@ -1088,7 +1088,7 @@ def test_sentinel_run_serves_the_live_view_only_with_its_flag(tmp_path, capsys, 
     out = capsys.readouterr()
     assert code == 0, out.err
     assert [(status, kind) for status, kind, _ in fetched] == [(200, "text/html; charset=utf-8"), (200, "image/jpeg")]
-    assert fetched[1][2] == b"\xff\xd8image\xff\xd9" and "<strong>LIVE</strong>" in fetched[0][2].decode()
+    assert fetched[1][2] == b"\xff\xd8image\xff\xd9" and "LIVE</span>" in fetched[0][2].decode()
     lines = [json.loads(line) for line in out.out.splitlines()]
     assert lines[0]["startup"]["live_preview"]["max_width"] == 640
     assert lines[-1]["status"]["state"] == "stopped" and lines[-1]["shutdown"]["all_stopped"] is True
@@ -1345,7 +1345,10 @@ def test_sentinel_run_saves_shows_and_keeps_the_snapshot_across_a_restart(tmp_pa
     incident_id = fetched["id"][2].decode()
     status, headers, page = fetched["page"]
     assert status == 200 and f'<img src="/incidents/{incident_id}/snapshot.jpg"' in page.decode()
-    assert "<td>incident snapshots</td><td>running</td>" in fetched["status"][2].decode()
+    status_html = fetched["status"][2].decode()
+    row = status_html[status_html.index("<span class=name>incident snapshots</span>"):]
+    assert row.startswith("<span class=name>incident snapshots</span><span class='fs inl'><span class=cur>"
+                          "<span class=\"badge k-ok\">") and "Running</span>" in row[:400]
     assert fetched["jpg"][0] == 200 and fetched["jpg"][2] == fetched["download"][2]
     assert fetched["download"][1]["Content-Disposition"] == f'attachment; filename="sentinel-{incident_id}.jpg"'
     lines = [json.loads(line) for line in out.out.splitlines()]
