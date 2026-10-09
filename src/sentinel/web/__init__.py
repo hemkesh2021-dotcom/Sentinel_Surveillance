@@ -27,6 +27,11 @@ def stylesheet(current_s: int) -> str:
     return _text("dashboard.css").replace(PAGE_CURRENT_TOKEN + "s", f"{current_s}s")
 
 
+def script() -> bytes:
+    """The pages' only script: in-place updates (D73), served from this origin."""
+    return _text("dashboard.js").encode("utf-8")
+
+
 def csp_hash(text: str) -> str:
     """The CSP source expression that allows exactly this inline style or script."""
     return "'sha256-" + base64.b64encode(hashlib.sha256(text.encode("utf-8")).digest()).decode("ascii") + "'"

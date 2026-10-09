@@ -418,7 +418,8 @@ CURRENT_CLAIMS = ("This page is current", "All components working", "Page curren
                   "the newest frame of the connected stream")
 NOT_CURRENT_LABELS = (f"NOT CURRENT: this page has not refreshed for {PAGE_CURRENT_S} s",
                       "Last reported: all components working", "NOT CURRENT: last reported LIVE",
-                      "NOT CURRENT: this picture is old", "Last reported: monitoring")
+                      "Last reported: monitoring")
+PICTURE_OLD = f"NOT CURRENT: this picture is old: no newer one has arrived for {PAGE_CURRENT_S} s."
 
 
 def test_every_current_claim_is_shown_only_while_the_page_is_fresh() -> None:
@@ -437,18 +438,22 @@ def test_every_current_claim_is_shown_only_while_the_page_is_fresh() -> None:
     assert all(sum("cur" in c for c in s) == 1 and sum("old" in c for c in s) == 1 and len(s) == 2
                for s in markup.switches)
     assert all("cur" in c for t, c in markup.texts if "k-ok" in c), "green outside a current layer"
-    assert '<figure class=frame><img src="/preview/1-0.jpg"' in page and "<figcaption class=old>" in page
+    # The picture's caption follows the picture's own timer (D73), not the page's.
+    assert markup.around(PICTURE_OLD) and all("pic-old" in c and "cur" not in c for c in markup.around(PICTURE_OLD))
+    assert '<figure class=frame data-frame="1-0" data-ingest="2026-10-09T12:00:00.066667Z"><img src="/preview/1-0.jpg"' in page
     assert '<main class="board report">' in page  # the runtime's report, dimmed once the page is not current
     current = f"{PAGE_CURRENT_S}s linear"
-    for rule in (f".cur {{ visibility: hidden; animation: cur {current}; }}",
+    for rule in (f".cur {{ visibility: hidden; animation: cur {current} var(--fresh-delay, 0s); }}",
                  "@keyframes cur { from, to { visibility: visible; } }",
-                 f".old {{ animation: old {current}; }}", "@keyframes old { from, to { visibility: hidden; } }",
-                 f".report {{ opacity: .55; animation: full {current}; }}",
-                 f".live .frame img {{ opacity: .3; animation: full {current}; }}",
-                 "@keyframes full { from, to { opacity: 1; } }"):
+                 f".old {{ animation: old {current} var(--fresh-delay, 0s); }}",
+                 "@keyframes old { from, to { visibility: hidden; } }",
+                 f".report {{ opacity: .55; animation: full {current} var(--fresh-delay, 0s); }}",
+                 f".live .frame img {{ opacity: .3; animation: pic {current} var(--pic-delay, 0s); }}",
+                 f".live .frame .pic-old {{ animation: old {current} var(--pic-delay, 0s); }}",
+                 'html[data-fresh="1"] .cur { animation-name: cur1; }', "@keyframes full { from, to { opacity: 1; } }"):
         assert rule in page, rule
     assert "forwards" not in status_page.STYLE and "infinite" not in status_page.STYLE  # no state held past the window
-    assert '<meta http-equiv=refresh content="2">' in page and "<script" not in page
+    assert "http-equiv=refresh" not in page and '<script src="/assets/dashboard.js" defer></script>' in page
     assert f'generated at <time datetime="{T0.isoformat()}">' in page  # the page's own time, apart from the runtime's
 
 

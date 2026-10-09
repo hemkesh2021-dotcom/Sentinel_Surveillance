@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -44,8 +45,10 @@ class Runtime:
         self.degraded = list(degraded or [])
         self.unanswered = 0  # page requests that arrived while the runtime was not answering
         self.served = 0
+        self.arrivals: list[float] = []  # time.monotonic() of every request for the runtime's status
 
     def snapshot(self) -> dict[str, Any]:
+        self.arrivals.append(time.monotonic())
         if not self.answering.is_set():
             self.unanswered += 1
             self.answering.wait(60.0)
@@ -72,10 +75,21 @@ class Camera:
         self.stamper.connect()
         self.frame()
 
-    def frame(self) -> None:
-        self.clock.advance(1 / 15)
+    def frame(self, dt: float = 1 / 15) -> None:
+        self.clock.advance(dt)
         frame = self.stamper.stamp(native_width=640, native_height=480, pixel_format=PixelFormat.BGR)
         self.frames.put(frame, object())
+
+    def run(self, interval_s: float = 0.25) -> threading.Event:
+        """Live video: a new frame every ``interval_s``, the fake clock keeping pace; set the event to stop."""
+        stop = threading.Event()
+
+        def tick() -> None:
+            while not stop.wait(interval_s):
+                self.frame(interval_s)
+
+        threading.Thread(target=tick, name="fake-camera", daemon=True).start()
+        return stop
 
 
 class _Notifier:
@@ -88,7 +102,8 @@ class _Notifier:
         return self.results.pop(0) if self.results else DeliveryResult(DeliveryStatus.SENT, "sent", provider_message_id="1")
 
 
-def incident_store(path: Path, *, count: int = 3, long_titles: bool = False, snapshot: bytes | None = PICTURE) -> list[str]:
+def incident_store(path: Path, *, count: int = 3, long_titles: bool = False, snapshot: bytes | None = PICTURE,
+                   acknowledge: bool = True) -> list[str]:
     """A database at ``path`` (sentinel.db) with ``count`` incidents, one delivered and one failed alert, the first
     acknowledged, and (unless ``snapshot`` is None) a saved snapshot of the first. Returns the incident IDs, oldest first."""
     clock = FakeClock(utc=datetime.now(timezone.utc) - timedelta(minutes=5))
@@ -113,7 +128,8 @@ def incident_store(path: Path, *, count: int = 3, long_titles: bool = False, sna
             payload="{}")
         ids.append(service.record(signal).incident_id)
         worker.run_once(limit=1)
-    service.acknowledge(ids[0], actor="operator:maintainer", reason="seen on the dashboard")
+    if acknowledge:
+        service.acknowledge(ids[0], actor="operator:maintainer", reason="seen on the dashboard")
     if snapshot is not None:
         stamper = FrameStamper("cam-1", clock)
         stamper.connect()

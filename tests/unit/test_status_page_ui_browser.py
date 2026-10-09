@@ -20,7 +20,11 @@ from browser_harness import Browser, Page, headless_browser
 from status_fixtures import Camera, Runtime, incident_store
 
 from sentinel import status_page
+from sentinel.config import IncidentsConfig, NotificationsConfig
+from sentinel.incidents.service import IncidentService
+from sentinel.media.clock import FakeClock
 from sentinel.status_page import PAGE_CURRENT_S, StatusServer
+from sentinel.storage.database import Database
 
 RECTS = """(() => { const r = id => { const b = document.getElementById(id).getBoundingClientRect();
   return {left: b.left, right: b.right, top: b.top, bottom: b.bottom, width: b.width}; };
@@ -183,3 +187,38 @@ def test_a_browser_that_runs_no_animation_never_shows_a_current_claim(browser: B
         assert page.evaluate("parseFloat(getComputedStyle(document.querySelector('.live .frame img')).opacity)") < 0.5
     finally:
         page.close()
+
+
+def test_the_incident_page_updates_in_place_keeping_focus_expanded_provenance_and_the_snapshot(
+        browser: Browser, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(status_page, "DETAIL_REFRESH_S", 1)
+    ids = incident_store(tmp_path / "sentinel.db", count=2, acknowledge=False)
+    server = StatusServer(0, lambda: {"runtime": {"state": "running", "camera_id": "cam-1"}}, tmp_path / "sentinel.db")
+    server.start()
+    page = None
+    try:
+        page = opened(browser, f"http://127.0.0.1:{server.address[1]}/incidents/{ids[0]}", width=1280, height=900)
+        assert "Not acknowledged" in page.evaluate(TEXT)
+        page.evaluate("""(() => { document.getElementById('d-provenance').open = true;
+            const link = document.querySelector('a.button[download]'); link.focus(); link.__testMark = 'kept';
+            document.querySelector('#snapshot img').__testMark = 'kept'; })()""")
+        origin = page.evaluate("performance.timeOrigin")
+        db = Database.open(tmp_path / "sentinel.db")  # what `sentinel incident ack` does, while this page is open
+        try:
+            IncidentService(db, FakeClock(), incidents=IncidentsConfig(), notifications=NotificationsConfig()
+                            ).acknowledge(ids[0], actor="operator:tester", reason="seen in the rehearsal")
+        finally:
+            db.close()
+        deadline = time.monotonic() + 6
+        while time.monotonic() < deadline and "by operator:tester: seen in the rehearsal" not in page.evaluate(TEXT):
+            time.sleep(0.1)
+        state = page.evaluate("""(() => ({origin: performance.timeOrigin,
+            focus: document.activeElement.__testMark || null, open: document.getElementById('d-provenance').open,
+            img: (document.querySelector('#snapshot img') || {}).__testMark || null,
+            text: document.body.innerText}))()""")
+        assert "by operator:tester: seen in the rehearsal" in state["text"] and "Not acknowledged" not in state["text"]
+        assert state["origin"] == origin and state["focus"] == "kept" and state["open"] and state["img"] == "kept"
+    finally:
+        if page is not None:
+            page.close()
+        assert server.stop(3.0)

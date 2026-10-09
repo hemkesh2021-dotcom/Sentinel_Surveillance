@@ -26,7 +26,7 @@ sentinel = "sentinel.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"sentinel.web" = ["*.css"]
+"sentinel.web" = ["*.css", "*.js"]
 
 [tool.pytest.ini_options]
 # The v1 dashboard tests in tests/test_dashboard.py need Flask and keep running

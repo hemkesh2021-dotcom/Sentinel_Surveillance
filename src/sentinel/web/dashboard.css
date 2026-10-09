@@ -257,20 +257,61 @@ th { color: var(--muted); font-weight: 680; }
 
 /* ---------------------------------------------------------------- D71: the page watchdog
    A .fs switch stacks a current layer (.cur) on its not-current replacement (.old). .cur is hidden unless its animation
-   shows it: CURRENTs from when the browser shows the page. .old is hidden for that time only. The runtime's report
-   (.report) and the live picture are dimmed except in that time. No fill mode: nothing outlasts the window, so only a
-   new page brings the current layers back, and a browser that runs no CSS animation never shows them. */
+   shows it, for CURRENTs; .old is hidden for that time only. The runtime's report (.report) is dimmed except in that
+   time. No fill mode: nothing outlasts the window, and a browser that runs no CSS animation never shows a current
+   claim. Without script the window starts when the page is shown; the update script (D73) restarts it only after a
+   valid, newer update, by switching html[data-fresh] between two identical animation names, with --fresh-delay set
+   to minus the time since that update's request was sent, so the window ends CURRENTs after the request. */
 .fs { display: grid; }
 .fs.inl { display: inline-grid; }
 .fs > * { grid-area: 1 / 1; }
 .pills .fs, .comp .fs { justify-items: end; }
-.cur { visibility: hidden; animation: cur CURRENTs linear; }
-.old { animation: old CURRENTs linear; }
-.report { opacity: .55; animation: full CURRENTs linear; }
-.live .frame img { opacity: .3; animation: full CURRENTs linear; }
+.cur { visibility: hidden; animation: cur CURRENTs linear var(--fresh-delay, 0s); }
+.old { animation: old CURRENTs linear var(--fresh-delay, 0s); }
+.report { opacity: .55; animation: full CURRENTs linear var(--fresh-delay, 0s); }
+html[data-fresh="1"] .cur { animation-name: cur1; }
+html[data-fresh="1"] .old { animation-name: old1; }
+html[data-fresh="1"] .report { animation-name: full1; }
 @keyframes cur { from, to { visibility: visible; } }
+@keyframes cur1 { from, to { visibility: visible; } }
 @keyframes old { from, to { visibility: hidden; } }
+@keyframes old1 { from, to { visibility: hidden; } }
 @keyframes full { from, to { opacity: 1; } }
+@keyframes full1 { from, to { opacity: 1; } }
+
+/* The live picture has its own timer, restarted only when a newer picture has loaded (html[data-pic], --pic-delay).
+   A picture that is no longer the newest (the newest failed to load, or the camera has no current frame) stays
+   in place, dimmed, with its time: data-state=failed or retained, set by the script. */
+.live .frame img { opacity: .3; animation: pic CURRENTs linear var(--pic-delay, 0s); }
+.live .frame .pic-old { animation: old CURRENTs linear var(--pic-delay, 0s); }
+html[data-pic="1"] .live .frame img { animation-name: pic1; }
+html[data-pic="1"] .live .frame .pic-old { animation-name: old1; }
+@keyframes pic { from, to { opacity: 1; } }
+@keyframes pic1 { from, to { opacity: 1; } }
+.live .frame[data-state=failed] img, .live .frame[data-state=retained] img { animation: none !important; opacity: .3; }
+.frame .kept { display: none; }
+.frame[data-state=failed] .kept, .frame[data-state=retained] .kept { display: flex; }
+.frame[data-state=failed] .pic-old, .frame[data-state=retained] .pic-old { display: none; }
+
+/* In-place updates (D73): the sync line, the selected incident and its preview. */
+.sync { margin: -6px var(--gutter) 12px; color: var(--muted); font-size: .86rem; min-height: 1.3em; }
+.noscript { margin: -6px var(--gutter) 14px; }
+.peek { display: none; }
+html.js .peek { display: inline-flex; align-items: center; gap: 6px; justify-self: start; padding: 5px 12px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--ink);
+  font: inherit; font-size: .84rem; font-weight: 680; cursor: pointer;
+  transition: background-color .18s var(--ease), box-shadow .18s var(--ease); }
+html.js .peek:hover { background: var(--surface-2); }
+html.js .peek[aria-pressed=true] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent-ink); }
+.inc-list > li { display: grid; gap: 6px; }
+.inc-list > li.selected > .inc { border-color: var(--accent-ink); box-shadow: inset 4px 0 0 var(--accent); }
+.preview { display: grid; gap: 10px; margin-bottom: 14px; padding: 14px; border-radius: 13px; background: var(--surface-3);
+  box-shadow: inset 2px 2px 6px var(--lo), inset -2px -2px 6px var(--hi); }
+.preview[hidden] { display: none; }
+.preview h3 { font-size: 1rem; overflow-wrap: anywhere; }
+.frame.thumb { padding: 6px; }
+.plain { padding: 5px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface);
+  color: var(--ink); font: inherit; font-size: .84rem; font-weight: 680; cursor: pointer; }
 
 /* Reduced motion: transitions off. The watchdog above moves nothing, so it stays. */
 @media (prefers-reduced-motion: reduce) {

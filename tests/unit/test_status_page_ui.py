@@ -100,7 +100,7 @@ def test_images_are_never_recoloured_and_reduced_motion_keeps_the_watchdog() -> 
     assert not re.search(r"\b(filter|backdrop-filter|mix-blend-mode|mask-image)\s*:", STYLE)
     reduced = STYLE[STYLE.index("@media (prefers-reduced-motion: reduce)"):]
     assert "transition-duration: 0s" in reduced and "animation" not in reduced
-    assert ".cur { visibility: hidden; animation: cur 5s linear; }" in STYLE  # untouched by the media block
+    assert ".cur { visibility: hidden; animation: cur 5s linear var(--fresh-delay, 0s); }" in STYLE  # untouched
     assert STYLE == stylesheet(status_page.PAGE_CURRENT_S) and "CURRENT" not in STYLE.replace("NOT CURRENT", "")
 
 
@@ -130,11 +130,14 @@ def test_the_csp_allows_exactly_the_inline_stylesheet_and_no_other_inline_code(t
             status, headers, body = get(server, path)
             assert status == 200, path
             policy = headers["Content-Security-Policy"]
-            assert f"style-src {STYLE_SOURCE};" in policy and "unsafe" not in policy and "script-src" not in policy
+            assert f"style-src {STYLE_SOURCE};" in policy and "unsafe" not in policy
+            assert "script-src 'self';" in policy and "connect-src 'self';" in policy  # D73: one same-origin script
             assert "default-src 'none'" in policy and "frame-ancestors 'none'" in policy
         page = get(server, "/")[2].decode()
         (style,) = re.findall(r"<style>(.*?)</style>", page, flags=re.S)
-        assert csp_hash(style) == STYLE_SOURCE and " style=" not in page and "<script" not in page
+        assert csp_hash(style) == STYLE_SOURCE and " style=" not in page
+        assert re.findall(r"<script[^>]*>(.*?)</script>", page, flags=re.S) == [""]  # no inline script
+        assert '<script src="/assets/dashboard.js" defer></script>' in page and "http-equiv=refresh" not in page
     finally:
         assert server.stop(3.0)
 
@@ -166,11 +169,11 @@ def test_the_chosen_theme_is_applied_and_kept_in_every_link(tmp_path: Path) -> N
     server.start()
     try:
         page = get(server, "/?theme=dark")[2].decode()
-        assert "<html lang=en data-page=status data-theme=dark>" in page
+        assert '<html lang=en data-page=status data-theme=dark data-source="/status.json?page=1&amp;theme=dark"' in page
         assert f'href="/incidents/{ids[0]}?theme=dark"' in page and '<a href="/?theme=dark" aria-current="true">' in page
         assert '<a href="/">' in page and '<a href="/?theme=light">' in page  # the other choices stay reachable
         page = get(server, "/?theme=%22%3E%3Cscript%3Ealert(1)%3C/script%3E")[2].decode()
-        assert "<html lang=en data-page=status>" in page and "alert(1)" not in page and "<script" not in page
+        assert '<html lang=en data-page=status data-source="/status.json?page=1"' in page and "alert(1)" not in page
         detail = get(server, f"/incidents/{ids[0]}?theme=light")[2].decode()
         assert "data-theme=light" in detail and '<a class=back href="/?theme=light">' in detail
         assert f'href="/incidents/{ids[0]}?theme=light" aria-current="true"' in detail
@@ -217,7 +220,7 @@ def test_the_main_page_puts_incidents_beside_the_live_view_and_keeps_technical_d
     ids = incident_store(tmp_path / "sentinel.db", count=3)
     page = render_html(build_status({"runtime": {"state": "running", "camera_id": "cam-1"}},
                                     read_store(tmp_path / "sentinel.db"), NOW))
-    order = [m for m in re.findall(r'<(?:section|aside) id=(\w+)', page)]
+    order = re.findall(r'<(?:section|aside) id=([\w-]+) class="panel', page)
     assert order == ["live", "incidents", "health", "delivery"]  # the mobile order; desktop puts incidents beside
     assert '<a class=skip href="#live">' in page
     assert all(f'href="/incidents/{i}"' in page for i in ids)

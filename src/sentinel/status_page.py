@@ -7,9 +7,9 @@ no sessions, roles, API or media. It is reached over an SSH port forward.
   refused before a socket is opened. Requests must name 127.0.0.1 or localhost
   with the page's port in their Host header, so a web page on another origin
   cannot read it through DNS rebinding.
-- **Read only.** GET ``/`` (HTML, refreshed every 2 s), GET ``/status.json``,
-  and one incident's detail at GET ``/incidents/<id>`` (HTML, refreshed every
-  10 s) and ``/incidents/<id>.json``. Every other method is refused. The
+- **Read only.** GET ``/`` (HTML), GET ``/status.json``, and one incident's
+  detail at GET ``/incidents/<id>`` (HTML) and ``/incidents/<id>.json``. Every
+  other method is refused. The
   database is read through a new read-only SQLite connection per request
   (``connect_reader``), in one short read transaction, so the page never
   writes, migrates or holds the writer's lock.
@@ -19,18 +19,27 @@ no sessions, roles, API or media. It is reached over an SSH port forward.
   picture only while that frame is live, at GET ``/preview/<epoch>-<seq>.jpg``
   (``live_preview``). The picture refreshes with the page. At most
   MAX_PICTURE_RESPONSES pictures are sent at once.
-- **A page that stops refreshing claims nothing current (D71).** The main
-  page reloads itself every REFRESH_S, and a browser whose reload gets no
-  answer (a stalled tunnel, a hung request) keeps showing the old page. So
-  every claim that something is current (the page itself, the runtime's
-  healthy state, LIVE, the picture) is shown only for PAGE_CURRENT_S after
-  the browser shows the page, by CSS alone (the CSP allows no script). After
+- **A page that stops updating claims nothing current (D71).** Every claim
+  that something is current (the page itself, the runtime's healthy state,
+  LIVE, the picture) is shown only for PAGE_CURRENT_S, by CSS alone; after
   that the page says it is NOT CURRENT and shows the runtime's report as last
-  reported, dimmed. Only a new page, built by the server under the freshness
-  checks above, shows current claims again. The claims are hidden unless the
-  animation shows them, so a browser that runs no CSS animation never shows
-  them. The window starts when the browser shows the page, not when the
-  server built it; the page states when it was generated.
+  reported, dimmed. The claims are hidden unless the animation shows them, so
+  a browser that runs no CSS animation never shows them.
+- **In-place updates (D73).** The pages never reload themselves. Their one
+  script (``SCRIPT_PATH``, same origin) polls ``/status.json?page=1`` every
+  REFRESH_S (``/incidents/<id>.json?page=1`` every DETAIL_REFRESH_S): the
+  status plus the page's regions, rendered here by the same functions the
+  page embeds, numbered by server instance and sequence (``marker``). It
+  places only changed fragments, keyed, so focus, expanded sections, the
+  selected incident, scroll and the theme are kept; it restarts the watchdog
+  only after a valid, newer document, and counts its window from when that
+  document's request was sent, so a delayed answer is current for less time
+  and a late one not at all. The live picture is loaded and decoded before
+  it replaces the shown one, never blanks, has its own timer, and when no
+  newer one can be shown the last stays, dimmed and marked as an old frame
+  with its time. Without script a page is read-only: it shows what was
+  generated and turns NOT CURRENT after the window (the window then counts
+  from when the page is shown); reloading updates it.
 - **Incident snapshot (D70; saved only by ``sentinel run --snapshots``).**
   The incident page shows the frame the opening observation came from, its
   identity, ingest time and time quality, with GET
@@ -88,9 +97,11 @@ from __future__ import annotations
 
 import hashlib
 import html
+import itertools
 import json
 import os
 import re
+import secrets
 import socket
 import sqlite3
 import stat
@@ -113,7 +124,7 @@ from .rules.zones import ZONE_KINDS, ZoneObservation
 from .scene.report import SceneReport
 from .scene.state import SCENE_STATE_KIND
 from .storage.database import connect_reader
-from .web import SPRITE, TAB_ICON, csp_hash, icon, stylesheet
+from .web import SPRITE, TAB_ICON, csp_hash, icon, script, stylesheet
 
 LOOPBACK_HOST = "127.0.0.1"
 MAX_INCIDENTS = 20
@@ -184,6 +195,8 @@ SECURITY_HEADERS = {  # Content-Security-Policy is added per response: it names 
     "Referrer-Policy": "no-referrer",
 }
 TAB_ICON_PATH = "/assets/icon.svg"
+SCRIPT_PATH = "/assets/dashboard.js"
+SCRIPT = script()
 DELIVERY_STATES = ("queued", "attempted", "delivered", "failed")
 # Shown even before the runtime publishes its own wording (D43 limitation).
 PENDING_DURABILITY_FALLBACK = (
@@ -609,24 +622,39 @@ def _incident_link(incident_id: object, theme: str | None = None) -> object:
 
 STYLE = stylesheet(PAGE_CURRENT_S)
 STYLE_SOURCE = csp_hash(STYLE)  # the CSP allows this inline stylesheet and no other inline style
-CONTENT_SECURITY_POLICY = (
-    f"default-src 'none'; img-src 'self'; style-src {STYLE_SOURCE}; base-uri 'none'; form-action 'none'; "
-    "frame-ancestors 'none'"
+CONTENT_SECURITY_POLICY = (  # the only script is SCRIPT_PATH; it talks to this origin only
+    f"default-src 'none'; img-src 'self'; style-src {STYLE_SOURCE}; script-src 'self'; connect-src 'self'; "
+    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 )
 
 
-def _document(title: str, refresh_s: int, body: str, *, theme: str | None, page: str) -> str:
+def _document(title: str, body: str, *, theme: str | None, page: str, source: str, refresh_s: int,
+              marker: Mapping[str, Any] | None) -> str:
+    """A page: no automatic reload (D73). With script, ``source`` is polled every ``refresh_s`` and the page's regions
+    are updated in place; without it, the page is read-only and its D71 watchdog marks it NOT CURRENT."""
     themed = f" data-theme={theme}" if theme in THEMES else ""
+    numbered = (f" data-instance={_e(marker['instance'])} data-sequence={_e(marker['sequence'])}"
+                if marker else "")
     return f"""<!doctype html>
-<html lang=en data-page={page}{themed}><head><meta charset=utf-8>
+<html lang=en data-page={page}{themed} data-source="{_e(source)}" data-refresh-ms={refresh_s * 1000} data-current-ms={PAGE_CURRENT_S * 1000}{numbered}><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width, initial-scale=1"><meta name=color-scheme content="light dark">
-<meta http-equiv=refresh content="{refresh_s}"><title>{_e(title)}</title>
-<link rel=icon href="/assets/icon.svg" type="image/svg+xml">
+<title>{_e(title)}</title>
+<link rel=icon href="{TAB_ICON_PATH}" type="image/svg+xml">
 <style>{STYLE}</style></head><body>
 {SPRITE}
 {body}
+<script src="{SCRIPT_PATH}" defer></script>
 </body></html>
 """
+
+
+def _source(path: str, theme: str | None) -> str:
+    """The JSON a page polls for its regions (same origin)."""
+    return f"{path}?page=1" + (f"&theme={theme}" if theme in THEMES else "")
+
+
+NOSCRIPT = ("<noscript><p class='note noscript'>Automatic updates need JavaScript, which is off in this browser: this "
+            "page shows the state when it was generated. Reload to update it.</p></noscript>")
 
 
 def _themes(path: str, theme: str | None) -> str:
@@ -749,50 +777,73 @@ def _empty_frame(glyph: str, title: str, text: object) -> str:
             f"<p>{_e(text)}</p></div></div>")
 
 
-def _preview_html(view: Mapping[str, Any] | None) -> str:
-    """The live view: state, age, ingest time, and a picture only while its frame is live."""
+def _live_head(view: Mapping[str, Any] | None) -> str:
+    """The live view's state line: LIVE (a current claim, D71), or why there is no current picture."""
     view = view or PREVIEW_OFF
     if not view.get("enabled"):
-        return (f"<div class=phead><h2>{icon('video')}Live view</h2>{_badge('off', 'Off', big=True)}</div>"
-                + _empty_frame("video", "The live view is off", f"{view.get('reason')}."))
+        return f"<div class=row>{_badge('off', 'Off', big=True)}<span class=muted>{_e(view.get('reason'))}.</span></div>"
     state = view.get("state")
     picture = view.get("picture")
-    shown = picture or view.get("frame")
     label = PREVIEW_LABELS.get(str(state), str(state).upper())
     reason = f"<span class=muted>{_e(view.get('reason'))}</span>"
     if state == "live":  # a claim that the video is current: only while the page is (D71)
-        head = _claim(f"<div class=row>{_badge('ok' if picture else 'warn', label, glyph='video', big=True)}{reason}</div>",
+        return _claim(f"<div class=row>{_badge('ok' if picture else 'warn', label, glyph='video', big=True)}{reason}</div>",
                       f"<div class=row>{_badge('stale', 'NOT CURRENT: last reported LIVE', big=True)}<span>when this "
-                      f"page was generated; the page has not refreshed for {PAGE_CURRENT_S} s, so what it shows is "
+                      f"page was last updated; it has not refreshed for {PAGE_CURRENT_S} s, so what it shows is "
                       "old.</span></div>", block=True)
-    else:
-        head = f"<div class=row>{_badge(PREVIEW_KINDS.get(str(state), 'off'), label, big=True)}{reason}</div>"
-    if picture:
-        frame = (f'<figure class=frame><img src="{_e(picture["url"])}" width="{_e(picture["width"])}" '
-                 f'height="{_e(picture["height"])}" alt="Camera picture, stream epoch {_e(picture["stream_epoch"])}, '
-                 f'frame {_e(picture["frame_seq"])}"><figcaption class=old>{icon("clock")}NOT CURRENT: this picture '
-                 f"is old; the page has not refreshed for {PAGE_CURRENT_S} s.</figcaption></figure>")
-    elif state == "live":
-        frame = _empty_frame("image", "No picture", f"{view.get('problem') or 'none encoded yet'}.")
-    else:
-        frame = _empty_frame(KIND_ICONS[PREVIEW_KINDS.get(str(state), "off")], label,
-                             "No picture is shown: the last frame is not current." if shown else view.get("reason"))
+    return f"<div class=row>{_badge(PREVIEW_KINDS.get(str(state), 'off'), label, big=True)}{reason}</div>"
+
+
+def _frame_empty(view: Mapping[str, Any] | None) -> str:
+    """The frame area when there is no picture to show (and none to keep)."""
+    view = view or PREVIEW_OFF
+    if not view.get("enabled"):
+        return _empty_frame("video", "The live view is off", f"{view.get('reason')}.")
+    state = view.get("state")
+    if state == "live":
+        return _empty_frame("image", "No picture", f"{view.get('problem') or 'none encoded yet'}.")
+    label = PREVIEW_LABELS.get(str(state), str(state).upper())
+    shown = view.get("picture") or view.get("frame")
+    return _empty_frame(KIND_ICONS[PREVIEW_KINDS.get(str(state), "off")], label,
+                        "No picture is shown: the last frame is not current." if shown else view.get("reason"))
+
+
+def _live_frame(view: Mapping[str, Any] | None) -> str:
+    """The frame area as first served: the live picture, with its old-picture captions, or the empty frame."""
+    picture = (view or {}).get("picture")
+    if not picture:
+        return _frame_empty(view)
+    return (f'<figure class=frame data-frame="{_e(picture["stream_epoch"])}-{_e(picture["frame_seq"])}" '
+            f'data-ingest="{_e(picture["ingest_utc"])}"><img src="{_e(picture["url"])}" width="{_e(picture["width"])}" '
+            f'height="{_e(picture["height"])}" alt="Camera picture, stream epoch {_e(picture["stream_epoch"])}, frame '
+            f'{_e(picture["frame_seq"])}"><figcaption class=pic-old>{icon("clock")}NOT CURRENT: this picture is old: no '
+            f"newer one has arrived for {PAGE_CURRENT_S} s.</figcaption><figcaption class=kept>{icon('clock')}<span>"
+            "</span></figcaption></figure>")
+
+
+def _live_facts(view: Mapping[str, Any] | None) -> str:
+    view = view or PREVIEW_OFF
+    if not view.get("enabled"):
+        return ""
+    picture = view.get("picture")
+    shown = picture or view.get("frame")
     facts = ""
     if shown:
         age = picture["age_ms"] if picture else view.get("age_ms")
         facts = ("<dl class=facts>"
-                 f"<div><dt>Frame age</dt><dd>{_e(_seconds(age))} <span class=muted>when this page was generated</span></dd></div>"
+                 f"<div><dt>Frame age</dt><dd>{_e(_seconds(age))} <span class=muted>when this update was generated</span></dd></div>"
                  f"<div><dt>Ingest time</dt><dd>{_clock(shown['ingest_utc'])}</dd></div>"
                  f"<div><dt>Frame</dt><dd>stream epoch {_e(shown['stream_epoch'])}, frame {_e(shown['frame_seq'])}</dd></div>"
                  "</dl>")
     bounds = view.get("bounds") or {}
-    note = (f"Refreshes with the page every {REFRESH_S} s. Pictures are at most {bounds.get('max_width')}×"
+    note = (f"Updated with the page every {REFRESH_S} s. Pictures are at most {bounds.get('max_width')}×"
             f"{bounds.get('max_height')}, at most {bounds.get('max_encodes_per_s')} encoded per second for all "
-            "viewers, from the frames the runtime already reads; nothing is saved.")
+            "viewers, from the frames the runtime already reads; nothing is saved. A picture is replaced only by a "
+            "newer one that has fully loaded; when none can be loaded, the last one stays, dimmed and marked as an "
+            "old frame with its time.")
     about = _details("About this picture", (f"<p>{_e(view.get('time_label'))}</p>" if view.get("time_label") else "")
                      + f"<p class=muted>{_e(note)}</p>", key="picture")
-    return (f"<div class=phead><h2>{icon('video')}Live view</h2></div>{head}{frame}{facts}"
-            f"{about}")
+    return f"{facts}{about}"
 
 
 def _capabilities(live: Mapping[str, Any], components: Mapping[str, Any], running: bool) -> str:
@@ -823,7 +874,9 @@ def _monitoring(runtime: Mapping[str, Any], degraded: list[str]) -> _Markup:
     return _badge("off", STATE_LABELS.get(str(state), str(state).capitalize()), glyph="clock")
 
 
-def render_html(status: Mapping[str, Any], *, theme: str | None = None) -> str:
+def status_regions(status: Mapping[str, Any], *, theme: str | None = None) -> dict[str, str]:
+    """The main page's updatable regions, by name: the full page embeds them, and ``/status.json?page=1`` carries them
+    for in-place updates (D73). One renderer for both, so the two can never disagree."""
     runtime = status["runtime"]
     components = status["components"]
     live = status.get("live") or {}
@@ -832,16 +885,18 @@ def render_html(status: Mapping[str, Any], *, theme: str | None = None) -> str:
     degraded = status["degraded"]
     generated = status.get("generated_utc")
     running = runtime.get("state") == "running"
-    page_freshness = (  # the page's own freshness, apart from what the runtime last reported (D71)
-        f"<div class=freshbar><div class=fs>"
-        f"<div class='cur now'>{icon('clock')}<p>This page is current: shown less than {PAGE_CURRENT_S} s ago, "
-        f"generated at {_clock(generated)}; it refreshes every {REFRESH_S} s. If refreshing stops, this bar turns NOT "
-        f"CURRENT within {PAGE_CURRENT_S} s and the report below is marked as last reported.</p></div>"
+    fresh = (  # the page's own freshness, apart from what the runtime last reported (D71)
+        f"<div class=fs>"
+        f"<div class='cur now'>{icon('clock')}<p>This page is current: updated less than {PAGE_CURRENT_S} s ago, "
+        f"generated at {_clock(generated)}; it updates every {REFRESH_S} s without reloading. If updates stop, this "
+        f"bar turns NOT CURRENT within {PAGE_CURRENT_S} s and the report below is marked as last reported.</p></div>"
         f"<div class='old gone'>{icon('clock')}<p><strong>NOT CURRENT: this page has not refreshed for "
         f"{PAGE_CURRENT_S} s</strong>. Everything below is what the runtime had last reported when this page was "
-        f"generated at {_clock(generated)}, and may have changed since. Only a refresh that succeeds makes this page "
-        "current again; reload to retry.</p></div></div></div>"
+        f"generated at {_clock(generated)}, and may have changed since. Only a valid, newer update makes it current "
+        "again; it is retried automatically (without JavaScript, reload).</p></div></div>"
     )
+    pills = (f"<span class=updated>Last update {_clock(runtime.get('updated_utc'))}</span>{_monitoring(runtime, degraded)}"
+             f"{_claim(_badge('ok', 'Page current'), _badge('stale', 'NOT CURRENT'))}")
     if degraded:
         summary = _badge("warn", "Degraded", big=True)
         problems = ("<div class='alertbox k-warn'>" + icon("warn") + "<div><strong>Degraded</strong><ul>"
@@ -861,7 +916,8 @@ def render_html(status: Mapping[str, Any], *, theme: str | None = None) -> str:
     database = status.get("database") or {}
     parts.append(("incident database (read)", database))
     component_rows = "".join(
-        f"<li><span class=name>{_e(name)}</span>{_state(item.get('state'), item.get('problem'), running=running)}"
+        f"<li data-key=\"c-{_e(name)}\"><span class=name>{_e(name)}</span>"
+        f"{_state(item.get('state'), item.get('problem'), running=running)}"
         + (f"<span class=why>{_e(item.get('problem'))}</span>" if item.get("problem") else "") + "</li>"
         for name, item in parts)
     capture = components.get("capture") or {}
@@ -889,11 +945,12 @@ def render_html(status: Mapping[str, Any], *, theme: str | None = None) -> str:
                     f"<span class=inc-meta><span class=mono>{_e(incident_id)}</span></span>{meta}")
             if isinstance(incident_id, str) and INCIDENT_ID.fullmatch(incident_id):
                 href = _href(f"/incidents/{incident_id}", theme)
-                items.append(f'<li><a class=inc href="{_e(href)}">{body}</a></li>')
+                items.append(f'<li data-key="i-{_e(incident_id)}"><a class=inc href="{_e(href)}">{body}</a>'
+                             f'<button type=button class=peek data-select="{_e(incident_id)}" aria-pressed=false>'
+                             f'{icon("info")}<span>Preview</span></button></li>')
             else:  # an ID with no page is plain text
                 items.append(f"<li><div class=inc>{body}</div></li>")
-        items = "".join(items)
-        incident_list = f"<ol class=inc-list>{items}</ol>"
+        incident_list = f"<ol class=inc-list>{''.join(items)}</ol>"
     else:
         incident_list = f"<p class=empty>{icon('check')}No incidents recorded.</p>"
     delivery_rows = [
@@ -926,40 +983,71 @@ def render_html(status: Mapping[str, Any], *, theme: str | None = None) -> str:
         None if not live else f"{live.get('people')} ({live.get('confirmed_people')})"),
         ("face recognition", live.get("face_recognition")), ("identities (counts only)", _identity_counts(live)),
         ("scene analysis", live.get("scene_analysis")), *scene_rows])}</table></div>""", key="technical")
-    camera = runtime.get("camera_id")
-    return _document(f"Sentinel · {camera}", REFRESH_S, f"""<a class=skip href="#live">Skip to the live view</a>
+    view = status.get("preview")
+    return {
+        "pills": pills,
+        "fresh": fresh,
+        "live-head": _live_head(view),
+        "live-facts": _live_facts(view),
+        "caps": _capabilities(live, components, running),
+        "incidents": (f"<div class=phead><h2>{icon('bell')}Incidents</h2><span class=muted>"
+                      f"{_e(incidents.get('unresolved'))} unresolved; latest {MAX_INCIDENTS} shown</span></div>"
+                      f"{incident_list}<p class=note>Waiting to be recorded: {_e(recording.get('pending_signals'))}. "
+                      f"Limitation: {_e(durability)}.</p>"),
+        "health": (f"<div class=phead><h2>{icon('shield')}System health</h2>{summary}</div>{problems}"
+                   f"<ul class=comp>{component_rows}</ul><p class=note>Last report from the runtime: "
+                   f"{_e(runtime.get('state'))}, updated {_clock(runtime.get('updated_utc'))} "
+                   f"({_e(runtime.get('status_age_s'))} s before this page was generated). Read-only, loopback only.</p>"
+                   f"{technical}"),
+        "delivery": (f"<div class=phead><h2>{icon('send')}Alert delivery</h2></div><div class=totals>{totals_html}</div>"
+                     "<p class=note>Delivery is at least once: an ambiguous attempt may have reached the chat, and a "
+                     "repeat carries the same incident ID.</p>"
+                     + _details("Alert rows", _table(["incident", "channel", "message", "state", "attempts", "ambiguous",
+                                                      "next attempt (UTC)", "last error"], delivery_rows, "No alerts."),
+                                key="alerts")),
+        "foot": f"Read-only, loopback only (D45). Generated at {_clock(generated)}.",
+    }
+
+
+def page_document(status: Mapping[str, Any], marker: Mapping[str, Any], *, theme: str | None = None) -> dict[str, Any]:
+    """``/status.json?page=1``: the status, plus what the page needs to update itself in place (D73)."""
+    return {**status, "page": {**marker, "regions": status_regions(status, theme=theme),
+                               "frame_empty": _frame_empty(status.get("preview"))}}
+
+
+def render_html(status: Mapping[str, Any], *, theme: str | None = None,
+                marker: Mapping[str, Any] | None = None) -> str:
+    regions = status_regions(status, theme=theme)
+    camera = status["runtime"].get("camera_id")
+    view = status.get("preview")
+    return _document(f"Sentinel · {camera}", f"""<a class=skip href="#live">Skip to the live view</a>
 <header class=top>
 <div class=brand>{icon("logo", "ic logo")}<span>Sentinel</span></div>
 <div class=cam><span>Camera</span><strong class=mono>{_e(camera)}</strong></div>
-<div class=pills><span class=updated>Last update {_clock(runtime.get("updated_utc"))}</span>{_monitoring(runtime, degraded)}{_claim(_badge("ok", "Page current"), _badge("stale", "NOT CURRENT"))}</div>
+<div class=pills data-region=pills>{regions["pills"]}</div>
 {_themes("/", theme)}
 </header>
-{page_freshness}
+<div class=freshbar data-region=fresh>{regions["fresh"]}</div>
+<p class=sync id=sync role=status></p>
+{NOSCRIPT}
 <main class="board report">
-<section id=live class="panel live" aria-label="Live view">{_preview_html(status.get("preview"))}
-{_capabilities(live, components, running)}</section>
+<section id=live class="panel live" aria-label="Live view">
+<div class=phead><h2>{icon("video")}Live view</h2></div>
+<div data-region=live-head>{regions["live-head"]}</div>
+<div id=frame data-region=frame-empty>{_live_frame(view)}</div>
+<div data-region=live-facts>{regions["live-facts"]}</div>
+<div data-region=caps>{regions["caps"]}</div>
+</section>
 <aside id=incidents class="panel incidents" aria-label=Incidents>
-<div class=phead><h2>{icon("bell")}Incidents</h2><span class=muted>{_e(incidents.get("unresolved"))} unresolved; latest {MAX_INCIDENTS} shown</span></div>
-{incident_list}
-<p class=note>Waiting to be recorded: {_e(recording.get("pending_signals"))}. Limitation: {_e(durability)}.</p>
+<section id=inc-preview class=preview aria-label="Selected incident" aria-live=polite hidden></section>
+<div data-region=incidents>{regions["incidents"]}</div>
 </aside>
-<section id=health class="panel health" aria-label="System health">
-<div class=phead><h2>{icon("shield")}System health</h2>{summary}</div>
-{problems}<ul class=comp>{component_rows}</ul>
-<p class=note>Last report from the runtime: {_e(runtime.get("state"))}, updated {_clock(runtime.get("updated_utc"))}
-({_e(runtime.get("status_age_s"))} s before this page was generated). Read-only, loopback only.</p>
-{technical}
-</section>
-<section id=delivery class="panel delivery" aria-label="Alert delivery">
-<div class=phead><h2>{icon("send")}Alert delivery</h2></div>
-<div class=totals>{totals_html}</div>
-<p class=note>Delivery is at least once: an ambiguous attempt may have reached the chat, and a repeat carries the same incident ID.</p>
-{_details("Alert rows", _table(["incident", "channel", "message", "state", "attempts", "ambiguous", "next attempt (UTC)",
-                                 "last error"], delivery_rows, "No alerts."), key="alerts")}
-</section>
+<section id=health class="panel health" aria-label="System health"><div data-region=health>{regions["health"]}</div></section>
+<section id=delivery class="panel delivery" aria-label="Alert delivery"><div data-region=delivery>{regions["delivery"]}</div></section>
 </main>
-<footer class=foot>Read-only, loopback only (D45). Generated at {_clock(generated)}.</footer>""",
-                     theme=theme, page="status")
+<footer class=foot data-region=foot>{regions["foot"]}</footer>""",
+                     theme=theme, page="status", source=_source("/status.json", theme), refresh_s=REFRESH_S,
+                     marker=marker)
 
 
 APPLICABILITY_NOTE = (
@@ -1039,8 +1127,8 @@ def _ack_tag(status: object, acknowledgment: Mapping[str, Any]) -> str:
     return _badge("off", "Not acknowledged", glyph="bell")
 
 
-def render_incident_html(detail: Mapping[str, Any], *, theme: str | None = None) -> str:
-    """One incident's page, from ``read_incident``'s document (state available)."""
+def incident_regions(detail: Mapping[str, Any], *, theme: str | None = None) -> dict[str, str]:
+    """One incident page's updatable regions (D73), from ``read_incident``'s document (state available)."""
     incident = detail["incident"]
     linked = detail["linked"]
     evidence, transitions = detail["evidence"], detail["transitions"]
@@ -1123,7 +1211,6 @@ def render_incident_html(detail: Mapping[str, Any], *, theme: str | None = None)
     def shown(part: Mapping[str, Any]) -> str:
         return f"<p class=note>{len(part['shown'])} of {part['total']} shown (the latest).</p>"
 
-    title = f"Sentinel incident {incident['incident_id']}"
     technical = (
         f"<h3>Rule observations</h3>{shown(evidence)}"
         "<p class=note>Source times are the ingest times of the frames each observation came from (UTC, for display). "
@@ -1146,33 +1233,61 @@ def render_incident_html(detail: Mapping[str, Any], *, theme: str | None = None)
         + _table(["channel", "message", "state", "attempts", "ambiguous", "provider confirmed", "next attempt (UTC)",
                   "last error"], delivery_rows, "No alert rows.")
     )
-    return _document(title, DETAIL_REFRESH_S, f"""<a class=skip href="#snapshot">Skip to the snapshot</a>
+    return {
+        "title": (f"<div class=tags>{_severity(incident['severity'])}{_status(incident['status'])}"
+                  f"{_ack_tag(incident['status'], acknowledgment)}</div><p class=muted>Read-only, loopback only; "
+                  f"updated every {DETAIL_REFRESH_S} s. Generated {_clock(detail.get('generated_utc'), date=True)}.</p>"),
+        "snap": _snapshot_html(detail.get("snapshot")),
+        "summary": f"{why}<div class=wrap><table class=kv>{summary}</table></div>",
+        "ack": ack,
+        "delivery": (f"<p class=note>{len(deliveries['shown'])} of {deliveries['total']} alert rows shown. Delivery is at "
+                     "least once: an ambiguous attempt may have reached the chat, and a repeat carries the same incident "
+                     "ID.</p><div class=cards>" + ("".join(delivery_cards) or "<p class=empty>" + icon("off")
+                                                     + "No alerts for this incident.</p>") + "</div>"),
+        "lifecycle": shown(transitions) + (f"<ol class=timeline>{timeline}</ol>" if timeline else
+                                           "<p class=empty>" + icon("off") + "No transitions.</p>"),
+        "scene": shown(annotations) + "<div class=cards>" + ("".join(scene_cards) or "<p class=empty>" + icon("off")
+                                                              + "No scene evidence.</p>") + "</div>",
+        "tech": _details("Technical provenance: every stored row", technical, key="provenance"),
+    }
+
+
+def incident_document(detail: Mapping[str, Any], marker: Mapping[str, Any], *, theme: str | None = None) -> dict[str, Any]:
+    """``/incidents/<id>.json?page=1``: the incident, plus its page's regions for in-place updates (D73)."""
+    return {**detail, "page": {**marker, "regions": incident_regions(detail, theme=theme)}}
+
+
+def render_incident_html(detail: Mapping[str, Any], *, theme: str | None = None,
+                         marker: Mapping[str, Any] | None = None) -> str:
+    """One incident's page, from ``read_incident``'s document (state available)."""
+    incident = detail["incident"]
+    regions = incident_regions(detail, theme=theme)
+    path = f"/incidents/{incident['incident_id']}"
+    return _document(f"Sentinel incident {incident['incident_id']}", f"""<a class=skip href="#snapshot">Skip to the snapshot</a>
 <header class=top>
 <div class=brand>{icon("logo", "ic logo")}<span>Sentinel</span></div>
 <a class=back href="{_e(_href("/", theme))}">{icon("back")}Back to status</a>
 <div class=pills><span class=muted>Camera <strong class=mono>{_e(incident["camera_id"])}</strong></span></div>
-{_themes(f"/incidents/{incident['incident_id']}", theme)}
+{_themes(path, theme)}
 </header>
 <div class=title-block>
 <p class=muted>Incident <span class=mono>{_e(incident["incident_id"])}</span></p>
 <h1>{_e(incident["title"])}</h1>
-<div class=tags>{_severity(incident["severity"])}{_status(incident["status"])}{_ack_tag(incident["status"], acknowledgment)}</div>
-<p class=muted>Read-only, loopback only; refreshes every {DETAIL_REFRESH_S} s. Generated {_clock(detail.get("generated_utc"), date=True)}.</p>
+<div data-region=title>{regions["title"]}</div>
 </div>
+<p class=sync id=sync role=status></p>
+{NOSCRIPT}
 <main class=detail>
-<section id=snapshot class="panel p-snap" aria-label=Snapshot><div class=phead><h2>{icon("image")}Snapshot</h2></div>{_snapshot_html(detail.get("snapshot"))}</section>
-<section class="panel p-summary" aria-label="What happened"><div class=phead><h2>{icon("info")}What happened</h2></div>{why}<div class=wrap><table class=kv>{summary}</table></div></section>
-<section class="panel p-ack" aria-label=Acknowledgment><div class=phead><h2>{icon("check")}Acknowledgment</h2></div>{ack}</section>
-<section class="panel p-delivery" aria-label="Alert delivery"><div class=phead><h2>{icon("send")}Alert delivery</h2></div>
-<p class=note>{len(deliveries["shown"])} of {deliveries["total"]} alert rows shown. Delivery is at least once: an ambiguous attempt may have reached the chat, and a repeat carries the same incident ID.</p>
-<div class=cards>{"".join(delivery_cards) or "<p class=empty>" + icon("off") + "No alerts for this incident.</p>"}</div></section>
-<section class="panel p-lifecycle" aria-label=Lifecycle><div class=phead><h2>{icon("list")}Lifecycle</h2></div>{shown(transitions)}
-{f"<ol class=timeline>{timeline}</ol>" if timeline else "<p class=empty>" + icon("off") + "No transitions.</p>"}</section>
-<section class="panel p-scene" aria-label="Scene evidence"><div class=phead><h2>{icon("chat")}Scene evidence on this incident</h2></div>{shown(annotations)}
-<div class=cards>{"".join(scene_cards) or "<p class=empty>" + icon("off") + "No scene evidence.</p>"}</div></section>
-<section class="panel p-tech" aria-label="Technical provenance">{_details("Technical provenance: every stored row", technical, key="provenance")}</section>
+<section id=snapshot class="panel p-snap" aria-label=Snapshot><div class=phead><h2>{icon("image")}Snapshot</h2></div><div data-region=snap>{regions["snap"]}</div></section>
+<section class="panel p-summary" aria-label="What happened"><div class=phead><h2>{icon("info")}What happened</h2></div><div data-region=summary>{regions["summary"]}</div></section>
+<section class="panel p-ack" aria-label=Acknowledgment><div class=phead><h2>{icon("check")}Acknowledgment</h2></div><div data-region=ack>{regions["ack"]}</div></section>
+<section class="panel p-delivery" aria-label="Alert delivery"><div class=phead><h2>{icon("send")}Alert delivery</h2></div><div data-region=delivery>{regions["delivery"]}</div></section>
+<section class="panel p-lifecycle" aria-label=Lifecycle><div class=phead><h2>{icon("list")}Lifecycle</h2></div><div data-region=lifecycle>{regions["lifecycle"]}</div></section>
+<section class="panel p-scene" aria-label="Scene evidence"><div class=phead><h2>{icon("chat")}Scene evidence on this incident</h2></div><div data-region=scene>{regions["scene"]}</div></section>
+<section class="panel p-tech" aria-label="Technical provenance"><div data-region=tech>{regions["tech"]}</div></section>
 </main>
-<footer class=foot>Read-only, loopback only (D45).</footer>""", theme=theme, page="incident")
+<footer class=foot>Read-only, loopback only (D45).</footer>""", theme=theme, page="incident", source=_source(f"{path}.json", theme),
+                     refresh_s=DETAIL_REFRESH_S, marker=marker)
 
 
 # ---------------------------------------------------------------- server
@@ -1251,6 +1366,9 @@ class StatusServer:
         self._now = now
         self._preview = preview
         self._picture_slots = threading.BoundedSemaphore(MAX_PICTURE_RESPONSES)
+        self._instance = secrets.token_hex(8)  # a page's updates are ordered within one server instance (D73)
+        self._sequence = itertools.count(1)
+        self._sequence_lock = threading.Lock()
         handler = type("StatusHandler", (_Handler,), {"page": self, "timeout": handler_timeout_s})
         self._httpd = _Server((LOOPBACK_HOST, port), handler, max_connections)
         self._thread: threading.Thread | None = None
@@ -1264,6 +1382,11 @@ class StatusServer:
         """``with_picture`` (the HTML page only): let the live view encode a picture if one is due."""
         return build_status(self._snapshot(), read_store(self._db_path), self._now(),
                             self.preview_view(with_picture=with_picture))
+
+    def marker(self) -> dict[str, Any]:
+        """The next document's place in this server's order: a page applies only newer ones (D73)."""
+        with self._sequence_lock:
+            return {"instance": self._instance, "sequence": next(self._sequence)}
 
     def preview_view(self, *, with_picture: bool = False) -> dict[str, Any] | None:
         """The live view's state; None while it is off."""
@@ -1323,8 +1446,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
         parts = urlsplit(self.path)
         path, theme = parts.path, theme_from_query(parts.query)
+        for_page = "page=1" in parts.query.split("&")[:8]  # a page updating itself (D73); exact, never echoed
         if path == TAB_ICON_PATH:
             self._send(200, "image/svg+xml", TAB_ICON)
+            return
+        if path == SCRIPT_PATH:
+            self._send(200, "text/javascript; charset=utf-8", SCRIPT)
             return
         preview = PREVIEW_PATH.fullmatch(path)
         if preview is not None:
@@ -1347,15 +1474,22 @@ class _Handler(BaseHTTPRequestHandler):
                 if detail["state"] != "available":
                     self._send(503, "text/plain; charset=utf-8", b"incident database unavailable\n")
                     return
-                if incident["json"]:
+                if incident["json"] and for_page:
+                    document = incident_document(detail, self.page.marker(), theme=theme)
+                    body, kind = json.dumps(document).encode(), "application/json"
+                elif incident["json"]:
                     body, kind = json.dumps(detail, indent=2).encode(), "application/json"
                 else:
-                    body, kind = render_incident_html(detail, theme=theme).encode(), "text/html; charset=utf-8"
-            elif path == "/status.json":
+                    body = render_incident_html(detail, theme=theme, marker=self.page.marker()).encode()
+                    kind = "text/html; charset=utf-8"
+            elif path == "/status.json" and for_page:  # the live page's update: it may encode a due picture
+                document = page_document(self.page.status(with_picture=True), self.page.marker(), theme=theme)
+                body, kind = json.dumps(document).encode(), "application/json"
+            elif path == "/status.json":  # unchanged: never encodes, no page fields
                 body, kind = json.dumps(self.page.status(), indent=2).encode(), "application/json"
             else:
-                body, kind = (render_html(self.page.status(with_picture=True), theme=theme).encode(),
-                              "text/html; charset=utf-8")
+                body = render_html(self.page.status(with_picture=True), theme=theme, marker=self.page.marker()).encode()
+                kind = "text/html; charset=utf-8"
         except Exception:  # noqa: BLE001 - never show exception text
             self._send(500, "text/plain; charset=utf-8", b"status unavailable\n")
             return

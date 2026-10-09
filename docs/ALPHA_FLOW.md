@@ -96,17 +96,22 @@ flow. Without them, nothing below exists and the outputs are as before.
   received and decoded the frame, not when the camera captured it. Pictures are
   at most 640×480, and at most 2 are encoded per second for all viewers, only
   while someone views the page. Nothing is saved.
-- **When the status page stops refreshing** (D71, with or without these flags):
-  the browser keeps showing the last page it received when a refresh gets no
-  answer (a stalled tunnel, a hung request). Every current claim on that page
-  (`This page is current`, the green `All components working`, the green `LIVE`
-  and the picture) lasts only 5 s after the browser shows it. Then the page
-  turns red at the top, `NOT CURRENT: this page has not refreshed for 5 s`, and
-  what follows is dimmed and labelled as last reported: `Last reported: all
-  components working`, `NOT CURRENT: last reported LIVE`, and the picture is
-  dimmed and marked `NOT CURRENT`. Only a refresh that succeeds brings the current
-  claims back, and only when that new page's own report is current. A stopped
-  runtime gives a browser error page instead.
+- **When the status page stops updating** (D71, D73, with or without these
+  flags): the page never reloads itself; its script asks for an update every
+  2 s and places only what changed, so scrolling, keyboard focus, expanded
+  sections and a selected incident stay as they are. When updates stop (a
+  stalled tunnel, a hung request, a stopped runtime), the page stays as it was,
+  and every current claim on it (`This page is current`, the green `All
+  components working`, the green `LIVE`) lasts only 5 s after the request of the
+  last valid update was sent. Then the page turns rust-red at the top, `NOT
+  CURRENT: this page has not refreshed for 5 s`, and what follows is dimmed and
+  labelled as last reported: `Last reported: all components working`, `NOT
+  CURRENT: last reported LIVE`. The last picture stays, dimmed and marked as
+  old; a picture that could not be loaded, or a frame that is no longer live,
+  is marked `OLD FRAME` with its time. Only a valid, newer update brings the
+  current claims back, and only when its own report is current; updates are
+  retried automatically, backing off to 15 s. Without JavaScript the page is
+  read-only: it turns NOT CURRENT after 5 s, and reloading updates it.
 - **Snapshots** (`--snapshots`): each new incident gets one JPEG. It is the frame
   that the observation that opened the incident came from, saved by a writer
   thread in `<data-dir>/snapshots/` (folder 0700, files 0600). If that frame was

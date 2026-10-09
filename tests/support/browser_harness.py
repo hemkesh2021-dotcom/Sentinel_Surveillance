@@ -10,6 +10,7 @@ last line, when no Chromium-family browser is found or it does not start; SENTIN
 from __future__ import annotations
 
 import base64
+import collections
 import contextlib
 import fcntl
 import json
@@ -46,6 +47,7 @@ class Browser:
         self._write, self._read = write_fd, read_fd
         self._buffer = b""
         self._id = 0
+        self.events: collections.deque[dict[str, Any]] = collections.deque(maxlen=5000)
 
     def call(self, method: str, params: dict[str, Any] | None = None, *, session: str | None = None,
              timeout_s: float = 15.0) -> dict[str, Any]:
@@ -59,10 +61,30 @@ class Browser:
         deadline = time.monotonic() + timeout_s
         while True:
             reply = self._receive(deadline)
-            if reply.get("id") == self._id:  # events and other replies are skipped
+            if reply.get("id") == self._id:
                 if "error" in reply:
                     raise DevToolsError(str(reply["error"].get("message")))
                 return reply.get("result", {})
+            if "method" in reply:  # an event: kept for take_event(); other replies are skipped
+                self.events.append(reply)
+
+    def take_event(self, method: str, *, session: str | None = None, timeout_s: float = 10.0) -> dict[str, Any] | None:
+        """The oldest unconsumed event of ``method`` (for ``session``), waiting up to ``timeout_s``; None at the timeout."""
+        deadline = time.monotonic() + timeout_s
+        while True:
+            for event in list(self.events):
+                if event.get("method") == method and (session is None or event.get("sessionId") == session):
+                    self.events.remove(event)
+                    return event.get("params", {})
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            try:
+                message = self._receive(time.monotonic() + min(remaining, 0.2))
+            except TimeoutError:
+                continue
+            if "method" in message:
+                self.events.append(message)
 
     def _receive(self, deadline: float) -> dict[str, Any]:
         while b"\0" not in self._buffer:
@@ -106,6 +128,10 @@ class Page:
 
     def navigate(self, url: str) -> None:
         self.call("Page.navigate", {"url": url})
+
+    def paused(self, timeout_s: float = 10.0) -> dict[str, Any] | None:
+        """The next request held by Fetch interception (``Fetch.enable``), or None at the timeout."""
+        return self.browser.take_event("Fetch.requestPaused", session=self.session, timeout_s=timeout_s)
 
     def evaluate(self, expression: str) -> Any:
         result = self.call("Runtime.evaluate", {"expression": expression, "returnByValue": True, "awaitPromise": True})
