@@ -82,8 +82,8 @@ def test_the_page_document_carries_the_same_regions_the_page_embeds_and_is_order
     marker = re.search(r"data-instance=([0-9a-f]{16}) data-sequence=(\d+)", page)
     assert marker and first["page"]["instance"] == second["page"]["instance"] == marker[1]
     assert int(marker[1] and marker[2]) < first["page"]["sequence"] < second["page"]["sequence"]
-    assert set(first["page"]["regions"]) == {"pills", "fresh", "live-head", "live-facts", "caps", "incidents", "health",
-                                             "delivery", "foot"}
+    assert set(first["page"]["regions"]) == {"pills", "fresh", "live-head", "live-facts", "caps", "incidents",
+                                             "chat-state", "health", "delivery", "foot"}
     embedded = regions_in(page)
     assert set(embedded) == set(first["page"]["regions"])
     for name in ("live-head", "caps", "incidents", "delivery"):  # the parts that do not carry a time or a sequence

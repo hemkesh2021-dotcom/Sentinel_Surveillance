@@ -16,7 +16,10 @@
      updates at once.
    - The live picture is loaded and decoded before it replaces the one shown, so it never blanks. It has its own
      timer, from the request that brought it. A picture that could not be loaded, or a frame that is no longer live,
-     leaves the last picture in place, dimmed and labelled as an old frame with its time. */
+     leaves the last picture in place, dimmed and labelled as an old frame with its time.
+   - Chat (D74, only where the runtime offers it): one question at a time, about one identified frame; answers are
+     shown as text, labelled with that frame's time and age, and never touch the timers above. The conversation and
+     the draft stay in this tab; the token in the form belongs to the server that sent this page. */
 (() => {
   "use strict";
   const root = document.documentElement;
@@ -36,6 +39,7 @@
     selected: null, detail: null, detailTimer: 0,
   };
   root.classList.add("js");
+  let refreshAsk = () => {};  // the chat's Ask button follows chat's availability, which updates with the page
 
   // ------------------------------------------------------------------ the watchdog timers
 
@@ -228,6 +232,7 @@
     state.sequence = doc.page.sequence;
     root.dataset.instance = doc.page.instance;
     root.dataset.sequence = String(doc.page.sequence);
+    refreshAsk();
     restart("fresh", sent);
   }
 
@@ -456,6 +461,174 @@
     }
     if (event.target.closest("[data-close]")) select(null);
   });
+
+  // ------------------------------------------------------------------ chat (D74): advisory questions about one frame
+
+  // The conversation and the draft live only in this tab: never in a region, so updates leave them alone, and never in
+  // storage. Answers are shown as text. Nothing here touches the freshness timers: an answer is not camera data.
+  const chatForm = document.getElementById("chat-form");
+  if (chatForm) {
+    const box = document.getElementById("chat-q");
+    const ask = document.getElementById("chat-ask");
+    const note = document.getElementById("chat-note");
+    const log = document.getElementById("chat-log");
+    const token = chatForm.dataset.token || "";
+    const servedBy = state.instance;  // the token belongs to the server that sent this page
+    const LIMIT = Number(box.getAttribute("maxlength")) || 300;
+    const JOB = /^[0-9a-f]{16}$/;
+    const chat = {pending: false, history: []};
+    const STATES = {
+      sending: "Sending your question…",
+      waiting: "Waiting for the scene model; monitoring comes first…",
+      answering: "The scene model is answering…",
+    };
+    const TITLES = {busy: "Busy", unavailable: "Unavailable", off: "Chat is off", no_fresh_frame: "No fresh frame",
+                    timeout: "No answer in time", invalid: "Not sent", refused: "Refused", unknown: "Lost"};
+    const REASONS = {unknown: "the server no longer has this question; it may have restarted"};
+    const GLYPHS = {sending: "clock", waiting: "clock", answering: "clock", answered: "check", busy: "warn",
+                    no_fresh_frame: "warn", timeout: "warn", unavailable: "off", off: "off", unknown: "off"};
+
+    const chatState = () => {
+      const element = document.querySelector("[data-chat-state]");
+      return element ? element.dataset.chatState : "off";
+    };
+
+    refreshAsk = () => {  // declared at the top, so that updates can call it
+      const available = chatState() === "available";
+      const restarted = state.instance !== servedBy;
+      const text = box.value.trim();
+      ask.disabled = chat.pending || !available || restarted || !text || text.length > LIMIT;
+      const reason = restarted ? "The runtime restarted after this page was loaded: reload the page to ask."
+        : !available ? "Chat is not available now: see the reason above."
+          : chat.pending ? "One question at a time." : "";
+      if (note.textContent !== reason) note.textContent = reason;
+    };
+
+    const line = (exchange, kind, text) => {
+      let node = exchange.querySelector(`.${kind}`);
+      if (!node) {
+        node = el("p", {class: kind});
+        exchange.append(node);
+      }
+      node.textContent = text;
+      return node;
+    };
+
+    // The exchange's state, as a label with its icon (the text says it; the icon and the edge colour repeat it).
+    const status = (exchange, state_, text) => {
+      let node = exchange.querySelector(".status");
+      if (node && exchange.dataset.state === state_ && node.textContent === text) return;  // unchanged: left alone
+      exchange.dataset.state = state_;
+      if (!node) {
+        node = el("p", {class: "status"});
+        exchange.append(node);
+      }
+      node.replaceChildren(svgIcon(GLYPHS[state_] || "crit"), text);
+    };
+
+    const number = (value) => (Number.isSafeInteger(value) && value >= 0 ? String(value) : "?");
+    const seconds = (ms) => (Number.isSafeInteger(ms) && ms >= 0 ? `${(ms / 1000).toFixed(1)} s` : "an unknown time");
+
+    // Which frame an answer describes, and how old it was. Historical unless the server says it was still live when
+    // the answer was ready: an answer is never about the scene now.
+    const label = (document_) => {
+      const frame = document_.frame;
+      if (!frame || typeof frame !== "object") return "";
+      const which = `the frame received at ${clock(frame.ingest_utc)} (stream epoch ${number(frame.stream_epoch)}, `
+        + `frame ${number(frame.frame_seq)})`;
+      if (document_.state !== "answered") return `About ${which}, ${seconds(frame.age_ms_when_asked)} old when asked.`;
+      const lead = document_.historical === false ? "About" : "Historical: about";
+      return `${lead} ${which}, ${seconds(frame.age_ms_when_asked)} old when asked and `
+        + `${seconds(document_.age_ms_when_answered)} old when answered. It describes that frame only, not the scene now.`;
+    };
+
+    // Shows a server document on one exchange; true when the exchange is finished.
+    const show = (exchange, document_, question) => {
+      const state_ = typeof document_.state === "string" ? document_.state : "error";
+      if (STATES[state_]) {
+        status(exchange, state_, STATES[state_]);
+        return false;
+      }
+      if (state_ === "answered" && typeof document_.answer === "string") {
+        status(exchange, "answered",
+          document_.cut_short === true ? "Answered (cut short at the answer limit)." : "Answered.");
+        line(exchange, "answer", document_.answer.slice(0, 1200));
+        line(exchange, "frame", label(document_));
+        chat.history.push({question, answer: document_.answer.slice(0, 400)});
+        chat.history = chat.history.slice(-2);
+        return true;
+      }
+      const reason = typeof document_.reason === "string" ? document_.reason.slice(0, 300)
+        : REASONS[state_] || "the question could not be answered";
+      status(exchange, TITLES[state_] ? state_ : "error", `${TITLES[state_] || "Error"}: ${reason}.`);
+      if (document_.frame) line(exchange, "frame", label(document_));
+      return true;
+    };
+
+    // One bounded request; always an object. ``lost`` marks a request that did not get a readable answer.
+    const request = async (url, options, ms) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), ms);
+      try {
+        const response = await fetch(url, {cache: "no-store", credentials: "same-origin", redirect: "error",
+          signal: controller.signal, ...options});
+        const type = response.headers.get("Content-Type") || "";
+        if (!type.startsWith("application/json")) return {state: "error", reason: `HTTP ${response.status}`};
+        const text = await response.text();
+        if (text.length > 20000) return {state: "error", reason: "the answer was too large"};
+        const parsed = JSON.parse(text);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed
+          : {state: "error", reason: "the answer was not readable"};
+      } catch (error) {
+        const reason = error && error.name === "AbortError" ? "no answer in time"
+          : error && error.name === "SyntaxError" ? "the answer was not readable" : "the connection failed";
+        return {state: "error", reason, lost: true};
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    chatForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      refreshAsk();
+      if (ask.disabled) return;
+      const question = box.value.trim();
+      chat.pending = true;
+      refreshAsk();
+      const exchange = el("li", {class: "exchange"}, [el("p", {class: "question"}, [question])]);
+      log.append(exchange);
+      while (log.children.length > 12) log.firstElementChild.remove();
+      status(exchange, "sending", STATES.sending);
+      try {
+        let document_ = await request("/chat", {method: "POST", headers: {"Content-Type": "application/json",
+          "X-Sentinel-Token": token}, body: JSON.stringify({question, history: chat.history})}, 8000);
+        const job = typeof document_.job === "string" && JOB.test(document_.job) ? document_.job : null;
+        if (job) box.value = "";  // handed over; a question that was not taken stays in the box, to send again
+        const started = performance.now();
+        for (;;) {
+          if (document_.lost && job) {  // a poll that got no answer: the question may still be answered
+            status(exchange, "waiting", `No reply from the page server (${document_.reason}); still waiting…`);
+          } else if (show(exchange, document_, question)) {
+            break;
+          } else if (!job) {
+            show(exchange, {state: "error", reason: "the answer was not readable"}, question);
+            break;
+          }
+          if (performance.now() - started > 40000) {
+            show(exchange, {state: "timeout", reason: "no answer in time"}, question);
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          document_ = await request(`/chat/${job}`, {headers: {"X-Sentinel-Token": token}}, 5000);
+        }
+      } finally {
+        chat.pending = false;
+        refreshAsk();
+      }
+    });
+    box.addEventListener("input", () => refreshAsk());
+    refreshAsk();
+  }
 
   // ------------------------------------------------------------------ lifecycle
 

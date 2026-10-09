@@ -151,11 +151,12 @@ time, .num { font-variant-numeric: tabular-nums; }
 
 /* ---------------------------------------------------------------- layout */
 .board { display: grid; gap: 18px; padding: 0 var(--gutter) 28px; grid-template-columns: minmax(0, 1fr);
-  grid-template-areas: "live" "incidents" "health" "delivery"; }
+  grid-template-areas: "live" "incidents" "chat" "health" "delivery"; }
 @media (min-width: 980px) {
-  .board { grid-template-columns: minmax(0, 1.75fr) minmax(320px, 1fr); align-items: start;
-    grid-template-areas: "live incidents" "health incidents" "delivery incidents"; }
-  .board > .incidents { position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow-y: auto; }
+  /* The live view leads; incidents and chat sit beside it, health and delivery below it. */
+  .board { grid-template-columns: minmax(0, 1.75fr) minmax(320px, 1fr); grid-template-rows: auto auto auto 1fr;
+    align-items: start; grid-template-areas: "live incidents" "live chat" "health chat" "delivery chat"; }
+  .board .inc-list { max-height: 46vh; overflow-y: auto; padding-right: 2px; }
 }
 .panel { min-width: 0; overflow-wrap: anywhere; padding: 17px 19px; border-radius: var(--radius); background: var(--surface);
   border: 1px solid var(--line); box-shadow: 7px 7px 18px var(--lo), -7px -7px 18px var(--hi); }
@@ -163,6 +164,7 @@ time, .num { font-variant-numeric: tabular-nums; }
 .incidents { grid-area: incidents; }
 .health { grid-area: health; }
 .delivery { grid-area: delivery; }
+.chat { grid-area: chat; }
 .phead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px;
   margin-bottom: 13px; }
 .phead h2 { display: flex; align-items: center; gap: 9px; }
@@ -312,6 +314,31 @@ html.js .peek[aria-pressed=true] { background: var(--accent); color: var(--accen
 .frame.thumb { padding: 6px; }
 .plain { padding: 5px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface);
   color: var(--ink); font: inherit; font-size: .84rem; font-weight: 680; cursor: pointer; }
+
+/* ---------------------------------------------------------------- chat (D74): the conversation lives in the tab only */
+.chat-log { display: grid; gap: 10px; margin: 12px 0; padding: 0; list-style: none; }
+.chat-log:empty { display: none; }
+.exchange { display: grid; gap: 4px; padding: 11px 13px; border-radius: 13px; background: var(--surface-2);
+  overflow-wrap: anywhere; }
+.exchange { border-inline-start: 4px solid var(--accent); }
+.exchange[data-state=answered] { border-inline-start-color: var(--border); }
+.exchange[data-state=busy], .exchange[data-state=no_fresh_frame], .exchange[data-state=timeout] {
+  border-inline-start-color: var(--warn-ink); }
+.exchange[data-state=unavailable], .exchange[data-state=off], .exchange[data-state=unknown] {
+  border-inline-start-color: var(--off-ink); }
+.exchange[data-state=error], .exchange[data-state=refused], .exchange[data-state=invalid] {
+  border-inline-start-color: var(--crit-ink); }
+.exchange .question { font-weight: 720; }
+.exchange .status { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: .88rem; }
+.exchange[data-state=answered] .status { color: var(--ink); }
+.exchange .answer { white-space: pre-line; }
+.exchange .frame { color: var(--muted); font-size: .84rem; padding: 0; background: none; box-shadow: none; }
+.chat-form { display: grid; gap: 8px; margin-top: 12px; }
+.chat-form label { font-weight: 700; }
+.chat-form textarea { width: 100%; min-height: 3.2em; padding: 9px 12px; border: 1px solid var(--border);
+  border-radius: 12px; background: var(--surface); color: var(--ink); font: inherit; resize: vertical;
+  box-shadow: inset 2px 2px 5px var(--lo), inset -2px -2px 5px var(--hi); }
+.button[disabled] { opacity: .55; cursor: not-allowed; transform: none; box-shadow: none; }
 
 /* Reduced motion: transitions off. The watchdog above moves nothing, so it stays. */
 @media (prefers-reduced-motion: reduce) {

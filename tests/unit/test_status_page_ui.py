@@ -221,9 +221,10 @@ def test_the_main_page_puts_incidents_beside_the_live_view_and_keeps_technical_d
     page = render_html(build_status({"runtime": {"state": "running", "camera_id": "cam-1"}},
                                     read_store(tmp_path / "sentinel.db"), NOW))
     order = re.findall(r'<(?:section|aside) id=([\w-]+) class="panel', page)
-    assert order == ["live", "incidents", "health", "delivery"]  # the mobile order; desktop puts incidents beside
+    assert order == ["live", "incidents", "chat", "health", "delivery"]  # the mobile order; desktop puts incidents
+    # and chat beside the live view
     assert '<a class=skip href="#live">' in page
     assert all(f'href="/incidents/{i}"' in page for i in ids)
     assert page.count("<details class=tech") == 2  # the runtime's counters, the alert rows (the live view adds one)
-    assert re.search(r"\.board \{[^}]*grid-template-areas: \"live\" \"incidents\" \"health\" \"delivery\"", STYLE)
-    assert '"live incidents" "health incidents" "delivery incidents"' in STYLE
+    assert re.search(r"\.board \{[^}]*grid-template-areas: \"live\" \"incidents\" \"chat\" \"health\" \"delivery\"", STYLE)
+    assert '"live incidents" "live chat" "health chat" "delivery chat"' in STYLE

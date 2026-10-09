@@ -243,6 +243,140 @@ def test_stop_is_bounded_and_submit_after_stop_is_refused(stamper: FrameStamper,
         analyzer.start()
 
 
+class Side:
+    """A side request (D74): records its callbacks in ``log`` and blocks until released."""
+
+    def __init__(self, log: list[object] | None = None, *, open_: bool = True, result: object = "answer") -> None:
+        self.log = [] if log is None else log
+        self.release = threading.Event()
+        self.started = threading.Event()
+        self.finished = threading.Event()
+        self.result = result
+        if open_:
+            self.release.set()
+
+    def work(self) -> object:
+        self.log.append("side")
+        assert self.release.wait(5), "test never released the side request"
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+    def on_started(self) -> None:
+        self.started.set()
+
+    def on_finished(self, result: object) -> None:
+        self.log.append(result)
+        self.finished.set()
+
+    def submit(self, analyzer: ThreadedSceneAnalyzer) -> bool:
+        return analyzer.submit_side(self.work, started=self.on_started, finished=self.on_finished)
+
+
+class Asleep:
+    """Keeps the worker asleep through one submit_side(), so that the request stays pending, not started."""
+
+    def __init__(self, analyzer: ThreadedSceneAnalyzer) -> None:
+        self.condition = analyzer._wake  # noqa: SLF001
+
+    def __enter__(self) -> None:
+        self.condition.notify = lambda n=1: None  # type: ignore[method-assign]
+
+    def __exit__(self, *exc: object) -> None:
+        del self.condition.notify  # the class's own notify again
+
+
+def test_a_side_request_runs_on_the_worker_only_while_it_is_idle_and_never_queues(
+    stamper: FrameStamper, clock: FakeClock
+) -> None:
+    gate = Gate(open_=False)
+    images = RecentImages()
+    analyzer = make(gate, images)
+    frame = frame_at(stamper, clock)
+    images.put(frame.key, "x")
+    analyzer.submit(job_for(frame))
+    assert gate.started.wait(2)
+    refused = Side()
+    assert refused.submit(analyzer) is False  # a scene job is running: refused, not queued
+    gate.release.set()
+    wait_for(lambda: not analyzer.busy())
+    side = Side(open_=False)
+    assert side.submit(analyzer) is True and side.started.wait(2) and analyzer.busy()
+    assert Side().submit(analyzer) is False  # one at a time
+    side.release.set()
+    assert side.finished.wait(2) and side.log == ["side", "answer"]
+    wait_for(lambda: not analyzer.busy())
+    assert refused.log == [] and [job_id for job_id, _ in analyzer.drain()] == ["job-1"]  # never in the scene inbox
+    assert (analyzer.counters["side_refused"], analyzer.counters["side_completed"]) == (2, 1)
+    assert analyzer.stop(2.0)
+
+
+def test_scene_jobs_go_first_a_running_side_request_delays_one_and_drops_none(
+    stamper: FrameStamper, clock: FakeClock
+) -> None:
+    order: list[object] = []
+
+    def scene(job: AnalysisJob, image: object) -> WorkerOutcome:
+        order.append(job.job_id)
+        return WorkerOutcome.completed(job.job_id, json.dumps(REPORT))
+
+    images = RecentImages()
+    analyzer = make(scene, images)
+    frames = [frame_at(stamper, clock) for _ in range(2)]
+    for frame in frames:
+        images.put(frame.key, "x")
+    first = Side(order)
+    with Asleep(analyzer):
+        assert first.submit(analyzer)  # accepted while idle, not started yet
+    analyzer.submit(job_for(frames[0], "job-1"))  # arrives before it starts: runs first
+    assert first.finished.wait(2)
+    wait_for(lambda: not analyzer.busy())
+    second = Side(order, open_=False)
+    assert second.submit(analyzer) and second.started.wait(2)
+    analyzer.submit(job_for(frames[1], "job-2"))  # waits for the running side request, then runs
+    second.release.set()
+    wait_for(lambda: len(order) == 6)
+    assert order == ["job-1", "side", "answer", "side", "answer", "job-2"]
+    assert [job_id for job_id, _ in drained(analyzer, 2)] == ["job-1", "job-2"]
+    assert analyzer.stop(2.0)
+
+
+def test_a_pending_side_request_can_be_withdrawn_and_stop_tells_it(stamper: FrameStamper, clock: FakeClock) -> None:
+    analyzer = make(Gate())
+    withdrawn = Side()
+    with Asleep(analyzer):
+        assert withdrawn.submit(analyzer)
+    assert analyzer.cancel_side() is True and analyzer.cancel_side() is False and not analyzer.busy()
+    dropped = Side()
+    with Asleep(analyzer):
+        assert dropped.submit(analyzer)
+    assert analyzer.stop(2.0)
+    assert withdrawn.log == [] and len(dropped.log) == 1 and str(dropped.log[0]) == "stopped"
+    assert isinstance(dropped.log[0], RuntimeError) and analyzer.counters["side_dropped_at_stop"] == 1
+    assert Side().submit(analyzer) is False  # after stop
+
+
+def test_a_failing_side_request_or_callback_never_stops_the_worker(stamper: FrameStamper, clock: FakeClock) -> None:
+    images = RecentImages()
+    analyzer = make(Gate(), images)
+    failing = Side(result=RuntimeError("model gone at /home/user/secret"))
+    assert failing.submit(analyzer) and failing.finished.wait(2)
+    assert isinstance(failing.log[1], RuntimeError)  # the request's own error, handed to its caller
+    wait_for(lambda: not analyzer.busy())
+
+    def broken(result: object) -> None:
+        raise ValueError("callback bug")
+
+    assert analyzer.submit_side(lambda: "x", started=lambda: None, finished=broken)
+    wait_for(lambda: analyzer.counters["side_callback_failed"] == 1 and not analyzer.busy())
+    frame = frame_at(stamper, clock)
+    images.put(frame.key, "x")
+    analyzer.submit(job_for(frame))
+    ((job_id, outcome),) = drained(analyzer)
+    assert (job_id, outcome.kind) == ("job-1", OutcomeKind.COMPLETED)  # scene analysis goes on
+    assert analyzer.stop(2.0)
+
+
 def test_submit_before_start_is_refused(stamper: FrameStamper, clock: FakeClock) -> None:
     analyzer = ThreadedSceneAnalyzer(Gate(), RecentImages(), revision="1")
     with pytest.raises(RuntimeError, match="not running"):

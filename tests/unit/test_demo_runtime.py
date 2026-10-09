@@ -51,6 +51,7 @@ from sentinel.media.jpeg import EncodedJpeg
 from sentinel.rules.scene_hazard import Severity
 from sentinel.rules.zones import ZoneObservation
 from sentinel.scene.analyzer import RecentImages, ThreadedSceneAnalyzer
+from sentinel.scene.chat import CHAT_ADMISSION, ChatAdmission, ChatQuestion
 from sentinel.status_page import read_incident, render_incident_html
 from sentinel.storage.database import Database
 from sentinel.tracking.tracker import PersonTracker, RawTrack, TrackerError
@@ -185,7 +186,8 @@ class Harness:
                  detector_problem: str | None = None, scene: SceneRuntime | None = None,
                  scene_problem: str | None = None, notifier_problems: dict[str, str] | None = None,
                  flaky: dict[str, int] | None = None, live_preview: bool = False, picture_bytes: int = 0,
-                 snapshots: bool = False) -> None:
+                 snapshots: bool = False, chat: bool = False, chat_run: Any = None,
+                 chat_admission: ChatAdmission = CHAT_ADMISSION) -> None:
         self.clock = FakeClock(utc=T0)
         self.config = config or make_config()
         self.db = Database.open(tmp_path / "sentinel.db")
@@ -211,7 +213,7 @@ class Harness:
             detector_problem=detector_problem, scene=scene, scene_problem=scene_problem,
             notifier_problems=notifier_problems, status_refresh_s=0.0, live_preview=live_preview,
             encode=lambda image, fmt, **kw: label_encode(image, fmt, picture_bytes=picture_bytes, **kw),
-            snapshots=self.writer,
+            snapshots=self.writer, chat=chat, chat_run=chat_run, chat_admission=chat_admission,
         )
         self.capture.connect()
 
@@ -1094,6 +1096,94 @@ def test_sentinel_run_serves_the_live_view_only_with_its_flag(tmp_path, capsys, 
     assert lines[-1]["status"]["state"] == "stopped" and lines[-1]["shutdown"]["all_stopped"] is True
     for secret in ("hunter2", "192.0.2.10", "rtsp://"):
         assert secret not in out.out + out.err + fetched[0][2].decode()
+
+
+# ---------------------------------------------------------------- advisory chat (D74)
+
+
+def test_chat_is_off_by_default_and_without_admission_unavailable_keeping_no_frames(tmp_path) -> None:
+    h = Harness(tmp_path)
+    h.frame()
+    assert h.runtime.chat is None and "chat" not in h.runtime.snapshot()["components"]  # unchanged without --chat
+    (tmp_path / "built").mkdir()
+    built = Harness(tmp_path / "built", chat=True, chat_run=lambda question, image: ("unused", False))
+    built.frame()
+    chat = built.runtime.chat
+    assert chat is not None and built.runtime._recent is None  # type: ignore[attr-defined]  # nothing to read frames for
+    assert chat.availability() == {"state": "unavailable", "reason": CHAT_ADMISSION.reason}
+    assert chat.ask(ChatQuestion("Is the door open?")) == (503, {"state": "unavailable", "reason": CHAT_ADMISSION.reason})
+    built.idle(0.0)
+    reported = built.runtime.snapshot()["components"]["chat"]
+    assert reported == chat.summary() and reported["counters"] == {"refused_unavailable": 1}
+    assert "Is the door open?" not in json.dumps(built.runtime.snapshot())  # counters only, never a question
+
+
+def test_admitted_chat_asks_about_the_runtimes_newest_frame_on_the_scene_worker(tmp_path) -> None:
+    images = RecentImages()
+    analyzer = ThreadedSceneAnalyzer(lambda job, image: WorkerOutcome.completed(job.job_id, REPORT), images,
+                                     revision="1+lfm2")
+    asked: list[tuple[str, Any, str]] = []
+
+    def run(question: ChatQuestion, image: Any) -> tuple[str, bool]:
+        asked.append((question.question, image, threading.current_thread().name))
+        return "A person stands near the door.", False
+
+    admitted = ChatAdmission(True, "admitted for this test", "a synthetic fixture")
+    h = Harness(tmp_path, scene=SceneRuntime(analyzer, images), chat=True, chat_run=run, chat_admission=admitted)
+    h.runtime.start()
+    try:
+        frame = h.frame(image=SimpleNamespace(shape=(480, 640, 3), label="asked-about"))
+        wait_for(lambda: analyzer.counters["delivered"] >= 1 and not analyzer.busy())  # monitoring went first
+        code, accepted = h.runtime.chat.ask(ChatQuestion("Who is near the door?"))
+        assert code == 202 and (accepted["frame"]["stream_epoch"], accepted["frame"]["frame_seq"]) == (1, frame.frame_seq)
+        wait_for(lambda: h.runtime.chat.poll(accepted["job"])[1]["state"] == "answered")
+    finally:
+        h.runtime.shutdown()
+    assert [(q, image.label, thread) for q, image, thread in asked] == [
+        ("Who is near the door?", "asked-about", "sentinel-scene")]  # the runtime's own frame, on the scene worker
+    assert h.capture.connects == 1  # no camera connection of its own
+    assert h.runtime.snapshot()["components"]["chat"]["counters"] == {"accepted": 1, "answered": 1}
+
+
+def test_sentinel_run_offers_chat_only_with_its_flag_and_says_it_is_not_admitted(tmp_path, capsys, monkeypatch) -> None:
+    import http.client
+    import re
+
+    monkeypatch.setenv("SENTINEL_RTSP_URL", FAKE_URL)
+    config = tmp_path / "config.yaml"
+    config.write_text("config_version: 1\ncamera: {id: cam-1}\n")
+    assert main(["run", str(config), "--data-dir", str(tmp_path / "data"), "--engine", "x", "--status-port", "0",
+                 "--chat"], devices=fake_devices(ThreadedSource())) == 1
+    assert capsys.readouterr().err.strip() == "run: --chat needs the status page (--status-port other than 0)"
+
+    port = free_port()
+    seen: list[Any] = []
+
+    def on_read(reads: int) -> None:
+        if reads == 15:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/", headers={"Host": f"127.0.0.1:{port}"})
+            page = conn.getresponse().read().decode()
+            token = re.search(r'data-token="([0-9a-f]{32})"', page)
+            conn.request("POST", "/chat", body=b'{"question": "Is the door open?"}', headers={
+                "Host": f"127.0.0.1:{port}", "Origin": f"http://127.0.0.1:{port}", "Content-Type": "application/json",
+                "X-Sentinel-Token": token[1] if token else ""})
+            response = conn.getresponse()
+            seen.extend([page, response.status, json.loads(response.read())])
+            conn.close()
+        if reads == 25:
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    code = main(["run", str(config), "--data-dir", str(tmp_path / "data"), "--engine", str(tmp_path / "x.engine"),
+                 "--status-port", str(port), "--chat"], devices=fake_devices(ThreadedSource(1000, on_read=on_read)))
+    out = capsys.readouterr()
+    assert code == 0, out.err
+    page, status, answer = seen
+    assert 'data-chat-state="unavailable"' in page and "operator-run resource and interference checks" in page
+    assert (status, answer) == (503, {"state": "unavailable", "reason": CHAT_ADMISSION.reason})
+    lines = [json.loads(line) for line in out.out.splitlines()]
+    assert lines[0]["startup"]["chat"] == {"state": "unavailable", "reason": CHAT_ADMISSION.reason}
+    assert "Is the door open?" not in out.out + out.err
 
 
 # ---------------------------------------------------------------- incident snapshots (D70)

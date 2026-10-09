@@ -98,6 +98,13 @@ def _scene_request(port: int, timeout_s: float) -> Any:
     return LlamaSceneRequest(LoopbackTransport(port, timeout_s))
 
 
+def _chat_request(port: int, timeout_s: float) -> Any:
+    from .scene.chat import LlamaChatRequest
+    from .scene.llama_server import LoopbackTransport
+
+    return LlamaChatRequest(LoopbackTransport(port, timeout_s))
+
+
 def _status_port(text: str) -> int:
     value = int(text)
     if value != 0 and not 1024 <= value <= 65535:
@@ -376,6 +383,12 @@ def main(
         "on its incident page. Kept 7 days, oldest deleted first beyond 200 MB or 2000 files, none saved below a "
         "free-space reserve of max(1 GB, 10%% of the volume)",
     )
+    run.add_argument(
+        "--chat", action="store_true",
+        help="D74 (off by default): offer advisory questions about the live frame on the status page, answered by the "
+        "admitted scene model on its own worker, monitoring first. It needs --scene and a chat admission, which this "
+        "build does not have, so chat stays unavailable and says why. Needs the status page",
+    )
     run.add_argument("--status-interval-s", type=_positive_seconds, default=30.0,
                      help="print a numbers-only status line this often (default 30)")
     incident_parser = commands.add_parser(
@@ -419,6 +432,7 @@ def main(
             tracker_backend=tracker_backend,
             scene_server=_scene_server,
             scene_request=_scene_request,
+            chat_request=_chat_request,
             meminfo=meminfo,
             face_backend=_face_backend,
             identity_store=_identity_store,
@@ -665,6 +679,9 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
     if args.live_preview and not args.status_port:
         print("run: --live-preview needs the status page (--status-port other than 0)", file=sys.stderr)
         return 1
+    if args.chat and not args.status_port:
+        print("run: --chat needs the status page (--status-port other than 0)", file=sys.stderr)
+        return 1
     face = None
     if args.face:
         if secret is None:
@@ -686,6 +703,7 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
                                         post_load_release=args.post_load_release),
         live_preview=args.live_preview,
         snapshots=SnapshotPolicy() if args.snapshots else None,
+        chat=args.chat,
     )
     clock = SystemClock()
     holder: dict[str, Any] = {}
@@ -703,9 +721,13 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
             runtime = holder.get("runtime")
             return None if runtime is None else runtime.preview
 
+        def chat() -> Any:
+            runtime = holder.get("runtime")
+            return None if runtime is None else runtime.chat
+
         try:
             page = StatusServer(args.status_port, snapshot, options.data_dir / DATABASE_NAME,
-                                preview=preview if args.live_preview else None)
+                                preview=preview if args.live_preview else None, chat=chat if args.chat else None)
         except OSError as exc:
             print(f"run: status_port_unavailable:{type(exc).__name__}", file=sys.stderr)
             return 1

@@ -58,6 +58,16 @@ no sessions, roles, API or media. It is reached over an SSH port forward.
   watchdog rules always arrive with their markup, and the CSP allows it by its
   SHA-256 and no other inline style. Green is used for current claims only.
   Camera frames and snapshots are never filtered or recoloured.
+- **Advisory chat (D74; only with ``sentinel run --chat``).** POST ``/chat``
+  asks the admitted scene model about the newest live frame, and GET
+  ``/chat/<job>`` reads its answer; both are this page's only non-GET route
+  and its only route that is not plain reading. A POST must come from this
+  page: the loopback Host, an Origin of exactly this origin (and
+  Sec-Fetch-Site same-origin when sent), a JSON body of at most
+  CHAT_MAX_BODY bytes with a Content-Length, and the token this server put in
+  its page (both chat routes); OPTIONS stays refused, so no cross-origin
+  preflight can pass. Chat is advisory (``sentinel.scene.chat``) and
+  unavailable in this build: no chat admission exists.
 - **Bounded connections.** At most MAX_CONNECTIONS at once (more get 503 and
   are closed); each connection's reads and writes time out after
   HANDLER_TIMEOUT_S, and its kernel send buffer is fixed, so a slow or
@@ -96,6 +106,7 @@ project's pydantic models. No new dependency; portable.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import html
 import itertools
 import json
@@ -121,6 +132,7 @@ from .incidents.snapshots import SNAPSHOT_DIR, SnapshotPolicy, file_name as snap
 from .live_preview import LivePreview, PreviewPicture, time_label
 from .rules.scene_hazard import FIRE_SMOKE_CANDIDATE, HazardCandidate
 from .rules.zones import ZONE_KINDS, ZoneObservation
+from .scene.chat import ADVISORY, CHAT_MAX_BODY, CHAT_MAX_QUESTION, ChatRequestError, parse_chat_request
 from .scene.report import SceneReport
 from .scene.state import SCENE_STATE_KIND
 from .storage.database import connect_reader
@@ -195,6 +207,10 @@ SECURITY_HEADERS = {  # Content-Security-Policy is added per response: it names 
     "Referrer-Policy": "no-referrer",
 }
 TAB_ICON_PATH = "/assets/icon.svg"
+CHAT_PATH = "/chat"
+CHAT_JOB_PATH = re.compile(r"/chat/(?P<id>[0-9a-f]{16})")
+CHAT_OFF = {"state": "off", "reason": "chat is off; start sentinel run with --chat to offer it"}
+CHAT_STARTING = {"state": "unavailable", "reason": "the runtime is starting"}
 SCRIPT_PATH = "/assets/dashboard.js"
 SCRIPT = script()
 DELIVERY_STATES = ("queued", "attempted", "delivered", "failed")
@@ -717,6 +733,8 @@ def _state_kind(state: object, problem: object = None, *, running: bool = True) 
 
 def _state(state: object, problem: object = None, *, running: bool = True) -> _Markup:
     """A component's state; a healthy one is a current claim (D71)."""
+    if state is None:
+        return _badge("off", "Not reported", glyph="info")
     kind = _state_kind(state, problem, running=running)
     label = STATE_LABELS.get(str(state), str(state).replace("_", " "))
     if kind == "ok":
@@ -874,6 +892,17 @@ def _monitoring(runtime: Mapping[str, Any], degraded: list[str]) -> _Markup:
     return _badge("off", STATE_LABELS.get(str(state), str(state).capitalize()), glyph="clock")
 
 
+def _chat_state(view: Mapping[str, Any] | None) -> str:
+    """Whether chat can be asked now (D74), with the reason; available is a current claim (D71)."""
+    view = view or CHAT_OFF
+    state = str(view.get("state"))
+    if state == "available":
+        badge = _claim(_badge("ok", "Available", glyph="chat"), _badge("off", "Was available", glyph="clock"))
+    else:
+        badge = _badge("off", {"off": "Off", "unavailable": "Unavailable"}.get(state, state.capitalize()), glyph="off")
+    return f'<div class=row data-chat-state="{_e(state)}">{badge}<span class=muted>{_e(view.get("reason"))}.</span></div>'
+
+
 def status_regions(status: Mapping[str, Any], *, theme: str | None = None) -> dict[str, str]:
     """The main page's updatable regions, by name: the full page embeds them, and ``/status.json?page=1`` carries them
     for in-place updates (D73). One renderer for both, so the two can never disagree."""
@@ -1005,6 +1034,7 @@ def status_regions(status: Mapping[str, Any], *, theme: str | None = None) -> di
                      + _details("Alert rows", _table(["incident", "channel", "message", "state", "attempts", "ambiguous",
                                                       "next attempt (UTC)", "last error"], delivery_rows, "No alerts."),
                                 key="alerts")),
+        "chat-state": _chat_state(status.get("chat")),
         "foot": f"Read-only, loopback only (D45). Generated at {_clock(generated)}.",
     }
 
@@ -1016,7 +1046,7 @@ def page_document(status: Mapping[str, Any], marker: Mapping[str, Any], *, theme
 
 
 def render_html(status: Mapping[str, Any], *, theme: str | None = None,
-                marker: Mapping[str, Any] | None = None) -> str:
+                marker: Mapping[str, Any] | None = None, chat_token: str = "") -> str:
     regions = status_regions(status, theme=theme)
     camera = status["runtime"].get("camera_id")
     view = status.get("preview")
@@ -1042,6 +1072,18 @@ def render_html(status: Mapping[str, Any], *, theme: str | None = None,
 <section id=inc-preview class=preview aria-label="Selected incident" aria-live=polite hidden></section>
 <div data-region=incidents>{regions["incidents"]}</div>
 </aside>
+<section id=chat class="panel chat" aria-label="Ask about the live picture">
+<div class=phead><h2>{icon("chat")}Ask about the live picture</h2></div>
+<div data-region=chat-state>{regions["chat-state"]}</div>
+<p class=note>{_e(ADVISORY)}</p>
+<ol id=chat-log class=chat-log aria-live=polite></ol>
+<form id=chat-form class=chat-form autocomplete=off data-token="{_e(chat_token)}">
+<label for=chat-q>Your question <span class=muted>(at most {CHAT_MAX_QUESTION} characters)</span></label>
+<textarea id=chat-q name=question maxlength={CHAT_MAX_QUESTION} rows=2 placeholder="For example: is the door open?"></textarea>
+<div class=row><button type=submit class=button id=chat-ask disabled>{icon("send")}Ask</button><span id=chat-note class=muted role=status></span></div>
+</form>
+<noscript><p class=note>Chat needs JavaScript.</p></noscript>
+</section>
 <section id=health class="panel health" aria-label="System health"><div data-region=health>{regions["health"]}</div></section>
 <section id=delivery class="panel delivery" aria-label="Alert delivery"><div data-region=delivery>{regions["delivery"]}</div></section>
 </main>
@@ -1350,6 +1392,7 @@ class StatusServer:
         host: str = LOOPBACK_HOST,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         preview: Callable[[], LivePreview | None] | None = None,
+        chat: Callable[[], Any] | None = None,
         max_connections: int = MAX_CONNECTIONS,
         handler_timeout_s: float = HANDLER_TIMEOUT_S,
     ) -> None:
@@ -1365,6 +1408,8 @@ class StatusServer:
         self._db_path = Path(db_path)
         self._now = now
         self._preview = preview
+        self._chat = chat  # D74: None while chat is off; else returns the runtime's ChatService, or None while starting
+        self.chat_token = secrets.token_hex(16)  # in this server's page only; required by both chat routes
         self._picture_slots = threading.BoundedSemaphore(MAX_PICTURE_RESPONSES)
         self._instance = secrets.token_hex(8)  # a page's updates are ordered within one server instance (D73)
         self._sequence = itertools.count(1)
@@ -1378,10 +1423,21 @@ class StatusServer:
         host, port = self._httpd.server_address[:2]
         return str(host), int(port)
 
-    def status(self, *, with_picture: bool = False) -> dict[str, Any]:
-        """``with_picture`` (the HTML page only): let the live view encode a picture if one is due."""
-        return build_status(self._snapshot(), read_store(self._db_path), self._now(),
-                            self.preview_view(with_picture=with_picture))
+    def status(self, *, with_picture: bool = False, for_page: bool = False) -> dict[str, Any]:
+        """``with_picture`` (pages only): let the live view encode a picture if one is due. ``for_page`` adds the chat's
+        availability, which the plain /status.json does not carry."""
+        status = build_status(self._snapshot(), read_store(self._db_path), self._now(),
+                              self.preview_view(with_picture=with_picture))
+        return {**status, "chat": self.chat_view()} if for_page else status
+
+    def chat_service(self) -> Any | None:
+        return None if self._chat is None else self._chat()
+
+    def chat_view(self) -> dict[str, str]:
+        if self._chat is None:
+            return dict(CHAT_OFF)
+        service = self._chat()
+        return dict(CHAT_STARTING) if service is None else service.availability()
 
     def marker(self) -> dict[str, Any]:
         """The next document's place in this server's order: a page applies only newer ones (D73)."""
@@ -1453,6 +1509,10 @@ class _Handler(BaseHTTPRequestHandler):
         if path == SCRIPT_PATH:
             self._send(200, "text/javascript; charset=utf-8", SCRIPT)
             return
+        job = CHAT_JOB_PATH.fullmatch(path)
+        if job is not None:
+            self._chat_poll(job["id"])
+            return
         preview = PREVIEW_PATH.fullmatch(path)
         if preview is not None:
             self._send_picture(preview["token"])
@@ -1483,12 +1543,14 @@ class _Handler(BaseHTTPRequestHandler):
                     body = render_incident_html(detail, theme=theme, marker=self.page.marker()).encode()
                     kind = "text/html; charset=utf-8"
             elif path == "/status.json" and for_page:  # the live page's update: it may encode a due picture
-                document = page_document(self.page.status(with_picture=True), self.page.marker(), theme=theme)
+                document = page_document(self.page.status(with_picture=True, for_page=True), self.page.marker(),
+                                         theme=theme)
                 body, kind = json.dumps(document).encode(), "application/json"
             elif path == "/status.json":  # unchanged: never encodes, no page fields
                 body, kind = json.dumps(self.page.status(), indent=2).encode(), "application/json"
             else:
-                body = render_html(self.page.status(with_picture=True), theme=theme, marker=self.page.marker()).encode()
+                body = render_html(self.page.status(with_picture=True, for_page=True), theme=theme,
+                                   marker=self.page.marker(), chat_token=self.page.chat_token).encode()
                 kind = "text/html; charset=utf-8"
         except Exception:  # noqa: BLE001 - never show exception text
             self._send(500, "text/plain; charset=utf-8", b"status unavailable\n")
@@ -1540,7 +1602,76 @@ class _Handler(BaseHTTPRequestHandler):
     def _refuse(self) -> None:
         self._send(405, "text/plain; charset=utf-8", b"read-only: GET only\n", allow="GET")
 
-    do_POST = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _refuse  # noqa: N815
+    do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _refuse  # noqa: N815
+
+    def do_POST(self) -> None:  # noqa: N802 - only the chat route takes a POST (D74)
+        if urlsplit(self.path).path != CHAT_PATH:
+            self._refuse()
+            return
+        if not self._host_allowed():
+            self._send(421, "text/plain; charset=utf-8", b"misdirected request\n")
+            return
+        problem = self._chat_request_problem()
+        if problem is not None:
+            self._json(*problem)
+            return
+        length = self.headers.get("Content-Length")
+        if length is None or not length.isdigit():
+            self._json(411, {"state": "refused", "reason": "a Content-Length is required"})
+            return
+        if int(length) > CHAT_MAX_BODY:
+            self._json(413, {"state": "invalid", "reason": "request too large"})
+            return
+        body = self.rfile.read(int(length))
+        if self.page._chat is None:
+            self._json(503, dict(CHAT_OFF))
+            return
+        service = self.page.chat_service()
+        if service is None:
+            self._json(503, dict(CHAT_STARTING))
+            return
+        try:
+            question = parse_chat_request(body)
+        except ChatRequestError as exc:
+            self._json(400, {"state": "invalid", "reason": exc.label})
+            return
+        try:
+            self._json(*service.ask(question))
+        except Exception:  # noqa: BLE001 - never show exception text
+            self._json(500, {"state": "error", "reason": "the question could not be taken"})
+
+    def _chat_request_problem(self) -> tuple[int, dict[str, str]] | None:
+        """Why a POST /chat is not from this page, or None. The token check runs last."""
+        port = self.server.server_address[1]
+        if self.headers.get("Origin") not in (f"http://{LOOPBACK_HOST}:{port}", f"http://localhost:{port}"):
+            return 403, {"state": "refused", "reason": "only this page may ask"}
+        if self.headers.get("Sec-Fetch-Site", "same-origin") != "same-origin":
+            return 403, {"state": "refused", "reason": "only this page may ask"}
+        if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
+            return 415, {"state": "refused", "reason": "a JSON body is required"}
+        if self.headers.get("Transfer-Encoding") is not None:
+            return 411, {"state": "refused", "reason": "a Content-Length is required"}
+        if not self._token_ok():
+            return 403, {"state": "refused", "reason": "only this page may ask"}
+        return None
+
+    def _token_ok(self) -> bool:
+        """The token this server put in its page, compared in constant time (as bytes: any header text compares)."""
+        given = self.headers.get("X-Sentinel-Token", "").encode("latin-1", "replace")
+        return hmac.compare_digest(given, self.page.chat_token.encode("ascii"))
+
+    def _chat_poll(self, job_id: str) -> None:
+        if not self._token_ok():
+            self._json(403, {"state": "refused", "reason": "only this page may ask"})
+            return
+        service = self.page.chat_service()
+        if service is None:
+            self._json(404, {"state": "unknown"})
+            return
+        self._json(*service.poll(job_id))
+
+    def _json(self, code: int, document: Mapping[str, Any]) -> None:
+        self._send(code, "application/json", json.dumps(document).encode())
 
     def _host_allowed(self) -> bool:
         port = self.server.server_address[1]

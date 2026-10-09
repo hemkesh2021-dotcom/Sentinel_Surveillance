@@ -25,6 +25,12 @@ to ``EdgeCore.on_scene_outcome()``, so the core stays single-threaded.
   (exception class name only), and the worker keeps going. submit() raises
   after stop() or if the worker thread died; the lane records that as error
   evidence.
+- **A side request (chat, D74).** submit_side() offers one lower-priority
+  request to the same worker thread, so the model still answers one request
+  at a time. It is accepted only while the worker is idle (nothing running or
+  waiting) and no other side request is pending, and a scene job submitted
+  before it starts runs first. It is never queued behind another and never
+  replaces a scene job; cancel_side() drops it while it has not started.
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ from typing import Any
 from ..contracts import FrameKey
 from ..jobs import AnalysisJob, OutcomeKind, WorkerOutcome
 
+SIDE = "side"  # what _running holds while a side request runs; never a job ID
 IMAGES_KEPT = 4  # 640x480 BGR: 921,600 B each, plus at most one waiting and one running job's image
 INBOX_LIMIT = 8
 
@@ -83,7 +90,8 @@ class ThreadedSceneAnalyzer:
         self._lock = threading.Lock()
         self._wake = threading.Condition(self._lock)
         self._waiting: tuple[AnalysisJob, Any] | None = None
-        self._running: str | None = None
+        self._side: tuple[Callable[[], Any], Callable[[], None], Callable[[Any], None]] | None = None
+        self._running: str | None = None  # a job ID, or SIDE
         self._inbox: deque[tuple[str, WorkerOutcome]] = deque()
         self._stopping = False
         self._thread: threading.Thread | None = None
@@ -135,7 +143,34 @@ class ThreadedSceneAnalyzer:
 
     def busy(self) -> bool:
         with self._lock:
-            return self._running is not None or self._waiting is not None
+            return self._running is not None or self._waiting is not None or self._side is not None
+
+    def submit_side(self, work: Callable[[], Any], *, started: Callable[[], None],
+                    finished: Callable[[Any], None]) -> bool:
+        """Offer one lower-priority request (D74); whether it was accepted.
+
+        ``started()`` and ``finished(result)`` are called on the worker thread; ``result`` is what ``work()``
+        returned or the exception it raised. Accepted only while nothing runs or waits here.
+        """
+        with self._lock:
+            if self._stopping or self._thread is None or not self._thread.is_alive():
+                return False
+            if self._running is not None or self._waiting is not None or self._side is not None:
+                self.counters["side_refused"] += 1
+                return False
+            self._side = (work, started, finished)
+            self.counters["side_accepted"] += 1
+            self._wake.notify()
+            return True
+
+    def cancel_side(self) -> bool:
+        """Drop a side request that has not started; True if one was dropped."""
+        with self._lock:
+            if self._side is None:
+                return False
+            self._side = None
+            self.counters["side_cancelled"] += 1
+            return True
 
     def stop(self, timeout_s: float) -> bool:
         """Drop any waiting job and stop the worker; False if a request is still running at the timeout."""
@@ -144,8 +179,12 @@ class ThreadedSceneAnalyzer:
             if self._waiting is not None:
                 self._waiting = None
                 self.counters["dropped_at_stop"] += 1
+            side, self._side = self._side, None
             self._wake.notify()
             thread = self._thread
+        if side is not None:
+            self.counters["side_dropped_at_stop"] += 1
+            side[2](RuntimeError("stopped"))
         if thread is not None:
             thread.join(timeout_s)
             return not thread.is_alive()
@@ -154,13 +193,22 @@ class ThreadedSceneAnalyzer:
     def _work(self) -> None:
         while True:
             with self._lock:
-                while self._waiting is None and not self._stopping:
+                while self._waiting is None and self._side is None and not self._stopping:
                     self._wake.wait()
                 if self._stopping:
                     return
-                job, image = self._waiting  # type: ignore[misc]
-                self._waiting = None
-                self._running = job.job_id
+                if self._waiting is None:  # scene jobs first; a side request only when none waits
+                    side, self._side = self._side, None
+                    self._running = SIDE
+                else:
+                    side = None
+                    job, image = self._waiting
+                    self._waiting = None
+                    self._running = job.job_id
+            if side is not None:
+                self._run_side(*side)  # type: ignore[arg-type]
+                del side
+                continue
             try:
                 outcome = self._run_job(job, image)
             except Exception as exc:  # one bad job must not stop scene analysis
@@ -169,6 +217,20 @@ class ThreadedSceneAnalyzer:
             with self._lock:
                 self._running = None
                 self._deliver(job.job_id, outcome)
+
+    def _run_side(self, work: Callable[[], Any], started: Callable[[], None], finished: Callable[[Any], None]) -> None:
+        try:
+            started()
+            result: Any = work()
+        except Exception as exc:  # the side request's error, never the worker's
+            result = exc
+        try:
+            finished(result)
+        except Exception:  # noqa: BLE001 - a broken callback must not stop scene analysis
+            self.counters["side_callback_failed"] += 1
+        with self._lock:
+            self._running = None
+            self.counters["side_completed"] += 1
 
     def _deliver(self, job_id: str, outcome: WorkerOutcome) -> None:
         # Called with the lock held.

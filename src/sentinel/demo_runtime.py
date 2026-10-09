@@ -123,6 +123,7 @@ from .live_preview import LivePreview
 from .live_state import Capability, LiveState
 from .media.capture import CapturedFrame, CaptureState, CaptureStatus, LatestFrame, SourceError, VideoSource
 from .media.clock import NS_PER_SECOND, Clock
+from .media.health import assess_frame
 from .media.jpeg import Encoder, encode_jpeg
 from .media.recent import RecentFrames
 from .memory_policy import (
@@ -139,6 +140,7 @@ from .memory_policy import (
 from .rules.zones import ZonePhase
 from .runtime import CoreOutput, EdgeCore, tick_record
 from .scene.analyzer import IMAGES_KEPT, RecentImages, ThreadedSceneAnalyzer
+from .scene.chat import CHAT_ADMISSION, ChatAdmission, ChatService
 from .scene.llama_server import PROFILED_FLAGS, PROMPT_CACHE_FLAGS, SCENE_REQUEST_SHA256
 from .storage.database import Database, DatabaseError
 from .tracking.tracker import FrameOutcome, PersonTracker, TrackerError
@@ -284,6 +286,9 @@ class DemoRuntime:
         live_preview: bool = False,
         encode: Encoder = encode_jpeg,
         snapshots: SnapshotWriter | None = None,
+        chat: bool = False,
+        chat_run: Callable[[Any, Any], Any] | None = None,
+        chat_admission: ChatAdmission = CHAT_ADMISSION,
     ) -> None:
         if tracker is None and detector_problem is None:
             detector_problem = "detector_not_configured"
@@ -314,10 +319,23 @@ class DemoRuntime:
         )
         self._identity_records: deque[dict[str, Any]] = deque()
         self._snapshots = snapshots
-        self._recent = RecentFrames() if live_preview or snapshots is not None else None  # only when something reads it
+        # D74: chat reads frames only when it can be used (admitted, with the scene model); otherwise it keeps none.
+        chat_usable = chat and chat_admission.admitted and scene is not None and chat_run is not None
+        self._recent = (RecentFrames() if live_preview or snapshots is not None or chat_usable
+                        else None)  # only when something reads it
         self._pinned: Counter[FrameKey] = Counter()  # D70: frames whose images wait with unrecorded observations
         self._preview = (LivePreview(self._recent, clock, config.freshness, lambda: capture.connected, encode=encode)
                          if live_preview and self._recent is not None else None)
+        self._chat: ChatService | None = None
+        if chat:  # D74: advisory, and unavailable (saying why) unless admitted and the scene model runs
+            watching = clock.mono()
+            recent = self._recent
+            self._chat = ChatService(
+                enabled=True, admission=chat_admission, scene=scene.analyzer if scene is not None else None,
+                latest=recent.latest if chat_usable and recent is not None else lambda: None, clock=clock,
+                run=chat_run if chat_usable else None,
+                assess=lambda frame: assess_frame(frame, capture.connected, clock.mono(), watching, config.freshness),
+                stale_after_s=config.freshness.stale_after_s)
         self._frames: OrderedDict[FrameKey, FrameRef] = OrderedDict()
         self._pending: deque[tuple[IncidentSignal, FrameKey | None, _Shot | None]] = deque()
         self._retry_at_ns = 0
@@ -343,6 +361,11 @@ class DemoRuntime:
     def preview(self) -> LivePreview | None:
         """The status page's live view (D69); None when it is off."""
         return self._preview
+
+    @property
+    def chat(self) -> ChatService | None:
+        """The status page's chat (D74); None when it is off."""
+        return self._chat
 
     # ------------------------------------------------------------ lifecycle
 
@@ -604,6 +627,8 @@ class DemoRuntime:
                                        "not_queued": self.counters["snapshots_not_queued"]}
         if self._preview is not None:  # only when enabled: the output of a run without it is unchanged
             components["preview"] = self._preview.summary()
+        if self._chat is not None:  # only when enabled; availability and counters, never a question or an answer
+            components["chat"] = self._chat.summary()
         snapshot = {
             "runtime": {
                 "state": self._state.value,
@@ -824,6 +849,7 @@ class RunOptions:
     memory_policy: MemoryPolicy = DEFAULT_POLICY  # D58: opt-in; the default changes nothing
     live_preview: bool = False  # D69: the status page's live view; off by default
     snapshots: SnapshotPolicy | None = None  # D70: incident snapshots under data_dir/snapshots; None: off (default)
+    chat: bool = False  # D74: advisory chat on the status page; off by default, and unavailable unless admitted
 
 
 @dataclass(frozen=True)
@@ -866,6 +892,7 @@ class Devices:
     face_backend: Callable[[Path | None], Any] | None = None  # has load(), compatibility(), faces(), weight_files
     identity_store: Callable[[Path], Any] | None = None  # has exists(), load(secret)
     encode: Encoder = encode_jpeg  # D69/D70 pictures; cv2 is imported only when it runs
+    chat_request: Callable[[int, float], Any] | None = None  # D74: a question on the scene worker (LlamaChatRequest)
 
 
 @dataclass
@@ -1257,10 +1284,14 @@ def assemble(
             tracker=tracker, detector_problem=detector_problem, scene=scene, scene_problem=scene_problem,
             face=face, face_problem=face_problem, enrollment=None if gallery is None else gallery.enrollment(),
             notifier_problems=notifier_problems, live_preview=options.live_preview, encode=devices.encode,
-            snapshots=snapshots,
+            snapshots=snapshots, chat=options.chat,
+            chat_run=(devices.chat_request(config.scene_server.port, config.scene_server.request_timeout_s)
+                      if options.chat and scene is not None and devices.chat_request is not None else None),
         )
         if runtime.preview is not None:  # only when enabled, as every new output key (evidence profiles are strict)
             startup["live_preview"] = runtime.preview.bounds()
+        if runtime.chat is not None:
+            startup["chat"] = runtime.chat.availability()
     except BaseException:
         if server is not None:
             server.stop(10.0)
