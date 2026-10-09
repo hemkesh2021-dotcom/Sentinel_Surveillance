@@ -23,6 +23,7 @@ from .adapters import resolve
 from .config import CaptureConfig, ConfigError, IncidentsConfig, NotificationsConfig, SentinelConfig, load_config
 from .demo_runtime import DATABASE_NAME, Devices, FaceOptions, RunOptions, SceneOptions, StartupRefused, assemble
 from .identity.gallery import DEFAULT_IDENTITY_DIR
+from .incidents.snapshots import SnapshotPolicy
 from .identity.vault import (
     MIN_NEW_SECRET_CHARS,
     SECRET_ENV,
@@ -368,6 +369,13 @@ def main(
         "age and live/stale/offline state; a picture only while that frame is live, at most 640x480 and 2 encoded "
         "per second for all viewers, encoded only while someone views the page; nothing is saved. Needs the status page",
     )
+    run.add_argument(
+        "--snapshots", action="store_true",
+        help="D70 (off by default): save one JPEG per new incident, of the frame its opening observation came from "
+        "(never another; recorded as missing if that frame is gone), in DATA_DIR/snapshots (0700; files 0600), shown "
+        "on its incident page. Kept 7 days, oldest deleted first beyond 200 MB or 2000 files, none saved below a "
+        "free-space reserve of max(1 GB, 10%% of the volume)",
+    )
     run.add_argument("--status-interval-s", type=_positive_seconds, default=30.0,
                      help="print a numbers-only status line this often (default 30)")
     incident_parser = commands.add_parser(
@@ -677,6 +685,7 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
         memory_policy=policy_from_flags(workload_thp_disable=args.workload_thp_disable,
                                         post_load_release=args.post_load_release),
         live_preview=args.live_preview,
+        snapshots=SnapshotPolicy() if args.snapshots else None,
     )
     clock = SystemClock()
     holder: dict[str, Any] = {}

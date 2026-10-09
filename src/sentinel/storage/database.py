@@ -143,6 +143,32 @@ MIGRATIONS: tuple[str, ...] = (
     );
     CREATE INDEX annotations_incident ON incident_annotations (incident_id, annotation_seq);
     """,
+    # 3: one snapshot record per incident (D70): saved, missing or pruned, with its source frame and file
+    """
+    CREATE TABLE incident_snapshots (
+        incident_id TEXT PRIMARY KEY REFERENCES incidents (incident_id),
+        observation_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('saved', 'missing', 'pruned')),
+        reason TEXT,
+        camera_id TEXT NOT NULL,
+        boot_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        stream_epoch INTEGER NOT NULL,
+        frame_seq INTEGER NOT NULL,
+        ingest_utc TEXT,
+        source_time_quality TEXT,
+        source_pts INTEGER,
+        width INTEGER,
+        height INTEGER,
+        file_name TEXT,
+        bytes INTEGER,
+        sha256 TEXT,
+        recorded_utc TEXT NOT NULL,
+        pruned_utc TEXT,
+        CHECK ((state = 'missing') = (file_name IS NULL))
+    );
+    CREATE INDEX snapshots_retention ON incident_snapshots (state, recorded_utc);
+    """,
 )
 SCHEMA_VERSION = len(MIGRATIONS)
 

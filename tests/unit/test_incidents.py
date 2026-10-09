@@ -90,14 +90,14 @@ def service(db: Database, notifications: NotificationsConfig = TELEGRAM, **incid
 
 def test_new_database_is_migrated_with_durable_settings(db: Database, db_path: Path) -> None:
     c = db.connection
-    assert c.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 2
+    assert c.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 3
     assert c.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     assert c.execute("PRAGMA synchronous").fetchone()[0] == 2  # FULL
     assert c.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
     assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert {"incidents", "observations", "incident_evidence", "incident_transitions", "outbox", "delivery_attempts",
-            "incident_annotations"} <= tables
+            "incident_annotations", "incident_snapshots"} <= tables
 
 
 def test_only_one_writer_and_readers_cannot_write(db: Database, db_path: Path) -> None:
@@ -468,7 +468,7 @@ def test_version_1_database_is_upgraded_in_place(db_path: Path, monkeypatch: pyt
 
     db = Database.open(db_path)
     try:
-        assert db.connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.connection.execute("PRAGMA user_version").fetchone()[0] == 3
         incidents = service(db)
         assert incidents.incident(incident_id).status is IncidentStatus.OPEN
         assert incidents.annotate(scene_evidence(incident_id), Applicability.EXPIRED).outcome is AnnotationOutcome.ANNOTATED

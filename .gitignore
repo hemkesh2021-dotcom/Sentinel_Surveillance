@@ -30,3 +30,10 @@ env/
 .DS_Store
 .vscode/
 .idea/
+
+# ── Sentinel v2 runtime data (keep --data-dir outside the repository) ──
+sentinel.db
+sentinel.db-*
+sentinel.db.lock
+snapshots/
+snap-*.jpg

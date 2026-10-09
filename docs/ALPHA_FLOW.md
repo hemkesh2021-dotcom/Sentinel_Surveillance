@@ -82,6 +82,40 @@ interpreter, as the operator packages do; in a development checkout,
    depends on the rule's merge window (120 s by default) and on whether the
    device rebooted.
 
+## Live view and incident snapshots (D69, D70; both opt-in)
+
+Add `--live-preview --snapshots` to the `sentinel run` command, in both runs of the
+flow. Without them, nothing below exists and the outputs are as before.
+
+- **Live view** (`--live-preview`, needs the status page): the status page shows
+  the newest frame the runtime already reads. It opens no second camera
+  connection. It shows a picture only while that frame is live: from the
+  connected stream and younger than `freshness.stale_after_s` (2 s). Otherwise it
+  states `STALE: not current`, `OFFLINE` or `STARTING`, with the frame's age and
+  identity and no picture. The time shown is the ingest time, when the Jetson
+  received and decoded the frame, not when the camera captured it. If the page
+  stops refreshing (a dropped tunnel, a stopped runtime), the picture is dimmed
+  and marked `NOT CURRENT` after 5 s. Pictures are at most 640×480, and at most 2
+  are encoded per second for all viewers, only while someone views the page.
+  Nothing is saved.
+- **Snapshots** (`--snapshots`): each new incident gets one JPEG. It is the frame
+  that the observation that opened the incident came from, saved by a writer
+  thread in `<data-dir>/snapshots/` (folder 0700, files 0600). If that frame was
+  no longer held, the incident page says `missing` with the reason. No other
+  frame is ever used in its place. The incident page shows the picture, its
+  stream epoch and frame, its ingest time with the time-quality label, and its
+  SHA-256, with a download link. A picture whose file no longer matches its
+  record is not shown. Retention: 7 days; the oldest are deleted first beyond
+  200 MB or 2000 snapshots; nothing is saved while free space would fall below
+  the greater of 1 GB and 10 % of the volume. Deletions are kept on the record
+  (`deleted by retention …`). Later observations that join an incident do not
+  replace its snapshot.
+- **Privacy:** neither feature masks any region (no privacy masks exist in this
+  build). Both stay on the loopback page, reached over SSH. No image is sent to
+  Telegram. Keep `--data-dir` outside the repository; `.gitignore` also lists
+  `sentinel.db*`, `snapshots/` and `snap-*.jpg`.
+- **Not measured:** the CPU, memory and disk cost of either on the device.
+
 ## Limits
 
 - This is the alpha's stand-in for the guide's authenticated acknowledge

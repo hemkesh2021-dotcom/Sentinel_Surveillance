@@ -40,6 +40,7 @@ from sentinel.demo_runtime import (
     environment_notifiers,
 )
 from sentinel.incidents.service import IncidentService
+from sentinel.incidents.snapshots import SnapshotStore, SnapshotWriter
 from sentinel.incidents.signals import IncidentSignal, SignalPhase
 from sentinel.jobs import OutcomeKind, WorkerOutcome
 from sentinel.live_state import Capability, Occupancy, SceneStatus
@@ -48,6 +49,7 @@ from sentinel.media.clock import FakeClock, SystemClock
 from sentinel.media.frames import FrameStamper
 from sentinel.media.jpeg import EncodedJpeg
 from sentinel.rules.scene_hazard import Severity
+from sentinel.rules.zones import ZoneObservation
 from sentinel.scene.analyzer import RecentImages, ThreadedSceneAnalyzer
 from sentinel.status_page import read_incident, render_incident_html
 from sentinel.storage.database import Database
@@ -182,7 +184,8 @@ class Harness:
     def __init__(self, tmp_path: Path, *, config=None, notifier: FakeNotifier | None = None, tracker: bool = True,
                  detector_problem: str | None = None, scene: SceneRuntime | None = None,
                  scene_problem: str | None = None, notifier_problems: dict[str, str] | None = None,
-                 flaky: dict[str, int] | None = None, live_preview: bool = False, picture_bytes: int = 0) -> None:
+                 flaky: dict[str, int] | None = None, live_preview: bool = False, picture_bytes: int = 0,
+                 snapshots: bool = False) -> None:
         self.clock = FakeClock(utc=T0)
         self.config = config or make_config()
         self.db = Database.open(tmp_path / "sentinel.db")
@@ -196,12 +199,19 @@ class Harness:
         notifiers = {} if notifier_problems else {"telegram": self.notifier}
         self.worker = OutboxWorker(self.db, self.clock, notifiers, self.config.notifications, rng=random.Random(7))
         self.outbox = OutboxLoop(self.worker, interval_s=0.05)
+        self.writer = None
+        if snapshots:
+            store = SnapshotStore(self.db, tmp_path / "snapshots", self.clock, encode=label_encode,
+                                  disk_usage=lambda path: SimpleNamespace(total=10**11, free=5 * 10**10))
+            store.open()
+            self.writer = SnapshotWriter(store, self.clock)
         self.runtime = DemoRuntime(
             self.config, self.clock, capture=self.capture, slot=self.slot, incidents=self.incidents,  # type: ignore[arg-type]
             outbox=self.outbox, tracker=PersonTracker(self.backend) if tracker else None,
             detector_problem=detector_problem, scene=scene, scene_problem=scene_problem,
             notifier_problems=notifier_problems, status_refresh_s=0.0, live_preview=live_preview,
             encode=lambda image, fmt, **kw: label_encode(image, fmt, picture_bytes=picture_bytes, **kw),
+            snapshots=self.writer,
         )
         self.capture.connect()
 
@@ -1084,3 +1094,276 @@ def test_sentinel_run_serves_the_live_view_only_with_its_flag(tmp_path, capsys, 
     assert lines[-1]["status"]["state"] == "stopped" and lines[-1]["shutdown"]["all_stopped"] is True
     for secret in ("hunter2", "192.0.2.10", "rtsp://"):
         assert secret not in out.out + out.err + fetched[0][2].decode()
+
+
+# ---------------------------------------------------------------- incident snapshots (D70)
+
+FIRE = json.dumps({"persons_visible": 0, "fire_or_smoke": True, "threat": "high", "observations": [],
+                   "uncertainty": "low", "summary": "Smoke near the window."})
+
+
+def labelled(n: int) -> Any:
+    return SimpleNamespace(shape=(480, 640, 3), label=f"<frame-{n}>")
+
+
+class ManualAnalyzer:
+    """A SceneAnalyzer the test completes by hand, so a result can arrive after its frame left every store."""
+
+    revision = "1+manual"
+
+    def __init__(self) -> None:
+        self.jobs: list[Any] = []
+        self.inbox: list[tuple[str, WorkerOutcome]] = []
+        self.counters: dict[str, int] = {}
+
+    def start(self) -> None:
+        pass
+
+    def stop(self, timeout_s: float) -> bool:
+        return True
+
+    def submit(self, job: Any) -> None:
+        self.jobs.append(job)
+
+    def cancel(self, job_id: str) -> None:
+        pass
+
+    def drain(self) -> list[tuple[str, WorkerOutcome]]:
+        out, self.inbox = self.inbox, []
+        return out
+
+    def complete(self, job: Any, text: str) -> None:
+        self.inbox.append((job.job_id, WorkerOutcome.completed(job.job_id, text)))
+
+
+def snapshot_row(h: Harness) -> tuple:
+    wait_for(lambda: h.rows("SELECT count(*) FROM incident_snapshots") == [(1,)])
+    return h.rows("SELECT incident_id, state, reason, stream_epoch, frame_seq, file_name FROM incident_snapshots")[0]
+
+
+def trigger(h: Harness) -> Any:
+    payload = h.rows("SELECT payload FROM incident_evidence WHERE phase = 'entered' ORDER BY evidence_seq LIMIT 1")
+    return ZoneObservation.model_validate_json(payload[0][0]).last_source
+
+
+def test_an_incident_snapshot_is_the_frame_its_opening_observation_came_from(tmp_path) -> None:
+    h = Harness(tmp_path, snapshots=True)
+    h.writer.start()  # type: ignore[union-attr]
+    try:
+        n = 0
+        while not h.outbox_rows():
+            h.frame(image=labelled(n))
+            n += 1
+        for _ in range(5):  # the person stays: newer frames, the same incident
+            h.frame(image=labelled(n))
+            n += 1
+        incident_id, state, reason, epoch, seq, name = snapshot_row(h)
+    finally:
+        assert h.writer.stop(5.0)  # type: ignore[union-attr]
+    source = trigger(h)
+    assert (state, reason, epoch, seq) == ("saved", None, source.stream_epoch, source.frame_seq)
+    data = (tmp_path / "snapshots" / name).read_bytes()
+    assert f"<frame-{source.frame_seq}>".encode() in data and f"<frame-{n - 1}>".encode() not in data
+    detail = read_incident(tmp_path / "sentinel.db", incident_id)["snapshot"]
+    assert detail["file"] == "verified" and detail["frame"] == {"stream_epoch": 1, "frame_seq": source.frame_seq}
+    assert h.runtime.snapshot()["components"]["snapshots"]["writer"]["queued"] == 1
+    assert h.runtime.preview is None and "preview" not in h.runtime.snapshot()["components"]  # snapshots alone
+
+
+def test_a_later_observation_that_joins_the_incident_keeps_its_snapshot(tmp_path) -> None:
+    h = Harness(tmp_path, snapshots=True)
+    h.writer.start()  # type: ignore[union-attr]
+    try:
+        n = 0
+        while not h.outbox_rows():
+            h.frame(image=labelled(n))
+            n += 1
+        for _ in range(20):  # 1.3 s without the person: the episode ends
+            h.frame([], image=labelled(n))
+            n += 1
+        for _ in range(10):  # back in the zone: a new episode, joining the same unresolved incident
+            h.frame(image=labelled(n))
+            n += 1
+        snapshot_row(h)
+    finally:
+        assert h.writer.stop(5.0)  # type: ignore[union-attr]
+    entered = h.rows("SELECT incident_id FROM incident_evidence WHERE phase = 'entered'")
+    assert len(entered) == 2 and len(set(entered)) == 1  # two episodes, one incident
+    assert h.runtime.snapshot()["records"]["record_joined"] == 1
+    assert h.rows("SELECT frame_seq FROM incident_snapshots") == [(trigger(h).frame_seq,)]  # the opening frame's
+    assert h.writer.status()["writer"] == {"queued": 1, "saved": 1}  # type: ignore[union-attr]  # no job for the join
+
+
+def test_a_delayed_record_still_saves_the_frame_that_triggered_it(tmp_path) -> None:
+    h = Harness(tmp_path, snapshots=True, flaky={"before": 2})  # recorded only on the third try, 2 s later
+    h.writer.start()  # type: ignore[union-attr]
+    pinned = []
+    try:
+        for n in range(45):
+            h.frame(image=labelled(n))
+            pinned.append(h.runtime.snapshot()["components"]["snapshots"]["pinned_frames"])
+        incident_id, state, _, _, seq, name = snapshot_row(h)
+    finally:
+        assert h.writer.stop(5.0)  # type: ignore[union-attr]
+    source = trigger(h)
+    assert h.runtime.snapshot()["records"]["record_created"] == 1 and seq == source.frame_seq
+    assert f"<frame-{source.frame_seq}>".encode() in (tmp_path / "snapshots" / name).read_bytes()
+    assert max(pinned) == 1 and pinned[-1] == 0  # its image waited with it, then was released
+
+
+def hazard_harness(tmp_path: Path) -> tuple[Harness, ManualAnalyzer, Any]:
+    """A hazard candidate from two fire reports; returns the second report's job, not yet completed."""
+    analyzer = ManualAnalyzer()
+    h = Harness(tmp_path, scene=SceneRuntime(analyzer, RecentImages()), snapshots=True)  # type: ignore[arg-type]
+    h.writer.start()  # type: ignore[union-attr]
+    n = 0
+    h.frame([], image=labelled(n))
+    analyzer.complete(analyzer.jobs[0], FIRE)
+    while len(analyzer.jobs) < 2:
+        n += 1
+        h.frame([], dt=0.5, image=labelled(n))
+    h.n = n  # type: ignore[attr-defined]
+    return h, analyzer, analyzer.jobs[1]
+
+
+def test_a_hazard_snapshot_is_its_scene_report_s_frame(tmp_path) -> None:
+    h, analyzer, job = hazard_harness(tmp_path)
+    try:
+        h.frame([], image=labelled(h.n + 1))  # type: ignore[attr-defined]
+        analyzer.complete(job, FIRE)
+        h.frame([], image=labelled(h.n + 2))  # type: ignore[attr-defined]
+        incident_id, state, _, _, seq, name = snapshot_row(h)
+    finally:
+        assert h.writer.stop(5.0)  # type: ignore[union-attr]
+    assert h.rows("SELECT kind FROM incidents") == [("scene.fire_smoke_candidate",)]
+    assert (state, seq) == ("saved", job.frame.frame_seq)
+    assert f"<frame-{job.frame.frame_seq}>".encode() in (tmp_path / "snapshots" / name).read_bytes()
+
+
+def test_a_triggering_frame_that_is_gone_is_recorded_missing_and_never_replaced(tmp_path) -> None:
+    h, analyzer, job = hazard_harness(tmp_path)
+    try:
+        for k in range(1, 7):  # the report is still current, but its frame left every image store
+            h.frame([], dt=0.1, image=labelled(h.n + k))  # type: ignore[attr-defined]
+        analyzer.complete(job, FIRE)
+        h.frame([], image=labelled(h.n + 7))  # type: ignore[attr-defined]
+        incident_id, state, reason, _, seq, name = snapshot_row(h)
+    finally:
+        assert h.writer.stop(5.0)  # type: ignore[union-attr]
+    assert (state, reason, seq, name) == ("missing", "frame_not_retained", job.frame.frame_seq, None)
+    assert list((tmp_path / "snapshots").iterdir()) == []
+    page = render_incident_html({**read_incident(tmp_path / "sentinel.db", incident_id), "generated_utc": "x"})
+    assert "no other frame was substituted" in page and "<img" not in page
+
+
+def test_snapshots_are_off_by_default(tmp_path) -> None:
+    h = Harness(tmp_path)
+    h.until_incident()
+    assert "snapshots" not in h.runtime.snapshot()["components"]
+    assert not (tmp_path / "snapshots").exists() and h.rows("SELECT count(*) FROM incident_snapshots") == [(0,)]
+    assert h.runtime._recent is None  # type: ignore[attr-defined]  # no frame image is held for anything
+
+
+def test_the_database_stays_open_while_the_snapshot_writer_runs(tmp_path) -> None:
+    from sentinel.demo_runtime import Assembly
+
+    db = Database.open(tmp_path / "sentinel.db")
+    assembly = Assembly(runtime=None, database=db)  # type: ignore[arg-type]
+    assert assembly.close({"stopped": {"outbox": True, "snapshots": False}}) is False
+    db.connection.execute("SELECT 1")  # still open
+    assert assembly.close({"stopped": {"outbox": True, "snapshots": True}}) is True
+
+
+def test_an_unusable_snapshot_directory_refuses_before_any_model_loads(tmp_path) -> None:
+    from sentinel.incidents.snapshots import SnapshotPolicy
+
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "snapshots").symlink_to(tmp_path / "elsewhere")
+    calls: list[str] = []
+    with pytest.raises(StartupRefused) as refused:
+        assemble(make_config(), RunOptions(tmp_path, tmp_path / "x.engine", snapshots=SnapshotPolicy()),
+                 fake_devices(ThreadedSource(), calls=calls), FakeClock())
+    assert refused.value.label == "snapshots: not_a_directory" and calls == []
+    Database.open(tmp_path / "sentinel.db").close()  # the database was released
+
+
+def test_sentinel_run_saves_shows_and_keeps_the_snapshot_across_a_restart(tmp_path, capsys, monkeypatch) -> None:
+    import http.client
+    import stat
+
+    from sentinel.status_page import StatusServer
+    from sentinel.storage.database import connect_reader
+
+    monkeypatch.setenv("SENTINEL_RTSP_URL", FAKE_URL)
+    config = tmp_path / "config.yaml"
+    config.write_text("config_version: 1\ncamera: {id: cam-1}\nzones:\n"
+                      "  - {zone_id: room, rule: restricted, polygon: [[0, 0], [1, 0], [1, 1], [0, 1]], "
+                      "min_duration_s: 0.2}\n")
+    data_dir = tmp_path / "data"
+    port = free_port()
+    fetched: dict[str, tuple[int, dict[str, str], bytes]] = {}
+
+    def fetch(name: str, path: str, server_port: int = port) -> None:
+        conn = http.client.HTTPConnection("127.0.0.1", server_port, timeout=5)
+        conn.request("GET", path, headers={"Host": f"127.0.0.1:{server_port}"})
+        response = conn.getresponse()
+        fetched[name] = (response.status, dict(response.getheaders()), response.read())
+        conn.close()
+
+    def saved() -> str | None:
+        try:
+            reader = connect_reader(data_dir / "sentinel.db")
+        except sqlite3.Error:
+            return None
+        try:
+            row = reader.execute("SELECT incident_id FROM incident_snapshots WHERE state = 'saved'").fetchone()
+        except sqlite3.Error:
+            row = None
+        reader.close()
+        return None if row is None else row[0]
+
+    def on_read(reads: int) -> None:
+        if 40 <= reads and "jpg" not in fetched:
+            incident_id = saved()
+            if incident_id is not None:
+                fetched["id"] = (0, {}, incident_id.encode())
+                fetch("status", "/")
+                fetch("page", f"/incidents/{incident_id}")
+                fetch("jpg", f"/incidents/{incident_id}/snapshot.jpg")
+                fetch("download", f"/incidents/{incident_id}/snapshot/download")
+        if "jpg" in fetched or reads == 600:
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    backend = FakeBackend()
+    backend.script.extend([PERSON] * 1000)
+    devices = fake_devices(ThreadedSource(1000, on_read=on_read), backend)
+    devices.encode = label_encode
+    code = main(["run", str(config), "--data-dir", str(data_dir), "--engine", str(tmp_path / "x.engine"),
+                 "--status-port", str(port), "--snapshots"], devices=devices)
+    out = capsys.readouterr()
+    assert code == 0, out.err
+    incident_id = fetched["id"][2].decode()
+    status, headers, page = fetched["page"]
+    assert status == 200 and f'<img src="/incidents/{incident_id}/snapshot.jpg"' in page.decode()
+    assert "<td>incident snapshots</td><td>running</td>" in fetched["status"][2].decode()
+    assert fetched["jpg"][0] == 200 and fetched["jpg"][2] == fetched["download"][2]
+    assert fetched["download"][1]["Content-Disposition"] == f'attachment; filename="sentinel-{incident_id}.jpg"'
+    lines = [json.loads(line) for line in out.out.splitlines()]
+    assert "live_preview" not in lines[0]["startup"]  # --snapshots does not turn the live view on
+    startup = lines[0]["startup"]["snapshots"]
+    assert startup["removed_temporary"] == 0 and startup["policy"]["retention_s"] == 7 * 86400.0
+    assert lines[-1]["shutdown"]["stopped"]["snapshots"] is True and lines[-1]["database_closed"] is True
+    folder = data_dir / "snapshots"
+    (picture,) = folder.iterdir()
+    assert stat.S_IMODE(folder.stat().st_mode) == 0o700 and stat.S_IMODE(picture.stat().st_mode) == 0o600
+    for secret in ("hunter2", "192.0.2.10", "rtsp://"):
+        assert secret not in out.out + out.err + page.decode()
+    # After the restart: the next runtime opens the same data directory, and the page still serves the same file.
+    Database.open(data_dir / "sentinel.db").close()
+    later = StatusServer(0, lambda: {"runtime": {"state": "running"}}, data_dir / "sentinel.db")
+    later.start()
+    try:
+        fetch("after", f"/incidents/{incident_id}/snapshot.jpg", later.address[1])
+    finally:
+        assert later.stop(2.0)
+    assert fetched["after"][0] == 200 and fetched["after"][2] == fetched["jpg"][2]

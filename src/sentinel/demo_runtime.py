@@ -55,6 +55,13 @@ reference, before inference; the last RECENT_FRAMES_KEPT only), and the status p
 one in its own request thread, bounded, only while the frame is live. Nothing else reads the camera, and the loop
 never waits on a viewer.
 
+Incident snapshots (D70, ``--snapshots``; off by default): when a zone ENTERED observation or a hazard candidate is
+queued, the loop looks up the frame it came from, by identity, among the images it still holds (RecentFrames, and the
+scene lane's RecentImages), and keeps that image with the observation until it is recorded (at most
+MAX_PINNED_SNAPSHOT_FRAMES distinct frames). When ``record()`` creates an incident, the job goes to the
+SnapshotWriter's thread; a frame that was gone is recorded as missing, never replaced by another. The loop never
+encodes or writes a file.
+
 Memory policies (D58; opt-in, off by default, see ``assemble``): this process
 can disable transparent huge pages for itself before the detector loads, and
 release each loaded model's files from the page cache after it settles. Both
@@ -99,6 +106,15 @@ from .identity.legacy_deepface import FaceBackendError, static_difference
 from .identity.vault import Secret, VaultError
 from .identity.worker import FaceWorker
 from .incidents.service import IncidentService, RecordOutcome
+from .incidents.snapshots import (
+    SNAPSHOT_DIR,
+    STOP_TIMEOUT_S as SNAPSHOT_STOP_TIMEOUT_S,
+    SnapshotDirectoryError,
+    SnapshotJob,
+    SnapshotPolicy,
+    SnapshotStore,
+    SnapshotWriter,
+)
 from .inference.legacy_ultralytics import LEGACY_ENGINE_SHA256
 from .incidents.signals import IncidentSignal, signal_from_hazard, signal_from_zone
 from .jobs import AnalysisJob, WorkerOutcome
@@ -138,6 +154,7 @@ RECORD_RETRY_NS = NS_PER_SECOND
 RATE_WINDOW_NS = 10 * NS_PER_SECOND
 FACE_STOP_TIMEOUT_S = 2.0  # a DeepFace call cannot be interrupted; p99 989 ms in the replay profile
 MAX_IDENTITY_RECORDS = 10_000  # identity records (ticks, results, transitions) per run; more are counted, not kept
+MAX_PINNED_SNAPSHOT_FRAMES = 4  # distinct frames whose images wait with unrecorded observations (D70)
 
 
 class Capture(Protocol):
@@ -159,6 +176,16 @@ class ServerHandle(Protocol):
     def status(self) -> Any: ...
 
     def stop(self, grace_s: float) -> bool: ...
+
+
+@dataclass(frozen=True)
+class _Shot:
+    """An observation's snapshot source: its frame's identity, and that frame's record and image while held."""
+
+    key: FrameKey
+    frame: FrameRef | None
+    image: Any | None
+    missing: str | None
 
 
 class RuntimeState(str, Enum):
@@ -256,6 +283,7 @@ class DemoRuntime:
         status_refresh_s: float = 0.5,
         live_preview: bool = False,
         encode: Encoder = encode_jpeg,
+        snapshots: SnapshotWriter | None = None,
     ) -> None:
         if tracker is None and detector_problem is None:
             detector_problem = "detector_not_configured"
@@ -285,11 +313,13 @@ class DemoRuntime:
             scene_problem=self._scene_problem,
         )
         self._identity_records: deque[dict[str, Any]] = deque()
-        self._recent = RecentFrames() if live_preview else None  # D69: only when something reads it
+        self._snapshots = snapshots
+        self._recent = RecentFrames() if live_preview or snapshots is not None else None  # only when something reads it
+        self._pinned: Counter[FrameKey] = Counter()  # D70: frames whose images wait with unrecorded observations
         self._preview = (LivePreview(self._recent, clock, config.freshness, lambda: capture.connected, encode=encode)
-                         if self._recent is not None else None)
+                         if live_preview and self._recent is not None else None)
         self._frames: OrderedDict[FrameKey, FrameRef] = OrderedDict()
-        self._pending: deque[tuple[IncidentSignal, FrameKey | None]] = deque()
+        self._pending: deque[tuple[IncidentSignal, FrameKey | None, _Shot | None]] = deque()
         self._retry_at_ns = 0
         self._record_problem: str | None = None
         self._annotate_problem: str | None = None
@@ -317,7 +347,9 @@ class DemoRuntime:
     # ------------------------------------------------------------ lifecycle
 
     def start(self) -> None:
-        """Start the threads this runtime owns: capture, scene worker, outbox."""
+        """Start the threads this runtime owns: capture, scene worker, outbox, snapshot writer."""
+        if self._snapshots is not None:
+            self._snapshots.start()
         if self._scene is not None:
             self._scene.analyzer.start()
         if self._face is not None:
@@ -356,6 +388,8 @@ class DemoRuntime:
                 stopped["scene_server"] = self._scene.server.stop(10.0)
             stopped["scene_worker"] = self._scene.analyzer.stop(self._config.scene_server.request_timeout_s + 1.0)
         self._flush(force=True)  # last chance for observations that are still waiting
+        if self._snapshots is not None:  # saves what is queued, including incidents the flush just created
+            stopped["snapshots"] = self._snapshots.stop(SNAPSHOT_STOP_TIMEOUT_S)
         if self._outbox is not None:
             stopped["outbox"] = self._outbox.stop(self._config.notifications.request_timeout_s + 2.0)
         self._shutdown = {
@@ -439,9 +473,9 @@ class DemoRuntime:
                 self._annotate(current)
                 for zone in current.zones:
                     enrich = zone.last_source if zone.phase is ZonePhase.ENTERED else None
-                    self._enqueue(signal_from_zone(zone), enrich)
+                    self._enqueue(signal_from_zone(zone), enrich, enrich)  # ENTERED can open: its frame is the shot
                 for candidate in current.candidates:
-                    self._enqueue(signal_from_hazard(candidate), None)
+                    self._enqueue(signal_from_hazard(candidate), None, candidate.last_source)
             for frame, incident_id in self._flush():
                 outputs.append(self._core.request_enrichment(frame, incident_id, self._capture.connected))
 
@@ -470,11 +504,32 @@ class DemoRuntime:
                 continue
             self.counters[f"annotation_{result.outcome.value}"] += 1
 
-    def _enqueue(self, signal: IncidentSignal, enrich: FrameKey | None) -> None:
+    def _enqueue(self, signal: IncidentSignal, enrich: FrameKey | None, source: FrameKey | None = None) -> None:
         if len(self._pending) >= MAX_PENDING_SIGNALS:
             self.counters["signals_dropped"] += 1
             return
-        self._pending.append((signal, enrich))
+        self._pending.append((signal, enrich, self._shot(source)))
+
+    def _shot(self, source: FrameKey | None) -> _Shot | None:
+        """D70: the image of exactly ``source``, if still held and within the bound; else why not."""
+        if self._snapshots is None or source is None:
+            return None
+        held = self._recent.get(source) if self._recent is not None else None
+        frame, image = held if held is not None else (self._frames.get(source), None)
+        if image is None and self._scene is not None:
+            image = self._scene.images.get(source)  # the scene lane holds its recent frames' images too
+        if frame is None or image is None:
+            return _Shot(source, frame, None, "frame_not_retained")
+        if source not in self._pinned and len(self._pinned) >= MAX_PINNED_SNAPSHOT_FRAMES:
+            return _Shot(source, frame, None, "too_many_waiting")
+        self._pinned[source] += 1
+        return _Shot(source, frame, image, None)
+
+    def _unpin(self, shot: _Shot | None) -> None:
+        if shot is not None and shot.image is not None:
+            self._pinned[shot.key] -= 1
+            if self._pinned[shot.key] <= 0:
+                del self._pinned[shot.key]
 
     def _flush(self, *, force: bool = False) -> list[tuple[FrameRef, str]]:
         """Record waiting signals in order; returns enrichment requests for created incidents.
@@ -485,7 +540,7 @@ class DemoRuntime:
         if not force and self._clock.monotonic_ns() < self._retry_at_ns:
             return enrich
         while self._pending:
-            signal, source = self._pending[0]
+            signal, source, shot = self._pending[0]
             try:
                 result = self._incidents.record(signal)
             except Exception as exc:  # noqa: BLE001 - kept and retried; record() deduplicates
@@ -494,8 +549,15 @@ class DemoRuntime:
                 self._retry_at_ns = self._clock.monotonic_ns() + RECORD_RETRY_NS
                 break
             self._pending.popleft()  # acknowledged only now (D31)
+            self._unpin(shot)
             self._record_problem = None
             self.counters[f"record_{result.outcome.value}"] += 1
+            if result.outcome is RecordOutcome.CREATED and shot is not None and self._snapshots is not None:
+                job = SnapshotJob(result.incident_id, signal.observation_id, shot.key, shot.frame,  # type: ignore[arg-type]
+                                  shot.image, shot.missing)
+                if not self._snapshots.submit(job):
+                    self.counters["snapshots_not_queued"] += 1
+                del job
             if result.outcome is RecordOutcome.CREATED and source is not None and self._scene is not None:
                 frame = self._frames.get(source)
                 if frame is None:
@@ -537,6 +599,9 @@ class DemoRuntime:
             },
             "notifications": self._notification_status(),
         }
+        if self._snapshots is not None:  # only when enabled, as the preview
+            components["snapshots"] = {**self._snapshots.status(), "pinned_frames": len(self._pinned),
+                                       "not_queued": self.counters["snapshots_not_queued"]}
         if self._preview is not None:  # only when enabled: the output of a run without it is unchanged
             components["preview"] = self._preview.summary()
         snapshot = {
@@ -702,6 +767,11 @@ def degradation(snapshot: Mapping[str, Any]) -> list[str]:
     for channel, state in notifications["channels"].items():
         if state["state"] != "available":
             reasons.append(f"{channel} unavailable ({state['problem']}); its alerts stay queued")
+    snapshots = components.get("snapshots")
+    if snapshots is not None and snapshots.get("problem"):
+        reasons.append(f"snapshots: {snapshots['problem']}")
+    if snapshots is not None and snapshot["runtime"]["state"] == "running" and snapshots.get("state") == "stopped":
+        reasons.append("snapshot writer stopped")
     worker = notifications["worker"]
     if notifications["channels"] and worker.get("problem"):
         reasons.append(f"delivery worker problem ({worker['problem']})")
@@ -753,6 +823,7 @@ class RunOptions:
     face: FaceOptions | None = None  # None: face recognition disabled (the default)
     memory_policy: MemoryPolicy = DEFAULT_POLICY  # D58: opt-in; the default changes nothing
     live_preview: bool = False  # D69: the status page's live view; off by default
+    snapshots: SnapshotPolicy | None = None  # D70: incident snapshots under data_dir/snapshots; None: off (default)
 
 
 @dataclass(frozen=True)
@@ -805,7 +876,7 @@ class Assembly:
 
     def close(self, shutdown: Mapping[str, Any]) -> bool:
         """Close the database unless a thread that uses it is still running."""
-        if not shutdown["stopped"].get("outbox", True):
+        if not shutdown["stopped"].get("outbox", True) or not shutdown["stopped"].get("snapshots", True):
             return False
         self.database.close()
         return True
@@ -1076,7 +1147,17 @@ def assemble(
     except DatabaseError as exc:
         raise StartupRefused(f"database: {exc}") from None
     server = None
+    store = None
     try:
+        snapshots = None
+        if options.snapshots is not None:  # D70: checked before any model loads
+            store = SnapshotStore(database, options.data_dir / SNAPSHOT_DIR, clock, options.snapshots,
+                                  encode=devices.encode)
+            try:
+                startup["snapshots"] = {**store.open(), "policy": options.snapshots.describe()}
+            except SnapshotDirectoryError as exc:
+                raise StartupRefused(f"snapshots: {exc.label}") from None
+            snapshots = SnapshotWriter(store, clock)
         notifiers, notifier_problems = devices.notifiers(config.notifications)
         incidents = IncidentService(database, clock, incidents=config.incidents, notifications=config.notifications)
         outbox = OutboxLoop(OutboxWorker(database, clock, notifiers, config.notifications))
@@ -1176,12 +1257,15 @@ def assemble(
             tracker=tracker, detector_problem=detector_problem, scene=scene, scene_problem=scene_problem,
             face=face, face_problem=face_problem, enrollment=None if gallery is None else gallery.enrollment(),
             notifier_problems=notifier_problems, live_preview=options.live_preview, encode=devices.encode,
+            snapshots=snapshots,
         )
         if runtime.preview is not None:  # only when enabled, as every new output key (evidence profiles are strict)
             startup["live_preview"] = runtime.preview.bounds()
     except BaseException:
         if server is not None:
             server.stop(10.0)
+        if store is not None:
+            store.close()
         database.close()
         raise
     return Assembly(runtime, database, startup)

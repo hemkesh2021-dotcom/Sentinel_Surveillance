@@ -21,6 +21,15 @@ no sessions, roles, API or media. It is reached over an SSH port forward.
   refreshing (a stalled tunnel or a stopped runtime), CSS alone dims it and
   marks it not current after PREVIEW_EXPIRY_S, so a frozen frame is never
   shown as current. At most MAX_PICTURE_RESPONSES pictures are sent at once.
+- **Incident snapshot (D70; saved only by ``sentinel run --snapshots``).**
+  The incident page shows the frame the opening observation came from, its
+  identity, ingest time and time quality, with GET
+  ``/incidents/<id>/snapshot.jpg`` (inline) and ``/incidents/<id>/snapshot/download``
+  (attachment). A file is served only by incident ID: its name must be the
+  one derived from that ID, it is opened inside the data directory's
+  ``snapshots`` folder without following links or blocking, and its size and
+  SHA-256 must match the row. A missing, pruned or altered snapshot is stated
+  as such, and never replaced by another frame.
 - **Bounded connections.** At most MAX_CONNECTIONS at once (more get 503 and
   are closed); each connection's reads and writes time out after
   HANDLER_TIMEOUT_S, and its kernel send buffer is fixed, so a slow or
@@ -58,11 +67,14 @@ project's pydantic models. No new dependency; portable.
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
+import os
 import re
 import socket
 import sqlite3
+import stat
 import threading
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
@@ -73,9 +85,10 @@ from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
-from .contracts import Evidence, EvidenceStatus
+from .contracts import Evidence, EvidenceStatus, SourceTimeQuality
 from .incidents.service import UNRESOLVED, latest_acknowledgment
-from .live_preview import LivePreview, PreviewPicture
+from .incidents.snapshots import SNAPSHOT_DIR, SnapshotPolicy, file_name as snapshot_file_name
+from .live_preview import LivePreview, PreviewPicture, time_label
 from .rules.scene_hazard import FIRE_SMOKE_CANDIDATE, HazardCandidate
 from .rules.zones import ZONE_KINDS, ZoneObservation
 from .scene.report import SceneReport
@@ -95,6 +108,38 @@ PREVIEW_EXPIRY_S = 5  # the shown picture is dimmed and marked not current once 
 PREVIEW_OFF = {"enabled": False, "state": "off",
                "reason": "the live view is off; start sentinel run with --live-preview to show it"}
 PREVIEW_STARTING = {"enabled": True, "state": "starting", "reason": "the runtime is starting"}
+SNAPSHOT_PATH = re.compile(
+    r"/incidents/(?P<id>[A-Za-z0-9][A-Za-z0-9_-]{0,127})/snapshot(?P<kind>\.jpg|/download)")
+SNAPSHOT_COLUMNS = (
+    "observation_id", "state", "reason", "stream_epoch", "frame_seq", "ingest_utc", "source_time_quality", "width",
+    "height", "file_name", "bytes", "sha256", "recorded_utc", "pruned_utc",
+)
+SNAPSHOT_POLICY = SnapshotPolicy()  # what `sentinel run --snapshots` uses; shown on the page
+SNAPSHOT_NONE = (
+    "none recorded for this incident: snapshots are saved only by sentinel run --snapshots, for the observation that "
+    "opens an incident, and none is left if the runtime stopped before saving it"
+)
+SNAPSHOT_REASONS = {
+    "frame_not_retained": "the frame it came from was no longer held when the incident was recorded",
+    "too_many_waiting": "more frames were waiting with unrecorded observations than the limit",
+    "queue_full": "the snapshot writer's queue was full",
+    "frame_identity_mismatch": "the held frame was not the one the observation came from",
+    "incident_id_not_file_safe": "the incident ID cannot name a file",
+    "too_large": "the picture was larger than the limit",
+    "free_space_reserve": "saving it would have left less free space than the reserve",
+    "retention_failed": "older snapshots could not be deleted to make room",
+    "unsupported_pixel_format": "the frame's pixel format cannot be encoded",
+    "retention_age": "older than the retention period",
+    "retention_quota": "the oldest, deleted to stay within the quota",
+}
+SNAPSHOT_NOTE = (
+    f"A snapshot is the frame the observation that opened the incident came from, never a later one. Snapshots are "
+    f"kept for {SNAPSHOT_POLICY.retention_s / 86400:g} days; the oldest are deleted first beyond "
+    f"{SNAPSHOT_POLICY.quota_bytes / 1e6:g} MB or {SNAPSHOT_POLICY.max_count} snapshots, and none is saved while free "
+    f"space would fall below the greater of {SNAPSHOT_POLICY.reserve_min_bytes / 1e9:g} GB and "
+    f"{SNAPSHOT_POLICY.reserve_fraction:.0%} of the volume. They are private files (0600) in the data directory's "
+    "snapshots folder, never in the repository."
+)
 MAX_CONNECTIONS = 16
 MAX_PICTURE_RESPONSES = 2
 HANDLER_TIMEOUT_S = 10.0  # per connection: a request must arrive, and each response be written, within this
@@ -228,13 +273,18 @@ def read_incident(db_path: Path, incident_id: str) -> dict[str, Any]:
     try:
         connection.execute("BEGIN")
         try:
-            return _incident_detail(connection, incident_id)
+            detail = _incident_detail(connection, incident_id)
         finally:
             connection.execute("COMMIT")
     except sqlite3.Error as exc:
         return {"state": "unavailable", "problem": f"database_unreadable:{type(exc).__name__}"}
     finally:
         connection.close()
+    snapshot = detail.get("snapshot") or {}
+    if "_file" in snapshot:  # checked outside the read transaction
+        data = snapshot_bytes(Path(db_path).parent / SNAPSHOT_DIR, incident_id, *snapshot.pop("_file"))
+        snapshot["file"] = "verified" if data is not None else "not_verified"
+    return detail
 
 
 INCIDENT_COLUMNS = (
@@ -299,7 +349,105 @@ def _incident_detail(c: sqlite3.Connection, incident_id: str) -> dict[str, Any]:
         "transitions": _latest(c, "incident_transitions", TRANSITION_COLUMNS, incident_id, MAX_TRANSITIONS),
         "annotations": annotations,
         "deliveries": {"total": total, "shown": deliveries},
+        "snapshot": _snapshot_detail(c, incident_id),
     }
+
+
+def _snapshot_detail(c: sqlite3.Connection, incident_id: str) -> dict[str, Any]:
+    """The incident's snapshot record (D70); ``_file`` (name, size, SHA-256) is checked after the read."""
+    table = c.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'incident_snapshots'").fetchone()
+    row = None if table is None else c.execute(
+        f"SELECT {', '.join(SNAPSHOT_COLUMNS)} FROM incident_snapshots WHERE incident_id = ?", (incident_id,)
+    ).fetchone()
+    if row is None:  # also a database from before schema 3
+        return {"state": "none", "text": SNAPSHOT_NONE}
+    item = dict(zip(SNAPSHOT_COLUMNS, row))
+    try:
+        label = time_label(SourceTimeQuality(item["source_time_quality"])) if item["source_time_quality"] else None
+    except ValueError:
+        label = None
+    state, reason = item["state"], item["reason"]
+    explained = SNAPSHOT_REASONS.get(reason, reason) if reason else None
+    text = {
+        "saved": "saved: the frame the observation that opened this incident came from",
+        "missing": f"missing: {explained}; no other frame was substituted",
+        "pruned": f"deleted by retention ({explained}) at {item['pruned_utc']}",
+    }.get(state, f"unknown state {state!r}")
+    detail = {
+        "state": state, "reason": reason, "text": text, "observation_id": item["observation_id"],
+        "frame": {"stream_epoch": item["stream_epoch"], "frame_seq": item["frame_seq"]},
+        "ingest_utc": item["ingest_utc"], "source_time_quality": item["source_time_quality"], "time_label": label,
+        "width": item["width"], "height": item["height"], "bytes": item["bytes"], "sha256": item["sha256"],
+        "recorded_utc": item["recorded_utc"], "pruned_utc": item["pruned_utc"],
+    }
+    if state == "saved":
+        detail["file"] = None  # set after the read: verified, or not_verified
+        detail["view_url"] = f"/incidents/{incident_id}/snapshot.jpg"
+        detail["download_url"] = f"/incidents/{incident_id}/snapshot/download"
+        detail["_file"] = (item["file_name"], item["bytes"], item["sha256"])
+    return detail
+
+
+def snapshot_bytes(directory: Path, incident_id: str, name: object, size: object, digest: object) -> bytes | None:
+    """The snapshot file's bytes if it is exactly what its row records; None otherwise.
+
+    The name must be the one derived from the incident ID (so no row can point elsewhere); it is opened relative to
+    the snapshot directory, which is opened without following a link, and neither open follows a link or blocks
+    (a FIFO is refused, not waited on); the file must be a regular file of the recorded size and SHA-256.
+    """
+    if (name != snapshot_file_name(incident_id) or not isinstance(size, int) or isinstance(size, bool)
+            or not 0 < size <= SNAPSHOT_POLICY.max_bytes or not isinstance(digest, str)):
+        return None
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    try:
+        directory_fd = os.open(directory, flags | os.O_DIRECTORY)
+        try:
+            fd = os.open(name, flags, dir_fd=directory_fd)
+        finally:
+            os.close(directory_fd)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size != size:
+            return None
+        chunks, left = [], size + 1
+        while left > 0:
+            chunk = os.read(fd, left)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            left -= len(chunk)
+        data = b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return data if len(data) == size and hashlib.sha256(data).hexdigest() == digest else None
+
+
+def read_snapshot(db_path: Path, incident_id: str) -> tuple[str, bytes | None]:
+    """(ok, bytes), or (none | not_verified | unavailable, None): a saved, verified snapshot's file, read only."""
+    if not INCIDENT_ID.fullmatch(incident_id):
+        return "none", None
+    try:
+        connection = connect_reader(db_path)
+    except sqlite3.Error:
+        return "unavailable", None
+    try:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'incident_snapshots'").fetchone()
+        row = None if table is None else connection.execute(
+            "SELECT state, file_name, bytes, sha256 FROM incident_snapshots WHERE incident_id = ?", (incident_id,)
+        ).fetchone()
+    except sqlite3.Error:
+        return "unavailable", None
+    finally:
+        connection.close()
+    if row is None or row[0] != "saved":
+        return "none", None
+    data = snapshot_bytes(Path(db_path).parent / SNAPSHOT_DIR, incident_id, *row[1:])
+    return ("ok", data) if data is not None else ("not_verified", None)
 
 
 def _latest(
@@ -432,6 +580,7 @@ table.list{width:100%} .muted{color:var(--muted)} .banner{padding:8px 12px;borde
 .ok{background:var(--ok)} .bad{background:var(--bad)} .grid{display:flex;flex-wrap:wrap;gap:24px}
 .wrap{overflow-x:auto} ul{margin:4px 0 0 18px;padding:0}
 .pv{position:relative;display:inline-block;margin:4px 0;max-width:100%}
+.snap{margin:4px 0} .snap img{display:block;max-width:100%;height:auto}
 .pv img{display:block;max-width:100%;height:auto;animation:pv-old .1s linear EXPIRYs forwards}
 .pv figcaption{visibility:hidden;position:absolute;left:0;right:0;top:0;padding:8px;background:var(--bad);
 font-weight:bold;animation:pv-show .1s linear EXPIRYs forwards}
@@ -533,6 +682,10 @@ def render_html(status: Mapping[str, Any]) -> str:
         component_rows.append([f"notifier: {channel}", item.get("state"), item.get("problem")])
     worker = notifications.get("worker") or {}
     component_rows.append(["delivery worker", worker.get("state"), worker.get("problem")])
+    for name, label in (("preview", "live view"), ("snapshots", "incident snapshots")):  # listed only when enabled
+        item = components.get(name)
+        if item is not None:
+            component_rows.append([label, item.get("state"), item.get("problem")])
     database = status.get("database") or {}
     component_rows.append(["incident database (read)", database.get("state"), database.get("problem")])
     capture = components.get("capture") or {}
@@ -628,6 +781,37 @@ def _frames(source: Mapping[str, Any] | None) -> str | None:
     return f"{source['first_frame_seq']}–{source['last_frame_seq']}"
 
 
+def _snapshot_html(snapshot: Mapping[str, Any] | None) -> str:
+    """The snapshot section: the verified picture with a download link, or why there is none."""
+    snapshot = snapshot or {"state": "none", "text": SNAPSHOT_NONE}
+    state = snapshot["state"]
+    if state == "saved" and snapshot.get("file") == "verified":
+        frame = snapshot["frame"]
+        body = (f'<figure class=snap><img src="{_e(snapshot["view_url"])}" width="{_e(snapshot["width"])}" '
+                f'height="{_e(snapshot["height"])}" alt="snapshot: stream epoch {_e(frame["stream_epoch"])} frame '
+                f'{_e(frame["frame_seq"])}"></figure><p><a href="{_e(snapshot["download_url"])}" download>Download this '
+                f'snapshot (JPEG, {_e(snapshot["bytes"])} bytes)</a></p>')
+    elif state == "saved":
+        body = ("<div class='banner bad'>Saved, but its file is missing or does not match its record (size or "
+                "SHA-256), so it is not shown.</div>")
+    else:
+        body = f"<p>{_e(snapshot['text'])}.</p>"
+    facts = ""
+    if "frame" in snapshot:
+        rows: list[tuple[str, object]] = [
+            ("frame", f"stream epoch {snapshot['frame']['stream_epoch']}, frame {snapshot['frame']['frame_seq']}"),
+            ("observation", snapshot["observation_id"]),
+            ("time (UTC)", snapshot["ingest_utc"] or "not known: the frame's record was no longer held"),
+            ("what the time means", snapshot["time_label"]),
+            ("recorded (UTC)", snapshot["recorded_utc"]),
+        ]
+        if snapshot["sha256"]:
+            rows += [("size", f"{snapshot['width']}×{snapshot['height']}, {snapshot['bytes']} bytes"),
+                     ("SHA-256", snapshot["sha256"])]
+        facts = f"<table>{_rows(rows)}</table>"
+    return f"{body}{facts}<p class=muted>{_e(SNAPSHOT_NOTE)}</p>"
+
+
 def render_incident_html(detail: Mapping[str, Any]) -> str:
     """One incident's page, from ``read_incident``'s document (state available)."""
     incident = detail["incident"]
@@ -686,6 +870,7 @@ def render_incident_html(detail: Mapping[str, Any]) -> str:
 <p class=muted>Camera {_e(incident["camera_id"])}. Read-only, loopback only; refreshes every {DETAIL_REFRESH_S} s.
 Generated {_e(detail.get("generated_utc"))}.</p>
 <table>{summary}</table>
+<h2>Snapshot</h2>{_snapshot_html(detail.get("snapshot"))}
 <h2>Rule observations</h2>{shown(evidence)}
 <p class=muted>Source times are the ingest times of the frames each observation came from (UTC, for display).
 An episode is one continuous presence of one track; ENDED closes it and changes no status.</p>
@@ -804,6 +989,9 @@ class StatusServer:
         preview = self._preview()
         return dict(PREVIEW_STARTING) if preview is None else preview.view(with_picture=with_picture)
 
+    def snapshot(self, incident_id: str) -> tuple[str, bytes | None]:
+        return read_snapshot(self._db_path, incident_id)
+
     def preview_picture(self, token: str) -> PreviewPicture | None:
         preview = None if self._preview is None else self._preview()
         return None if preview is None else preview.picture(token)
@@ -855,6 +1043,10 @@ class _Handler(BaseHTTPRequestHandler):
         if preview is not None:
             self._send_picture(preview["token"])
             return
+        snapshot = SNAPSHOT_PATH.fullmatch(path)
+        if snapshot is not None:
+            self._send_snapshot(snapshot["id"], download=snapshot["kind"] == "/download")
+            return
         incident = INCIDENT_PATH.fullmatch(path)
         if path not in ("/", "/status.json") and incident is None:
             self._send(404, "text/plain; charset=utf-8", b"not found\n")
@@ -880,6 +1072,30 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(500, "text/plain; charset=utf-8", b"status unavailable\n")
             return
         self._send(200, kind, body)
+
+    def _send_snapshot(self, incident_id: str, *, download: bool) -> None:
+        """A saved snapshot, only after its row, name, size and SHA-256 check; the ID is never echoed."""
+        if not self.page._picture_slots.acquire(blocking=False):
+            self._send(503, "text/plain; charset=utf-8", b"busy: too many picture requests\n")
+            return
+        try:
+            try:
+                state, data = self.page.snapshot(incident_id)
+            except Exception:  # noqa: BLE001 - never show exception text
+                self._send(500, "text/plain; charset=utf-8", b"snapshot unavailable\n")
+                return
+            if state == "unavailable":
+                self._send(503, "text/plain; charset=utf-8", b"incident database unavailable\n")
+            elif state == "not_verified":
+                self._send(409, "text/plain; charset=utf-8", b"snapshot file missing or not matching its record\n")
+            elif state != "ok" or data is None:
+                self._send(404, "text/plain; charset=utf-8", b"no snapshot\n")
+            else:
+                disposition = "attachment" if download else "inline"
+                self._send(200, "image/jpeg", data,
+                           extra={"Content-Disposition": f'{disposition}; filename="sentinel-{incident_id}.jpg"'})
+        finally:
+            self.page._picture_slots.release()
 
     def _send_picture(self, token: str) -> None:
         """The live view's picture named ``token``, only while its frame is live; the token is never echoed."""
@@ -908,7 +1124,8 @@ class _Handler(BaseHTTPRequestHandler):
         port = self.server.server_address[1]
         return self.headers.get("Host", "") in (f"{LOOPBACK_HOST}:{port}", f"localhost:{port}")
 
-    def _send(self, code: int, kind: str, body: bytes, *, allow: str | None = None) -> None:
+    def _send(self, code: int, kind: str, body: bytes, *, allow: str | None = None,
+              extra: Mapping[str, str] | None = None) -> None:
         self.send_response(code)
         self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(body)))
@@ -916,6 +1133,8 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header(name, value)
         if allow is not None:
             self.send_header("Allow", allow)
+        for name, value in (extra or {}).items():
+            self.send_header(name, value)
         try:
             self.end_headers()
             if self.command != "HEAD":
