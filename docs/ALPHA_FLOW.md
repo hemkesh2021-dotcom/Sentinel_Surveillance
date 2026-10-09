@@ -93,11 +93,20 @@ flow. Without them, nothing below exists and the outputs are as before.
   connected stream and younger than `freshness.stale_after_s` (2 s). Otherwise it
   states `STALE: not current`, `OFFLINE` or `STARTING`, with the frame's age and
   identity and no picture. The time shown is the ingest time, when the Jetson
-  received and decoded the frame, not when the camera captured it. If the page
-  stops refreshing (a dropped tunnel, a stopped runtime), the picture is dimmed
-  and marked `NOT CURRENT` after 5 s. Pictures are at most 640×480, and at most 2
-  are encoded per second for all viewers, only while someone views the page.
-  Nothing is saved.
+  received and decoded the frame, not when the camera captured it. Pictures are
+  at most 640×480, and at most 2 are encoded per second for all viewers, only
+  while someone views the page. Nothing is saved.
+- **When the status page stops refreshing** (D71, with or without these flags):
+  the browser keeps showing the last page it received when a refresh gets no
+  answer (a stalled tunnel, a hung request). Every current claim on that page
+  (`This page is current`, the green `All components working`, the green `LIVE`
+  and the picture) lasts only 5 s after the browser shows it. Then the page
+  turns red at the top, `NOT CURRENT: this page has not refreshed for 5 s`, and
+  what follows is dimmed and labelled as last reported: `Last reported: all
+  components working`, `NOT CURRENT: last reported LIVE`, and the picture is
+  dimmed and marked `NOT CURRENT`. Only a refresh that succeeds brings the current
+  claims back, and only when that new page's own report is current. A stopped
+  runtime gives a browser error page instead.
 - **Snapshots** (`--snapshots`): each new incident gets one JPEG. It is the frame
   that the observation that opened the incident came from, saved by a writer
   thread in `<data-dir>/snapshots/` (folder 0700, files 0600). If that frame was

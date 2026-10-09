@@ -12,6 +12,7 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
+from html.parser import HTMLParser
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,7 @@ from sentinel.media.clock import FakeClock
 from sentinel.media.frames import FrameStamper
 from sentinel.media.jpeg import SOI, EncodedJpeg, EncodeError, fit_within, jpeg_comments, with_comment
 from sentinel.media.recent import RecentFrames
-from sentinel.status_page import PREVIEW_EXPIRY_S, StatusServer, render_html
+from sentinel.status_page import PAGE_CURRENT_S, StatusServer, render_html
 from sentinel.storage.database import Database
 
 T0 = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
@@ -377,15 +378,86 @@ def test_a_stale_page_shows_no_picture_and_old_picture_urls_are_refused(db_path:
         assert get(server, "/preview/1-0.jpg")[:3:2] == (404, b"no current picture\n")
 
 
-def test_the_page_marks_its_picture_not_current_once_it_stops_refreshing() -> None:
+class Markup(HTMLParser):
+    """Each visible text with the classes of every element around it, and the children of each ``fs`` switch."""
+
+    VOID = {"meta", "img", "br", "hr", "input", "link"}
+
+    def __init__(self, page: str) -> None:
+        super().__init__()
+        self.stack: list[tuple[str, frozenset[str], list[frozenset[str]]]] = []
+        self.texts: list[tuple[str, frozenset[str]]] = []
+        self.switches: list[list[frozenset[str]]] = []
+        self.feed(page)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        classes = frozenset((dict(attrs).get("class") or "").split())
+        if self.stack and "fs" in self.stack[-1][1]:
+            self.stack[-1][2].append(classes)
+        if tag not in self.VOID:
+            self.stack.append((tag, classes, []))
+
+    def handle_endtag(self, tag: str) -> None:
+        while self.stack:
+            name, classes, children = self.stack.pop()
+            if "fs" in classes:
+                self.switches.append(children)
+            if name == tag:
+                break
+
+    def handle_data(self, data: str) -> None:
+        if data.strip() and not (self.stack and self.stack[-1][0] == "style"):
+            self.texts.append((data.strip(), frozenset().union(*(c for _, c, _ in self.stack))))
+
+    def around(self, text: str, *, exact: bool = False) -> list[frozenset[str]]:
+        return [c for t, c in self.texts if (t == text if exact else text in t)]
+
+
+HEALTHY = {**SNAPSHOT, "degraded": []}
+CURRENT_CLAIMS = ("This page is current", "All components working")
+NOT_CURRENT_LABELS = (f"NOT CURRENT: this page has not refreshed for {PAGE_CURRENT_S} s",
+                      "Last reported: all components working", "NOT CURRENT: last reported LIVE",
+                      "NOT CURRENT: this picture is old")
+
+
+def test_every_current_claim_is_shown_only_while_the_page_is_fresh() -> None:
+    """D71: the page, the runtime's health, LIVE and the picture are current only for PAGE_CURRENT_S after the browser
+    shows the page, by CSS alone; hidden by default, so a browser that runs no animation never shows them."""
     rig = live_rig()
-    status = status_page.build_status(SNAPSHOT, {"state": "available"}, T0, rig.preview.view(with_picture=True))
-    page = render_html(status)
-    assert '<meta http-equiv=refresh content="2">' in page
-    assert f"animation:pv-old .1s linear {PREVIEW_EXPIRY_S}s forwards" in page  # dims the picture, CSS only
-    assert f"animation:pv-show .1s linear {PREVIEW_EXPIRY_S}s forwards" in page and "visibility:hidden" in page
-    assert f"NOT CURRENT: this page has not refreshed for {PREVIEW_EXPIRY_S} s" in page
-    assert "<script" not in page
+    page = render_html(status_page.build_status(HEALTHY, {"state": "available"}, T0, rig.preview.view(with_picture=True)))
+    markup = Markup(page)
+    for claim in CURRENT_CLAIMS:
+        assert markup.around(claim) and all("cur" in c and "old" not in c for c in markup.around(claim)), claim
+    assert markup.around("LIVE", exact=True) and all("cur" in c for c in markup.around("LIVE", exact=True))
+    for label in NOT_CURRENT_LABELS:
+        assert markup.around(label) and all("old" in c and "cur" not in c for c in markup.around(label)), label
+    # Each switch holds one current layer and its not-current replacement: the page, the health and LIVE.
+    assert len(markup.switches) == 3 and all(sorted("cur" in c for c in s) == [False, True] for s in markup.switches)
+    assert all(sum("old" in c for c in s) == 1 for s in markup.switches)
+    assert '<figure class=pv><img src="/preview/1-0.jpg"' in page and "<figcaption class=old>" in page
+    assert '<div class=report>' in page  # the runtime's report, dimmed once the page is not current
+    current = f"{PAGE_CURRENT_S}s linear"
+    for rule in (f".cur{{visibility:hidden;animation:cur {current}}}", "@keyframes cur{from,to{visibility:visible}}",
+                 f".old{{animation:old {current}}}", "@keyframes old{from,to{visibility:hidden}}",
+                 f".report{{opacity:.55;animation:full {current}}}", f"opacity:.12;animation:full {current}}}",
+                 "@keyframes full{from,to{opacity:1}}"):
+        assert rule in page, rule
+    assert "forwards" not in status_page.STYLE and "infinite" not in status_page.STYLE  # no state held past the window
+    assert '<meta http-equiv=refresh content="2">' in page and "<script" not in page
+    assert f"generated at {T0.isoformat()}" in page  # the page's own time, apart from the runtime's last update
+
+
+def test_a_stale_or_degraded_report_makes_no_current_claim_even_on_a_fresh_page() -> None:
+    rig = live_rig()
+    rig.clock.advance(3.0)
+    degraded = {**SNAPSHOT, "degraded": ["capture waiting (open_failed)"]}
+    markup = Markup(render_html(status_page.build_status(degraded, {"state": "available"}, T0,
+                                                         rig.preview.view(with_picture=True))))
+    assert not markup.around("LIVE", exact=True) and not markup.around("All components working")
+    assert not markup.around("Last reported: all components working") and not markup.around("last reported LIVE")
+    for shown in ("STALE: not current", "Degraded", "capture waiting (open_failed)"):  # last reported, never hidden
+        assert markup.around(shown) and all("cur" not in c and "old" not in c for c in markup.around(shown)), shown
+    assert len(markup.switches) == 1  # only the page's own freshness
 
 
 def test_the_live_view_is_off_or_starting_without_a_preview(db_path: Path) -> None:

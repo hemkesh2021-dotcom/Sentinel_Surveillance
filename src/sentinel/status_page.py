@@ -17,10 +17,20 @@ no sessions, roles, API or media. It is reached over an SSH port forward.
   page shows the newest frame the runtime already reads, with its state
   (live, stale, offline, starting), its age and its ingest time, and a
   picture only while that frame is live, at GET ``/preview/<epoch>-<seq>.jpg``
-  (``live_preview``). The picture refreshes with the page. If the page stops
-  refreshing (a stalled tunnel or a stopped runtime), CSS alone dims it and
-  marks it not current after PREVIEW_EXPIRY_S, so a frozen frame is never
-  shown as current. At most MAX_PICTURE_RESPONSES pictures are sent at once.
+  (``live_preview``). The picture refreshes with the page. At most
+  MAX_PICTURE_RESPONSES pictures are sent at once.
+- **A page that stops refreshing claims nothing current (D71).** The main
+  page reloads itself every REFRESH_S, and a browser whose reload gets no
+  answer (a stalled tunnel, a hung request) keeps showing the old page. So
+  every claim that something is current (the page itself, the runtime's
+  healthy state, LIVE, the picture) is shown only for PAGE_CURRENT_S after
+  the browser shows the page, by CSS alone (the CSP allows no script). After
+  that the page says it is NOT CURRENT and shows the runtime's report as last
+  reported, dimmed. Only a new page, built by the server under the freshness
+  checks above, shows current claims again. The claims are hidden unless the
+  animation shows them, so a browser that runs no CSS animation never shows
+  them. The window starts when the browser shows the page, not when the
+  server built it; the page states when it was generated.
 - **Incident snapshot (D70; saved only by ``sentinel run --snapshots``).**
   The incident page shows the frame the opening observation came from, its
   identity, ingest time and time quality, with GET
@@ -104,7 +114,7 @@ INCIDENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 INCIDENT_PATH = re.compile(r"/incidents/(?P<id>[A-Za-z0-9][A-Za-z0-9_-]{0,127})(?P<json>\.json)?")
 DETAIL_REFRESH_S = 10
 PREVIEW_PATH = re.compile(r"/preview/(?P<token>[0-9]{1,9}-[0-9]{1,12})\.jpg")
-PREVIEW_EXPIRY_S = 5  # the shown picture is dimmed and marked not current once the page is this old
+PAGE_CURRENT_S = 5  # current claims are shown only this long after the browser shows the page (D71; CSS only)
 PREVIEW_OFF = {"enabled": False, "state": "off",
                "reason": "the live view is off; start sentinel run with --live-preview to show it"}
 PREVIEW_STARTING = {"enabled": True, "state": "starting", "reason": "the runtime is starting"}
@@ -571,20 +581,27 @@ def _incident_link(incident_id: object) -> object:
     return incident_id
 
 
-STYLE = """:root{--bg:#fff;--fg:#1d1f21;--muted:#666;--line:#ddd;--ok:#e6f4ea;--bad:#fdecea;--link:#0b57d0}
-@media (prefers-color-scheme:dark){:root{--bg:#16181a;--fg:#e8e8e8;--muted:#9a9a9a;--line:#333;--ok:#173322;--bad:#3b1d1a;--link:#8ab4f8}}
+# The page watchdog (D71). A ``fs`` switch stacks a current layer (``cur``) on its not-current replacement (``old``).
+# ``cur`` is hidden unless its animation shows it, for PAGE_CURRENT_S from when the browser shows the page; ``old`` is
+# hidden for that time only. ``report`` (the runtime's last report) and the picture are dimmed except in that time.
+# Nothing is held past the window, so only a new page can bring the current layers back.
+STYLE = """:root{--bg:#fff;--fg:#1d1f21;--muted:#666;--line:#ddd;--ok:#e6f4ea;--bad:#fdecea;--gone:#eceff1;--link:#0b57d0}
+@media (prefers-color-scheme:dark){:root{--bg:#16181a;--fg:#e8e8e8;--muted:#9a9a9a;--line:#333;--ok:#173322;--bad:#3b1d1a;--gone:#2a2d30;--link:#8ab4f8}}
 body{background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,sans-serif;margin:16px;max-width:1100px}
 h1{font-size:20px;margin:0 0 4px} h2{font-size:16px;margin:20px 0 6px} a{color:var(--link)}
 table{border-collapse:collapse;margin:4px 0} th,td{border-bottom:1px solid var(--line);padding:3px 10px 3px 0;text-align:left;vertical-align:top}
 table.list{width:100%} .muted{color:var(--muted)} .banner{padding:8px 12px;border-radius:6px;margin:10px 0}
-.ok{background:var(--ok)} .bad{background:var(--bad)} .grid{display:flex;flex-wrap:wrap;gap:24px}
-.wrap{overflow-x:auto} ul{margin:4px 0 0 18px;padding:0}
+.ok{background:var(--ok)} .bad{background:var(--bad)} .gone{background:var(--gone)} .info{border:1px solid var(--line)}
+.grid{display:flex;flex-wrap:wrap;gap:24px} .wrap{overflow-x:auto} ul{margin:4px 0 0 18px;padding:0}
+.fs{display:grid} .fs>*{grid-area:1/1}
+.cur{visibility:hidden;animation:cur CURRENTs linear} .old{animation:old CURRENTs linear}
+.report{opacity:.55;animation:full CURRENTs linear}
+@keyframes cur{from,to{visibility:visible}} @keyframes old{from,to{visibility:hidden}} @keyframes full{from,to{opacity:1}}
 .pv{position:relative;display:inline-block;margin:4px 0;max-width:100%}
 .snap{margin:4px 0} .snap img{display:block;max-width:100%;height:auto}
-.pv img{display:block;max-width:100%;height:auto;animation:pv-old .1s linear EXPIRYs forwards}
-.pv figcaption{visibility:hidden;position:absolute;left:0;right:0;top:0;padding:8px;background:var(--bad);
-font-weight:bold;animation:pv-show .1s linear EXPIRYs forwards}
-@keyframes pv-old{to{opacity:.12}} @keyframes pv-show{to{visibility:visible}}""".replace("EXPIRY", str(PREVIEW_EXPIRY_S))
+.pv img{display:block;max-width:100%;height:auto;opacity:.12;animation:full CURRENTs linear}
+.pv figcaption{position:absolute;left:0;right:0;top:0;padding:8px;background:var(--bad);font-weight:bold}""".replace(
+    "CURRENT", str(PAGE_CURRENT_S))
 
 
 def _document(title: str, refresh_s: int, body: str) -> str:
@@ -634,13 +651,18 @@ def _preview_html(view: Mapping[str, Any] | None) -> str:
     state = view.get("state")
     picture = view.get("picture")
     shown = picture or view.get("frame")
-    banner = (f"<div class='banner {'ok' if state == 'live' and picture else 'bad'}'>"
-              f"<strong>{_e(PREVIEW_LABELS.get(str(state), str(state).upper()))}</strong>: {_e(view.get('reason'))}</div>")
+    label = f"<strong>{_e(PREVIEW_LABELS.get(str(state), str(state).upper()))}</strong>: {_e(view.get('reason'))}"
+    if state == "live":  # a claim that the video is current: only while the page is (D71)
+        banner = (f"<div class=fs><div class='banner {'ok' if picture else 'bad'} cur'>{label}</div>"
+                  f"<div class='banner bad old'><strong>NOT CURRENT: last reported LIVE</strong> when this page was "
+                  f"generated; the page has not refreshed for {PAGE_CURRENT_S} s, so what it shows is old.</div></div>")
+    else:
+        banner = f"<div class='banner bad'>{label}</div>"
     if picture:
         body = (f'<figure class=pv><img src="{_e(picture["url"])}" width="{_e(picture["width"])}" '
                 f'height="{_e(picture["height"])}" alt="camera picture, stream epoch {_e(picture["stream_epoch"])} '
-                f'frame {_e(picture["frame_seq"])}"><figcaption>NOT CURRENT: this page has not refreshed for '
-                f"{PREVIEW_EXPIRY_S} s, so this picture is old.</figcaption></figure>")
+                f'frame {_e(picture["frame_seq"])}"><figcaption class=old>NOT CURRENT: this picture is old; the page '
+                f"has not refreshed for {PAGE_CURRENT_S} s.</figcaption></figure>")
     elif state == "live":
         body = f"<p>No picture: {_e(view.get('problem') or 'none encoded yet')}.</p>"
     else:
@@ -668,10 +690,21 @@ def render_html(status: Mapping[str, Any]) -> str:
     rates = status.get("rates") or {}
     frames = status.get("frames") or {}
     degraded = status["degraded"]
+    generated = status.get("generated_utc")
+    page_freshness = (  # the page's own freshness, apart from what the runtime last reported (D71)
+        f"<div class=fs><div class='banner info cur'>This page is current: shown less than {PAGE_CURRENT_S} s ago, "
+        f"generated at {_e(generated)}; it refreshes every {REFRESH_S} s.</div>"
+        f"<div class='banner bad old'><strong>NOT CURRENT: this page has not refreshed for {PAGE_CURRENT_S} s</strong>. "
+        f"Everything below is what the runtime had last reported when this page was generated at {_e(generated)}, and "
+        "may have changed since. Only a refresh that succeeds makes this page current again; reload to retry.</div></div>"
+    )
     banner = (
         "<div class='banner bad'><strong>Degraded</strong><ul>"
         + "".join(f"<li>{_e(reason)}</li>" for reason in degraded) + "</ul></div>"
-        if degraded else "<div class='banner ok'><strong>All components working</strong></div>"
+        if degraded else
+        "<div class=fs><div class='banner ok cur'><strong>All components working</strong></div>"
+        "<div class='banner gone old'>Last reported: all components working. Whether they still are is not known: "
+        "this page is not current.</div></div>"
     )
     component_rows = []
     for name in ("capture", "detector", "scene", "face", "incidents"):
@@ -711,8 +744,10 @@ def render_html(status: Mapping[str, Any]) -> str:
         for d in delivery.get("recent") or []
     ]
     return _document("Sentinel status", REFRESH_S, f"""<h1>Sentinel status: camera {_e(runtime.get("camera_id"))}</h1>
-<p class=muted>Runtime {_e(runtime.get("state"))}; status from {_e(runtime.get("updated_utc"))}
-({_e(runtime.get("status_age_s"))} s old). Read-only, loopback only; refreshes every {REFRESH_S} s.</p>
+{page_freshness}
+<div class=report>
+<p class=muted>Last report from the runtime: {_e(runtime.get("state"))}, updated {_e(runtime.get("updated_utc"))}
+({_e(runtime.get("status_age_s"))} s before this page was generated). Read-only, loopback only.</p>
 {banner}
 {_preview_html(status.get("preview"))}
 <div class=grid>
@@ -748,7 +783,8 @@ Waiting to be recorded: {_e(recording.get("pending_signals"))}.</p>
 · ambiguous {_e(totals.get("ambiguous"))}.
 <span class=muted>Delivery is at least once: an ambiguous attempt may have reached the chat, and a repeat carries the same incident ID.</span></p>
 <div class=wrap>{_table(["incident", "channel", "message", "state", "attempts", "ambiguous", "next attempt (UTC)", "last error"],
-                         delivery_rows, "No alerts.")}</div>""")
+                         delivery_rows, "No alerts.")}</div>
+</div>""")
 
 
 APPLICABILITY_NOTE = (
