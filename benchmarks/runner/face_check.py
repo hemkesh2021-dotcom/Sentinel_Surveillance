@@ -300,9 +300,38 @@ def _delay(account: dict[str, str]) -> tuple[int, int] | None:
     return None if d is None or v is None else (max(0, d - v), d + v)
 
 
-def _bounds(account: dict[str, str], fmt: int) -> dict[str, tuple[int, int]] | None:
+def _cue_offsets(result: Any) -> dict[str, float]:
+    """Each cue the guard printed, in seconds after readiness (T0), on CLOCK_MONOTONIC; only well-formed ones."""
+    ready = s5._get(result, "child", "ready_mono_s")
+    offsets = {}
+    for cue in s5._list(s5._get(result, "cues")):
+        if isinstance(cue, dict) and isinstance(cue.get("name"), str) and isinstance(cue.get("printed_mono_s"), float) \
+                and isinstance(ready, float):
+            offsets[cue["name"]] = cue["printed_mono_s"] - ready
+    return offsets
+
+
+def _cues_on_time(offsets: dict[str, float]) -> bool:
+    """Format 3: every movement cue printed within CUE_TOLERANCE_S after its offset (D79)."""
+    return all(name in offsets and 0 <= offsets[name] - at <= CUE_TOLERANCE_S
+               for name, at in face_account.CUE_AT_S.items())
+
+
+def _bounds(account: dict[str, str], fmt: int, cues: dict[str, float] | None = None) -> dict[str, tuple[float, float]] | None:
     """Each movement's interval (lo, hi) in seconds after T0; None if any reading, uncertainty or the delay is
-    unknown or malformed. Format 1: [t, t], the reading taken as exact, as it always was."""
+    unknown or malformed. Format 1: [t, t], the reading taken as exact, as it always was. Format 3 (D79): [cue, cue +
+    allowance] from the guard's own cue times, only where the account says the movement was done within its allowance
+    after its cue (yes), and only when every cue was printed on time."""
+    if fmt == 3:
+        if cues is None or not _cues_on_time(cues):
+            return None
+        bounds3 = {}
+        for key in face_account.TIMES:
+            if account.get(face_account.within_key(key)) != "yes":
+                return None
+            at = cues[face_account.CUE_OF[key]]
+            bounds3[key] = (at, at + face_account.ALLOWANCE_S[key])
+        return bounds3
     if fmt == 1:
         s = {key: stopwatch_seconds(account.get(key)) for key in face_account.TIMES}
         return None if any(value is None for value in s.values()) else {k: (v, v) for k, v in s.items()}
@@ -430,19 +459,27 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
     if account is None:
         return r
     if fmt is None:
-        r.item("account complete and in order", "the account's header names neither format 1 nor format 2", False)
+        r.item("account complete and in order", "the account's header names none of formats 1, 2 and 3", False)
         return r
-    review = face_account.review(account, face_account.FIELDS_V1 if fmt == 1 else face_account.FIELDS)
+    fields = {1: face_account.FIELDS_V1, 2: face_account.FIELDS, 3: face_account.FIELDS_V3}[fmt]
+    review = face_account.review(account, fields)
     r.item("account complete and in order", review, review[-1] == "Complete and in order: yes")
+    cues = _cue_offsets(result) if fmt == 3 else None
     if fmt == 1:
         declared = {k: account.get(k) for k in ("stopwatch_started_at_t0", "stayed_until_stop", "other_faces_in_view")}
         r.item("stopwatch started at the T0 cue; stayed until the stop; no other face in view", declared,
                declared == {"stopwatch_started_at_t0": "yes", "stayed_until_stop": "yes", "other_faces_in_view": "no"})
-    else:
+    elif fmt == 2:
         _declared(r, account)
+    else:
+        _declared_cued(r, account, cues or {})
     duration = s5._get(result, "parameters", "duration_s")
-    bounds = _bounds(account, fmt)
+    bounds = _bounds(account, fmt, cues)
     windows = _windows(bounds, duration) if bounds is not None and isinstance(duration, (int, float)) else None
+    if fmt == 3 and bounds is not None:
+        r.describe("account movements from the guard's cues: the cue (s after T0) and the interval its allowance "
+                   "allows", {k: [face_account.CUE_OF[k], round(bounds[k][0], 2), round(bounds[k][1], 2)]
+                              for k in face_account.TIMES})
     if fmt == 2 and bounds is not None:
         r.describe("account times aligned to T0: stopwatch reading, its uncertainty (s), the interval it allows "
                    "(s after T0)", {"stopwatch_start_delay_s": list(_delay(account)),
@@ -480,6 +517,20 @@ def _declared(r: Reading, account: dict[str, str]) -> None:
            "the stop; no other face in view", value,
            upper is not None and upper <= DELAY_MAX_S and value["stayed_until_stop"] == "yes"
            and value["other_faces_in_view"] == "no")
+
+
+def _declared_cued(r: Reading, account: dict[str, str], cues: dict[str, float]) -> None:
+    """Item 15 for a format-3 account (D79): every movement cue printed on time by the guard, every movement done
+    within its allowance after its cue; stayed until the stop; no other face in view."""
+    value = {"cues_s_after_t0": {name: (round(cues[name], 2) if name in cues else None)
+                                 for name in face_account.CUE_AT_S},
+             "within_allowance": {key: account.get(face_account.within_key(key)) for key in face_account.TIMES},
+             "stayed_until_stop": account.get("stayed_until_stop"),
+             "other_faces_in_view": account.get("other_faces_in_view")}
+    r.item(f"every movement cue printed within {CUE_TOLERANCE_S:g} s of its time and each movement done within its "
+           "allowance after it; stayed until the stop; no other face in view", value,
+           _cues_on_time(cues) and all(v == "yes" for v in value["within_allowance"].values())
+           and value["stayed_until_stop"] == "yes" and value["other_faces_in_view"] == "no")
 
 
 def _completion(r: Reading, line: Timeline) -> None:

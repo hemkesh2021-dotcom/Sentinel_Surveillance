@@ -327,7 +327,7 @@ F2_PROVENANCE = ("f2_launch_utc=2026-10-08T09:00:00Z\nboot_id=0f1e2d3c-4b5a-6978
 
 
 def finish(mods, out: Path, *, cue_delay_s: float = 0.1, account: dict[str, str] | None = ACCOUNT,
-           counts: dict[str, int] | None = None) -> None:
+           counts: dict[str, int] | None = None, cues: dict[str, float] | None = None) -> None:
     """result.json as the guard writes it, then the account and the counts, in the package's order (the counts by
     face_counts.sh unless ``counts`` fakes them)."""
     ready = 1.0  # FakeClock's default start (seconds), the runtime's T0
@@ -341,7 +341,8 @@ def finish(mods, out: Path, *, cue_delay_s: float = 0.1, account: dict[str, str]
                       "listeners_after": []},
         "captures": json.loads((out / "captures.json").read_text()) if (out / "captures.json").exists() else
         [{"name": name, "at_s": at, "status": "saved", "listeners": LOOPBACK} for at, name in CAPTURES],
-        "cues": [{"name": "t0", "at_s": 0.0, "printed_after_launch_s": 70.1, "printed_mono_s": ready + cue_delay_s}],
+        "cues": [{"name": name, "at_s": float(at), "printed_after_launch_s": 70.0 + at + cue_delay_s,
+                  "printed_mono_s": ready + at + cue_delay_s} for name, at in (cues or {"t0": 0.0}).items()],
         "run_output": mods.guard.read_run_output(out / "run.jsonl"),
     }
     (out / "result.json").write_text(json.dumps(result))
@@ -365,6 +366,11 @@ def finish(mods, out: Path, *, cue_delay_s: float = 0.1, account: dict[str, str]
 def save_account(mods, out: Path, account: dict[str, str]) -> None:
     """A format-1 account (the face-0f7855e package's) as that helper saved and locked it; a format-2 account through
     the current helper's prompts (an unknown reading's uncertainty is not asked)."""
+    if any(key.endswith("_within_20_s") for key in account):  # format 3 (D79), through the helper's prompts
+        answers = iter([account[f.key] for f in mods.account.FIELDS_V3] + ["SAVE"])
+        assert mods.account.enter(out, ask=lambda prompt: next(answers), say=lambda text: None,
+                                  account_format_number=3) == 0
+        return
     if "stopwatch_started_at_t0" in account:
         data = mods.account.render(account, mods.account.FIELDS_V1, mods.account.HEADER_V1).encode()
         (out / "account.txt").write_bytes(data)
@@ -807,6 +813,72 @@ def test_old_format_accounts_keep_their_original_reading(mods, tmp_path, startup
     assert '"K1": [135.0, 225.0]' in text
     assert "aligned to T0" not in text and "inside the turn interval" not in text
     assert "DESCRIPTIVE A: new matching evidence on the retained track after the turn (match votes)" in text
+
+
+# ---------------------------------------------------------------- format 3 (D79, PROPOSED): cued, no stopwatch
+
+FORMAT3_CUES = {"t0": 0.0, "k1": 120.0, "a": 240.0, "e2": 360.0, "k2": 480.0}
+
+
+def account_v3(mods, **changes: str) -> dict[str, str]:
+    values = {**{mods.account.within_key(k): "yes" for k in mods.account.TIMES}, "face_hidden_while_turned": "yes",
+              "stayed_until_stop": "yes", "other_faces_in_view": "no", "notes": "a note that is never printed"}
+    return {**values, **changes}
+
+
+def test_the_scripted_run_validates_with_a_cued_format_3_account(mods, tmp_path, startup, f1_list) -> None:
+    out = simulate(tmp_path, startup)
+    finish(mods, out, account=account_v3(mods), cues=FORMAT3_CUES)
+    result, text = reading(mods, out, f1_list)
+    assert result.ok, text
+    assert "MISSING" not in text and "FAIL" not in text and "NOT_EXERCISED" not in text
+    windows = line_for(text, "judged windows from the account's intervals")
+    # [cue + allowance + 15, next cue - 15]: 70, 70, 85, 70 and 70 s, every one at least 45 s.
+    assert ('"E1": [35.1, 105.1]' in windows and '"K1": [155.1, 225.1]' in windows and '"A": [260.1, 345.1]' in windows
+            and '"E2": [395.1, 465.1]' in windows and '"K2": [515.1, 585.0]' in windows), windows
+    assert line_for(text, "every movement cue printed within 0.5 s").startswith("PASS")
+    assert "DESCRIPTIVE account movements from the guard's cues" in text
+    assert line_for(text, "A: a known identity is retained").startswith("PASS")
+
+
+@pytest.mark.parametrize("answer", ["no", "unknown"])
+def test_a_cued_movement_not_done_within_its_allowance_leaves_no_windows(mods, tmp_path, startup, f1_list,
+                                                                          answer) -> None:
+    out = simulate(tmp_path, startup, duration=70.0)
+    finish(mods, out, account=account_v3(mods, **{mods.account.within_key("turned_away"): answer}), cues=FORMAT3_CUES)
+    result, text = reading(mods, out, f1_list)
+    assert not result.ok
+    assert line_for(text, "every movement cue printed within 0.5 s").startswith("FAIL")
+    assert line_for(text, "judged windows from the account's intervals").startswith("MISSING")
+
+
+@pytest.mark.parametrize("change", ["missing", "late"])
+def test_a_movement_cue_missing_or_late_leaves_no_windows(mods, tmp_path, startup, f1_list, change) -> None:
+    cues = dict(FORMAT3_CUES)
+    if change == "missing":
+        del cues["a"]
+    else:
+        cues["a"] += 0.6  # beyond the 0.5 s tolerance, as the T0 cue's
+    out = simulate(tmp_path, startup, duration=70.0)
+    finish(mods, out, account=account_v3(mods), cues=cues)
+    result, text = reading(mods, out, f1_list)
+    assert not result.ok
+    assert line_for(text, "every movement cue printed within 0.5 s").startswith("FAIL")
+    assert line_for(text, "judged windows from the account's intervals").startswith("MISSING")
+
+
+def test_a_cued_account_is_schema_text_to_the_privacy_profile_and_entered_only_after_the_run(mods, tmp_path) -> None:
+    run = tmp_path / "f2"
+    run.mkdir()
+    (run / "provenance.txt").write_text(F2_PROVENANCE)
+    assert mods.account.enter(run, ask=lambda prompt: "SAVE", say=lambda text: None, account_format_number=3) == 2
+    (run / "result.json").write_text("{}")
+    save_account(mods, run, account_v3(mods))
+    text = (run / "account.txt").read_text()
+    assert text.splitlines()[0] == mods.account.HEADER_V3 and "turned_away_within_5_s=yes" in text
+    read = mods.evidence.read(run / "account.txt", "f2")
+    assert read.nonconforming == [] and read.content == [(f"line {len(mods.account.FIELDS_V3) + 1}: notes",
+                                                          "a note that is never printed")]
 
 
 def test_both_formats_are_schema_text_to_the_privacy_profile(mods, tmp_path) -> None:

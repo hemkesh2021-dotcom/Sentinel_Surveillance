@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The F2 operator account (V2-25 live validation): what the operator actually did, entered before any result.
 
-    python3 benchmarks/runner/face_account.py enter F2_DIR
+    python3 benchmarks/runner/face_account.py enter F2_DIR [--format 3]
     python3 benchmarks/runner/face_account.py check F2_DIR
 
 ``enter`` asks for each item in turn and writes ``F2_DIR/account.txt`` (key=value) in **format 2** (D66):
@@ -24,6 +24,12 @@ as targets only. The helper does no arithmetic; face_check aligns the readings t
 **Format 1** (the ``face-0f7855e`` package and earlier: a yes/no stopwatch answer and readings taken as exact) is kept
 read only, with its keys, comments and header unchanged, so accounts saved in it keep their original reading:
 ``check`` and face_check tell the formats apart by the header line.
+
+**Format 3** (D79, PROPOSED, only with the maintainer's approval; ``enter --format 3``): cued, with no stopwatch. The
+guard prints each movement's cue and records when (face_check reads those times from ``result.json``); the operator
+only answers, for each movement, whether it was done within its allowance after its cue, and not before it (yes / no /
+unknown), plus the same three questions about the face and the room. Each movement's interval is then [cue, cue +
+allowance]; the judged windows, their washout and minimum, and every other criterion are unchanged.
 
 ``check`` shows a saved account, read only, with its lock state. Stdlib only.
 """
@@ -109,7 +115,44 @@ FIELDS = (
 # An uncertainty is asked only when its reading is known: the uncertainty key -> its reading's key.
 PAIRED = {DELAY_UNCERTAINTY: DELAY, **{uncertainty_key(key): key for key in TIMES}}
 UNCERTAINTY_OF = {reading: uncertainty for uncertainty, reading in PAIRED.items()}
-FORMATS = {HEADER_V1: (1, FIELDS_V1), HEADER: (2, FIELDS)}
+
+# Format 3 (D79, PROPOSED: used only with the maintainer's approval; uncalibrated, for this bounded test only).
+HEADER_V3 = "# F2 account, format 3 (cued), entered with benchmarks/runner/face_account.py; values as typed"
+CUE_OF = {"out_of_view_1": "t0", "seated_facing_1": "k1", "turned_away": "a", "stood_up": "e2",
+          "out_of_view_2": "e2", "seated_facing_2": "k2"}  # the guard's cue that starts each movement
+CUE_AT_S = {"t0": 0, "k1": 120, "a": 240, "e2": 360, "k2": 480}  # the cues' offsets from T0
+ALLOWANCE_S = {"out_of_view_1": 20, "seated_facing_1": 20, "turned_away": 5, "stood_up": 5, "out_of_view_2": 20,
+               "seated_facing_2": 20}  # each movement is done within this long after its cue
+
+
+def within_key(key: str) -> str:
+    return f"{key}_within_{ALLOWANCE_S[key]}_s"
+
+
+_CUED = {
+    "out_of_view_1": "within 20 s after the T0 cue you were where the camera surely could not see you",
+    "seated_facing_1": "within 20 s after the 2:00 cue you sat at the Mac with your face toward the camera",
+    "turned_away": "within 5 s after the 4:00 cue your face was turned away from the camera, still seated",
+    "stood_up": "within 5 s after the 6:00 cue you stood up to leave",
+    "out_of_view_2": "within 20 s after the 6:00 cue you were again where the camera surely could not see you",
+    "seated_facing_2": "within 20 s after the 8:00 cue you sat facing the camera again",
+}
+
+
+def _cued(key: str) -> Field:
+    return Field(within_key(key), "choice", f"yes / no: {_CUED[key]}, and not before that cue", YES_NO)
+
+
+FIELDS_V3 = (
+    *(_cued(key) for key in TIMES[:3]), FIELDS_V1[4],  # face_hidden_while_turned
+    *(_cued(key) for key in TIMES[3:]), *FIELDS_V1[8:],  # stayed_until_stop, other_faces_in_view, notes
+)
+INTRO_V3 = (
+    "Your F2 account (format 3, cued). For each movement: did you do it within its allowance after its cue, and not\n"
+    "before the cue? Answer yes or no, or unknown if you are not sure. Then the three questions about your face and the\n"
+    "room. Nothing here shows an identity result."
+)
+FORMATS = {HEADER_V1: (1, FIELDS_V1), HEADER: (2, FIELDS), HEADER_V3: (3, FIELDS_V3)}
 INTRO = (
     "Your F2 account (format 2). Answer from what you noted; type unknown for anything you did not note or are not\n"
     "sure of. First: how many whole seconds after the T0 cue you started the stopwatch (0 if at the cue, as far as\n"
@@ -223,9 +266,9 @@ _HINTS = {"time": "m:ss or unknown", "text": "one line, may be empty", "seconds"
           "uncertainty": "1 to 5, or unknown"}
 
 
-def _ask(field: Field, number: int, ask: Callable[[str], str], say: Callable[[str], None]) -> str:
+def _ask(field: Field, number: int, ask: Callable[[str], str], say: Callable[[str], None], total: int) -> str:
     hint = _HINTS.get(field.kind, " / ".join(field.choices))
-    say(f"[{number}/{len(FIELDS)}] {field.key}" + (f": {field.comment}" if field.comment else ""))
+    say(f"[{number}/{total}] {field.key}" + (f": {field.comment}" if field.comment else ""))
     while True:
         value, why = accepted(field, ask(f"  ({hint}) > "))
         if why is None and (value or field.kind == "text"):
@@ -233,16 +276,21 @@ def _ask(field: Field, number: int, ask: Callable[[str], str], say: Callable[[st
         say("  not accepted: " + (why or "type a value, or unknown"))
 
 
-def _answer(index: int, values: dict[str, str], ask: Callable[[str], str], say: Callable[[str], None]) -> str:
-    field = FIELDS[index]
+def _answer(index: int, values: dict[str, str], ask: Callable[[str], str], say: Callable[[str], None],
+            fields: tuple[Field, ...] = FIELDS) -> str:
+    field = fields[index]
     reading = PAIRED.get(field.key)
     if reading is not None and values.get(reading) == UNKNOWN:
-        say(f"[{index + 1}/{len(FIELDS)}] {field.key}: unknown, because {reading} is unknown")
+        say(f"[{index + 1}/{len(fields)}] {field.key}: unknown, because {reading} is unknown")
         return UNKNOWN
-    return _ask(field, index + 1, ask, say)
+    return _ask(field, index + 1, ask, say, len(fields))
 
 
-def enter(run_dir: Path, ask: Callable[[str], str] = input, say: Callable[[str], None] = print) -> int:
+def enter(run_dir: Path, ask: Callable[[str], str] = input, say: Callable[[str], None] = print,
+          account_format_number: int = 2) -> int:
+    """Format 2 (D66), or format 3 (D79, cued) when asked for."""
+    fields, header, intro = ((FIELDS_V3, HEADER_V3, INTRO_V3) if account_format_number == 3 else
+                             (FIELDS, HEADER, INTRO))
     problem = not_ready(run_dir)
     if problem is not None:
         say(f"STOP: {problem}. Nothing written.")
@@ -251,15 +299,15 @@ def enter(run_dir: Path, ask: Callable[[str], str] = input, say: Callable[[str],
     if lock_state(run_dir) is not None or path.exists():
         say("STOP: an account already exists or is locked; it is never changed. Nothing written.")
         return 2
-    position = {field.key: n for n, field in enumerate(FIELDS)}
+    position = {field.key: n for n, field in enumerate(fields)}
     try:
-        say(INTRO)
+        say(intro)
         values: dict[str, str] = {}
-        for index in range(len(FIELDS)):
-            values[FIELDS[index].key] = _answer(index, values, ask, say)
+        for index in range(len(fields)):
+            values[fields[index].key] = _answer(index, values, ask, say, fields)
         while True:
             say("Your account (not saved yet):")
-            for line in listing(values) + review(values):
+            for line in listing(values, fields) + review(values, fields):
                 say(line)
             choice = ask("Type SAVE to write and lock it, a number to re-enter that item, or QUIT: ").strip()
             if choice == "SAVE":
@@ -267,17 +315,17 @@ def enter(run_dir: Path, ask: Callable[[str], str] = input, say: Callable[[str],
             if choice == "QUIT":
                 say("Nothing written.")
                 return 1
-            if choice.isdigit() and 1 <= int(choice) <= len(FIELDS):
-                key = FIELDS[int(choice) - 1].key
-                values[key] = _answer(int(choice) - 1, values, ask, say)
-                if key in UNCERTAINTY_OF:  # a re-entered reading: its uncertainty is asked again (or unknown)
-                    values[UNCERTAINTY_OF[key]] = _answer(position[UNCERTAINTY_OF[key]], values, ask, say)
+            if choice.isdigit() and 1 <= int(choice) <= len(fields):
+                key = fields[int(choice) - 1].key
+                values[key] = _answer(int(choice) - 1, values, ask, say, fields)
+                if key in UNCERTAINTY_OF and UNCERTAINTY_OF[key] in position:  # a re-entered reading: ask again
+                    values[UNCERTAINTY_OF[key]] = _answer(position[UNCERTAINTY_OF[key]], values, ask, say, fields)
             else:
                 say("Not understood: type SAVE, QUIT or an item number.")
     except (EOFError, KeyboardInterrupt):
         say("\nAborted. Nothing written.")
         return 1
-    data = render(values).encode()
+    data = render(values, fields, header).encode()
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
@@ -319,10 +367,15 @@ def check(run_dir: Path, say: Callable[[str], None] = print) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Enter or check the F2 operator account; shows no identity result.")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("enter", help="answer each item; saving locks the account").add_argument("run_dir", type=Path)
+    enter_parser = commands.add_parser("enter", help="answer each item; saving locks the account")
+    enter_parser.add_argument("run_dir", type=Path)
+    enter_parser.add_argument("--format", type=int, choices=(2, 3), default=2,
+                              help="2 (D66, the default) or 3 (D79, cued: only with the maintainer's approval)")
     commands.add_parser("check", help="show a saved account and its lock state").add_argument("run_dir", type=Path)
     args = parser.parse_args(argv)
-    return enter(args.run_dir) if args.command == "enter" else check(args.run_dir)
+    if args.command == "enter":
+        return enter(args.run_dir, account_format_number=args.format)
+    return check(args.run_dir)
 
 
 if __name__ == "__main__":
