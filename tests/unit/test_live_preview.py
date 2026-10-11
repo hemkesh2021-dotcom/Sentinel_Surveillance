@@ -161,7 +161,7 @@ def test_a_frame_older_than_stale_after_shows_no_picture_and_its_picture_is_refu
 
 
 def test_a_frame_from_an_ended_stream_epoch_is_stale_at_once() -> None:
-    rig = live_rig()
+    rig = live_rig(max_encodes_per_s=2.0)  # so that the new epoch's first frame is not due at once
     assert rig.preview.view(with_picture=True)["picture"] is not None
     rig.stamper.disconnect()  # the connection ended a moment after the frame
     view = rig.preview.view(with_picture=True)
@@ -197,22 +197,41 @@ def test_starting_then_offline_without_frames_and_offline_after_a_long_gap() -> 
 # ---------------------------------------------------------------- bounds
 
 
+def encode_times(rig: Rig, requests: int, rate: float) -> list[float]:
+    """Frame times (s) of the pictures made while a page asks after every frame, at 15 fps."""
+    made = []
+    for _ in range(requests):
+        frame = rig.frame()
+        picture = rig.preview.view(with_picture=True)["picture"]
+        if picture is not None and picture["frame_seq"] == frame.frame_seq and f"e1-f{frame.frame_seq}" == rig.encoded[-1]:
+            made.append(rig.clock.monotonic_ns() / 1e9)
+    return made
+
+
 def test_encoding_is_bounded_per_second_and_each_frame_is_encoded_once() -> None:
     rig = live_rig()
     for _ in range(5):  # five viewers of the same frame
         assert rig.preview.view(with_picture=True)["picture"]["frame_seq"] == 0
     assert rig.encoded == ["e1-f0"]
-    for _ in range(45):  # 3 s at 15 fps, a page request after every frame
-        rig.frame()
-        rig.preview.view(with_picture=True)
-    # At most 2 per second: each encode waits until 0.5 s after the previous one, so here every 8th frame (0.53 s).
-    assert rig.encoded == ["e1-f0", "e1-f8", "e1-f16", "e1-f24", "e1-f32", "e1-f40"]
+    # D75's default, the camera substream's 15 fps: a page asking after every frame gets every frame, once each.
+    encode_times(rig, 45, 15.0)
+    assert rig.encoded == [f"e1-f{n}" for n in range(46)]
     counters = rig.preview.summary()["counters"]
-    assert counters["encodes"] == 6 and counters["reused"] == 4 and counters["rate_limited"] == 45 - 5
+    assert counters["encodes"] == 46 and counters["reused"] == 4 and "rate_limited" not in counters
+
+
+@pytest.mark.parametrize("rate", [2.0, 5.0, 7.5])
+def test_a_lower_budget_is_never_exceeded_in_any_second_nor_spaced_closer_than_three_quarters(rate: float) -> None:
+    rig = live_rig(max_encodes_per_s=rate)
+    times = encode_times(rig, 90, rate)  # 6 s at 15 fps
+    assert len(set(rig.encoded)) == len(rig.encoded)  # each frame once
+    assert all(b - a >= 0.75 / rate - 1e-6 for a, b in zip(times, times[1:]))
+    assert all(sum(1 for t in times if start <= t < start + 1.0) <= rate for start in times)
+    assert len(times) >= 6 * rate * 0.6  # bounded, not starved: most of the budget is used
 
 
 def test_a_rate_limited_picture_is_described_by_its_own_frame() -> None:
-    rig = live_rig()
+    rig = live_rig(max_encodes_per_s=2.0)
     rig.preview.view(with_picture=True)
     rig.frame()
     newest = rig.frame()  # 2 frames later, 0.13 s: not due yet
@@ -284,8 +303,9 @@ def test_the_preview_bounds_cannot_be_raised() -> None:
         LivePreview(rig.frames, rig.clock, FreshnessConfig(), lambda: None, max_encodes_per_s=PREVIEW_MAX_ENCODES_PER_S + 1)
     with pytest.raises(ValueError):
         LivePreview(rig.frames, rig.clock, FreshnessConfig(), lambda: None, max_jpeg_bytes=PREVIEW_MAX_JPEG_BYTES + 1)
-    assert rig.preview.bounds() == {"max_width": 640, "max_height": 480, "jpeg_quality": 70, "max_encodes_per_s": 2.0,
-                                    "max_jpeg_bytes": 262_144, "pictures_kept": 2}
+    assert rig.preview.bounds() == {"max_width": 640, "max_height": 480, "jpeg_quality": 70, "max_encodes_per_s": 15.0,
+                                    "max_jpeg_bytes": 262_144, "pictures_kept": 2, "yield_encodes_per_s": 2.0,
+                                    "stream_wait_s": 1.5, "viewer_idle_s": 3.0, "stale_after_ms": 2000}
 
 
 def test_the_device_encoder_scales_a_copy_and_leaves_the_frame_unchanged() -> None:
@@ -356,7 +376,7 @@ def test_the_page_shows_the_live_picture_and_serves_it(db_path: Path) -> None:
         code, headers, body = get(server, "/")
         page = body.decode()
         assert code == 200 and "img-src 'self'" in headers["Content-Security-Policy"]
-        assert '<img src="/preview/1-0.jpg" width="640" height="480"' in page
+        assert '<img class=pic src="/preview/1-0.jpg" width="640" height="480"' in page
         assert "LIVE</span><span class=muted>the newest frame of the connected stream</span>" in page
         assert "2026-10-09T12:00:00.066667Z" in page and "not when the camera captured it" in page
         code, headers, body = get(server, "/preview/1-0.jpg")
@@ -419,7 +439,7 @@ CURRENT_CLAIMS = ("This page is current", "All components working", "Page curren
 NOT_CURRENT_LABELS = (f"NOT CURRENT: this page has not refreshed for {PAGE_CURRENT_S} s",
                       "Last reported: all components working", "NOT CURRENT: last reported LIVE",
                       "Last reported: monitoring")
-PICTURE_OLD = f"NOT CURRENT: this picture is old: no newer one has arrived for {PAGE_CURRENT_S} s."
+PICTURE_OLD = "NOT CURRENT: no newer picture has arrived in time; this one was received at"
 
 
 def test_every_current_claim_is_shown_only_while_the_page_is_fresh() -> None:
@@ -438,18 +458,23 @@ def test_every_current_claim_is_shown_only_while_the_page_is_fresh() -> None:
     assert all(sum("cur" in c for c in s) == 1 and sum("old" in c for c in s) == 1 and len(s) == 2
                for s in markup.switches)
     assert all("cur" in c for t, c in markup.texts if "k-ok" in c), "green outside a current layer"
-    # The picture's caption follows the picture's own timer (D73), not the page's.
+    # The picture's caption follows the picture's own timer (D73, D75), not the page's.
     assert markup.around(PICTURE_OLD) and all("pic-old" in c and "cur" not in c for c in markup.around(PICTURE_OLD))
-    assert '<figure class=frame data-frame="1-0" data-ingest="2026-10-09T12:00:00.066667Z"><img src="/preview/1-0.jpg"' in page
-    assert '<main class="board report">' in page  # the runtime's report, dimmed once the page is not current
+    assert ('<figure class=frame data-frame="1-0" data-ingest="2026-10-09T12:00:00.066667Z" data-age-ms="0">'
+            '<img class=pic src="/preview/1-0.jpg"') in page
+    # The runtime's report is dimmed once the page is not current; the picture is not part of it (its own timer, D75).
+    for marker in ('<div class="report live-report" data-region=live-head>', 'class="panel incidents report"',
+                   'class="panel health report"', 'class="panel delivery report"'):
+        assert marker in page, marker
+    assert "<main class=board>" in page
     current = f"{PAGE_CURRENT_S}s linear"
     for rule in (f".cur {{ visibility: hidden; animation: cur {current} var(--fresh-delay, 0s); }}",
                  "@keyframes cur { from, to { visibility: visible; } }",
                  f".old {{ animation: old {current} var(--fresh-delay, 0s); }}",
                  "@keyframes old { from, to { visibility: hidden; } }",
                  f".report {{ opacity: .55; animation: full {current} var(--fresh-delay, 0s); }}",
-                 f".live .frame img {{ opacity: .3; animation: pic {current} var(--pic-delay, 0s); }}",
-                 f".live .frame .pic-old {{ animation: old {current} var(--pic-delay, 0s); }}",
+                 ".live .frame .pic { opacity: .3; animation: pic var(--pic-window, 5s) linear var(--pic-delay, 0s); }",
+                 ".live .frame .pic-old { animation: old var(--pic-window, 5s) linear var(--pic-delay, 0s); }",
                  'html[data-fresh="1"] .cur { animation-name: cur1; }', "@keyframes full { from, to { opacity: 1; } }"):
         assert rule in page, rule
     assert "forwards" not in status_page.STYLE and "infinite" not in status_page.STYLE  # no state held past the window

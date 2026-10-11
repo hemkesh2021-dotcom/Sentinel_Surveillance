@@ -150,6 +150,7 @@ def test_every_control_is_reachable_by_keyboard_with_a_visible_focus_ring(browse
 
 
 TEXT = "document.body.innerText"
+PLAYER = "document.getElementById('player-state').innerText.trim()"
 
 
 def test_reduced_motion_turns_transitions_off_and_keeps_the_freshness_watchdog(browser: Browser, site: dict[str, Any]) -> None:
@@ -161,12 +162,12 @@ def test_reduced_motion_turns_transitions_off_and_keeps_the_freshness_watchdog(b
                 transition)
             text = page.evaluate(TEXT)
             assert time.monotonic() - started < PAGE_CURRENT_S - 1
-            assert "This page is current" in text and "the newest frame of the connected stream" in text
-            time.sleep(PAGE_CURRENT_S + 0.5)  # nothing refreshes it here
+            assert "This page is current" in text and page.evaluate(PLAYER) == "LIVE"  # the player's claim (D75)
+            time.sleep(PAGE_CURRENT_S + 0.5)  # nothing refreshes it here, and the camera stand-in makes no new frame
             text = page.evaluate(TEXT)
             assert f"NOT CURRENT: this page has not refreshed for {PAGE_CURRENT_S} s" in text
             assert "This page is current" not in text and "All components working" not in text
-            assert "the newest frame of the connected stream" not in text
+            assert page.evaluate(PLAYER) != "LIVE" and "the newest frame of the connected stream" not in text
         finally:
             page.close()
 

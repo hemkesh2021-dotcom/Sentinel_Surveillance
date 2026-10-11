@@ -174,7 +174,7 @@ time, .num { font-variant-numeric: tabular-nums; }
 /* ---------------------------------------------------------------- live view */
 .frame { position: relative; margin: 0; padding: 8px; border-radius: 15px; background: var(--surface-3);
   box-shadow: inset 4px 4px 11px var(--lo), inset -4px -4px 11px var(--hi); }
-.frame img { display: block; width: 100%; height: auto; max-height: 72vh; object-fit: contain; }
+.frame img, .frame canvas { display: block; width: 100%; height: auto; max-height: 72vh; object-fit: contain; }
 .frame figcaption { position: absolute; left: 8px; right: 8px; top: 8px; display: flex; align-items: center; gap: 8px;
   padding: 9px 12px; background: var(--stale-bg); color: var(--stale-ink); font-weight: 760; }
 .frame-empty { display: grid; place-items: center; align-content: center; gap: 8px; min-height: 220px;
@@ -185,6 +185,10 @@ time, .num { font-variant-numeric: tabular-nums; }
 .facts > div { min-width: 0; padding: 9px 13px; border-radius: var(--radius-s); background: var(--surface-2); }
 .facts dt { color: var(--muted); font-size: .76rem; font-weight: 680; letter-spacing: .045em; text-transform: uppercase; }
 .facts dd { margin: 2px 0 0; font-weight: 720; overflow-wrap: anywhere; }
+.player-state { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-height: 2em; }
+.player-state:empty { display: none; }
+.live.playing [data-region=live-head], .live.playing [data-region=live-facts] > .facts { display: none; }
+.player-facts[hidden] { display: none; }
 .caps { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); justify-items: start; gap: 8px;
   margin-top: 13px; }
 
@@ -281,16 +285,21 @@ html[data-fresh="1"] .report { animation-name: full1; }
 @keyframes full { from, to { opacity: 1; } }
 @keyframes full1 { from, to { opacity: 1; } }
 
-/* The live picture has its own timer, restarted only when a newer picture has loaded (html[data-pic], --pic-delay).
-   A picture that is no longer the newest (the newest failed to load, or the camera has no current frame) stays
-   in place, dimmed, with its time: data-state=failed or retained, set by the script. */
-.live .frame img { opacity: .3; animation: pic CURRENTs linear var(--pic-delay, 0s); }
-.live .frame .pic-old { animation: old CURRENTs linear var(--pic-delay, 0s); }
-html[data-pic="1"] .live .frame img { animation-name: pic1; }
-html[data-pic="1"] .live .frame .pic-old { animation-name: old1; }
+/* The live picture has its own timer (D75), restarted by the player for every new picture it draws (#live[data-pic]):
+   its window (--pic-window) is the device's stale threshold minus the picture's age when sent, counted from when this
+   browser asked for it (--pic-delay); the LIVE label (.pcur, .pold) shares it. Without script the window is CURRENTs
+   from when the page is shown. A picture that is no longer the newest (none could be had, or the camera has no
+   current frame) stays in place, dimmed, with its time: data-state=failed or retained, set by the script. */
+.live .frame .pic { opacity: .3; animation: pic var(--pic-window, CURRENTs) linear var(--pic-delay, 0s); }
+.live .frame .pic-old { animation: old var(--pic-window, CURRENTs) linear var(--pic-delay, 0s); }
+.pcur { visibility: hidden; animation: cur var(--pic-window, CURRENTs) linear var(--pic-delay, 0s); }
+.pold { animation: old var(--pic-window, CURRENTs) linear var(--pic-delay, 0s); }
+#live[data-pic="1"] .frame .pic { animation-name: pic1; }
+#live[data-pic="1"] .frame .pic-old, #live[data-pic="1"] .pold { animation-name: old1; }
+#live[data-pic="1"] .pcur { animation-name: cur1; }
 @keyframes pic { from, to { opacity: 1; } }
 @keyframes pic1 { from, to { opacity: 1; } }
-.live .frame[data-state=failed] img, .live .frame[data-state=retained] img { animation: none !important; opacity: .3; }
+.live .frame[data-state=failed] .pic, .live .frame[data-state=retained] .pic { animation: none !important; opacity: .3; }
 .frame .kept { display: none; }
 .frame[data-state=failed] .kept, .frame[data-state=retained] .kept { display: flex; }
 .frame[data-state=failed] .pic-old, .frame[data-state=retained] .pic-old { display: none; }

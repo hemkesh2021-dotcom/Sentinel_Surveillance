@@ -129,7 +129,7 @@ from pydantic import ValidationError
 from .contracts import Evidence, EvidenceStatus, SourceTimeQuality
 from .incidents.service import UNRESOLVED, latest_acknowledgment
 from .incidents.snapshots import SNAPSHOT_DIR, SnapshotPolicy, file_name as snapshot_file_name
-from .live_preview import LivePreview, PreviewPicture, time_label
+from .live_preview import STREAM_WAIT_S, LivePreview, PreviewPicture, frame_facts, parse_token, time_label
 from .rules.scene_hazard import FIRE_SMOKE_CANDIDATE, HazardCandidate
 from .rules.zones import ZONE_KINDS, ZoneObservation
 from .scene.chat import ADVISORY, CHAT_MAX_BODY, CHAT_MAX_QUESTION, ChatRequestError, parse_chat_request
@@ -147,6 +147,8 @@ INCIDENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 INCIDENT_PATH = re.compile(r"/incidents/(?P<id>[A-Za-z0-9][A-Za-z0-9_-]{0,127})(?P<json>\.json)?")
 DETAIL_REFRESH_S = 10
 PREVIEW_PATH = re.compile(r"/preview/(?P<token>[0-9]{1,9}-[0-9]{1,12})\.jpg")
+LIVE_FRAME_PATH = "/live/frame"  # D75: the player's pictures, one per request (needs this server's token)
+MAX_STREAM_REQUESTS = 4  # live picture requests at once, for every viewer together (each holds one connection)
 PAGE_CURRENT_S = 5  # current claims are shown only this long after the browser shows the page (D71; CSS only)
 PREVIEW_OFF = {"enabled": False, "state": "off",
                "reason": "the live view is off; start sentinel run with --live-preview to show it"}
@@ -776,6 +778,11 @@ STATUS_KINDS = {"candidate": "off", "open": "warn", "acknowledged": "done", "res
 STATUS_ICONS = {"candidate": "clock", "open": "bell", "acknowledged": "check", "resolved": "check", "dismissed": "off"}
 
 
+def _number(value: object) -> str | None:
+    """A whole or decimal number for display (``15``, ``7.5``); None for anything else."""
+    return f"{value:g}" if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
 def _seconds(ms: object) -> str | None:
     return None if not isinstance(ms, int) else f"{ms / 1000:.1f} s"
 
@@ -801,11 +808,11 @@ def _live_head(view: Mapping[str, Any] | None) -> str:
     if not view.get("enabled"):
         return f"<div class=row>{_badge('off', 'Off', big=True)}<span class=muted>{_e(view.get('reason'))}.</span></div>"
     state = view.get("state")
-    picture = view.get("picture")
     label = PREVIEW_LABELS.get(str(state), str(state).upper())
     reason = f"<span class=muted>{_e(view.get('reason'))}</span>"
-    if state == "live":  # a claim that the video is current: only while the page is (D71)
-        return _claim(f"<div class=row>{_badge('ok' if picture else 'warn', label, glyph='video', big=True)}{reason}</div>",
+    if state == "live":  # a claim that the video is current: only while the page is (D71); a missing picture is the
+        # frame area's to say (D75: pictures come from the player's own requests, not from this document)
+        return _claim(f"<div class=row>{_badge('ok', label, glyph='video', big=True)}{reason}</div>",
                       f"<div class=row>{_badge('stale', 'NOT CURRENT: last reported LIVE', big=True)}<span>when this "
                       f"page was last updated; it has not refreshed for {PAGE_CURRENT_S} s, so what it shows is "
                       "old.</span></div>", block=True)
@@ -832,11 +839,12 @@ def _live_frame(view: Mapping[str, Any] | None) -> str:
     if not picture:
         return _frame_empty(view)
     return (f'<figure class=frame data-frame="{_e(picture["stream_epoch"])}-{_e(picture["frame_seq"])}" '
-            f'data-ingest="{_e(picture["ingest_utc"])}"><img src="{_e(picture["url"])}" width="{_e(picture["width"])}" '
-            f'height="{_e(picture["height"])}" alt="Camera picture, stream epoch {_e(picture["stream_epoch"])}, frame '
-            f'{_e(picture["frame_seq"])}"><figcaption class=pic-old>{icon("clock")}NOT CURRENT: this picture is old: no '
-            f"newer one has arrived for {PAGE_CURRENT_S} s.</figcaption><figcaption class=kept>{icon('clock')}<span>"
-            "</span></figcaption></figure>")
+            f'data-ingest="{_e(picture["ingest_utc"])}" data-age-ms="{_e(picture["age_ms"])}"><img class=pic '
+            f'src="{_e(picture["url"])}" width="{_e(picture["width"])}" height="{_e(picture["height"])}" alt="Camera '
+            f'picture, stream epoch {_e(picture["stream_epoch"])}, frame {_e(picture["frame_seq"])}">'
+            f"<figcaption class=pic-old>{icon('clock')}<span>NOT CURRENT: no newer picture has arrived in time; this one "
+            f"was received at {_clock(picture['ingest_utc'])}.</span></figcaption><figcaption class=kept>"
+            f"{icon('clock')}<span></span></figcaption></figure>")
 
 
 def _live_facts(view: Mapping[str, Any] | None) -> str:
@@ -854,11 +862,15 @@ def _live_facts(view: Mapping[str, Any] | None) -> str:
                  f"<div><dt>Frame</dt><dd>stream epoch {_e(shown['stream_epoch'])}, frame {_e(shown['frame_seq'])}</dd></div>"
                  "</dl>")
     bounds = view.get("bounds") or {}
-    note = (f"Updated with the page every {REFRESH_S} s. Pictures are at most {bounds.get('max_width')}×"
-            f"{bounds.get('max_height')}, at most {bounds.get('max_encodes_per_s')} encoded per second for all "
-            "viewers, from the frames the runtime already reads; nothing is saved. A picture is replaced only by a "
-            "newer one that has fully loaded; when none can be loaded, the last one stays, dimmed and marked as an "
-            "old frame with its time.")
+    note = (f"With JavaScript, this page asks the device for one picture at a time, the newest, as soon as it has "
+            f"shown the last; a picture is shown as live for at most {_e(_seconds(bounds.get('stale_after_ms')))} after "
+            "its frame was received by the device (its age when sent, plus the time since this browser asked for it). "
+            f"Pictures are at most {bounds.get('max_width')}×{bounds.get('max_height')}, at most "
+            f"{_e(_number(bounds.get('max_encodes_per_s')))} per second for all viewers (fewer while monitoring work "
+            "waits), "
+            "encoded only while someone watches, from the frames the runtime already reads; nothing is saved. When no "
+            "newer picture can be shown, the last one stays, dimmed and marked as an old frame with its time. Without "
+            "JavaScript the picture is the one made with the page.")
     about = _details("About this picture", (f"<p>{_e(view.get('time_label'))}</p>" if view.get("time_label") else "")
                      + f"<p class=muted>{_e(note)}</p>", key="picture")
     return f"{facts}{about}"
@@ -1060,19 +1072,20 @@ def render_html(status: Mapping[str, Any], *, theme: str | None = None,
 <div class=freshbar data-region=fresh>{regions["fresh"]}</div>
 <p class=sync id=sync role=status></p>
 {NOSCRIPT}
-<main class="board report">
+<main class=board>
 <section id=live class="panel live" aria-label="Live view">
-<div class=phead><h2>{icon("video")}Live view</h2></div>
-<div data-region=live-head>{regions["live-head"]}</div>
-<div id=frame data-region=frame-empty>{_live_frame(view)}</div>
-<div data-region=live-facts>{regions["live-facts"]}</div>
-<div data-region=caps>{regions["caps"]}</div>
+<div class=phead><h2>{icon("video")}Live view</h2><div id=player-state class=player-state role=status></div></div>
+<div class="report live-report" data-region=live-head>{regions["live-head"]}</div>
+<div id=frame data-live={"on" if (view or {}).get("enabled") else "off"} data-token="{_e(chat_token)}" data-stale-after-ms="{_e(((view or {}).get("bounds") or {}).get("stale_after_ms") or 2000)}">{_live_frame(view)}</div>
+<dl id=player-facts class="facts player-facts" hidden></dl>
+<div class="report live-report" data-region=live-facts>{regions["live-facts"]}</div>
+<div class=report data-region=caps>{regions["caps"]}</div>
 </section>
-<aside id=incidents class="panel incidents" aria-label=Incidents>
+<aside id=incidents class="panel incidents report" aria-label=Incidents>
 <section id=inc-preview class=preview aria-label="Selected incident" aria-live=polite hidden></section>
 <div data-region=incidents>{regions["incidents"]}</div>
 </aside>
-<section id=chat class="panel chat" aria-label="Ask about the live picture">
+<section id=chat class="panel chat report" aria-label="Ask about the live picture">
 <div class=phead><h2>{icon("chat")}Ask about the live picture</h2></div>
 <div data-region=chat-state>{regions["chat-state"]}</div>
 <p class=note>{_e(ADVISORY)}</p>
@@ -1084,8 +1097,8 @@ def render_html(status: Mapping[str, Any], *, theme: str | None = None,
 </form>
 <noscript><p class=note>Chat needs JavaScript.</p></noscript>
 </section>
-<section id=health class="panel health" aria-label="System health"><div data-region=health>{regions["health"]}</div></section>
-<section id=delivery class="panel delivery" aria-label="Alert delivery"><div data-region=delivery>{regions["delivery"]}</div></section>
+<section id=health class="panel health report" aria-label="System health"><div data-region=health>{regions["health"]}</div></section>
+<section id=delivery class="panel delivery report" aria-label="Alert delivery"><div data-region=delivery>{regions["delivery"]}</div></section>
 </main>
 <footer class=foot data-region=foot>{regions["foot"]}</footer>""",
                      theme=theme, page="status", source=_source("/status.json", theme), refresh_s=REFRESH_S,
@@ -1345,7 +1358,8 @@ class _Server(ThreadingHTTPServer):
         super().__init__(address, handler)
         self._slots = threading.BoundedSemaphore(max_connections)
         self._counts_lock = threading.Lock()
-        self.counts = {"refused_busy": 0, "write_timeouts": 0, "connection_errors": 0}
+        self.counts = {"refused_busy": 0, "write_timeouts": 0, "connection_errors": 0, "stream_busy": 0,
+                       "stream_refused": 0}
 
     def count(self, name: str) -> None:
         with self._counts_lock:
@@ -1409,8 +1423,9 @@ class StatusServer:
         self._now = now
         self._preview = preview
         self._chat = chat  # D74: None while chat is off; else returns the runtime's ChatService, or None while starting
-        self.chat_token = secrets.token_hex(16)  # in this server's page only; required by both chat routes
+        self.chat_token = secrets.token_hex(16)  # in this server's pages only; required by the chat and live routes
         self._picture_slots = threading.BoundedSemaphore(MAX_PICTURE_RESPONSES)
+        self._stream_slots = threading.BoundedSemaphore(MAX_STREAM_REQUESTS)
         self._instance = secrets.token_hex(8)  # a page's updates are ordered within one server instance (D73)
         self._sequence = itertools.count(1)
         self._sequence_lock = threading.Lock()
@@ -1509,6 +1524,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path == SCRIPT_PATH:
             self._send(200, "text/javascript; charset=utf-8", SCRIPT)
             return
+        if path == LIVE_FRAME_PATH:
+            self._send_live_frame(parts.query)
+            return
         job = CHAT_JOB_PATH.fullmatch(path)
         if job is not None:
             self._chat_poll(job["id"])
@@ -1542,9 +1560,9 @@ class _Handler(BaseHTTPRequestHandler):
                 else:
                     body = render_incident_html(detail, theme=theme, marker=self.page.marker()).encode()
                     kind = "text/html; charset=utf-8"
-            elif path == "/status.json" and for_page:  # the live page's update: it may encode a due picture
-                document = page_document(self.page.status(with_picture=True, for_page=True), self.page.marker(),
-                                         theme=theme)
+            elif path == "/status.json" and for_page:  # the live page's update; pictures come from /live/frame (D75)
+                document = page_document(self.page.status(for_page=True),
+                                         {**self.page.marker(), "token": self.page.chat_token}, theme=theme)
                 body, kind = json.dumps(document).encode(), "application/json"
             elif path == "/status.json":  # unchanged: never encodes, no page fields
                 body, kind = json.dumps(self.page.status(), indent=2).encode(), "application/json"
@@ -1580,6 +1598,53 @@ class _Handler(BaseHTTPRequestHandler):
                            extra={"Content-Disposition": f'{disposition}; filename="sentinel-{incident_id}.jpg"'})
         finally:
             self.page._picture_slots.release()
+
+    def _send_live_frame(self, query: str) -> None:
+        """The player's next picture (D75): the newest live one newer than ``after``, or, after waiting at most
+        STREAM_WAIT_S, why there is none (JSON). Only for this server's pages (its token, same origin); at most
+        MAX_STREAM_REQUESTS at once. A picture carries its frame, ingest time and age when sent in headers."""
+        if self.page._preview is None:
+            self._json(404, {"state": "off", "reason": PREVIEW_OFF["reason"]})
+            return
+        if not self._token_ok() or self.headers.get("Sec-Fetch-Site", "same-origin") != "same-origin":
+            self.server.count("stream_refused")  # type: ignore[attr-defined]
+            self._json(403, {"state": "refused", "reason": "this page was served by an earlier runtime: reload it"})
+            return
+        after = None
+        for part in query.split("&")[:8]:
+            key, _, value = part.partition("=")
+            if key == "after":
+                after = parse_token(value)
+                if after is None:
+                    self._json(400, {"state": "invalid", "reason": "after must be <stream epoch>-<frame sequence>"})
+                    return
+        if not self.page._stream_slots.acquire(blocking=False):
+            self.server.count("stream_busy")  # type: ignore[attr-defined]
+            self._json(503, {"state": "busy", "reason": "too many live picture requests at once"})
+            return
+        try:
+            try:
+                preview = self.page._preview()
+                answer = None if preview is None else preview.next_frame(after, STREAM_WAIT_S)
+                stale_after_ms = None if preview is None else preview.bounds()["stale_after_ms"]
+            except Exception:  # noqa: BLE001 - never show exception text
+                self._json(500, {"state": "error", "reason": "the live picture is unavailable"})
+                return
+            if answer is None:
+                self._json(200, {**PREVIEW_STARTING, "frame": None, "age_ms": None, "stale_after_ms": None})
+            elif answer.picture is None:
+                view = answer.view or {}
+                self._json(200, {**{key: view.get(key) for key in ("state", "reason", "age_ms", "frame")},
+                                 "stale_after_ms": stale_after_ms})
+            else:
+                picture = answer.picture
+                self._send(200, "image/jpeg", picture.jpeg, extra={
+                    "X-Frame": picture.token, "X-Frame-Ingest": frame_facts(picture.frame)["ingest_utc"],
+                    "X-Frame-Age-Ms": str(answer.age_ms), "X-Frame-Size": f"{picture.width}x{picture.height}",
+                    "X-Time-Quality": picture.frame.source_time_quality.value,
+                    "X-Stale-After-Ms": str(stale_after_ms)})
+        finally:
+            self.page._stream_slots.release()
 
     def _send_picture(self, token: str) -> None:
         """The live view's picture named ``token``, only while its frame is live; the token is never echoed."""

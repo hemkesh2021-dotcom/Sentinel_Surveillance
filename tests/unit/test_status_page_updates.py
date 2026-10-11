@@ -53,7 +53,7 @@ def served(tmp_path: Path):
 def regions_in(page: str) -> dict[str, str]:
     """What a page embeds in each region: the inner HTML of every ``data-region`` element that is not the frame."""
     found = {}
-    for match in re.finditer(r'<(div|footer) (?:class=[\w"-]+ )?data-region=([a-z-]+)>', page):
+    for match in re.finditer(r'<(div|footer) (?:class=(?:"[^"]*"|[\w-]+) )?data-region=([a-z-]+)>', page):
         tag, name = match.groups()
         if name == "frame-empty":
             continue
@@ -88,8 +88,9 @@ def test_the_page_document_carries_the_same_regions_the_page_embeds_and_is_order
     assert set(embedded) == set(first["page"]["regions"])
     for name in ("live-head", "caps", "incidents", "delivery"):  # the parts that do not carry a time or a sequence
         assert embedded[name] == first["page"]["regions"][name], name
-    assert first["preview"]["picture"]["url"] == "/preview/1-0.jpg"  # a page update may encode a due picture
-    assert camera.preview.summary()["counters"]["encodes"] == 1  # once per frame, as before
+    assert first["preview"]["picture"] is None  # D75: pictures come from /live/frame, never from a page update
+    assert camera.preview.summary()["counters"]["encodes"] == 1  # the page's own first picture only
+    assert first["page"]["token"] == second["page"]["token"] and re.fullmatch(r"[0-9a-f]{32}", first["page"]["token"])
     assert f'href="/incidents/{ids[0]}?theme=dark"' in second["page"]["regions"]["incidents"]
     assert "<script" not in json.dumps(first["page"]) and first["page"]["frame_empty"].startswith("<div class=frame>")
 

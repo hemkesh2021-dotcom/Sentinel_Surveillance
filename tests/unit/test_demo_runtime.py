@@ -1011,6 +1011,35 @@ def test_the_live_view_shows_the_frames_the_loop_takes_and_follows_video_freshne
     assert h.runtime.snapshot()["components"]["preview"] == preview.summary()
 
 
+def test_the_live_view_encodes_less_while_incident_signals_wait_to_be_recorded(tmp_path) -> None:
+    from sentinel.live_preview import PREVIEW_YIELD_ENCODES_PER_S
+
+    h = Harness(tmp_path, live_preview=True, flaky={"before": 10**6})  # every record() fails: the signal waits
+    preview = h.runtime.preview
+    made = []
+    for n in range(45):  # 3 s at 15 fps; the encoder's step after each frame, as its thread would run it
+        h.frame(image=SimpleNamespace(shape=(480, 640, 3), label=f"f{n}"))
+        if h.runtime.snapshot()["components"]["incidents"]["pending_signals"] and preview.encode_newest() == "encoded":
+            made.append(h.clock.monotonic_ns() / 1e9)
+    assert h.runtime._monitoring_backlog()  # type: ignore[attr-defined]
+    assert made and all(sum(1 for t in made if start <= t < start + 1.0) <= PREVIEW_YIELD_ENCODES_PER_S
+                        for start in made)
+    assert preview.summary()["counters"]["yielded"] >= len(made)
+
+
+def test_shutdown_stops_the_live_views_encoder_and_reports_it(tmp_path) -> None:
+    h = Harness(tmp_path, live_preview=True)
+    h.runtime.start()
+    h.frame(image=SimpleNamespace(shape=(480, 640, 3), label="seen"))
+    preview = h.runtime.preview
+    assert preview.next_frame(None, 2.0).picture is not None  # a viewer started the encoder
+    assert preview.summary()["encoder"]["running"]
+    h.runtime.request_stop()
+    result = h.runtime.shutdown()
+    assert result["all_stopped"] and result["stopped"]["live_view"] is True
+    assert not preview.summary()["encoder"]["running"] and preview.next_frame(None, 0).view["state"] == "closed"
+
+
 def test_the_live_view_is_off_by_default_and_keeps_no_frames(tmp_path) -> None:
     h = Harness(tmp_path)
     h.frame()
@@ -1078,7 +1107,7 @@ def test_sentinel_run_serves_the_live_view_only_with_its_flag(tmp_path, capsys, 
     def on_read(reads: int) -> None:
         if reads == 15:  # in the capture thread: no new frame arrives meanwhile
             fetch("/")
-            match = re.search(r'<img src="(/preview/1-\d+\.jpg)"', fetched[0][2].decode())
+            match = re.search(r'<img class=pic src="(/preview/1-\d+\.jpg)"', fetched[0][2].decode())
             fetch(match.group(1) if match else "/preview/none.jpg")
         if reads == 25:
             os.kill(os.getpid(), signal.SIGTERM)

@@ -51,9 +51,11 @@ unavailable without loading the model. The face adapter needs its own admission 
 PENDING_VALIDATION: only ``--face-validation`` runs may use it. Nothing here shows names, photos or embeddings.
 
 Live view (D69, ``--live-preview``; off by default): the loop puts each frame it takes into RecentFrames (a
-reference, before inference; the last RECENT_FRAMES_KEPT only), and the status page's LivePreview encodes the newest
-one in its own request thread, bounded, only while the frame is live. Nothing else reads the camera, and the loop
-never waits on a viewer.
+reference, before inference; the last RECENT_FRAMES_KEPT only). Since D75 the page's player receives continuous
+pictures: LivePreview's encoder thread, which runs only while someone watches and at a lower OS priority, encodes the
+newest live frame, bounded, and encodes less while incident signals wait to be recorded or snapshots are queued
+(``_monitoring_backlog``). Nothing else reads the camera, and the loop never waits on a viewer; shutdown stops the
+encoder (``stopped["live_view"]``).
 
 Incident snapshots (D70, ``--snapshots``; off by default): when a zone ENTERED observation or a hazard candidate is
 queued, the loop looks up the frame it came from, by identity, among the images it still holds (RecentFrames, and the
@@ -324,7 +326,8 @@ class DemoRuntime:
         self._recent = (RecentFrames() if live_preview or snapshots is not None or chat_usable
                         else None)  # only when something reads it
         self._pinned: Counter[FrameKey] = Counter()  # D70: frames whose images wait with unrecorded observations
-        self._preview = (LivePreview(self._recent, clock, config.freshness, lambda: capture.connected, encode=encode)
+        self._preview = (LivePreview(self._recent, clock, config.freshness, lambda: capture.connected, encode=encode,
+                                     pressure=self._monitoring_backlog)
                          if live_preview and self._recent is not None else None)
         self._chat: ChatService | None = None
         if chat:  # D74: advisory, and unavailable (saying why) unless admitted and the scene model runs
@@ -361,6 +364,13 @@ class DemoRuntime:
     def preview(self) -> LivePreview | None:
         """The status page's live view (D69); None when it is off."""
         return self._preview
+
+    def _monitoring_backlog(self) -> bool:
+        """Whether monitoring work waits (D75: the live view then encodes less): incident signals not yet recorded, or
+        snapshots queued. Read from the encoder's thread; both reads are single, thread-safe operations."""
+        if self._pending:
+            return True
+        return self._snapshots is not None and self._snapshots.status().get("queued", 0) > 0
 
     @property
     def chat(self) -> ChatService | None:
@@ -410,6 +420,8 @@ class DemoRuntime:
             if self._scene.server is not None:
                 stopped["scene_server"] = self._scene.server.stop(10.0)
             stopped["scene_worker"] = self._scene.analyzer.stop(self._config.scene_server.request_timeout_s + 1.0)
+        if self._preview is not None:  # D75: its encoder thread, if a viewer started it; waiting requests are answered
+            stopped["live_view"] = self._preview.close(1.0)
         self._flush(force=True)  # last chance for observations that are still waiting
         if self._snapshots is not None:  # saves what is queued, including incidents the flush just created
             stopped["snapshots"] = self._snapshots.stop(SNAPSHOT_STOP_TIMEOUT_S)

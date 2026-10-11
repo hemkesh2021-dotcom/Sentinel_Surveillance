@@ -1,16 +1,19 @@
-"""D71 and D73: the status page's freshness in a real browser, with in-place updates.
+"""D71, D73 and D75: the status page's freshness in a real browser, with in-place updates and the live player.
 
 Headless Chromium (``browser_harness``) loads the real StatusServer; the runtime and the camera are stand-ins
 (``status_fixtures``) whose report and frames the test controls. Requests can be held, delayed, replayed, corrupted
 or failed through the DevTools Fetch domain, without changing the server. What a viewer sees is read from the page's
 visible text (``innerText``, which leaves out hidden elements) and computed styles.
 
-Covered: updates in place (no reload; the picture never blanks); a stalled connection turning the page NOT CURRENT,
-with bounded, non-overlapping retries, and recovering; a delayed answer getting less time and a too-late one none;
-out-of-order, unreadable, invalid and failed answers restarting nothing; a picture that fails to load, and a frame
-that is no longer live, both kept in place and marked as old; a hidden tab not polled and updated at once on return;
-scroll, keyboard focus, expanded sections, the selected incident and the theme kept across updates; and the read-only
-page without script.
+The page's freshness (its status updates, D71/D73) and the picture's (the player's own timer, D75) are separate
+claims: each is checked on its own, and a stalled connection ends both.
+
+Covered: updates in place (no reload; pictures arrive continuously and never blank); a stalled connection turning the
+page and its picture NOT CURRENT, with bounded, non-overlapping retries, and recovering; a delayed answer getting less
+time and a too-late one none; out-of-order, unreadable, invalid and failed answers restarting nothing; pictures that
+cannot be had, and a frame that is no longer live, both keeping the last picture in place, marked as old; a hidden
+tab asking for nothing and updating at once on return; scroll, keyboard focus, expanded sections, the selected
+incident and the theme kept across updates; and the read-only page without script.
 """
 
 from __future__ import annotations
@@ -34,23 +37,27 @@ PAGE_CURRENT = "This page is current"
 PAGE_NOT_CURRENT = f"NOT CURRENT: this page has not refreshed for {PAGE_CURRENT_S} s"
 HEALTHY = "All components working"
 HEALTHY_LAST_REPORTED = "Last reported: all components working"
-LIVE = "the newest frame of the connected stream"  # the LIVE banner's reason, in its current layer
-LIVE_LAST_REPORTED = "NOT CURRENT: last reported LIVE"
-PICTURE_OLD = f"NOT CURRENT: this picture is old: no newer one has arrived for {PAGE_CURRENT_S} s."
+LIVE_SERVER = "the newest frame of the connected stream"  # the server's LIVE line: the page without script
+PICTURE_OLD = "NOT CURRENT: no newer picture has arrived in time"
+PICTURE_NOT_LIVE = "NOT CURRENT: no newer picture in time"  # the player's label once the picture's window has ended
 WINDOW = PAGE_CURRENT_S
+STALE_AFTER_S = 2.0  # FreshnessConfig's default: the picture's own window
 PROBE = """(() => {
   const figure = document.querySelector('#frame figure.frame');
-  const img = figure && figure.querySelector('img');
+  const pic = figure && figure.querySelector('.pic');
   let opacity = null;
-  if (img) { opacity = 1; for (let node = img; node; node = node.parentElement) opacity *= parseFloat(getComputedStyle(node).opacity); }
-  const report = document.querySelector('.report');
+  if (pic) { opacity = 1; for (let node = pic; node; node = node.parentElement) opacity *= parseFloat(getComputedStyle(node).opacity); }
+  const report = document.querySelector('#health.report');  // a report region that is always shown
+  const player = document.getElementById('player-state');
   return {document: performance.timeOrigin, ready: document.readyState, text: document.body ? document.body.innerText : '',
-          sequence: document.documentElement.dataset.sequence || null,
+          player: player ? player.innerText.trim() : '', sequence: document.documentElement.dataset.sequence || null,
           sync: (document.getElementById('sync') || {}).textContent || '',
           report_opacity: report ? parseFloat(getComputedStyle(report).opacity) : null,
           generated: (document.querySelector('.freshbar time') || {getAttribute: () => null}).getAttribute('datetime'),
-          picture: img ? {opacity: opacity, loaded: img.complete && img.naturalWidth > 0, src: img.getAttribute('src'),
-                          state: figure.dataset.state || null, frame: figure.dataset.frame || null} : null};
+          picture: pic ? {opacity: opacity, kind: pic.tagName.toLowerCase(), state: figure.dataset.state || null,
+                          frame: figure.dataset.frame || null,
+                          loaded: pic.tagName === 'CANVAS' ? pic.dataset.drawn === '1' : pic.complete && pic.naturalWidth > 0}
+                       : null};
 })()"""
 
 
@@ -70,11 +77,12 @@ def live(tmp_path: Path) -> Iterator[dict[str, Any]]:
     server.start()
     try:
         yield {"url": f"http://127.0.0.1:{server.address[1]}", "runtime": runtime, "camera": camera, "stop": stop,
-               "db": tmp_path / "sentinel.db"}
+               "db": tmp_path / "sentinel.db", "server": server}
     finally:
         stop.set()
         runtime.answering.set()
         assert server.stop(3.0)
+        camera.preview.close(2.0)
 
 
 def read(page: Page) -> dict[str, Any]:
@@ -93,41 +101,54 @@ def wait_for(page: Page, predicate: Callable[[dict[str, Any]], bool], timeout_s:
     raise AssertionError(f"the page never reached the expected state; last seen: {seen!r}")
 
 
-def current(seen: dict[str, Any]) -> bool:
-    return all(claim in seen["text"] for claim in (PAGE_CURRENT, HEALTHY, LIVE))
+def page_current(seen: dict[str, Any]) -> bool:
+    return PAGE_CURRENT in seen["text"] and HEALTHY in seen["text"]
+
+
+def picture_live(seen: dict[str, Any]) -> bool:
+    """The picture shown as live: with script, the player's LIVE label and a drawn, undimmed picture; without, the
+    server's LIVE line and its loaded picture."""
+    picture = seen["picture"] or {}
+    labelled = seen["player"] == "LIVE" if seen["player"] else LIVE_SERVER in seen["text"]
+    return labelled and bool(picture.get("loaded")) and picture.get("state") in (None, "live") \
+        and picture.get("opacity") == 1
 
 
 def current_with_picture(seen: dict[str, Any]) -> bool:
-    return current(seen) and bool((seen["picture"] or {}).get("loaded")) and seen["picture"]["state"] in (None, "live")
+    return page_current(seen) and picture_live(seen)
 
 
 def not_current(seen: dict[str, Any]) -> bool:
-    return PAGE_NOT_CURRENT in seen["text"] and not any(c in seen["text"] for c in (PAGE_CURRENT, HEALTHY, LIVE))
+    return PAGE_NOT_CURRENT in seen["text"] and not any(c in seen["text"] for c in (PAGE_CURRENT, HEALTHY))
+
+
+def picture_not_live(seen: dict[str, Any]) -> bool:
+    picture = seen["picture"] or {}
+    return seen["player"] != "LIVE" and LIVE_SERVER not in seen["text"] and bool(picture.get("loaded")) \
+        and (picture.get("opacity") or 1) < 0.5
 
 
 def assert_current(seen: dict[str, Any]) -> None:
-    assert current(seen), seen["text"][:300]
-    for label in (PAGE_NOT_CURRENT, HEALTHY_LAST_REPORTED, LIVE_LAST_REPORTED, PICTURE_OLD):
+    assert current_with_picture(seen), (seen["text"][:300], seen["player"], seen["picture"])
+    for label in (PAGE_NOT_CURRENT, HEALTHY_LAST_REPORTED, PICTURE_OLD, PICTURE_NOT_LIVE):
         assert label not in seen["text"], label
-    assert seen["report_opacity"] == 1 and seen["picture"]["opacity"] == 1
+    assert seen["report_opacity"] == 1
 
 
 def assert_not_current(seen: dict[str, Any]) -> None:
     assert not_current(seen), seen["text"][:300]
-    for label in (HEALTHY_LAST_REPORTED, LIVE_LAST_REPORTED):
-        assert label in seen["text"], label
+    assert HEALTHY_LAST_REPORTED in seen["text"]
     assert seen["report_opacity"] < 1
 
 
 def opened(browser: Browser, url: str, **options: Any) -> Page:
     page = browser.page(**options)
     page.navigate(url)
-    wait_for(page, current_with_picture, 30.0)
+    wait_for(page, lambda s: current_with_picture(s) and (s["picture"] or {}).get("kind") == "canvas", 30.0)
     return page
 
 
-def test_updates_arrive_in_place_and_a_new_picture_replaces_the_old_without_blanking(
-        browser: Browser, live: dict[str, Any]) -> None:
+def test_updates_arrive_in_place_and_pictures_stream_without_blanking(browser: Browser, live: dict[str, Any]) -> None:
     page = opened(browser, f"{live['url']}/")
     try:
         first = read(page)
@@ -137,38 +158,50 @@ def test_updates_arrive_in_place_and_a_new_picture_replaces_the_old_without_blan
         while time.monotonic() < deadline:
             seen = read(page)
             if not (seen["picture"] and seen["picture"]["loaded"]):
-                blank += 1  # no picture shown, or one that has not decoded: a flash
+                blank += 1  # no picture shown, or one that has not been drawn: a flash
             frames.add(seen["picture"]["frame"] if seen["picture"] else None)
             assert seen["document"] == first["document"], "the page reloaded"
             assert_current(seen)
             time.sleep(0.03)
-        assert blank == 0 and len(frames) >= 3  # new pictures arrived, and never a gap between them
+        # The camera stand-in makes 4 frames a second: the player shows them as they come, apart from the status
+        # updates, which still come every REFRESH_S.
+        assert blank == 0 and len(frames) >= 3 * REFRESH_S * 4 * 0.6
         assert live["runtime"].served >= served + 2 and int(read(page)["sequence"]) > int(first["sequence"])
         assert "http-equiv" not in page.evaluate("document.head.innerHTML")  # no document-wide reload
     finally:
         page.close()
 
 
-def test_a_stalled_connection_turns_the_page_not_current_and_only_a_fresh_update_restores_it(
+def hold(page: Page, *patterns: str) -> None:
+    """Hold every request matching ``patterns`` before it leaves the browser (a stalled connection)."""
+    page.call("Fetch.enable", {"patterns": [{"urlPattern": p, "requestStage": "Request"} for p in patterns]})
+
+
+def test_a_stalled_connection_turns_the_page_and_its_picture_not_current_and_only_fresh_answers_restore_them(
         browser: Browser, live: dict[str, Any]) -> None:
     page = opened(browser, f"{live['url']}/")
     runtime = live["runtime"]
     try:
         origin = read(page)["document"]
-        runtime.answering.clear()  # as a stalled SSH forward: requests arrive and are never answered
+        hold(page, "*/live/frame*")  # pictures stop arriving: their requests never leave
+        runtime.answering.clear()  # and status requests arrive but are never answered
         stalled = time.monotonic()
+        seen = wait_for(page, picture_not_live, STALE_AFTER_S + 1.5)  # the picture first: its own, shorter window
+        assert PICTURE_OLD in seen["text"] and seen["player"] == PICTURE_NOT_LIVE
         seen = wait_for(page, not_current, WINDOW + REFRESH_S + 1.0)
         assert time.monotonic() - stalled <= WINDOW + REFRESH_S + 1.0
         assert_not_current(seen)
-        assert PICTURE_OLD in seen["text"] and seen["picture"]["loaded"]  # the last frame stays, marked as old
-        assert seen["picture"]["opacity"] < 0.5
-        time.sleep(9.0)
+        assert picture_not_live(seen) and seen["picture"]["loaded"]  # the last frame stays, marked as old
+        seen = wait_for(page, lambda s: "DISCONNECTED" in s["player"], 8.0)  # the held request is given up
+        assert "OLD FRAME: the page cannot reach the device; this one was received at" in seen["text"]
+        time.sleep(5.0)
         seen = read(page)
         assert_not_current(seen) and "No current update (no answer in time)" in seen["sync"]
         arrivals = [t for t in runtime.arrivals if t >= stalled]
         assert 1 <= len(arrivals) <= 4  # one at a time, abandoned after the window, then backing off
         assert all(b - a >= REFRESH_S for a, b in zip(arrivals, arrivals[1:]))
         runtime.answering.set()
+        page.call("Fetch.disable")
         seen = wait_for(page, current_with_picture, 16.0)
         assert_current(seen) and seen["document"] == origin and seen["sync"] == ""
     finally:
@@ -195,7 +228,7 @@ def test_a_delayed_answer_is_current_for_less_time_and_a_late_one_is_not_applied
         held = time.monotonic()
         time.sleep(3.5)
         page.call("Fetch.continueRequest", {"requestId": event["requestId"]})
-        applied = wait_for(page, lambda s: current(s) and s["sequence"] is not None, 2.0)
+        applied = wait_for(page, lambda s: page_current(s) and s["sequence"] is not None, 2.0)
         before = int(applied["sequence"])
         waiting = page.paused(REFRESH_S + 3.0)  # the next request: held, never answered
         seen = wait_for(page, not_current, 3.0)
@@ -207,6 +240,7 @@ def test_a_delayed_answer_is_current_for_less_time_and_a_late_one_is_not_applied
         time.sleep(0.5)
         seen = read(page)
         assert_not_current(seen) and int(seen["sequence"]) == before
+        assert picture_live(seen)  # the pictures kept coming: their freshness is their own
         page.call("Fetch.disable")
         assert_current(wait_for(page, current_with_picture, 12.0))
     finally:
@@ -272,24 +306,27 @@ def test_fast_failures_back_off_instead_of_flooding_the_runtime(browser: Browser
         page.close()
 
 
-def test_a_picture_that_fails_to_load_keeps_the_last_frame_marked_old_until_a_new_one_loads(
+def test_pictures_that_cannot_be_had_keep_the_last_frame_marked_old_until_a_new_one_arrives(
         browser: Browser, live: dict[str, Any]) -> None:
     page = opened(browser, f"{live['url']}/")
     try:
-        kept = read(page)["picture"]["src"]
-        page.call("Fetch.enable", {"patterns": [{"urlPattern": "*/preview/*", "requestStage": "Request"}]})
-        deadline = time.monotonic() + 3 * REFRESH_S + 2
+        kept = read(page)["picture"]["frame"]
+        hold(page, "*/live/frame*")
+        failed = 0
+        deadline = time.monotonic() + 8.0
         seen = read(page)
         while time.monotonic() < deadline and seen["picture"]["state"] != "failed":
             event = page.paused(0.5)
             if event:
                 page.call("Fetch.failRequest", {"requestId": event["requestId"], "errorReason": "Failed"})
+                failed += 1
             seen = read(page)
-        assert seen["picture"]["state"] == "failed" and seen["picture"]["src"] == kept and seen["picture"]["loaded"]
-        assert "OLD FRAME: the newest picture could not be loaded; this one was received at" in seen["text"]
-        assert seen["picture"]["opacity"] < 0.5 and current(seen)  # the status itself is still current
+        assert seen["picture"]["state"] == "failed" and seen["picture"]["loaded"] and failed >= 1
+        assert "OLD FRAME: the page cannot reach the device; this one was received at" in seen["text"]
+        assert "DISCONNECTED" in seen["player"] and seen["picture"]["opacity"] < 0.5
+        assert page_current(seen)  # the status itself is still current: the claims are separate
         page.call("Fetch.disable")
-        seen = wait_for(page, lambda s: s["picture"]["state"] == "live" and s["picture"]["src"] != kept, 10.0)
+        seen = wait_for(page, lambda s: picture_live(s) and s["picture"]["frame"] != kept, 10.0)
         assert_current(seen) and "OLD FRAME" not in seen["text"]
     finally:
         page.close()
@@ -301,29 +338,33 @@ def test_a_frame_that_is_no_longer_live_stays_in_place_marked_as_an_old_frame(
     try:
         live["stop"].set()  # the camera stops delivering frames
         time.sleep(0.3)
-        kept = read(page)["picture"]["src"]
+        kept = read(page)["picture"]["frame"]
         live["camera"].clock.advance(3.0)  # the newest frame is now older than freshness.stale_after_s
-        seen = wait_for(page, lambda s: s["picture"] and s["picture"]["state"] == "retained", 2 * REFRESH_S + 2)
-        assert seen["picture"]["src"] == kept and seen["picture"]["loaded"] and seen["picture"]["opacity"] < 0.5
+        seen = wait_for(page, lambda s: s["picture"] and s["picture"]["state"] == "retained", 4.0)
+        assert seen["picture"]["frame"] == kept and seen["picture"]["loaded"] and seen["picture"]["opacity"] < 0.5
         assert "OLD FRAME: the camera has no current frame; this one was received at" in seen["text"]
-        assert "STALE: not current" in seen["text"] and LIVE not in seen["text"] and PAGE_CURRENT in seen["text"]
+        assert seen["player"].startswith("STALE: not current") and "no new frame for" in seen["player"]
+        assert PAGE_CURRENT in seen["text"]
     finally:
         page.close()
 
 
-def test_a_hidden_tab_is_not_polled_and_updates_at_once_when_shown_again(browser: Browser, live: dict[str, Any]) -> None:
+def test_a_hidden_tab_asks_for_nothing_and_updates_at_once_when_shown_again(
+        browser: Browser, live: dict[str, Any]) -> None:
     page = opened(browser, f"{live['url']}/")
-    runtime = live["runtime"]
+    runtime, preview = live["runtime"], live["camera"].preview
     try:
         other = browser.page()  # another tab in front, and no focus emulation: headless reports the page hidden
         other.call("Page.bringToFront")
         page.call("Emulation.setFocusEmulationEnabled", {"enabled": False})
         assert wait_until(lambda: page.evaluate("document.visibilityState") == "hidden", 3.0)
         time.sleep(1.0)
-        hidden = runtime.served
+        hidden, pictures = runtime.served, preview.summary()["counters"]["stream_requests"]
         time.sleep(WINDOW + 1.5)
         assert runtime.served <= hidden + 1  # at most a request already under way
-        assert not_current(read(page))  # nothing renewed it meanwhile
+        assert preview.summary()["counters"]["stream_requests"] <= pictures + 1
+        seen = read(page)
+        assert not_current(seen) and seen["player"] != "LIVE"  # nothing renewed either meanwhile
         shown = time.monotonic()
         page.call("Page.bringToFront")
         page.call("Emulation.setFocusEmulationEnabled", {"enabled": True})
@@ -380,6 +421,7 @@ def test_updates_keep_scroll_focus_expanded_sections_the_selected_incident_and_t
             page.close()
         stop.set()
         assert server.stop(3.0)
+        camera.preview.close(2.0)
 
 
 def test_without_script_the_page_is_read_only_and_marks_itself_not_current(browser: Browser, live: dict[str, Any]) -> None:
@@ -388,10 +430,13 @@ def test_without_script_the_page_is_read_only_and_marks_itself_not_current(brows
         page.call("Emulation.setScriptExecutionDisabled", {"value": True})
         page.navigate(f"{live['url']}/")
         seen = wait_for(page, current_with_picture, 15.0)
-        assert "Automatic updates need JavaScript" in seen["text"]
+        assert "Automatic updates need JavaScript" in seen["text"] and seen["picture"]["kind"] == "img"
         served = live["runtime"].served
+        pictures = live["camera"].preview.summary()["counters"].get("stream_requests", 0)
         seen = wait_for(page, not_current, WINDOW + 1.0)
         assert_not_current(seen) and live["runtime"].served == served  # nothing reloads or polls
+        assert picture_not_live(seen) and PICTURE_OLD in seen["text"]
+        assert live["camera"].preview.summary()["counters"].get("stream_requests", 0) == pictures  # nor streams
         page.call("Page.reload")
         assert_current(wait_for(page, current_with_picture, 15.0))  # a reload that succeeds makes it current again
     finally:

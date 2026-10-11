@@ -1,8 +1,8 @@
-/* Sentinel status pages: in-place updates (D73).
+/* Sentinel status pages: in-place updates (D73) and the live player (D75).
 
-   Served from this origin only (CSP: script-src 'self'; connect-src 'self'). No storage, no cookies, no third-party
-   code. Without it the pages still work, read-only: they show what the server rendered and turn NOT CURRENT after the
-   watchdog window; reload to update.
+   Served from this origin only (CSP: script-src 'self'; connect-src 'self'). No third-party code. Without it the
+   pages still work, read-only: they show what the server rendered and turn NOT CURRENT after the watchdog window;
+   reload to update.
 
    - Every fragment is rendered and escaped by the server; this script only places it, keyed, so that elements stay
      where they are (focus, expanded sections, text that did not change, the selected incident) and the whole page is
@@ -10,13 +10,18 @@
    - The D71 timers (the CSS watchdog) restart only after a document that was received with HTTP 200, parsed and
      validated, and is newer than the last one (server instance and sequence). Their window counts from when that
      document's request was sent, so a delayed answer gets less time, never more, and one that arrives after the
-     window is not applied. Nothing else restarts them: not a failed or repeated answer, not an image, not the chat.
+     window is not applied. Nothing else restarts them: not a failed or repeated answer, not a picture, not the chat.
    - One request at a time; a request is abandoned after the window; failures back off (2, 4, 8, at most 15 s). A
      hidden tab is not polled, and its claims expire when it is hidden and again when it is shown; on return the page
      updates at once.
-   - The live picture is loaded and decoded before it replaces the one shown, so it never blanks. It has its own
-     timer, from the request that brought it. A picture that could not be loaded, or a frame that is no longer live,
-     leaves the last picture in place, dimmed and labelled as an old frame with its time.
+   - The live picture (D75) is the player's, apart from the status updates: it asks GET /live/frame for one picture
+     at a time, the newest newer than the one it has, as soon as it has the last; it decodes it off the page and draws
+     it on a canvas, so the picture never blanks. Every picture restarts the picture's own timer (the CSS watchdog
+     for the picture and the LIVE label): its window is the device's stale threshold minus the picture's age when
+     sent, counted from when this browser asked for it, so a picture is never shown as live once its frame could be
+     older than the threshold. A picture that cannot be had leaves the last one in place, dimmed and labelled as an
+     old frame with its time. Nothing else restarts that timer: not a status update, not the chat, not an animation.
+     The player stops asking while the tab is hidden or the picture is out of sight, and backs off on failures.
    - Chat (D74, only where the runtime offers it): one question at a time, about one identified frame; answers are
      shown as text, labelled with that frame's time and age, and never touch the timers above. The conversation and
      the draft stay in this tab; the token in the form belongs to the server that sent this page. */
@@ -30,16 +35,17 @@
   if (!SOURCE || !SOURCE.startsWith("/") || SOURCE.startsWith("//") || !(EVERY > 0) || !(WINDOW > 0)) return;
   const MAX_TEXT = 600000;
   const MAX_WAIT = 15000;
-  const PICTURE = /^\/preview\/[0-9]{1,9}-[0-9]{1,12}\.jpg$/;
   const INSTANCE = /^[0-9a-f]{16}$/;
+  const TOKEN = /^[0-9a-f]{32}$/;
   const INCIDENT = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
   const state = {
     instance: root.dataset.instance || null, sequence: Number(root.dataset.sequence || "-1"),
-    last: Object.create(null), timer: 0, inflight: null, failures: 0, picture: null,
+    last: Object.create(null), timer: 0, inflight: null, failures: 0, token: null,
     selected: null, detail: null, detailTimer: 0,
   };
   root.classList.add("js");
   let refreshAsk = () => {};  // the chat's Ask button follows chat's availability, which updates with the page
+  let player = null;  // the live player, on the status page with the live view on
 
   // ------------------------------------------------------------------ the watchdog timers
 
@@ -52,16 +58,14 @@
   }
 
   function expireNow() {  // after a freeze or a back-forward restore: nothing is current until an update arrives
-    for (const name of ["fresh", "pic"]) {
-      root.style.setProperty(`--${name}-delay`, `${-10 * WINDOW}ms`);
-      root.dataset[name] = root.dataset[name] === "1" ? "0" : "1";
-    }
+    root.style.setProperty("--fresh-delay", `${-10 * WINDOW}ms`);
+    root.dataset.fresh = root.dataset.fresh === "1" ? "0" : "1";
+    if (player) player.expire();
   }
 
   const navigation = performance.getEntriesByType ? performance.getEntriesByType("navigation")[0] : null;
   const requested = navigation && navigation.requestStart > 0 ? navigation.requestStart : 0;
   restart("fresh", requested);
-  restart("pic", requested);
 
   // ------------------------------------------------------------------ keyed placement of server fragments
 
@@ -139,16 +143,9 @@
     }
     if (KIND === "status") {
       if (typeof page.frame_empty !== "string") return false;
+      if (page.token !== undefined && (typeof page.token !== "string" || !TOKEN.test(page.token))) return false;
       const preview = doc.preview;
       if (preview !== undefined && (preview === null || typeof preview !== "object")) return false;
-      const picture = preview && preview.picture;
-      if (picture != null) {
-        if (typeof picture !== "object" || typeof picture.url !== "string" || !PICTURE.test(picture.url)) return false;
-        for (const field of ["width", "height", "stream_epoch", "frame_seq"]) {
-          if (!Number.isSafeInteger(picture[field]) || picture[field] < 0) return false;
-        }
-        if (picture.width < 1 || picture.height < 1 || picture.width > 4096 || picture.height > 4096) return false;
-      }
     }
     return true;
   }
@@ -202,9 +199,10 @@
         throw new Error("answer not readable");
       }
       if (!valid(doc)) throw new Error("answer not valid");
+      if (document.visibilityState === "hidden") return;  // arrived after the tab was hidden: asked again on return
       if (newer(doc.page)) {
         if (performance.now() - sent >= WINDOW) throw new Error("answer arrived too late");
-        await apply(doc, sent);
+        apply(doc, sent);
       }  // an older or repeated document is ignored: it restarts nothing
       state.failures = 0;
       say("");
@@ -220,13 +218,15 @@
     }
   }
 
-  async function apply(doc, sent) {
-    const next = KIND === "status" ? await nextPicture(doc.preview) : null;
+  function apply(doc, sent) {
     if (doc.page.instance !== state.instance) state.last = Object.create(null);
     // New elements pick up the bounded delay as they appear; the restart below then aligns every timer.
     root.style.setProperty("--fresh-delay", `${-Math.round(performance.now() - sent)}ms`);
     for (const [name, html] of Object.entries(doc.page.regions)) place(name, html);
-    if (next) showFrame(doc, next, sent);
+    if (KIND === "status") {
+      if (doc.page.token) state.token = doc.page.token;
+      if (player) player.status(doc);
+    }
     markSelected();
     state.instance = doc.page.instance;
     state.sequence = doc.page.sequence;
@@ -236,79 +236,11 @@
     restart("fresh", sent);
   }
 
-  // ------------------------------------------------------------------ the live picture
-
-  function preload(url) {
-    return new Promise((resolve) => {
-      const img = new Image();
-      let done = false;
-      const finish = (value) => {
-        if (!done) {
-          done = true;
-          clearTimeout(timer);
-          resolve(value);
-        }
-      };
-      const timer = setTimeout(() => finish(null), Math.min(WINDOW, 4000));
-      img.onload = () => (img.decode ? img.decode() : Promise.resolve()).then(() => finish(img), () => finish(null));
-      img.onerror = () => finish(null);
-      img.src = url;
-    });
-  }
-
-  async function nextPicture(preview) {
-    const picture = preview && preview.picture;
-    if (!picture) return {state: "none", preview};
-    if (state.picture && state.picture.url === picture.url) return {state: "same", picture};
-    const img = await preload(picture.url);
-    return img ? {state: "loaded", picture, img} : {state: "failed", picture};
-  }
+  // ------------------------------------------------------------------ small helpers
 
   function clock(iso) {
     const when = new Date(iso);
     return Number.isNaN(when.getTime()) ? "an unknown time" : `${when.toISOString().slice(11, 23)} UTC`;
-  }
-
-  function showFrame(doc, next, sent) {
-    const slot = document.getElementById("frame");
-    if (!slot) return;
-    let figure = slot.querySelector("figure.frame");
-    if (next.state === "loaded") {
-      if (!figure) {
-        slot.replaceChildren(buildFigure());
-        figure = slot.querySelector("figure.frame");
-        delete state.last["frame-empty"];  // the placeholder is gone; place it again when it is needed
-      }
-      const picture = next.picture;
-      const img = next.img;
-      img.width = picture.width;
-      img.height = picture.height;
-      img.alt = `Camera picture, stream epoch ${picture.stream_epoch}, frame ${picture.frame_seq}`;
-      const shown = figure.querySelector("img");
-      if (shown) shown.replaceWith(img);
-      else figure.prepend(img);
-      figure.dataset.state = "live";
-      figure.dataset.frame = `${picture.stream_epoch}-${picture.frame_seq}`;
-      figure.dataset.ingest = picture.ingest_utc || "";
-      state.picture = picture;
-      restart("pic", sent);
-    } else if (next.state === "same" && figure && figure.dataset.state !== "failed") {
-      figure.dataset.state = "live";  // a newer, valid update says this very frame is still live
-      restart("pic", sent);
-    } else if (next.state === "failed" || next.state === "none") {
-      if (figure && state.picture) {
-        figure.dataset.state = next.state === "failed" ? "failed" : "retained";
-        const kept = figure.querySelector(".kept span");
-        const when = clock(state.picture.ingest_utc);
-        const which = `stream epoch ${state.picture.stream_epoch}, frame ${state.picture.frame_seq}`;
-        const label = next.state === "failed"
-          ? `OLD FRAME: the newest picture could not be loaded; this one was received at ${when} (${which}).`
-          : `OLD FRAME: the camera has no current frame; this one was received at ${when} (${which}).`;
-        if (kept && kept.textContent !== label) kept.textContent = label;
-      } else {
-        place("frame-empty", doc.page.frame_empty);
-      }
-    }
   }
 
   function svgIcon(name) {
@@ -329,21 +261,377 @@
     return node;
   }
 
-  function buildFigure() {  // the same structure the server renders around a live picture
-    return el("figure", {class: "frame"}, [
-      el("figcaption", {class: "pic-old"}, [svgIcon("clock"),
-        `NOT CURRENT: this picture is old: no newer one has arrived for ${Math.round(WINDOW / 1000)} s.`]),
-      el("figcaption", {class: "kept"}, [svgIcon("clock"), el("span")]),
-    ]);
+  function badge(kind, text, glyph, big) {
+    return el("span", {class: `badge k-${kind}${big ? " big" : ""}`}, [svgIcon(glyph), text]);
   }
 
-  function initialPicture() {
-    const figure = document.querySelector("#frame figure.frame");
-    const img = figure && figure.querySelector("img");
-    if (!img) return;
-    const [epoch, seq] = (figure.dataset.frame || "").split("-").map(Number);
-    state.picture = {url: img.getAttribute("src"), ingest_utc: figure.dataset.ingest || "", stream_epoch: epoch,
-                     frame_seq: seq};
+  function median(values) {
+    if (!values.length) return null;
+    const sorted = [...values].sort((a, b) => a - b);
+    const middle = sorted.length >> 1;
+    return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+  }
+
+  // ------------------------------------------------------------------ the live player (D75)
+
+  function makePlayer() {
+    const slot = document.getElementById("frame");
+    const panel = document.getElementById("live");
+    const label = document.getElementById("player-state");
+    const facts = document.getElementById("player-facts");
+    if (!slot || !panel || !label || slot.dataset.live !== "on") return null;
+    const LIVE = "/live/frame";
+    const FRAME = /^[0-9]{1,9}-[0-9]{1,12}$/;
+    const SIZE = /^([0-9]{1,4})x([0-9]{1,4})$/;
+    const STAMP = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]{8,15}Z$/;
+    const STALE_AFTER = Math.min(Math.max(Number(slot.dataset.staleAfterMs) || 2000, 250), 30000);
+    const ASK_TIMEOUT = 5000;  // the device waits at most 1.5 s for a newer picture; the rest is transfer
+    const p = {
+      token: TOKEN.test(slot.dataset.token || "") ? slot.dataset.token : "",
+      after: null, shown: null, state: null, reason: "", failures: 0, running: false, wake: null,
+      pending: null, decoding: false, canvas: null, context: null, seen: [], inSight: true, statsTimer: 0,
+    };
+
+    // ------------------------------------------------ its timer (the picture and the LIVE label share it)
+
+    function restartPicture(sentAt, windowMs) {
+      const elapsed = Math.max(0, performance.now() - sentAt);
+      panel.style.setProperty("--pic-window", `${Math.max(0, Math.round(windowMs))}ms`);
+      panel.style.setProperty("--pic-delay", `${-Math.round(elapsed)}ms`);
+      panel.dataset.pic = panel.dataset.pic === "1" ? "0" : "1";
+    }
+
+    function expire() {  // nothing shown is live until a new picture arrives
+      panel.style.setProperty("--pic-delay", `${-10 * STALE_AFTER}ms`);
+      panel.dataset.pic = panel.dataset.pic === "1" ? "0" : "1";
+    }
+
+    // ------------------------------------------------ what it says
+
+    const LABELS = {
+      connecting: ["off", "clock", "CONNECTING", "asking the device for live pictures"],
+      paused: ["off", "clock", "PAUSED", "not asked for while the picture is out of sight or this tab is hidden"],
+      stale: ["warn", "clock", "STALE: not current", ""], offline: ["crit", "crit", "OFFLINE", ""],
+      starting: ["off", "clock", "STARTING", ""], closed: ["off", "off", "STOPPED", "the runtime is stopping"],
+      disconnected: ["crit", "off", "DISCONNECTED", ""], busy: ["warn", "warn", "BUSY", ""],
+      reload: ["off", "off", "RELOAD TO RESUME", "the runtime restarted after this page was loaded; reload the page"],
+      error: ["crit", "crit", "NO PICTURE", ""], off: ["off", "off", "OFF", ""],
+    };
+
+    function setState(name, reason) {
+      const text = reason || "";
+      if (p.state === name && p.reason === text) return;
+      p.state = name;
+      p.reason = text;
+      panel.dataset.player = name;
+      if (name === "live") {  // a claim that the picture is current: only while its own timer runs (D75)
+        label.replaceChildren(el("span", {class: "fs inl"}, [
+          el("span", {class: "pcur"}, [badge("ok", "LIVE", "video", true)]),
+          el("span", {class: "pold"}, [badge("stale", "NOT CURRENT: no newer picture in time", "clock", true)]),
+        ]));
+      } else {
+        const [kind, glyph, title, standing] = LABELS[name] || LABELS.error;
+        label.replaceChildren(badge(kind, title, glyph, true), el("span", {class: "muted"}, [text || standing]));
+      }
+      if (name !== "live") keep(name);
+    }
+
+    function keep(name) {  // the last picture stays, dimmed, with why it is old and when it was received
+      const figure = slot.querySelector("figure.frame");
+      const shown = p.shown || (figure && figure.dataset.frame ? {id: figure.dataset.frame, ingest: figure.dataset.ingest}
+                                                                : null);
+      if (!figure || !shown || name === "connecting") return;
+      figure.dataset.state = name === "disconnected" || name === "error" || name === "busy" ? "failed" : "retained";
+      const cause = {
+        stale: "the camera has no current frame", offline: "the camera has no current frame",
+        disconnected: "the page cannot reach the device", busy: "the device is busy with other viewers",
+        error: "the newest picture could not be shown", paused: "pictures are not asked for while out of sight",
+        reload: "the runtime restarted", closed: "the runtime is stopping", starting: "the runtime is starting",
+      }[name] || "no newer picture has arrived";
+      const [epoch, seq] = (shown.id || "").split("-");
+      const text = `OLD FRAME: ${cause}; this one was received at ${clock(shown.ingest)} (stream epoch ${epoch || "?"}, `
+        + `frame ${seq || "?"}).`;
+      const span = figure.querySelector(".kept span");
+      if (span && span.textContent !== text) span.textContent = text;
+    }
+
+    // ------------------------------------------------ the picture
+
+    function figure(width, height) {
+      let shown = slot.querySelector("figure.frame");
+      if (!shown || !shown.querySelector("canvas.pic")) {
+        const canvas = el("canvas", {class: "pic", width: String(width), height: String(height), role: "img",
+                                      "aria-label": "Live camera picture"});
+        const built = el("figure", {class: "frame player"}, [
+          canvas,
+          el("figcaption", {class: "pic-old"}, [svgIcon("clock"), el("span")]),
+          el("figcaption", {class: "kept"}, [svgIcon("clock"), el("span")]),
+        ]);
+        slot.replaceChildren(built);
+        delete state.last["frame-empty"];
+        shown = built;
+        p.canvas = canvas;
+        p.context = canvas.getContext("2d", {alpha: false});
+      }
+      return shown;
+    }
+
+    async function decode(blob) {
+      if (typeof createImageBitmap === "function") return createImageBitmap(blob);
+      const url = URL.createObjectURL(blob);
+      try {
+        const image = new Image();
+        image.src = url;
+        await image.decode();
+        return image;
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+
+    function newerThanShown(meta) {
+      return !p.shown || meta.epoch > p.shown.epoch || (meta.epoch === p.shown.epoch && meta.seq > p.shown.seq);
+    }
+
+    function draw(image, meta) {
+      if (!wanted()) return;  // hidden or out of sight: a late picture restarts nothing (asked again on return)
+      const shown = figure(meta.width, meta.height);
+      if (p.canvas.width !== meta.width || p.canvas.height !== meta.height) {
+        p.canvas.width = meta.width;
+        p.canvas.height = meta.height;
+      }
+      p.context.drawImage(image, 0, 0, meta.width, meta.height);
+      meta.drawn = performance.now();
+      p.canvas.dataset.drawn = "1";
+      shown.dataset.state = "live";
+      shown.dataset.frame = meta.id;
+      shown.dataset.frameShown = meta.id;
+      shown.dataset.ingest = meta.ingest;
+      p.shown = meta;
+      const old = shown.querySelector(".pic-old span");
+      const text = `NOT CURRENT: no newer picture has arrived in time; this one was received at ${clock(meta.ingest)}.`;
+      if (old && old.textContent !== text) old.textContent = text;
+      restartPicture(meta.sent, STALE_AFTER - meta.age);
+      setState("live");
+      p.seen.push(meta);
+      if (p.seen.length > 120) p.seen.splice(0, p.seen.length - 120);
+      requestAnimationFrame((at) => { meta.presented = at; });
+    }
+
+    async function decodeNewest() {
+      if (p.decoding) return;
+      p.decoding = true;
+      try {
+        while (p.pending) {
+          const {meta, blob} = p.pending;
+          p.pending = null;  // a newer one that arrives meanwhile replaces nothing older than it
+          if (!newerThanShown(meta)) continue;
+          let image = null;
+          try {
+            image = await decode(blob);
+          } catch (error) {
+            image = null;
+          }
+          meta.decoded = performance.now();
+          if (!image) {
+            setState("error", "a picture could not be decoded");
+            continue;
+          }
+          if (newerThanShown(meta)) draw(image, meta);
+          if (typeof image.close === "function") image.close();
+        }
+      } finally {
+        p.decoding = false;
+      }
+    }
+
+    function readMeta(headers, sent) {
+      const id = headers.get("X-Frame") || "";
+      const age = Number(headers.get("X-Frame-Age-Ms"));
+      const size = SIZE.exec(headers.get("X-Frame-Size") || "");
+      const ingest = headers.get("X-Frame-Ingest") || "";
+      if (!FRAME.test(id) || !Number.isSafeInteger(age) || age < 0 || age > 3600000 || !size || !STAMP.test(ingest)) {
+        return null;
+      }
+      const width = Number(size[1]);
+      const height = Number(size[2]);
+      if (width < 1 || height < 1 || width > 4096 || height > 4096) return null;
+      const [epoch, seq] = id.split("-").map(Number);
+      return {id, epoch, seq, age, width, height, ingest, sent, received: 0, decoded: 0, drawn: 0, presented: 0};
+    }
+
+    // ------------------------------------------------ asking
+
+    function wanted() {
+      return document.visibilityState !== "hidden" && p.inSight;
+    }
+
+    function sleep(ms) {
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => { p.wake = null; resolve(); }, ms);
+        p.wake = () => { clearTimeout(timer); p.wake = null; resolve(); };
+      });
+    }
+
+    async function readJson(response) {
+      const text = await response.text();
+      if (text.length > 20000) return null;
+      try {
+        const doc = JSON.parse(text);
+        return doc && typeof doc === "object" && !Array.isArray(doc) ? doc : null;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    async function askOnce() {  // the time to wait before asking again (0: at once)
+      const sent = performance.now();
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), ASK_TIMEOUT);
+      const token = state.token && state.token !== p.token && p.failures ? state.token : p.token;
+      try {
+        const response = await fetch(p.after ? `${LIVE}?after=${p.after}` : LIVE, {
+          cache: "no-store", credentials: "same-origin", redirect: "error", signal: controller.signal,
+          headers: {"X-Sentinel-Token": token},
+        });
+        const type = response.headers.get("Content-Type") || "";
+        if (response.status === 200 && type === "image/jpeg") {
+          const meta = readMeta(response.headers, sent);
+          const blob = await response.blob();
+          if (!meta || blob.size < 4 || blob.size > 1048576) throw new Error("the picture was not valid");
+          meta.received = performance.now();
+          p.token = token;
+          p.after = meta.id;
+          p.failures = 0;
+          p.pending = {meta, blob};  // the newest wins: an older one not yet decoded is dropped
+          decodeNewest();
+          return 0;
+        }
+        const doc = type.startsWith("application/json") ? await readJson(response) : null;
+        const reason = doc && typeof doc.reason === "string" ? doc.reason.slice(0, 200) : "";
+        if (response.status === 403) {
+          if (state.token && state.token !== token) {  // the runtime restarted: its newer page brought a new token
+            p.token = state.token;
+            p.after = null;
+            return 0;
+          }
+          p.failures += 1;
+          setState("reload");
+          return Math.min(2000 * p.failures, MAX_WAIT);
+        }
+        if (response.status === 503) {
+          p.failures += 1;
+          setState("busy", reason || "too many live picture requests at once");
+          return 1000;
+        }
+        if (response.status === 200 && doc && typeof doc.state === "string") {
+          p.token = token;
+          p.failures = 0;
+          if (doc.state === "live") return 0;  // live, but nothing newer within the device's wait: ask again
+          setState(LABELS[doc.state] ? doc.state : "error", reason);
+          return 500;
+        }
+        if (response.status === 404 && doc && doc.state === "off") {
+          setState("off", reason);
+          return MAX_WAIT;
+        }
+        throw new Error(`HTTP ${response.status}`);
+      } catch (error) {
+        p.failures += 1;
+        const wait = Math.min(500 * 2 ** (p.failures - 1), 5000);
+        setState("disconnected", `${why(error)}; trying again in ${Math.max(1, Math.round(wait / 1000))} s`);
+        return wait;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    async function run() {
+      if (p.running) return;
+      p.running = true;
+      try {
+        if (!p.shown && !slot.querySelector("figure.frame")) setState("connecting");
+        while (wanted()) {
+          const wait = await askOnce();
+          if (wait > 0 && wanted()) await sleep(wait);
+        }
+        setState("paused");
+      } finally {
+        p.running = false;
+      }
+    }
+
+    function resume() {
+      if (p.wake) p.wake();
+      if (wanted()) run();
+    }
+
+    // ------------------------------------------------ measuring (delivered rate apart from age)
+
+    function stats() {
+      const now = performance.now();
+      const recent = p.seen.filter((m) => now - m.drawn <= 5000);
+      if (!recent.length || p.state !== "live") {
+        facts.hidden = !p.shown;
+        slot.dataset.fps = "0";
+        return;
+      }
+      const span = Math.max(1, Math.min(5000, now - recent[0].drawn));
+      const fps = recent.length > 1 ? ((recent.length - 1) * 1000) / (recent[recent.length - 1].drawn - recent[0].drawn || 1) : 0;
+      const sentAge = median(recent.map((m) => m.age));
+      const bound = recent.map((m) => m.age + ((m.presented || m.drawn) - m.sent));
+      const transfer = median(recent.map((m) => m.received - m.sent));
+      const decoding = median(recent.map((m) => m.decoded - m.received));
+      Object.assign(slot.dataset, {fps: fps.toFixed(1), ageSentMs: String(Math.round(sentAge)),
+                                   ageBoundMs: String(Math.round(median(bound))),
+                                   ageBoundMaxMs: String(Math.round(Math.max(...bound))), span: String(Math.round(span))});
+      const shown = p.shown;
+      const rows = [
+        ["Delivered", `${fps.toFixed(1)} pictures/s (last ${Math.round(span / 1000)} s)`],
+        ["Age when sent", `${Math.round(sentAge)} ms median, on the device's clock (ingest to sending)`],
+        ["Age when shown", `at most ${Math.round(median(bound))} ms median, ${Math.round(Math.max(...bound))} ms `
+          + "largest (age when sent plus the time since this browser asked)"],
+        ["Asking to arrival", `${Math.round(transfer)} ms median (includes waiting for the next frame)`],
+        ["Decoding", `${Math.round(decoding)} ms median`],
+        ["Shown frame", `stream epoch ${shown.epoch}, frame ${shown.seq}; received by the device at ${clock(shown.ingest)}; `
+          + "the camera's capture time is not known"],
+      ];
+      const nodes = rows.map(([term, value]) => el("div", {}, [el("dt", {}, [term]), el("dd", {}, [value])]));
+      facts.replaceChildren(...nodes);
+      facts.hidden = false;
+    }
+
+    // ------------------------------------------------ start
+
+    const first = slot.querySelector("figure.frame");
+    if (first && first.dataset.frame && FRAME.test(first.dataset.frame)) {  // the page's own first picture
+      const [epoch, seq] = first.dataset.frame.split("-").map(Number);
+      const age = Number(first.dataset.ageMs);
+      p.after = first.dataset.frame;
+      p.shown = {id: first.dataset.frame, epoch, seq, ingest: first.dataset.ingest || "", age: Number.isFinite(age) ? age : 0,
+                 sent: requested, drawn: performance.now()};
+      restartPicture(requested, STALE_AFTER - p.shown.age);
+      setState("live");
+    } else {
+      expire();
+    }
+    panel.classList.add("playing");
+    if (typeof IntersectionObserver === "function") {
+      new IntersectionObserver((entries) => {
+        for (const entry of entries) p.inSight = entry.isIntersecting;
+        if (p.inSight) resume();
+        else if (p.wake) p.wake();
+      }).observe(slot);
+    }
+    p.statsTimer = setInterval(stats, 1000);
+    return {
+      run, resume, expire,
+      status(doc) {  // a status update may say the live view is off or starting; it never restarts the picture's timer
+        const preview = doc.preview;
+        if (preview && preview.enabled === false) setState("off", preview.reason);
+        if (!p.shown && !slot.querySelector("figure.frame")) place("frame-empty", doc.page.frame_empty);
+      },
+    };
   }
 
   // ------------------------------------------------------------------ the selected incident (status page)
@@ -360,10 +648,6 @@
         if (span && span.textContent !== label) span.textContent = label;
       }
     }
-  }
-
-  function badge(kind, text, glyph) {
-    return el("span", {class: `badge k-${kind}`}, [svgIcon(glyph), text]);
   }
 
   const SEVERITY = {info: ["off", "info"], warning: ["warn", "warn"], critical: ["crit", "crit"]};
@@ -636,22 +920,31 @@
     // A browser may pause animations in a hidden tab and resume them on return: expire every claim at both edges, so
     // that only an update received after the return can make anything current again.
     expireNow();
-    if (document.visibilityState === "visible") update();
+    if (document.visibilityState === "visible") {
+      update();
+      if (player) player.resume();
+    }
   });
   window.addEventListener("pageshow", (event) => {
     if (event.persisted) {
       expireNow();
       update();
+      if (player) player.resume();
     }
   });
   document.addEventListener("resume", () => {
     expireNow();
     update();
+    if (player) player.resume();
   });
-  window.addEventListener("online", () => update());
+  window.addEventListener("online", () => {
+    update();
+    if (player) player.resume();
+  });
 
   if (KIND === "status") {
-    initialPicture();
+    player = makePlayer();
+    if (player) player.run();
     const wanted = /^#incident-([A-Za-z0-9][A-Za-z0-9_-]{0,127})$/.exec(location.hash);
     if (wanted) select(wanted[1]);
   }
