@@ -187,7 +187,8 @@ class Harness:
                  scene_problem: str | None = None, notifier_problems: dict[str, str] | None = None,
                  flaky: dict[str, int] | None = None, live_preview: bool = False, picture_bytes: int = 0,
                  snapshots: bool = False, chat: bool = False, chat_run: Any = None,
-                 chat_admission: ChatAdmission = CHAT_ADMISSION) -> None:
+                 chat_admission: ChatAdmission = CHAT_ADMISSION, chat_validation: bool = False,
+                 pressure: Any = lambda: 2_000_000_000) -> None:
         self.clock = FakeClock(utc=T0)
         self.config = config or make_config()
         self.db = Database.open(tmp_path / "sentinel.db")
@@ -214,6 +215,7 @@ class Harness:
             notifier_problems=notifier_problems, status_refresh_s=0.0, live_preview=live_preview,
             encode=lambda image, fmt, **kw: label_encode(image, fmt, picture_bytes=picture_bytes, **kw),
             snapshots=self.writer, chat=chat, chat_run=chat_run, chat_admission=chat_admission,
+            chat_validation=chat_validation, pressure=pressure,  # never this machine's own memory
         )
         self.capture.connect()
 
@@ -1153,7 +1155,7 @@ def test_admitted_chat_asks_about_the_runtimes_newest_frame_on_the_scene_worker(
                                      revision="1+lfm2")
     asked: list[tuple[str, Any, str]] = []
 
-    def run(question: ChatQuestion, image: Any) -> tuple[str, bool]:
+    def run(question: ChatQuestion, image: Any, abort: Any = None) -> tuple[str, bool]:
         asked.append((question.question, image, threading.current_thread().name))
         return "A person stands near the door.", False
 
@@ -1172,6 +1174,60 @@ def test_admitted_chat_asks_about_the_runtimes_newest_frame_on_the_scene_worker(
         ("Who is near the door?", "asked-about", "sentinel-scene")]  # the runtime's own frame, on the scene worker
     assert h.capture.connects == 1  # no camera connection of its own
     assert h.runtime.snapshot()["components"]["chat"]["counters"] == {"accepted": 1, "answered": 1}
+
+
+def test_a_chat_validation_run_asks_the_model_and_memory_pressure_cancels_a_running_question(tmp_path) -> None:
+    """D77: not admitted, but a --chat-validation run may ask; the loop's gate then cancels a running question when
+    the device's pressure passes 5.0 GB, and pauses new ones, without touching monitoring."""
+    images = RecentImages()
+    analyzer = ThreadedSceneAnalyzer(lambda job, image: WorkerOutcome.completed(job.job_id, REPORT), images,
+                                     revision="1+lfm2")
+    release, ended = threading.Event(), []
+
+    def run(question: ChatQuestion, image: Any, abort: Any = None) -> tuple[str, bool]:
+        while not release.wait(0.01):
+            if abort is not None and abort.reason is not None:
+                ended.append(abort.reason)
+                from sentinel.scene.chat import ChatCancelled
+                raise ChatCancelled(abort.reason)
+        return "A chair by the window.", False
+
+    pressure = [2_000_000_000]
+    h = Harness(tmp_path, scene=SceneRuntime(analyzer, images), chat=True, chat_run=run, chat_validation=True,
+                pressure=lambda: pressure[0])
+    h.runtime.start()
+    try:
+        frame = h.frame(image=SimpleNamespace(shape=(480, 640, 3), label="asked-about"))
+        wait_for(lambda: analyzer.counters["delivered"] >= 1 and not analyzer.busy())
+        chat = h.runtime.chat
+        assert chat.availability()["state"] == "available" and "validation run" in chat.availability()["reason"]
+        code, accepted = chat.ask(ChatQuestion("What is visible?"))
+        assert code == 202
+        wait_for(lambda: chat.poll(accepted["job"])[1]["state"] == "answering")
+        pressure[0] = 5_100_000_000
+        h.idle(1.0)  # the loop's next sample, a second later
+        wait_for(lambda: chat.poll(accepted["job"])[1]["state"] == "cancelled")
+        assert ended == ["device memory pressure: monitoring comes first"]
+        assert chat.availability()["state"] == "paused"
+        processed = h.runtime.snapshot()["frames"]["processed"]
+        h.frame()  # monitoring goes on
+        assert h.runtime.snapshot()["frames"]["processed"] == processed + 1
+        summary = h.runtime.snapshot()["components"]["chat"]
+        assert summary["validation_run"] is True and summary["gate"]["open"] is False
+        assert summary["gate"]["peak_pressure_bytes"] == 5_100_000_000
+    finally:
+        release.set()
+        h.runtime.shutdown()
+    assert frame.frame_seq == 0
+
+
+def test_chat_validation_needs_chat(tmp_path, capsys, monkeypatch) -> None:
+    monkeypatch.setenv("SENTINEL_RTSP_URL", FAKE_URL)
+    config = tmp_path / "config.yaml"
+    config.write_text("config_version: 1\ncamera: {id: cam-1}\n")
+    assert main(["run", str(config), "--data-dir", str(tmp_path / "data"), "--engine", "x", "--chat-validation"],
+                devices=fake_devices(ThreadedSource())) == 1
+    assert "--chat-validation needs --chat" in capsys.readouterr().err
 
 
 def test_sentinel_run_offers_chat_only_with_its_flag_and_says_it_is_not_admitted(tmp_path, capsys, monkeypatch) -> None:

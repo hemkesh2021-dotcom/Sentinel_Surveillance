@@ -31,11 +31,21 @@ to ``EdgeCore.on_scene_outcome()``, so the core stays single-threaded.
   waiting) and no other side request is pending, and a scene job submitted
   before it starts runs first. It is never queued behind another and never
   replaces a scene job; cancel_side() drops it while it has not started.
+- **A running side request yields (D77).** A scene job submitted while a side
+  request runs aborts it at once (its ``abort`` callback: the chat closes its
+  request's connection, and llama-server cancels the task), so the scene job
+  waits only for the side request to end, never for its answer. abort_side()
+  ends it for other reasons (its deadline, memory pressure, stopping). Each
+  scene job's wait from submission to start is measured; the waits of jobs
+  submitted while a side request ran are kept (SIDE_WAITS_KEPT) and summarised
+  by side_delays().
 """
 
 from __future__ import annotations
 
+import statistics
 import threading
+import time
 from collections import Counter, OrderedDict, deque
 from collections.abc import Callable
 from typing import Any
@@ -46,6 +56,8 @@ from ..jobs import AnalysisJob, OutcomeKind, WorkerOutcome
 SIDE = "side"  # what _running holds while a side request runs; never a job ID
 IMAGES_KEPT = 4  # 640x480 BGR: 921,600 B each, plus at most one waiting and one running job's image
 INBOX_LIMIT = 8
+SIDE_WAITS_KEPT = 64
+PREEMPTED = "a scene job is waiting: monitoring comes first"
 
 
 class RecentImages:
@@ -83,14 +95,20 @@ class ThreadedSceneAnalyzer:
         images: RecentImages,
         *,
         revision: str,
+        now: Callable[[], int] = time.monotonic_ns,
     ) -> None:
         self._run_job = run_job
         self._images = images
         self._revision = revision
+        self._now = now  # waits are measured on this monotonic clock (ns)
         self._lock = threading.Lock()
         self._wake = threading.Condition(self._lock)
         self._waiting: tuple[AnalysisJob, Any] | None = None
-        self._side: tuple[Callable[[], Any], Callable[[], None], Callable[[Any], None]] | None = None
+        self._waiting_since: tuple[int, bool] | None = None  # when the waiting job came, and whether a side request ran
+        self._side: tuple[Callable[[], Any], Callable[[], None], Callable[[Any], None],
+                          Callable[[str], bool] | None] | None = None
+        self._running_abort: Callable[[str], bool] | None = None  # the running side request's abort
+        self._side_waits_ms: deque[float] = deque(maxlen=SIDE_WAITS_KEPT)
         self._running: str | None = None  # a job ID, or SIDE
         self._inbox: deque[tuple[str, WorkerOutcome]] = deque()
         self._stopping = False
@@ -122,14 +140,21 @@ class ThreadedSceneAnalyzer:
                 replaced = self._waiting[0].job_id
                 self.counters["replaced_waiting"] += 1
                 self._deliver(replaced, WorkerOutcome.failed(replaced, OutcomeKind.ERROR, "replaced before it started"))
+            behind_side = self._running == SIDE
             self._waiting = (job, image)
+            self._waiting_since = (self._now(), behind_side)
             self.counters["submitted"] += 1
             self._wake.notify()
+            abort = self._running_abort if behind_side else None
+        if abort is not None and abort(PREEMPTED):  # outside the lock: it closes a connection
+            with self._lock:
+                self.counters["side_preempted"] += 1
 
     def cancel(self, job_id: str) -> None:
         with self._lock:
             if self._waiting is not None and self._waiting[0].job_id == job_id:
                 self._waiting = None
+                self._waiting_since = None
                 self.counters["cancelled_waiting"] += 1
             elif self._running == job_id:
                 self.counters["cancelled_running"] += 1  # its outcome still arrives, late
@@ -146,11 +171,12 @@ class ThreadedSceneAnalyzer:
             return self._running is not None or self._waiting is not None or self._side is not None
 
     def submit_side(self, work: Callable[[], Any], *, started: Callable[[], None],
-                    finished: Callable[[Any], None]) -> bool:
+                    finished: Callable[[Any], None], abort: Callable[[str], bool] | None = None) -> bool:
         """Offer one lower-priority request (D74); whether it was accepted.
 
         ``started()`` and ``finished(result)`` are called on the worker thread; ``result`` is what ``work()``
-        returned or the exception it raised. Accepted only while nothing runs or waits here.
+        returned or the exception it raised. Accepted only while nothing runs or waits here. ``abort(reason)``, if
+        given, ends the request while it runs (D77): a scene job's arrival calls it, so does abort_side().
         """
         with self._lock:
             if self._stopping or self._thread is None or not self._thread.is_alive():
@@ -158,10 +184,29 @@ class ThreadedSceneAnalyzer:
             if self._running is not None or self._waiting is not None or self._side is not None:
                 self.counters["side_refused"] += 1
                 return False
-            self._side = (work, started, finished)
+            self._side = (work, started, finished, abort)
             self.counters["side_accepted"] += 1
             self._wake.notify()
             return True
+
+    def abort_side(self, reason: str) -> bool:
+        """End the running side request (its deadline, memory pressure, stopping); True if one was running."""
+        with self._lock:
+            abort = self._running_abort if self._running == SIDE else None
+        if abort is None or not abort(reason):
+            return False
+        with self._lock:
+            self.counters["side_aborted"] += 1
+        return True
+
+    def side_delays(self) -> dict[str, Any]:
+        """How long scene jobs submitted while a side request ran waited to start (ms; the latest SIDE_WAITS_KEPT)."""
+        with self._lock:
+            waits = list(self._side_waits_ms)
+        if not waits:
+            return {"n": 0, "median_ms": None, "max_ms": None, "last_ms": None}
+        return {"n": len(waits), "median_ms": round(statistics.median(waits), 1), "max_ms": round(max(waits), 1),
+                "last_ms": round(waits[-1], 1)}
 
     def cancel_side(self) -> bool:
         """Drop a side request that has not started; True if one was dropped."""
@@ -178,13 +223,17 @@ class ThreadedSceneAnalyzer:
             self._stopping = True
             if self._waiting is not None:
                 self._waiting = None
+                self._waiting_since = None
                 self.counters["dropped_at_stop"] += 1
             side, self._side = self._side, None
             self._wake.notify()
             thread = self._thread
+            running_abort = self._running_abort if self._running == SIDE else None
         if side is not None:
             self.counters["side_dropped_at_stop"] += 1
             side[2](RuntimeError("stopped"))
+        if running_abort is not None:
+            running_abort("the runtime is stopping")
         if thread is not None:
             thread.join(timeout_s)
             return not thread.is_alive()
@@ -200,13 +249,20 @@ class ThreadedSceneAnalyzer:
                 if self._waiting is None:  # scene jobs first; a side request only when none waits
                     side, self._side = self._side, None
                     self._running = SIDE
+                    self._running_abort = side[3]  # type: ignore[index]
                 else:
                     side = None
                     job, image = self._waiting
                     self._waiting = None
                     self._running = job.job_id
+                    if self._waiting_since is not None:
+                        since, behind_side = self._waiting_since
+                        if behind_side:
+                            self._side_waits_ms.append((self._now() - since) / 1e6)
+                            self.counters["jobs_waited_for_side"] += 1
+                    self._waiting_since = None
             if side is not None:
-                self._run_side(*side)  # type: ignore[arg-type]
+                self._run_side(*side[:3])  # type: ignore[arg-type]
                 del side
                 continue
             try:
@@ -230,6 +286,7 @@ class ThreadedSceneAnalyzer:
             self.counters["side_callback_failed"] += 1
         with self._lock:
             self._running = None
+            self._running_abort = None
             self.counters["side_completed"] += 1
 
     def _deliver(self, job_id: str, outcome: WorkerOutcome) -> None:

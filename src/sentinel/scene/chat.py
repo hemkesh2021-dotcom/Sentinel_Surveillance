@@ -7,7 +7,14 @@ the camera, run commands or establish an identity; nothing here holds a referenc
 - **Not admitted in this build.** The accepted resource profile measured scene analysis alone, with its one pinned
   request (SCENE_REQUEST_SHA256). A chat request is a different request on the same model, so concurrent scene and
   chat use is admitted only by a recorded ChatAdmission, after operator-run resource and interference checks.
-  CHAT_ADMISSION is NOT_ADMITTED: chat is unavailable, says why, and never reaches the model.
+  CHAT_ADMISSION is not admitted: chat is unavailable, says why, and never reaches the model, except in a guarded
+  validation run (``sentinel run --chat-validation``, D77), which exists to make those checks; the page and the
+  status then say that chat is being validated, not admitted.
+- **A running question yields (D77).** A scene job that arrives while a question runs ends it at once (the scene
+  worker's ``abort``: the question's request connection is closed and llama-server cancels the task), and so do the
+  question's own deadline (CHAT_DEADLINE_S) and memory pressure (ChatGate: no new question above 4.7 GB for three
+  samples or after repeated scene deadline misses, a running one cancelled above 5.0 GB). A cancelled question says
+  why; it is never retried or queued.
 - **The same model, the same worker, monitoring first.** A question runs on the scene worker's own thread
   (``ThreadedSceneAnalyzer.submit_side``), against the same loopback llama-server; no other model or camera
   connection is started. It is accepted only while that worker is idle, and a scene job that arrives meanwhile runs
@@ -44,7 +51,8 @@ from ..contracts import FrameRef
 from ..incidents.service import utc_text
 from ..media.clock import NS_PER_SECOND, Clock
 from ..media.health import VideoFreshness, VideoState
-from .llama_server import MODEL_NAME, TransportError, opencv_jpeg
+from .chat_gate import ChatGate
+from .llama_server import MODEL_NAME, AbortHandle, TransportError, opencv_jpeg
 
 CHAT_MAX_QUESTION = 300
 CHAT_MAX_HISTORY = 2  # earlier exchanges sent as context
@@ -78,18 +86,24 @@ JOB_ID = re.compile(r"[0-9a-f]{16}")
 
 @dataclass(frozen=True)
 class ChatAdmission:
-    """Whether concurrent scene and chat use is admitted, and on what evidence (D74)."""
+    """Whether concurrent scene and chat use is admitted, and on what evidence (D74); whether a guarded validation
+    run may use it before then (D77)."""
 
     admitted: bool
     reason: str
     evidence: str | None = None  # the operator-run checks it rests on, when admitted
+    validation_allowed: bool = False  # a --chat-validation run may ask the model, to make those checks
 
 
 CHAT_ADMISSION = ChatAdmission(
     admitted=False,
     reason=("not admitted: concurrent scene analysis and chat have not passed the operator-run resource and "
             "interference checks, so chat stays unavailable"),
+    validation_allowed=True,  # D77: only a guarded --chat-validation run, to make those checks
 )
+VALIDATION_NOTE = ("validation run: chat is not admitted; its answers and their effect on monitoring are being "
+                   "checked")
+CANCELLED = "cancelled"
 
 
 class ChatRequestError(ValueError):
@@ -98,6 +112,10 @@ class ChatRequestError(ValueError):
     def __init__(self, label: str) -> None:
         super().__init__(label)
         self.label = label
+
+
+class ChatCancelled(ChatRequestError):
+    """A running question that was ended (D77); ``label`` says why."""
 
 
 @dataclass(frozen=True)
@@ -189,14 +207,19 @@ class LlamaChatRequest:
         self._transport = transport
         self._encode = encode
 
-    def __call__(self, question: ChatQuestion, image: Any) -> tuple[str, bool]:
+    def __call__(self, question: ChatQuestion, image: Any, abort: AbortHandle | None = None) -> tuple[str, bool]:
         try:
             jpeg = self._encode(image)
         except Exception as exc:  # noqa: BLE001 - a bad frame is this question's error
             raise ChatRequestError(f"the frame could not be encoded ({type(exc).__name__})") from None
+        if abort is not None and abort.reason is not None:
+            raise ChatCancelled(abort.reason)
         try:
-            data = self._transport.post(chat_request_body(jpeg, question))
+            body = chat_request_body(jpeg, question)
+            data = self._transport.post(body, abort=abort) if abort is not None else self._transport.post(body)
         except TransportError as exc:
+            if exc.aborted:
+                raise ChatCancelled((abort.reason if abort is not None else None) or "cancelled") from None
             raise ChatRequestError("the model did not answer in time" if exc.timed_out else
                                    f"the model could not be reached ({exc.label})") from None
         try:
@@ -216,7 +239,8 @@ class _Job:
     job_id: str
     frame: dict[str, Any]
     accepted_ns: int
-    state: str = "waiting"  # waiting, answering, answered, error, timeout, busy
+    abort: AbortHandle = field(default_factory=AbortHandle)
+    state: str = "waiting"  # waiting, answering, answered, error, timeout, busy, cancelled
     answer: str | None = None
     cut_short: bool = False
     reason: str | None = None
@@ -234,9 +258,12 @@ class ChatService:
 
     def __init__(self, *, enabled: bool, admission: ChatAdmission, scene: Any, latest: Callable[[], Any],
                  assess: Callable[[FrameRef], VideoFreshness], clock: Clock,
-                 run: Callable[[ChatQuestion, Any], tuple[str, bool]] | None, stale_after_s: float) -> None:
+                 run: Callable[..., tuple[str, bool]] | None, stale_after_s: float,
+                 gate: ChatGate | None = None, validation_run: bool = False) -> None:
         self._enabled = enabled
         self._admission = admission
+        self._gate = gate
+        self._validation = validation_run and admission.validation_allowed and not admission.admitted
         self._scene = scene
         self._latest = latest
         self._assess = assess
@@ -254,17 +281,33 @@ class ChatService:
         """off, unavailable or available, with the reason; fixed text."""
         if not self._enabled:
             return {"state": "off", "reason": "chat is off; start sentinel run with --chat to offer it"}
-        if not self._admission.admitted:
+        if not self._admission.admitted and not self._validation:
             return {"state": "unavailable", "reason": self._admission.reason}
         if self._scene is None or self._run is None:
             return {"state": "unavailable",
                     "reason": "the scene model is not running (start sentinel run with --scene)"}
+        if self._gate is not None:
+            open_, why = self._gate.allows_new()
+            if not open_:
+                return {"state": "paused", "reason": why or "monitoring comes first"}
+        if self._validation:
+            return {"state": "available", "reason": f"ask about the picture the camera is showing now ({VALIDATION_NOTE})"}
         return {"state": "available", "reason": "ask about the picture the camera is showing now"}
 
     def summary(self) -> dict[str, Any]:
         """For the runtime status: the availability and counters, never a question or an answer."""
         with self._lock:
-            return {**self.availability(), "counters": dict(sorted(self.counters.items())), "advisory": ADVISORY}
+            out = {**self.availability(), "counters": dict(sorted(self.counters.items())), "advisory": ADVISORY,
+                   "validation_run": self._validation}
+        if self._gate is not None:
+            out["gate"] = self._gate.summary()
+        if self._scene is not None:
+            out["scene_waits_behind_chat"] = self._scene.side_delays()
+        return out
+
+    def abort_running(self, reason: str) -> bool:
+        """End a running question (memory pressure, stopping); True if one was running."""
+        return self._scene is not None and self._scene.abort_side(reason)
 
     # ------------------------------------------------------------ asking
 
@@ -272,8 +315,8 @@ class ChatService:
         """(HTTP status, document) for a validated question."""
         available = self.availability()
         if available["state"] != "available":
-            self._count("refused_unavailable")
-            return 503, {"state": "unavailable" if available["state"] == "unavailable" else "off",
+            self._count("refused_paused" if available["state"] == "paused" else "refused_unavailable")
+            return 503, {"state": available["state"] if available["state"] in ("unavailable", "paused") else "off",
                          "reason": available["reason"]}
         now = self._clock.monotonic_ns()
         with self._lock:
@@ -317,7 +360,7 @@ class ChatService:
         del image
 
         def work() -> tuple[str, bool]:
-            return self._run(question, held.pop())  # type: ignore[misc]
+            return self._run(question, held.pop(), job.abort)  # type: ignore[misc]
 
         def started() -> None:
             with job.lock:
@@ -328,7 +371,7 @@ class ChatService:
             self._finish(job, result)
 
         with self._lock:
-            accepted = self._scene.submit_side(work, started=started, finished=finished)
+            accepted = self._scene.submit_side(work, started=started, finished=finished, abort=job.abort.abort)
             if not accepted:
                 self.counters["busy_scene"] += 1
                 return 429, {"state": "busy", "reason": BUSY}
@@ -366,6 +409,8 @@ class ChatService:
             elif job.state in ("waiting", "answering") and now - job.accepted_ns > CHAT_DEADLINE_S * NS_PER_SECOND:
                 job.state, job.reason, job.finished_ns = "timeout", "no answer in time", now
                 gave_up = "timeouts"
+        if gave_up == "timeouts":
+            job.abort.abort("no answer in time")  # D77: the request itself ends too, freeing the model
         if gave_up is not None:
             self._count(gave_up)
 
@@ -377,6 +422,9 @@ class ChatService:
             if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], str):
                 job.state, job.answer, job.cut_short = "answered", result[0], bool(result[1])
                 self._count("answered")
+            elif isinstance(result, ChatCancelled):
+                job.state, job.reason = CANCELLED, result.label
+                self._count("cancelled")
             else:
                 job.state = "error"
                 job.reason = (result.label if isinstance(result, ChatRequestError)

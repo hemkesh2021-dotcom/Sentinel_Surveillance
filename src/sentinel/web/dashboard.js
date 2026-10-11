@@ -767,10 +767,12 @@
       answering: "The scene model is answering…",
     };
     const TITLES = {busy: "Busy", unavailable: "Unavailable", off: "Chat is off", no_fresh_frame: "No fresh frame",
-                    timeout: "No answer in time", invalid: "Not sent", refused: "Refused", unknown: "Lost"};
+                    timeout: "No answer in time", invalid: "Not sent", refused: "Refused", unknown: "Lost",
+                    cancelled: "Cancelled", paused: "Paused"};
     const REASONS = {unknown: "the server no longer has this question; it may have restarted"};
     const GLYPHS = {sending: "clock", waiting: "clock", answering: "clock", answered: "check", busy: "warn",
-                    no_fresh_frame: "warn", timeout: "warn", unavailable: "off", off: "off", unknown: "off"};
+                    no_fresh_frame: "warn", timeout: "warn", unavailable: "off", off: "off", unknown: "off",
+                    cancelled: "warn", paused: "clock"};
 
     const chatState = () => {
       const element = document.querySelector("[data-chat-state]");

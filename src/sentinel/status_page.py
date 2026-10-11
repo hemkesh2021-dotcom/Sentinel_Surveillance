@@ -910,6 +910,8 @@ def _chat_state(view: Mapping[str, Any] | None) -> str:
     state = str(view.get("state"))
     if state == "available":
         badge = _claim(_badge("ok", "Available", glyph="chat"), _badge("off", "Was available", glyph="clock"))
+    elif state == "paused":  # D77: memory pressure or missed scene deadlines; monitoring comes first
+        badge = _badge("warn", "Paused", glyph="clock")
     else:
         badge = _badge("off", {"off": "Off", "unavailable": "Unavailable"}.get(state, state.capitalize()), glyph="off")
     return f'<div class=row data-chat-state="{_e(state)}">{badge}<span class=muted>{_e(view.get("reason"))}.</span></div>'

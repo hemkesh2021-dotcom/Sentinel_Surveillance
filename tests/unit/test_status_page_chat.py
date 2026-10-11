@@ -48,7 +48,7 @@ class Rig:
         self.port = self.server.address[1]
         self.origin = f"http://127.0.0.1:{self.port}"
 
-    def answer(self, question: Any, image: Any) -> tuple[str, bool]:
+    def answer(self, question: Any, image: Any, abort: Any = None) -> tuple[str, bool]:
         self.questions.append(question.question)
         return f"Seen: {question.question}", False
 

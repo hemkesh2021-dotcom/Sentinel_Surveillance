@@ -161,6 +161,7 @@ class SceneLane:
         job = self._in_flight
         if job is not None and now_ns >= job.deadline_mono_ns:
             self._in_flight = None
+            self.counters["deadline_missed"] += 1  # D77: what chat's gate and the interference check count
             self._remember_timed_out(job)
             self._cancel(job)
             reason = "no result by the deadline"

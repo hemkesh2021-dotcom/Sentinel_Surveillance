@@ -33,6 +33,7 @@ import hashlib
 import http.client
 import json
 import socket
+import threading
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -141,12 +142,60 @@ def opencv_jpeg(image: Any) -> bytes:
 
 
 class TransportError(Exception):
-    """A request failure described by a fixed label."""
+    """A request failure described by a fixed label; ``aborted`` when another thread ended it (AbortHandle)."""
 
-    def __init__(self, label: str, *, timed_out: bool = False) -> None:
+    def __init__(self, label: str, *, timed_out: bool = False, aborted: bool = False) -> None:
         super().__init__(label)
         self.label = label
         self.timed_out = timed_out
+        self.aborted = aborted
+
+
+class AbortHandle:
+    """Lets another thread end one request in flight (D77).
+
+    ``abort`` shuts the request's connection down, so the blocked call returns at once. llama-server (b8932: the
+    installed source, tools/server, checks a non-streamed request's connection about once a second while its task
+    runs, then queues a cancel ahead of other tasks, which frees the slot after the batch it is working on) stops the
+    task: the next request does not wait for this one to finish. A handle aborted before the request starts stops it
+    from starting. Thread-safe; ``reason`` is fixed text.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._sock: socket.socket | None = None
+        self._reason: str | None = None
+
+    @property
+    def reason(self) -> str | None:
+        with self._lock:
+            return self._reason
+
+    def attach(self, sock: socket.socket | None) -> bool:
+        """Called by the transport once connected; False if the handle was already aborted."""
+        with self._lock:
+            if self._reason is not None:
+                return False
+            self._sock = sock
+            return True
+
+    def detach(self) -> None:
+        with self._lock:
+            self._sock = None
+
+    def abort(self, reason: str) -> bool:
+        """End the request (or stop it from starting); False if it was already aborted."""
+        with self._lock:
+            if self._reason is not None:
+                return False
+            self._reason = reason
+            sock = self._sock
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass  # already closed: the request has ended either way
+        return True
 
 
 class LoopbackTransport:
@@ -163,19 +212,32 @@ class LoopbackTransport:
         self._timeout_s = timeout_s
         self._connection = connection
 
-    def post(self, body: bytes) -> bytes:
+    def post(self, body: bytes, *, abort: AbortHandle | None = None) -> bytes:
+        """The response body; with ``abort``, another thread may end the request (TransportError ``aborted``)."""
         conn = self._connection(LOOPBACK_HOST, self._port, timeout=self._timeout_s)
         try:
+            if abort is not None:
+                conn.connect()
+                if not abort.attach(getattr(conn, "sock", None)):
+                    raise TransportError("aborted", aborted=True)
             conn.request("POST", COMPLETIONS_PATH, body=body, headers={"Content-Type": "application/json"})
             response = conn.getresponse()
             data = response.read(MAX_RESPONSE_BYTES + 1)
             status = response.status
         except (TimeoutError, socket.timeout):
+            if abort is not None and abort.reason is not None:
+                raise TransportError("aborted", aborted=True) from None
             raise TransportError("request_timed_out", timed_out=True) from None
         except (OSError, http.client.HTTPException) as exc:
+            if abort is not None and abort.reason is not None:
+                raise TransportError("aborted", aborted=True) from None
             raise TransportError(f"request_failed:{type(exc).__name__}") from None
         finally:
+            if abort is not None:
+                abort.detach()
             conn.close()
+        if abort is not None and abort.reason is not None:
+            raise TransportError("aborted", aborted=True)  # an answer that arrived as it was aborted is not used
         if status != 200:
             raise TransportError(f"http_{status}" if 100 <= status <= 599 else "http_invalid_status")
         if len(data) > MAX_RESPONSE_BYTES:

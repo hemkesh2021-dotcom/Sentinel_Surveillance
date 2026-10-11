@@ -143,6 +143,7 @@ from .rules.zones import ZonePhase
 from .runtime import CoreOutput, EdgeCore, tick_record
 from .scene.analyzer import IMAGES_KEPT, RecentImages, ThreadedSceneAnalyzer
 from .scene.chat import CHAT_ADMISSION, ChatAdmission, ChatService
+from .scene.chat_gate import SAMPLE_INTERVAL_S as CHAT_GATE_SAMPLE_S, ChatGate, read_pressure
 from .scene.llama_server import PROFILED_FLAGS, PROMPT_CACHE_FLAGS, SCENE_REQUEST_SHA256
 from .storage.database import Database, DatabaseError
 from .tracking.tracker import FrameOutcome, PersonTracker, TrackerError
@@ -289,8 +290,10 @@ class DemoRuntime:
         encode: Encoder = encode_jpeg,
         snapshots: SnapshotWriter | None = None,
         chat: bool = False,
-        chat_run: Callable[[Any, Any], Any] | None = None,
+        chat_run: Callable[..., Any] | None = None,
         chat_admission: ChatAdmission = CHAT_ADMISSION,
+        chat_validation: bool = False,
+        pressure: Callable[[], int | None] = read_pressure,
     ) -> None:
         if tracker is None and detector_problem is None:
             detector_problem = "detector_not_configured"
@@ -322,7 +325,8 @@ class DemoRuntime:
         self._identity_records: deque[dict[str, Any]] = deque()
         self._snapshots = snapshots
         # D74: chat reads frames only when it can be used (admitted, with the scene model); otherwise it keeps none.
-        chat_usable = chat and chat_admission.admitted and scene is not None and chat_run is not None
+        chat_allowed = chat_admission.admitted or (chat_validation and chat_admission.validation_allowed)
+        chat_usable = chat and chat_allowed and scene is not None and chat_run is not None
         self._recent = (RecentFrames() if live_preview or snapshots is not None or chat_usable
                         else None)  # only when something reads it
         self._pinned: Counter[FrameKey] = Counter()  # D70: frames whose images wait with unrecorded observations
@@ -330,15 +334,19 @@ class DemoRuntime:
                                      pressure=self._monitoring_backlog)
                          if live_preview and self._recent is not None else None)
         self._chat: ChatService | None = None
-        if chat:  # D74: advisory, and unavailable (saying why) unless admitted and the scene model runs
+        self._chat_gate: ChatGate | None = None  # D77: chat's pressure response, sampled on this loop at most once a second
+        self._pressure = pressure
+        self._next_gate_ns = 0
+        if chat:  # D74: advisory, and unavailable (saying why) unless admitted (or validated, D77) and the scene model runs
             watching = clock.mono()
             recent = self._recent
+            self._chat_gate = ChatGate() if chat_usable else None
             self._chat = ChatService(
                 enabled=True, admission=chat_admission, scene=scene.analyzer if scene is not None else None,
                 latest=recent.latest if chat_usable and recent is not None else lambda: None, clock=clock,
                 run=chat_run if chat_usable else None,
                 assess=lambda frame: assess_frame(frame, capture.connected, clock.mono(), watching, config.freshness),
-                stale_after_s=config.freshness.stale_after_s)
+                stale_after_s=config.freshness.stale_after_s, gate=self._chat_gate, validation_run=chat_validation)
         self._frames: OrderedDict[FrameKey, FrameRef] = OrderedDict()
         self._pending: deque[tuple[IncidentSignal, FrameKey | None, _Shot | None]] = deque()
         self._retry_at_ns = 0
@@ -458,7 +466,28 @@ class DemoRuntime:
                                                         error=result.error))
         if self._pending:
             self._handle(None)
+        self._observe_chat_gate()
         self._refresh_status()
+
+    def _observe_chat_gate(self) -> None:
+        """D77: one pressure sample (and the scene deadline misses so far) for chat's gate, at most once a second; a
+        cancellation it asks for ends the running question. Monitoring itself is never changed by it."""
+        if self._chat_gate is None:
+            return
+        now = self._clock.monotonic_ns()
+        if now < self._next_gate_ns:
+            return
+        self._next_gate_ns = now + round(CHAT_GATE_SAMPLE_S * NS_PER_SECOND)
+        lane = self._core.lane
+        misses = 0 if lane is None else lane.counters["deadline_missed"] + lane.counters["enrichment_skipped"]
+        try:
+            pressure = self._pressure()
+        except Exception:  # noqa: BLE001 - an unreadable reading closes chat (the gate fails closed)
+            pressure = None
+        self._chat_gate.observe(now, pressure, misses)
+        reason = self._chat_gate.take_cancel()
+        if reason is not None and self._chat is not None:
+            self._chat.abort_running(reason)
 
     def _on_frame(self, captured: CapturedFrame, connected: StreamIdentity | None) -> CoreOutput:
         frame = captured.frame
@@ -862,6 +891,7 @@ class RunOptions:
     live_preview: bool = False  # D69: the status page's live view; off by default
     snapshots: SnapshotPolicy | None = None  # D70: incident snapshots under data_dir/snapshots; None: off (default)
     chat: bool = False  # D74: advisory chat on the status page; off by default, and unavailable unless admitted
+    chat_validation: bool = False  # D77: --chat-validation: chat may ask the model in this guarded run, not admitted
 
 
 @dataclass(frozen=True)
@@ -1296,7 +1326,7 @@ def assemble(
             tracker=tracker, detector_problem=detector_problem, scene=scene, scene_problem=scene_problem,
             face=face, face_problem=face_problem, enrollment=None if gallery is None else gallery.enrollment(),
             notifier_problems=notifier_problems, live_preview=options.live_preview, encode=devices.encode,
-            snapshots=snapshots, chat=options.chat,
+            snapshots=snapshots, chat=options.chat, chat_validation=options.chat_validation,
             chat_run=(devices.chat_request(config.scene_server.port, config.scene_server.request_timeout_s)
                       if options.chat and scene is not None and devices.chat_request is not None else None),
         )

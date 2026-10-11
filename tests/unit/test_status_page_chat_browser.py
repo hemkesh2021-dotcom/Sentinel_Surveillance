@@ -55,7 +55,7 @@ class Model:
         self.release.set()
         self.questions: list[str] = []
 
-    def __call__(self, question: Any, image: Any) -> tuple[str, bool]:
+    def __call__(self, question: Any, image: Any, abort: Any = None) -> tuple[str, bool]:
         self.questions.append(question.question)
         self.release.wait(20.0)
         return "One chair stands by the window; nobody is in the picture.", False

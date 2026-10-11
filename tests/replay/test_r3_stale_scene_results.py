@@ -45,6 +45,7 @@ def test_late_answer_for_incident_a_never_becomes_current_and_only_annotates_a(
     ]
     assert [job.incident_id for job in jobs] == [None, "inc-A", None, "inc-B"]
     assert run.analyzer.cancelled == ["job-2"]  # the lane gave up on it at its deadline
+    assert run.lane.counters["deadline_missed"] == 1  # D77: what chat's gate and the interference check count
 
     by_id = {evidence.evidence_id: (ms, evidence, routing) for ms, evidence, routing in run.evidence}
     assert list(by_id) == ["job-1.observed", "job-2.timeout", "job-3.observed", "job-2.observed.late"]

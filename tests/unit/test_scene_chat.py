@@ -42,7 +42,7 @@ from sentinel.scene.chat import (
     clean_text,
     parse_chat_request,
 )
-from sentinel.scene.llama_server import IMAGE_SIZE, MODEL_NAME, TransportError
+from sentinel.scene.llama_server import IMAGE_SIZE, MODEL_NAME, AbortHandle, TransportError
 
 ADMITTED = ChatAdmission(admitted=True, reason="admitted for this test", evidence="a synthetic fixture")
 
@@ -52,13 +52,43 @@ def completion(content: str, *, finish: str = "stop", **message: Any) -> bytes:
                                     "message": {"role": "assistant", "content": content, **message}}]}).encode()
 
 
+class Socket:
+    """What AbortHandle shuts down: here, an event the transport stand-in waits on."""
+
+    def __init__(self) -> None:
+        self.closed = threading.Event()
+
+    def shutdown(self, how: int) -> None:
+        self.closed.set()
+
+
 class Transport:
+    """The model's stand-in. ``hold`` cleared: a request blocks until it is set, or until the request is aborted, which
+    then ends it as a shut-down connection ends the real one (LoopbackTransport)."""
+
     def __init__(self, *replies: Any) -> None:
         self.replies = list(replies)
         self.bodies: list[dict[str, Any]] = []
+        self.hold = threading.Event()
+        self.hold.set()
+        self.aborted: list[str] = []
+        self.running = threading.Event()
 
-    def post(self, body: bytes) -> bytes:
+    def post(self, body: bytes, abort: AbortHandle | None = None) -> bytes:
         self.bodies.append(json.loads(body))
+        sock = Socket()
+        if abort is not None and not abort.attach(sock):  # type: ignore[arg-type]
+            raise TransportError("aborted", aborted=True)
+        try:
+            self.running.set()
+            while not self.hold.wait(0.01):
+                if sock.closed.is_set():
+                    self.aborted.append(abort.reason if abort is not None else "")
+                    raise TransportError("aborted", aborted=True)
+        finally:
+            self.running.clear()
+            if abort is not None:
+                abort.detach()
         reply = self.replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
@@ -141,7 +171,8 @@ def test_chat_is_unavailable_in_this_build_and_says_why_without_asking_the_model
                           clock=FakeClock(), run=None, stale_after_s=2.0)
     assert noscene.availability() == {"state": "unavailable",
                                       "reason": "the scene model is not running (start sentinel run with --scene)"}
-    assert set(off.service.summary()) == {"state", "reason", "counters", "advisory"}
+    assert set(off.service.summary()) == {"state", "reason", "counters", "advisory", "validation_run",
+                                          "scene_waits_behind_chat"}
 
 
 def test_without_a_fresh_frame_it_says_so_and_the_model_is_not_asked(rig) -> None:
@@ -230,8 +261,8 @@ def test_one_question_at_a_time_even_where_the_scheduler_would_take_another(rig)
 
 
 def test_a_question_past_its_deadline_is_given_up_and_never_overlaps_the_next(rig) -> None:
-    r = rig(completion("late"), completion("on time"))
-    r.gate.clear()  # the first question holds the worker
+    r = rig(completion("on time"))
+    r.gate.clear()  # the first question holds the worker, still preparing its picture
     r.frame()
     code, first = r.service.ask(ChatQuestion("First?"))
     _until(lambda: r.service.poll(first["job"])[1]["state"] == "answering")
@@ -242,11 +273,112 @@ def test_a_question_past_its_deadline_is_given_up_and_never_overlaps_the_next(ri
     assert r.service.poll(first["job"])[1]["state"] == "timeout"
     r.gate.set()
     _until(lambda: not r.analyzer.busy())
-    assert r.service.poll(first["job"])[1]["state"] == "timeout"  # its late answer is dropped
+    assert r.service.poll(first["job"])[1]["state"] == "timeout"
+    assert r.transport.bodies == []  # D77: ended at its deadline, it never asked the model
     r.frame()
     code, third = r.service.ask(ChatQuestion("Third?"))
     assert code == 202 and r.answer(third["job"])["answer"] == "on time"
-    assert len(r.transport.bodies) == 2  # one request at a time, never overlapping
+    assert len(r.transport.bodies) == 1  # one request at a time, never overlapping
+
+
+def test_a_question_running_past_its_deadline_has_its_request_ended_and_frees_the_model(rig) -> None:
+    r = rig(completion("never used"), completion("on time"))
+    r.transport.hold.clear()  # the request is with the model and does not finish
+    r.frame()
+    code, first = r.service.ask(ChatQuestion("First?"))
+    assert r.transport.running.wait(5.0)
+    r.clock.advance(30.1)
+    assert r.service.poll(first["job"])[1]["state"] == "timeout"
+    _until(lambda: not r.analyzer.busy())  # the request ended: the worker is free without waiting for an answer
+    assert r.transport.aborted == ["no answer in time"]
+    r.transport.hold.set()
+    r.frame()
+    code, second = r.service.ask(ChatQuestion("Second?"))
+    assert code == 202 and r.answer(second["job"])["answer"] == "never used"  # the next reply in turn: nothing late
+
+
+def test_a_scene_job_that_arrives_while_a_question_runs_ends_it_and_starts_at_once(rig) -> None:
+    ran = []
+
+    def scene_job(job: AnalysisJob, image: Any) -> WorkerOutcome:
+        ran.append(job.job_id)
+        return WorkerOutcome.completed(job.job_id, "{}")
+
+    r = rig(completion("unused"), scene_job=scene_job)
+    r.transport.hold.clear()
+    r.frame()
+    code, first = r.service.ask(ChatQuestion("What is on the table?"))
+    assert r.transport.running.wait(5.0)
+    frame = r.frames.latest()[0]
+    r.analyzer._images.put(frame.key, object())  # type: ignore[attr-defined]  # the lane's job names a held frame
+    job = AnalysisJob(job_id="scene-1", frame=frame, purpose=JobPurpose.PERIODIC,
+                      deadline_mono_ns=frame.ingest_mono_ns + 8 * NS_PER_SECOND)
+    r.analyzer.submit(job)
+    _until(lambda: ran == ["scene-1"])
+    document = r.service.poll(first["job"])[1]
+    assert document["state"] == "cancelled" and document["reason"] == (
+        "a scene job is waiting: monitoring comes first")
+    assert r.transport.aborted == ["a scene job is waiting: monitoring comes first"]
+    waits = r.analyzer.side_delays()
+    assert waits["n"] == 1 and waits["max_ms"] < 1000  # it waited only for the question to end, never for an answer
+    counters = r.analyzer.counters
+    assert counters["side_preempted"] == 1 and counters["jobs_waited_for_side"] == 1
+    assert r.service.summary()["counters"]["cancelled"] == 1
+
+
+def test_a_question_cancelled_before_its_request_starts_never_reaches_the_model(rig) -> None:
+    r = rig(completion("unused"))
+    r.gate.clear()  # still preparing its picture
+    r.frame()
+    code, first = r.service.ask(ChatQuestion("Anyone there?"))
+    _until(lambda: r.service.poll(first["job"])[1]["state"] == "answering")
+    assert r.service.abort_running("device memory pressure: monitoring comes first")
+    r.gate.set()
+    _until(lambda: r.service.poll(first["job"])[1]["state"] == "cancelled")
+    assert r.transport.bodies == [] and r.analyzer.counters["side_aborted"] == 1
+    assert not r.service.abort_running("again")  # nothing runs now
+
+
+def test_memory_pressure_pauses_new_questions_and_cancels_a_running_one(rig) -> None:
+    from sentinel.scene.chat_gate import ChatGate
+
+    r = rig(completion("unused"), completion("after"))
+    gate = ChatGate()
+    r.service._gate = gate  # type: ignore[attr-defined]
+    r.transport.hold.clear()
+    r.frame()
+    code, first = r.service.ask(ChatQuestion("Is the door open?"))
+    assert code == 202 and r.transport.running.wait(5.0)
+    gate.observe(1, 5_100_000_000, 0)  # above 5.0 GB: cancel optional work
+    reason = gate.take_cancel()
+    assert reason == "device memory pressure: monitoring comes first" and gate.take_cancel() is None
+    assert r.service.abort_running(reason)
+    _until(lambda: r.service.poll(first["job"])[1]["state"] == "cancelled")
+    assert r.transport.aborted == [reason]
+    r.frame()
+    code, document = r.service.ask(ChatQuestion("And now?"))
+    assert (code, document["state"]) == (503, "paused") and "above 5 GB" in document["reason"]
+    assert r.service.availability()["state"] == "paused"
+    r.transport.hold.set()
+    for second in range(2, 64):  # below 4.5 GB for 60 s, no scene deadline missed: open again
+        gate.observe(second * NS_PER_SECOND, 4_000_000_000, 0)
+    assert r.service.availability()["state"] == "available"
+
+
+def test_a_validation_run_may_ask_and_says_it_is_not_admitted_while_others_stay_unavailable(rig) -> None:
+    r = rig(completion("A chair by the window."), admission=CHAT_ADMISSION)
+    assert r.service.availability() == {"state": "unavailable", "reason": CHAT_ADMISSION.reason}
+    r.service._validation = True  # type: ignore[attr-defined]  # what ChatService(validation_run=True) sets
+    available = r.service.availability()
+    assert available["state"] == "available" and "validation run: chat is not admitted" in available["reason"]
+    r.frame()
+    code, first = r.service.ask(ChatQuestion("What is visible?"))
+    assert code == 202 and r.answer(first["job"])["answer"] == "A chair by the window."
+    assert r.service.summary()["validation_run"] is True
+    never = ChatService(enabled=True, admission=ChatAdmission(admitted=False, reason="no"), scene=r.analyzer,
+                        latest=r.frames.latest, assess=lambda f: None, clock=r.clock, run=None, stale_after_s=2.0,
+                        validation_run=True)
+    assert never.availability() == {"state": "unavailable", "reason": "no"}  # only where the record allows it
 
 
 def test_monitoring_comes_first_and_nothing_queues(rig) -> None:
@@ -341,6 +473,12 @@ class _IdleThenBusy:
 
     def cancel_side(self) -> bool:
         return True
+
+    def abort_side(self, reason: str) -> bool:
+        return False
+
+    def side_delays(self) -> dict[str, Any]:
+        return {"n": 0, "median_ms": None, "max_ms": None, "last_ms": None}
 
 
 @pytest.mark.parametrize(("body", "label"), [

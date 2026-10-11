@@ -331,7 +331,8 @@ html.js .peek[aria-pressed=true] { background: var(--accent); color: var(--accen
   overflow-wrap: anywhere; }
 .exchange { border-inline-start: 4px solid var(--accent); }
 .exchange[data-state=answered] { border-inline-start-color: var(--border); }
-.exchange[data-state=busy], .exchange[data-state=no_fresh_frame], .exchange[data-state=timeout] {
+.exchange[data-state=busy], .exchange[data-state=no_fresh_frame], .exchange[data-state=timeout],
+.exchange[data-state=cancelled], .exchange[data-state=paused] {
   border-inline-start-color: var(--warn-ink); }
 .exchange[data-state=unavailable], .exchange[data-state=off], .exchange[data-state=unknown] {
   border-inline-start-color: var(--off-ink); }

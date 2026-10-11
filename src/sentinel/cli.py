@@ -389,6 +389,11 @@ def main(
         "admitted scene model on its own worker, monitoring first. It needs --scene and a chat admission, which this "
         "build does not have, so chat stays unavailable and says why. Needs the status page",
     )
+    run.add_argument(
+        "--chat-validation", action="store_true",
+        help="D77: a guarded validation run only: chat may ask the scene model although it is not admitted, so that "
+        "its resource and interference checks can be made; the page and the status say so. Needs --chat",
+    )
     run.add_argument("--status-interval-s", type=_positive_seconds, default=30.0,
                      help="print a numbers-only status line this often (default 30)")
     incident_parser = commands.add_parser(
@@ -682,6 +687,9 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
     if args.chat and not args.status_port:
         print("run: --chat needs the status page (--status-port other than 0)", file=sys.stderr)
         return 1
+    if args.chat_validation and not args.chat:
+        print("run: --chat-validation needs --chat", file=sys.stderr)
+        return 1
     face = None
     if args.face:
         if secret is None:
@@ -704,6 +712,7 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
         live_preview=args.live_preview,
         snapshots=SnapshotPolicy() if args.snapshots else None,
         chat=args.chat,
+        chat_validation=args.chat_validation,
     )
     clock = SystemClock()
     holder: dict[str, Any] = {}
