@@ -179,7 +179,8 @@ RELEASE = vocab("none", "post_load")  # memory_policy model-file release labels
 RELEASE_RESULTS = vocab("returned_0", "returned_error", "open_failed", "unsupported")  # memory_policy
 RELEASE_COMPONENTS = vocab("scene", "detector", "face")  # memory_policy.RELEASE_FILE_ROLES
 RELEASE_ROLES = vocab("llm", "mmproj", "engine", "facenet512_weights.h5", "face_detection_yunet_2023mar.onnx")
-STOPPED_PARTS = vocab("capture", "face_worker", "scene_server", "scene_worker", "outbox", "status_page")
+STOPPED_PARTS = vocab("capture", "face_worker", "scene_server", "scene_worker", "outbox", "status_page",
+                      "snapshots", "live_view")  # the last two only with --snapshots and --live-preview (D70, D75)
 CHANNELS = vocab("telegram")
 GUARD_STATUS = Either((vocab("duration_stop", "child_exited", "cleanup_failed", "forced_stop", "guard_stop",
                              "ready_timeout", "operator_interrupt"), template(r"refused:(.+)")))
@@ -207,6 +208,101 @@ TRANSITION_REASON = template(*(fixed(t) for t in (
     r"(\d+) consistent matches")
 INCIDENT_TITLE = template(r"Person in restricted zone '(.*)'", r"Person dwelling in zone '(.*)'",
                           fixed("Possible fire or smoke (scene model only, unconfirmed)"))
+
+# D78: what --live-preview (D69, D75), --snapshots (D70) and --chat [--chat-validation] (D74, D77) add to a run's
+# evidence, field by field, so that a combined run is read as strictly as a face-only one. A run without those flags
+# has none of these fields. Fixed text is declared as fixed text, never as free text.
+PREVIEW_STATE = vocab("live", "stale", "offline", "starting")  # live_preview.STATE_NAMES
+PREVIEW_REASON = template(
+    fixed("the newest frame of the connected stream"), fixed("no frame yet since the runtime started"),
+    fixed("no frame received"), r"no new frame for (\d+) s \(offline after ([\d.]+) s\)",
+    r"no new frame for ([\d.]+) s \(stale after ([\d.]+) s\)",
+    fixed("the stream connection this frame came from has ended; reconnecting"))
+TIME_QUALITY = vocab("none", "stream_relative", "capture_synced")  # contracts.SourceTimeQuality
+TIME_LABEL = template(*(fixed("ingest time: when this device received and decoded the frame, not when the camera "
+                              f"captured it; {text} (source time quality: {quality})") for quality, text in (
+    ("none", "the camera's capture time is not known"),
+    ("stream_relative", "the camera's capture time is not known (its stream timestamps map to no clock)"),
+    ("capture_synced", "a capture time is known through a validated clock sync, but is not shown here"))))
+PREVIEW_BOUNDS = {"max_width": INT, "max_height": INT, "jpeg_quality": INT, "max_encodes_per_s": NUM,
+                  "max_jpeg_bytes": INT, "pictures_kept": INT, "yield_encodes_per_s": NUM, "stream_wait_s": NUM,
+                  "viewer_idle_s": NUM, "stale_after_ms": INT}  # LivePreview.bounds
+PREVIEW_COUNTERS = vocab(  # LivePreview counters
+    "reused", "encode_busy", "rate_limited", "encodes", "encode_failures", "served", "not_kept", "refused_not_current",
+    "stream_requests", "stream_pictures_sent", "stream_no_newer_picture", "stream_not_live", "yielded",
+    "encoder_starts")
+SNAPSHOT_POLICY = {"retention_s": NUM, "quota_bytes": INT, "max_count": INT, "reserve_min_bytes": INT,
+                   "reserve_fraction": NUM, "max_bytes": INT, "max_width": INT, "max_height": INT,
+                   "jpeg_quality": INT, "prune_interval_s": NUM}  # incidents.snapshots.SnapshotPolicy
+SNAPSHOT_MISSING = ("frame_not_retained", "too_many_waiting", "queue_full", "frame_identity_mismatch",
+                    "incident_id_not_file_safe", "not_an_image", "unexpected_channels", "unsupported_pixel_format",
+                    "jpeg_encode_failed", "encode_failed", "too_large", "retention_failed", "free_space_reserve",
+                    "write_failed")  # SnapshotStore._missing labels, before any ':'
+SNAPSHOT_STORE_COUNTERS = vocab("saved", "duplicate", *(f"missing:{label}" for label in SNAPSHOT_MISSING),
+                                "pruned:retention_age", "pruned:retention_quota")
+SNAPSHOT_WRITER_COUNTERS = vocab("queued", "not_queued_full", "not_queued_stopped", "saved", "missing", "duplicate",
+                                 "errors")
+CHAT_STATE = vocab("off", "unavailable", "available", "paused")  # ChatService.availability
+GATE_REASON = template(
+    fixed("memory pressure cannot be read, so chat waits until it can"),
+    r"device memory pressure is above ([\d.]+) GB, so chat is stopped and a running question cancelled",
+    r"device memory pressure has been above ([\d.]+) GB for (\d+) samples, so new questions wait",
+    r"scene analysis missed its deadline (\d+) times within ([\d.]+) s, so new questions wait")
+CHAT_REASON = Either((template(
+    fixed("chat is off; start sentinel run with --chat to offer it"),
+    fixed("not admitted: concurrent scene analysis and chat have not passed the operator-run resource and "
+          "interference checks, so chat stays unavailable"),
+    fixed("the scene model is not running (start sentinel run with --scene)"),
+    fixed("ask about the picture the camera is showing now"),
+    fixed("ask about the picture the camera is showing now (validation run: chat is not admitted; its answers and "
+          "their effect on monitoring are being checked)"),
+    fixed("monitoring comes first")), GATE_REASON))
+CHAT_ADVISORY = template(fixed(
+    "Answers come from the on-device scene model and describe one frame: they are advisory. Chat cannot acknowledge "
+    "incidents, change rules, control the camera, run commands or identify anyone."))
+CHAT_COUNTERS = vocab(  # ChatService counters
+    "refused_unavailable", "refused_paused", "busy_pending", "busy_interval", "no_frame", "no_fresh_frame",
+    "busy_scene", "accepted", "gave_up_waiting", "timeouts", "answered", "errors", "cancelled")
+GATE_COUNTERS = vocab("samples", "closed", "reopened", "cancel_requests")  # ChatGate counters
+GATE_LIMITS = {"stop_new_bytes": INT, "stop_samples": INT, "cancel_bytes": INT, "readmit_bytes": INT,
+               "readmit_s": NUM, "misses_window_s": NUM, "misses_to_stop": INT}
+OPTIONAL_STARTUP = {  # assemble's startup fields for the live view, snapshots and chat
+    **{f"live_preview.{k}": v for k, v in PREVIEW_BOUNDS.items()},
+    **{f"snapshots.{k}": INT for k in ("removed_temporary", "removed_unrecorded", "unexpected_files", "pruned")},
+    **{f"snapshots.policy.{k}": v for k, v in SNAPSHOT_POLICY.items()},
+    "chat.state": CHAT_STATE, "chat.reason": CHAT_REASON,
+}
+OPTIONAL_STATUS = {  # build_status's preview, and DemoRuntime's preview, snapshots and chat components
+    "preview.enabled": BOOL, "preview.state": PREVIEW_STATE, "preview.reason": PREVIEW_REASON, "preview.age_ms": COUNT,
+    "preview.frame": NULL, **{f"preview.frame.{k}": INT for k in ("stream_epoch", "frame_seq", "native_width",
+                                                                  "native_height")},
+    "preview.frame.ingest_utc": ISO, "preview.frame.source_time_quality": TIME_QUALITY,
+    "preview.time_label": maybe(TIME_LABEL), "preview.picture": NULL, "preview.problem": maybe(TEXT),
+    **{f"preview.bounds.{k}": v for k, v in PREVIEW_BOUNDS.items()},
+    "components.preview.state": vocab("enabled"), "components.preview.pictures_kept": INT,
+    "components.preview.problem": maybe(TEXT), "components.preview.encoder.running": BOOL,
+    "components.preview.encoder.nice": COUNT, "components.preview.encode_ms": NULL,
+    "components.preview.encode_ms.last": INT, "components.preview.encode_ms.median": NUM,
+    "components.preview.encode_ms.max": NUM, "components.preview.counters.*": INT,
+    "components.snapshots.state": vocab("not_started", "running", "stopped"), "components.snapshots.queued": INT,
+    "components.snapshots.held_frames": INT, "components.snapshots.problem": maybe(TEXT),
+    "components.snapshots.writer.*": INT, "components.snapshots.store.*": INT,
+    **{f"components.snapshots.policy.{k}": v for k, v in SNAPSHOT_POLICY.items()},
+    "components.snapshots.pinned_frames": INT, "components.snapshots.not_queued": INT,
+    "components.chat.state": CHAT_STATE, "components.chat.reason": CHAT_REASON, "components.chat.counters.*": INT,
+    "components.chat.advisory": CHAT_ADVISORY, "components.chat.validation_run": BOOL,
+    "components.chat.gate.open": BOOL, "components.chat.gate.reason": maybe(GATE_REASON),
+    "components.chat.gate.pressure_bytes": COUNT, "components.chat.gate.peak_pressure_bytes": COUNT,
+    "components.chat.gate.misses_in_window": INT, **{f"components.chat.gate.limits.{k}": v
+                                                     for k, v in GATE_LIMITS.items()},
+    "components.chat.gate.counters.*": INT,
+    "components.chat.scene_waits_behind_chat.n": INT,
+    **{f"components.chat.scene_waits_behind_chat.{k}": SECONDS for k in ("median_ms", "max_ms", "last_ms")},
+}
+OPTIONAL_STATUS_KEYS = {"components.preview.counters": PREVIEW_COUNTERS,
+                        "components.snapshots.writer": SNAPSHOT_WRITER_COUNTERS,
+                        "components.snapshots.store": SNAPSHOT_STORE_COUNTERS,
+                        "components.chat.counters": CHAT_COUNTERS, "components.chat.gate.counters": GATE_COUNTERS}
 
 
 # ---------------------------------------------------------------- profiles
@@ -307,6 +403,7 @@ STARTUP = {  # the runtime's ``starting`` line (demo_runtime.assemble and cli)
     "detector_problem": maybe(TEXT), "scene_problem": maybe(TEXT), "face_problem": maybe(TEXT),
     "notifier_problems.*": maybe(TEXT), "face.validation_run": BOOL, "face.identities_enrolled": INT,
     "status_page": maybe(LOOPBACK_URL),
+    **OPTIONAL_STARTUP,
 }
 STARTUP_KEYS = {"scene_memory_before": MEMFREE_KEYS, "detector_memory_before": MEMFREE_KEYS,
                 "face_memory_before": MEMFREE_KEYS, "releases": RELEASE_COMPONENTS, "releases.*.files": RELEASE_ROLES,
@@ -439,17 +536,23 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
     "delivery.recent[].attempts": INT, "delivery.recent[].in_flight": BOOL, "delivery.recent[].ambiguous": BOOL,
     "delivery.recent[].next_attempt_utc": maybe(ISO), "delivery.recent[].updated_utc": ISO,
     "delivery.recent[].last_error": maybe(TEXT),
+    **OPTIONAL_STATUS,
 }, keys={
+    **OPTIONAL_STATUS_KEYS,
     "runtime.shutdown.stopped": STOPPED_PARTS,
     "components.detector.counters": Either((  # tracking.tracker counters; skip and failure labels are content
         vocab("processed", "epoch_resets", "failed", "failure_resets", "boxes_dropped_small",
               "boxes_dropped_overflow"), template(r"skipped_([a-z0-9_]+)", r"failed_([a-z0-9_]+)"))),
     "components.scene.lane": vocab(  # scene.lane counters (JobPurpose: periodic, enrichment)
         "submitted_periodic", "submitted_enrichment", "enrichment_replaced", "result_for_unknown_job", "late_result",
-        "enrichment_skipped", "submit_failed", "cancel_failed", "timed_out_job_forgotten"),
+        "enrichment_skipped", "submit_failed", "cancel_failed", "timed_out_job_forgotten",
+        "deadline_missed"),  # D77
     "components.scene.worker": vocab(  # scene.analyzer counters
         "submitted", "delivered", "image_not_retained", "replaced_waiting", "cancelled_waiting", "cancelled_running",
-        "dropped_at_stop", "inbox_dropped"),
+        "dropped_at_stop", "inbox_dropped",
+        # chat's side requests (D74) and their preemption (D77)
+        "side_accepted", "side_refused", "side_cancelled", "side_completed", "side_dropped_at_stop",
+        "side_callback_failed", "side_preempted", "side_aborted", "jobs_waited_for_side"),
     "components.face.results": FACE_COUNTERS,  # runtime face_counters
     "components.face.worker.counters": vocab(  # identity.worker counters
         "ticks", "skipped_no_person", "replaced", "offered", "abandoned_at_stop", "expired_before_start", "started",

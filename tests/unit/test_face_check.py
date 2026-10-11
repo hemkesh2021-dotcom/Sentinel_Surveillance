@@ -235,8 +235,12 @@ def segment(script, t: float) -> tuple[str, int | None]:
 
 
 def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: float = 4.0,
-             duration: float = 600.0) -> Path:
-    """Run the real runtime through ``script`` and write the F2 directory as the package's blocks would."""
+             duration: float = 600.0, combined: bool = False) -> Path:
+    """Run the real runtime through ``script`` and write the F2 directory as the package's blocks would.
+
+    ``combined`` (D78): with the live view, incident snapshots and chat in a validation run as well, each used during
+    the run (pictures made, a question asked now and then), and the status captures as the plain /status.json serves
+    them (the live view's state included)."""
     out = root / "f2"
     out.mkdir()
     clock = FakeClock(utc=NOW)
@@ -256,12 +260,30 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
     scene = SceneRuntime(ThreadedSceneAnalyzer(lambda job, image: WorkerOutcome.completed(job.job_id, REPORT), images,
                                                revision="1+lfm2-vl-1.6b-q4_0"), images)
     db = Database.open(root / "sentinel.db")
+    extra: dict[str, Any] = {}
+    store = None
+    if combined:
+        from sentinel.incidents.snapshots import SnapshotStore, SnapshotWriter
+        from sentinel.media.jpeg import EncodedJpeg
+        from sentinel.scene.chat import CHAT_ADMISSION
+
+        store = SnapshotStore(db, root / "snapshots", clock, encode=lambda *a, **k: EncodedJpeg(b"\xff\xd8s\xff\xd9", 8, 8),
+                              disk_usage=lambda path: SimpleNamespace(total=10**11, free=5 * 10**10))
+        opened = store.open()
+        extra = dict(live_preview=True, encode=lambda *a, **k: EncodedJpeg(b"\xff\xd8p\xff\xd9", 8, 8),
+                     snapshots=SnapshotWriter(store, clock), chat=True, chat_admission=CHAT_ADMISSION,
+                     chat_validation=True, chat_run=lambda question, image, abort=None: ("A chair.", False),
+                     pressure=lambda: 2_500_000_000)
     runtime = DemoRuntime(config, clock, capture=capture, slot=slot,
                           incidents=IncidentService(db, clock, incidents=config.incidents,
                                                     notifications=config.notifications),
                           tracker=PersonTracker(tracker), scene=scene, face=FaceRuntime(worker, 1, True),
-                          enrollment=GALLERY.enrollment(), status_refresh_s=0.0)
+                          enrollment=GALLERY.enrollment(), status_refresh_s=0.0, **extra)
     runtime.start()
+    if combined:  # what assemble adds to the starting line for these flags, from the same objects
+        startup = {**startup, "startup": {**startup["startup"], "live_preview": runtime.preview.bounds(),
+                                          "snapshots": {**opened, "policy": store.policy.describe()},
+                                          "chat": runtime.chat.availability()}}
     lines = [json.dumps(startup)]
     pending, captures, next_status = list(CAPTURES), [], 0.0
     for n in range(1, int(duration * fps) + 1):
@@ -281,9 +303,14 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
         if t >= next_status:
             lines.append(json.dumps(status_line(runtime.snapshot())))
             next_status += 30.0
+        if combined and n % int(fps * 15) == 0:  # a picture made and a question asked every 15 s
+            runtime.preview.view(with_picture=True)
+            from sentinel.scene.chat import ChatQuestion
+            runtime.chat.ask(ChatQuestion("What is visible?"))
         while pending and t >= pending[0][0]:
             at, name = pending.pop(0)
-            status = build_status(runtime.snapshot(), read_store(root / "sentinel.db"), clock.utc_now())
+            status = build_status(runtime.snapshot(), read_store(root / "sentinel.db"), clock.utc_now(),
+                                  runtime.preview.view() if combined else None)
             (out / f"status-{name}.json").write_text(json.dumps(status))
             captures.append({"name": name, "at_s": at, "status": "saved", "listeners": LOOPBACK})
     shutdown = runtime.shutdown()
@@ -388,6 +415,42 @@ def test_the_scripted_live_run_is_validated_from_the_runtimes_own_output(mods, t
     assert retention.startswith("PASS") and '"cleared_to": "unresolved"' in retention
     assert "a note that is never printed" not in text
     assert "DESCRIPTIVE scheduling rate" in text and "DESCRIPTIVE time to known" in text
+
+
+def test_a_combined_run_is_read_field_by_field_and_its_f2_reading_is_unchanged(mods, tmp_path, startup, f1_list) -> None:
+    """D78: face recognition with the live view, snapshots and a chat validation run: every evidence file fits its
+    profile (nothing nonconforming, so the privacy counts read it as strictly as a face-only run) and the F2 reading
+    is the same as without them."""
+    out = simulate(tmp_path, startup, combined=True)
+    finish(mods, out)
+    result, text = reading(mods, out, f1_list)
+    assert result.ok, text
+    assert "MISSING" not in text and "FAIL" not in text and "NOT_EXERCISED" not in text
+    for path in sorted(out.iterdir()):
+        if path.is_file() and path.name not in mods.check.NOT_COUNTED:
+            read = mods.evidence.read(path, "f2")
+            assert read.nonconforming == [], (path.name, read.nonconforming[:5])
+    status = json.loads((out / "status-k1.json").read_text())
+    assert status["preview"]["state"] == "live" and status["components"]["chat"]["validation_run"] is True
+    assert status["components"]["chat"]["counters"]["accepted"] >= 1
+    assert status["components"]["preview"]["counters"]["encodes"] >= 1
+    assert status["components"]["snapshots"]["state"] == "running"
+    stopped = json.loads((out / "run.jsonl").read_text().splitlines()[-1])["shutdown"]["stopped"]
+    assert stopped["live_view"] is True and stopped["snapshots"] is True
+    starting = json.loads((out / "run.jsonl").read_text().splitlines()[0])["startup"]
+    assert starting["chat"]["state"] == "available" and "validation run" in starting["chat"]["reason"]
+
+
+def test_an_undeclared_combined_field_is_nonconforming(mods, tmp_path, startup) -> None:
+    """The additions are explicit fields, not a bypass: an unknown key or value under them is still counted."""
+    out = simulate(tmp_path, startup, combined=True, duration=70.0)  # the first capture is at 60 s
+    status = json.loads((out / "status-e1.json").read_text())
+    status["components"]["chat"]["counters"]["asked_someone"] = 1
+    status["components"]["chat"]["reason"] = "Alice asked"
+    status["preview"]["state"] = "glowing"
+    (out / "status-e1.json").write_text(json.dumps(status))
+    read = mods.evidence.read(out / "status-e1.json", "f2")
+    assert len(read.nonconforming) == 3, read.nonconforming
 
 
 def test_a_face_still_visible_while_turned_away_does_not_exercise_retention(mods, tmp_path, startup, f1_list) -> None:
