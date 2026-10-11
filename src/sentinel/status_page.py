@@ -1059,6 +1059,13 @@ def page_document(status: Mapping[str, Any], marker: Mapping[str, Any], *, theme
                                "frame_empty": _frame_empty(status.get("preview"))}}
 
 
+# Basic navigation for the alpha (D82): the status page's sections, in page order; plain links, no script.
+SECTIONS = (("live", "Live view"), ("incidents", "Incidents"), ("chat", "Ask"), ("health", "Health"),
+            ("delivery", "Alerts"))
+SECTIONS_NAV = ('<nav class=jump aria-label="Sections">'
+                + "".join(f'<a href="#{target}">{label}</a>' for target, label in SECTIONS) + "</nav>")
+
+
 def render_html(status: Mapping[str, Any], *, theme: str | None = None,
                 marker: Mapping[str, Any] | None = None, chat_token: str = "") -> str:
     regions = status_regions(status, theme=theme)
@@ -1071,6 +1078,7 @@ def render_html(status: Mapping[str, Any], *, theme: str | None = None,
 <div class=pills data-region=pills>{regions["pills"]}</div>
 {_themes("/", theme)}
 </header>
+{SECTIONS_NAV}
 <div class=freshbar data-region=fresh>{regions["fresh"]}</div>
 <p class=sync id=sync role=status></p>
 {NOSCRIPT}

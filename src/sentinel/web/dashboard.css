@@ -5,30 +5,33 @@
 
 :root {
   color-scheme: light;
-  --coconut-milk: #f0ede5;  /* light background */
-  --white-smoke: #eddcc9;   /* warm secondary surfaces */
-  --stretch-limo: #2b2c30;  /* dark background; light-theme text */
-  --carbon-fibre: #2e302f;  /* dark surfaces */
-  --green-sheen: #d9ce52;   /* restrained accent; selected controls */
+  /* Carbon & Cream (the maintainer's palette, D82): its two colours and its dark surfaces, as named. The other values
+     are derived from them by sentinel.web.palettes (OKLab, moved in lightness only until each pairing meets its
+     contrast floor); the tests check that these blocks match that derivation. States keep fixed colours. */
+  --carbon: #2e302f;          /* light-theme text and accent; dark raised surfaces */
+  --cream: #eddcc9;           /* dark-theme text and accent; light accent text */
+  --carbon-canvas: #1c1d1c;   /* dark background */
+  --carbon-panel: #232423;    /* dark panels */
+  --carbon-sunken: #191a19;   /* dark sunken surfaces */
 
-  --bg: var(--coconut-milk);
-  --surface: var(--coconut-milk);
-  --surface-2: var(--white-smoke);
-  --surface-3: #e6e1d6;
-  --ink: var(--stretch-limo);
-  --muted: #55565b;
-  --link: #5d5710;
-  --accent: var(--green-sheen);
-  --accent-ink: var(--stretch-limo);
-  --focus: var(--stretch-limo);
-  --border: #7a7568;
-  --line: rgba(43, 44, 48, .13);
-  --hi: rgba(255, 255, 255, .78);
-  --lo: rgba(84, 72, 48, .17);
-  --ok-bg: #dcebd9; --ok-ink: #1e6b3d;
-  --warn-bg: #f6e2bd; --warn-ink: #7a4a00;
-  --crit-bg: #f7d9d4; --crit-ink: #a11d1d;
-  --off-bg: #e4dfd5; --off-ink: #55565b;
+  --bg: #f7efe5;
+  --surface: #fdf8f3;
+  --surface-2: #f3e6d7;
+  --surface-3: #efe4d8;
+  --ink: var(--carbon);
+  --muted: #676664;
+  --link: var(--carbon);
+  --accent: var(--carbon);
+  --accent-ink: var(--cream);
+  --focus: var(--carbon);
+  --border: #83827e;
+  --line: rgba(46, 48, 47, .13);
+  --hi: rgba(255, 255, 255, .85);
+  --lo: rgba(110, 109, 105, .16);
+  --ok-bg: #dcebda; --ok-ink: #1d6a3b;
+  --warn-bg: #f6e3bf; --warn-ink: #734400;
+  --crit-bg: #f8dad5; --crit-ink: #a11d1d;
+  --off-bg: #efe4d8; --off-ink: #676664;
   --stale-bg: #7a2e12; --stale-ink: #fdf6e8;
   --radius: 18px;
   --radius-s: 11px;
@@ -39,45 +42,49 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme=light]) {
     color-scheme: dark;
-    --bg: var(--stretch-limo);
-    --surface: var(--carbon-fibre);
-    --surface-2: #383733;
-    --surface-3: #34353a;
-    --ink: var(--coconut-milk);
-    --muted: #b3aea3;
-    --link: var(--green-sheen);
-    --focus: var(--green-sheen);
-    --border: #85827a;
-    --line: rgba(240, 237, 229, .1);
-    --hi: rgba(255, 255, 255, .035);
-    --lo: rgba(0, 0, 0, .42);
-    --ok-bg: #213428; --ok-ink: #8fd3a0;
-    --warn-bg: #3a2f1c; --warn-ink: #f2c76e;
-    --crit-bg: #3d2421; --crit-ink: #ff9e94;
-    --off-bg: #3a3b3d; --off-ink: #c9c5bc;
-    --stale-bg: #f2a65a; --stale-ink: #2b2c30;
+    --bg: var(--carbon-canvas);
+    --surface: var(--carbon-panel);
+    --surface-2: var(--carbon);
+    --surface-3: var(--carbon-sunken);
+    --ink: var(--cream);
+    --muted: #a0978c;
+    --link: var(--cream);
+    --accent: var(--cream);
+    --accent-ink: var(--carbon-canvas);
+    --focus: var(--cream);
+    --border: #7d7872;
+    --line: rgba(237, 220, 201, .11);
+    --hi: rgba(255, 255, 255, .03);
+    --lo: rgba(0, 0, 0, .5);
+    --ok-bg: #1e3326; --ok-ink: #8fd3a0;
+    --warn-bg: #3a2e19; --warn-ink: #f2c76e;
+    --crit-bg: #3f2320; --crit-ink: #ff9e94;
+    --off-bg: var(--carbon-sunken); --off-ink: #a0978c;
+    --stale-bg: #f2a65a; --stale-ink: #1c1d1c;
   }
 }
 
 :root[data-theme=dark] {
   color-scheme: dark;
-  --bg: var(--stretch-limo);
-  --surface: var(--carbon-fibre);
-  --surface-2: #383733;
-  --surface-3: #34353a;
-  --ink: var(--coconut-milk);
-  --muted: #b3aea3;
-  --link: var(--green-sheen);
-  --focus: var(--green-sheen);
-  --border: #85827a;
-  --line: rgba(240, 237, 229, .1);
-  --hi: rgba(255, 255, 255, .035);
-  --lo: rgba(0, 0, 0, .42);
-  --ok-bg: #213428; --ok-ink: #8fd3a0;
-  --warn-bg: #3a2f1c; --warn-ink: #f2c76e;
-  --crit-bg: #3d2421; --crit-ink: #ff9e94;
-  --off-bg: #3a3b3d; --off-ink: #c9c5bc;
-  --stale-bg: #f2a65a; --stale-ink: #2b2c30;
+  --bg: var(--carbon-canvas);
+  --surface: var(--carbon-panel);
+  --surface-2: var(--carbon);
+  --surface-3: var(--carbon-sunken);
+  --ink: var(--cream);
+  --muted: #a0978c;
+  --link: var(--cream);
+  --accent: var(--cream);
+  --accent-ink: var(--carbon-canvas);
+  --focus: var(--cream);
+  --border: #7d7872;
+  --line: rgba(237, 220, 201, .11);
+  --hi: rgba(255, 255, 255, .03);
+  --lo: rgba(0, 0, 0, .5);
+  --ok-bg: #1e3326; --ok-ink: #8fd3a0;
+  --warn-bg: #3a2e19; --warn-ink: #f2c76e;
+  --crit-bg: #3f2320; --crit-ink: #ff9e94;
+  --off-bg: var(--carbon-sunken); --off-ink: #a0978c;
+  --stale-bg: #f2a65a; --stale-ink: #1c1d1c;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -141,6 +148,11 @@ time, .num { font-variant-numeric: tabular-nums; }
 .k-stale { background: var(--stale-bg); color: var(--stale-ink); }
 
 /* ---------------------------------------------------------------- page freshness */
+.jump { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 var(--gutter) 12px; }
+.jump a { padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface);
+  color: var(--ink); font-weight: 650; font-size: .86rem; text-decoration: none; }
+.jump a:hover { background: var(--surface-2); }
+.board > [id] { scroll-margin-top: 12px; }
 .freshbar { margin: 0 var(--gutter) 16px; }
 .freshbar .now, .freshbar .gone { display: flex; align-items: flex-start; gap: 10px; padding: 10px 15px;
   border-radius: 13px; }

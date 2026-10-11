@@ -81,7 +81,7 @@ def icon(name: str, cls: str = "ic") -> str:
 
 
 TAB_ICON = (
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#2b2c30"/>'
-    '<circle cx="16" cy="16" r="6.5" fill="none" stroke="#d9ce52" stroke-width="2.6"/>'
-    '<circle cx="16" cy="16" r="2.3" fill="#f0ede5"/><circle cx="23.5" cy="8.5" r="1.7" fill="#d9ce52"/></svg>'
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#2e302f"/>'
+    '<circle cx="16" cy="16" r="6.5" fill="none" stroke="#eddcc9" stroke-width="2.6"/>'
+    '<circle cx="16" cy="16" r="2.3" fill="#eddcc9"/><circle cx="23.5" cy="8.5" r="1.7" fill="#eddcc9"/></svg>'
 ).encode("ascii")

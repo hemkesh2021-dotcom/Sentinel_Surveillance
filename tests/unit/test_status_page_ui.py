@@ -31,8 +31,8 @@ from sentinel.status_page import (
 from sentinel.web import ICONS, csp_hash, stylesheet
 
 NOW = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
-REFERENCE = {"--coconut-milk": "#f0ede5", "--white-smoke": "#eddcc9", "--stretch-limo": "#2b2c30",
-             "--carbon-fibre": "#2e302f", "--green-sheen": "#d9ce52"}
+REFERENCE = {"--carbon": "#2e302f", "--cream": "#eddcc9", "--carbon-canvas": "#1c1d1c", "--carbon-panel": "#232423",
+             "--carbon-sunken": "#191a19"}  # Carbon & Cream (D82): the maintainer's colours and dark surfaces
 TEXT_PAIRS = [("ink", s) for s in ("bg", "surface", "surface-2", "surface-3")] + \
     [("muted", s) for s in ("bg", "surface", "surface-2", "surface-3")] + \
     [("link", s) for s in ("bg", "surface", "surface-2", "surface-3")] + \
@@ -89,11 +89,48 @@ def test_the_reference_colours_are_named_tokens_and_both_theme_blocks_agree() ->
     for name, value in REFERENCE.items():
         assert f"{name}: {value};" in css, name
     light, dark = themes()["light"], themes()["dark"]
-    assert (light["bg"], light["ink"], light["surface-2"], light["accent"]) == ("#f0ede5", "#2b2c30", "#eddcc9", "#d9ce52")
-    assert (dark["bg"], dark["surface"], dark["ink"]) == ("#2b2c30", "#2e302f", "#f0ede5")
+    assert (light["bg"], light["ink"], light["surface-2"], light["accent"]) == ("#f7efe5", "#2e302f", "#f3e6d7", "#2e302f")
+    assert (dark["bg"], dark["surface"], dark["ink"], dark["accent"]) == ("#1c1d1c", "#232423", "#eddcc9", "#eddcc9")
     # The automatic dark block (prefers-color-scheme) and the explicit one (?theme=dark) set the same values.
     auto = css[css.index(":root:not([data-theme=light]) {"):]
     assert tokens(auto[:auto.index("}")], light) == dark
+
+
+# The stylesheet's names for the palette's surfaces (D82): page background, panels, warm secondary, sunken.
+SURFACE_OF = {"light": {"bg": "canvas", "surface": "panel", "surface-2": "sidebar", "surface-3": "sunken"},
+              "dark": {"bg": "canvas", "surface": "panel", "surface-2": "raised", "surface-3": "sunken"}}
+SAME_NAME = ("ink", "muted", "link", "accent", "accent-ink", "focus", "border", "off-bg", "off-ink", "ok-bg", "ok-ink",
+             "warn-bg", "warn-ink", "crit-bg", "crit-ink", "stale-bg", "stale-ink")
+
+
+@pytest.mark.parametrize("mode", ["light", "dark"])
+def test_the_stylesheet_is_carbon_and_cream_as_the_palette_derives_it(mode: str) -> None:
+    from sentinel.web import palettes
+
+    derived = {k: v.lower() for k, v in palettes.tokens(palettes.DEFAULT_PALETTE, mode).items()}
+    values = {k: v.lower() for k, v in themes()[mode].items()}
+    assert {k: values[k] for k in SURFACE_OF[mode]} == {k: derived[v] for k, v in SURFACE_OF[mode].items()}
+    assert {k: values[k] for k in SAME_NAME} == {k: derived[k] for k in SAME_NAME}
+
+
+def test_every_palette_meets_its_contrast_floors_in_both_modes() -> None:
+    from sentinel.web import palettes
+
+    for preset in palettes.PRESETS:
+        for mode in ("light", "dark"):
+            low = [row for row in palettes.contrast_report(preset.key, mode) if row[2] < row[3]]
+            assert not low, (preset.key, mode, low)
+
+
+def test_the_sections_nav_links_each_section_of_the_page_in_page_order() -> None:
+    page = render_html(build_status({"runtime": {"state": "running", "camera_id": "cam-1"}},
+                                    {"state": "available"}, NOW))
+    nav = re.search(r'<nav class=jump aria-label="Sections">(.*?)</nav>', page).group(1)
+    targets = re.findall(r'<a href="#([a-z-]+)">([^<]+)</a>', nav)
+    assert targets == [("live", "Live view"), ("incidents", "Incidents"), ("chat", "Ask"), ("health", "Health"),
+                       ("delivery", "Alerts")]
+    positions = [page.index(f"id={target} ") for target, _ in targets]
+    assert positions == sorted(positions) and page.index("<nav class=jump") < positions[0]
 
 
 def test_images_are_never_recoloured_and_reduced_motion_keeps_the_watchdog() -> None:

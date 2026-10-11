@@ -91,8 +91,8 @@ def test_incidents_are_beside_the_camera_on_desktop_and_below_it_on_mobile_with_
 
 
 @pytest.mark.parametrize(("preference", "query", "background"), [
-    ("light", "", "rgb(240, 237, 229)"), ("dark", "", "rgb(43, 44, 48)"),
-    ("light", "?theme=dark", "rgb(43, 44, 48)"), ("dark", "?theme=light", "rgb(240, 237, 229)"),
+    ("light", "", "rgb(247, 239, 229)"), ("dark", "", "rgb(28, 29, 28)"),  # Carbon & Cream (D82)
+    ("light", "?theme=dark", "rgb(28, 29, 28)"), ("dark", "?theme=light", "rgb(247, 239, 229)"),
 ])
 def test_light_and_dark_follow_the_browser_unless_the_page_chooses(
         browser: Browser, site: dict[str, Any], preference: str, query: str, background: str) -> None:
@@ -103,7 +103,25 @@ def test_light_and_dark_follow_the_browser_unless_the_page_chooses(
               getComputedStyle(a).backgroundColor])}))()""")
         assert seen["bg"] == background
         expected = {"": "Auto", "?theme=dark": "Dark", "?theme=light": "Light"}[query]
-        assert seen["selected"] == [[expected, "rgb(217, 206, 82)"]]  # Green Sheen marks the selected control
+        accent = "rgb(46, 48, 47)" if background == "rgb(247, 239, 229)" else "rgb(237, 220, 201)"
+        assert seen["selected"] == [[expected, accent]]  # the theme's accent (carbon, or cream when dark) marks it
+    finally:
+        page.close()
+
+
+def test_a_section_link_brings_its_section_into_view_on_a_phone(browser: Browser, site: dict[str, Any]) -> None:
+    page = opened(browser, f"{site['url']}/", width=390, height=844, mobile=True)
+    try:
+        page.evaluate("document.querySelector('.jump a[href=\"#chat\"]').click()")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            seen = page.evaluate("""(() => { const r = document.getElementById('chat').getBoundingClientRect();
+              return {hash: location.hash, top: Math.round(r.top), sideways: document.documentElement.scrollWidth
+                      > document.documentElement.clientWidth}; })()""")
+            if seen["hash"] == "#chat" and 0 <= seen["top"] <= 40:
+                break
+            time.sleep(0.05)
+        assert seen["hash"] == "#chat" and 0 <= seen["top"] <= 40 and not seen["sideways"], seen
     finally:
         page.close()
 
