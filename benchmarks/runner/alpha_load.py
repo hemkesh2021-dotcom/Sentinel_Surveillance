@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Steady, repeatable load on the status page during a guarded device check (D80): chat questions and a live viewer.
 
-    alpha_load.py chat OUT.jsonl [--port 18090] [--every-s 6] [--wait-s 600]
+    alpha_load.py chat OUT.jsonl [--port 18090] [--every-s 6] [--wait-s 600] [--for-s SECONDS]
     alpha_load.py view OUT.jsonl [--port 18090] [--wait-s 600]
 
 Operator tooling, not part of the runtime. Started before the guarded run (D50: nothing under a deadline): each waits
@@ -14,7 +14,9 @@ up to ``--wait-s`` for the page on 127.0.0.1, then works until the page has not 
   are exercised. Per question it records numbers and fixed labels only: when it was asked (CLOCK_MONOTONIC, the
   guard's and the runtime's clock), which question, the state it ended in, the reason label for a refusal or a
   cancellation, the frame the answer describes (stream epoch, frame, ingest time), its age when asked and answered,
-  whether it was historical, the answer's length and whether it was cut short. **Never the answer's text.**
+  whether it was historical, the answer's length and whether it was cut short. **Never the answer's text.** With
+  ``--for-s`` it stops asking that long after its first accepted question (the page answers while the models load,
+  when chat is not yet available) and exits; the operator may then ask their own on the page.
 - ``view`` pulls live pictures through GET /live/frame as the page's player does (one request at a time, the newest
   newer than the last), and records per second: pictures received, their bytes, and their age when sent (the
   device's clock); never a picture.
@@ -113,7 +115,7 @@ def _record(asked_mono: float, kind: str, document: dict[str, Any], http_status:
     }
 
 
-def chat(out: Path, port: int, every_s: float, wait_s: float) -> int:
+def chat(out: Path, port: int, every_s: float, wait_s: float, for_s: float | None = None) -> int:
     page = Page(port)
     with out.open("w") as sink:
         if not _wait_for(page, wait_s):
@@ -121,13 +123,18 @@ def chat(out: Path, port: int, every_s: float, wait_s: float) -> int:
             return 0
         sink.write(json.dumps({"event": "started", "mono_s": round(time.monotonic(), 3), "questions": QUESTIONS,
                                "every_s": every_s}) + "\n")
-        silent_since, n = None, 0
+        silent_since, n, first = None, 0, None
         while True:
             asked = time.monotonic()
+            if for_s is not None and first is not None and asked - first >= for_s:
+                sink.write(json.dumps({"event": "stopped_asking", "mono_s": round(asked, 3)}) + "\n")
+                return 0
             kind = "short" if n % 2 == 0 else "long"
             n += 1
             try:
                 status, document = page.json("POST", "/chat", {"question": QUESTIONS[kind], "history": []})
+                if status == 202 and first is None:
+                    first = asked  # chat is available: --for-s counts from here
                 if status == 403:  # a restarted runtime: its new page has a new token
                     page.refresh_token()
                 job = document.get("job") if isinstance(document.get("job"), str) else None
@@ -203,9 +210,11 @@ def main(argv: list[str] | None = None) -> int:
         sub.add_argument("--wait-s", type=float, default=600.0)
         if name == "chat":
             sub.add_argument("--every-s", type=float, default=6.0)
+            sub.add_argument("--for-s", type=float, default=None,
+                             help="stop asking this long after the first accepted question")
     args = parser.parse_args(argv)
     if args.command == "chat":
-        return chat(args.out, args.port, args.every_s, args.wait_s)
+        return chat(args.out, args.port, args.every_s, args.wait_s, args.for_s)
     return view(args.out, args.port, args.wait_s)
 
 

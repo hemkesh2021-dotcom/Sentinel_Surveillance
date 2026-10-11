@@ -371,6 +371,7 @@ def test_the_load_tool_asks_and_watches_a_real_page_and_keeps_numbers_and_labels
     from sentinel.status_page import StatusServer
 
     monkeypatch.setattr(mods.load, "GONE_S", 0.5)
+    (tmp_path / "limited").mkdir()
     incident_store(tmp_path / "sentinel.db", count=1)
     camera = Camera()
     analyzer = ThreadedSceneAnalyzer(lambda job, image: None, RecentImages(), revision="test")
@@ -398,6 +399,9 @@ def test_the_load_tool_asks_and_watches_a_real_page_and_keeps_numbers_and_labels
     clients = [threading.Thread(target=lambda: exits.update(chat=mods.load.main(
                    ["chat", str(tmp_path / "chat-load.jsonl"), "--port", str(port), "--every-s", "0.5",
                     "--wait-s", "5"]))),
+               threading.Thread(target=lambda: exits.update(chat_for=mods.load.main(
+                   ["chat", str(tmp_path / "limited" / "chat-load.jsonl"), "--port", str(port), "--every-s", "0.5",
+                    "--wait-s", "5", "--for-s", "1.2"]))),
                threading.Thread(target=lambda: exits.update(view=mods.load.main(
                    ["view", str(tmp_path / "viewer.jsonl"), "--port", str(port), "--wait-s", "5"])))]
     for client in clients:
@@ -410,7 +414,11 @@ def test_the_load_tool_asks_and_watches_a_real_page_and_keeps_numbers_and_labels
     stop.set()
     camera.preview.close(2.0)
     assert analyzer.stop(3.0)
-    assert exits == {"chat": 0, "view": 0}
+    assert exits == {"chat": 0, "chat_for": 0, "view": 0}
+    limited = [json.loads(line) for line in (tmp_path / "limited" / "chat-load.jsonl").read_text().splitlines()]
+    asked = [x["asked_mono_s"] for x in limited if "asked_mono_s" in x]
+    assert limited[-1]["event"] == "stopped_asking" and asked and asked[-1] - asked[0] < 1.2 + 0.5
+    assert mods.evidence.read(tmp_path / "limited" / "chat-load.jsonl", "f2").nonconforming == []
     chat_text, view_text = (tmp_path / "chat-load.jsonl").read_text(), (tmp_path / "viewer.jsonl").read_text()
     assert "secret-free" not in chat_text and token not in chat_text and token not in view_text
     chat_lines = [json.loads(line) for line in chat_text.splitlines()]
@@ -427,3 +435,18 @@ def test_the_load_tool_asks_and_watches_a_real_page_and_keeps_numbers_and_labels
     assert all(isinstance(x["max_age_ms_when_sent"], int) for x in seconds if x["pictures"])
     for name in ("chat-load.jsonl", "viewer.jsonl"):
         assert mods.evidence.read(tmp_path / name, "f2").nonconforming == []
+
+
+def test_the_combined_reading_needs_an_incident_with_its_snapshot_and_reads_f2_with_its_gate(mods, made,
+                                                                                             tmp_path) -> None:
+    run = fresh_copy(made, tmp_path)
+    face_run, identity = tmp_path / "face-run", tmp_path / "identity"
+    reading, f2 = mods.check.read_combined(run, face_run, identity, None)
+    text = text_of(reading)
+    assert line_for(text, "the alpha flow ran alongside").startswith("MISSING")  # no zone, no snapshots: not shown
+    assert not f2.ok and text_of(f2).splitlines()[0].startswith("FAIL F1 basis for this F2")  # the gate comes first
+    edit_last_status(run, lambda s: (s["incidents"].update(recent=[{"incident_id": "inc-1"}]),
+                                     s["components"].setdefault("snapshots", {}).setdefault("writer", {}).update(
+                                         saved=1)))
+    reading, _ = mods.check.read_combined(run, face_run, identity, None)
+    assert line_for(text_of(reading), "the alpha flow ran alongside").startswith("PASS")

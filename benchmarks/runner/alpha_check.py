@@ -2,9 +2,10 @@
 """The predeclared reading of the alpha's chat and combined device checks (D80): PASS, FAIL or MISSING; missing
 evidence never passes. DESCRIPTIVE lines are never judged.
 
-    alpha_check.py chat RUN_DIR                chat with scene analysis, the live view and monitoring (no face)
-    alpha_check.py combined RUN_DIR F1_DIR     the same with face recognition and snapshots: this reading, then F2's
-                                               (face_check, format 3) over the same run, both of which must pass
+    alpha_check.py chat RUN_DIR       chat with scene analysis, the live view and monitoring (no face)
+    alpha_check.py combined RUN_DIR --run FACE_RUN --identity-dir DIR --recheck-root DIR
+                                      the same with face recognition: this reading, then F2's own (face_check, with
+                                      its F1-basis gate) over the same run; both must pass
 
 RUN_DIR holds the guard's files (result.json, guard.jsonl, run.jsonl, status-*.json) and alpha_load's
 chat-load.jsonl and viewer.jsonl. Limits, all set before any run:
@@ -222,8 +223,10 @@ def read_chat(run_dir: Path, *, face: bool = False) -> s5.Reading:
     return r
 
 
-def read_combined(run_dir: Path, f1: Path) -> tuple[s5.Reading, Any]:
-    """This reading, with the incident and snapshot items of the alpha flow, and F2's own reading of the same run."""
+def read_combined(run_dir: Path, face_run: Path, identity_dir: Path,
+                  recheck_root: Path | None) -> tuple[s5.Reading, Any]:
+    """This reading, with the incident and snapshot items of the alpha flow, and F2's own reading of the same run,
+    built on FACE_RUN's F1 (its F1-basis gate included, as face_check f2 --run reads it)."""
     r = read_chat(run_dir, face=True)
     result = s5._load(run_dir / "result.json")
     captures = _captures(run_dir, result)
@@ -235,7 +238,7 @@ def read_combined(run_dir: Path, f1: Path) -> tuple[s5.Reading, Any]:
     r.item("the alpha flow ran alongside: at least one incident recorded, with its snapshot saved", value,
            isinstance(value["incidents"], int) and value["incidents"] >= 1
            and isinstance(value["snapshots_saved"], int) and value["snapshots_saved"] >= 1)
-    return r, face_check.read_f2(run_dir, f1)
+    return r, face_check.read_f2(run_dir, face_run / "f1", (face_run, identity_dir, recheck_root))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -244,20 +247,25 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("chat").add_argument("run_dir", type=Path)
     combined = commands.add_parser("combined")
     combined.add_argument("run_dir", type=Path)
-    combined.add_argument("f1", type=Path)
+    combined.add_argument("--run", type=Path, required=True, help="the face run whose F1 this F2 builds on")
+    combined.add_argument("--identity-dir", type=Path, required=True)
+    combined.add_argument("--recheck-root", type=Path, help="where accepted corrected F1 readings are")
     args = parser.parse_args(argv)
     if args.command == "chat":
         reading = read_chat(args.run_dir)
         print("\n".join(reading.lines))
         print(f"alpha chat check: {'passed' if reading.ok else 'not passed'}")
         return 0 if reading.ok else 1
-    reading, f2 = read_combined(args.run_dir, args.f1)
+    reading, f2 = read_combined(args.run_dir, args.run, args.identity_dir, args.recheck_root)
     print("\n".join(reading.lines))
     print("--- F2 (face recognition), over the same run")
     print("\n".join(f2.lines))
     both = reading.ok and f2.ok
-    print(f"alpha combined check: {'passed' if both else 'not passed'} (alpha items {'passed' if reading.ok else 'not passed'}, "
-          f"F2 {'passed' if f2.ok else 'not passed'})")
+
+    def said(ok: bool) -> str:
+        return "passed" if ok else "not passed"
+
+    print(f"alpha combined check: {said(both)} (alpha items {said(reading.ok)}, F2 {said(f2.ok)})")
     return 0 if both else 1
 
 

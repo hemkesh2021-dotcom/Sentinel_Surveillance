@@ -602,7 +602,7 @@ CHAT_JOB_REASON = Either((CHAT_REASON, template(
     fixed("the runtime is starting"), fixed("the question could not be taken"))))
 CHAT_FINAL = vocab("answered", "error", "timeout", "busy", "cancelled", "unavailable", "paused", "no_fresh_frame",
                    "refused", "invalid", "off", "unknown", "unreadable")  # alpha_load.FINAL and its own unreadable
-LOAD_EVENT = {"event": vocab("started", "page_never_answered", "page_gone"), "mono_s": NUM,
+LOAD_EVENT = {"event": vocab("started", "page_never_answered", "page_gone", "stopped_asking"), "mono_s": NUM,
               "questions.short": template(fixed("What is visible in this picture? Answer in one sentence.")),
               "questions.long": template(fixed("Describe everything visible in this picture in detail, object by "
                                                "object, with its colour and where it is.")), "every_s": NUM}
