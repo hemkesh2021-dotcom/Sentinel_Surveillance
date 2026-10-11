@@ -299,6 +299,9 @@ OPTIONAL_STATUS = {  # build_status's preview, and DemoRuntime's preview, snapsh
     "components.chat.scene_waits_behind_chat.n": INT,
     **{f"components.chat.scene_waits_behind_chat.{k}": SECONDS for k in ("median_ms", "max_ms", "last_ms",
                                                                          "max_ever_ms")},
+    "components.chat.scene_waits_behind_chat.grace_ms": INT,  # D81
+    **{f"components.chat.scene_waits_behind_chat.run_ms.{group}.{k}": (INT if k == "n" else SECONDS)
+       for group in ("behind_side", "others") for k in ("n", "median_ms", "max_ms")},
 }
 OPTIONAL_STATUS_KEYS = {"components.preview.counters": PREVIEW_COUNTERS,
                         "components.snapshots.writer": SNAPSHOT_WRITER_COUNTERS,
@@ -553,7 +556,9 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
         "dropped_at_stop", "inbox_dropped",
         # chat's side requests (D74) and their preemption (D77)
         "side_accepted", "side_refused", "side_cancelled", "side_completed", "side_dropped_at_stop",
-        "side_callback_failed", "side_preempted", "side_aborted", "jobs_waited_for_side"),
+        "side_callback_failed", "side_preempted", "side_aborted", "jobs_waited_for_side",
+        # D81: accepted behind a scene job, and the periodic job's grace
+        "side_accepted_behind_scene", "side_grace_started", "side_finished_in_grace", "side_preempted_after_grace"),
     "components.face.results": FACE_COUNTERS,  # runtime face_counters
     "components.face.worker.counters": vocab(  # identity.worker counters
         "ticks", "skipped_no_person", "replaced", "offered", "abandoned_at_stop", "expired_before_start", "started",
@@ -598,9 +603,12 @@ CHAT_JOB_REASON = Either((CHAT_REASON, template(
 CHAT_FINAL = vocab("answered", "error", "timeout", "busy", "cancelled", "unavailable", "paused", "no_fresh_frame",
                    "refused", "invalid", "off", "unknown", "unreadable")  # alpha_load.FINAL and its own unreadable
 LOAD_EVENT = {"event": vocab("started", "page_never_answered", "page_gone"), "mono_s": NUM,
-              "question": template(fixed("What is visible in this picture?")), "every_s": NUM}
+              "questions.short": template(fixed("What is visible in this picture? Answer in one sentence.")),
+              "questions.long": template(fixed("Describe everything visible in this picture in detail, object by "
+                                               "object, with its colour and where it is.")), "every_s": NUM}
 CHAT_LOAD = JsonProfile({
-    **LOAD_EVENT, "asked_mono_s": NUM, "http_status": INT, "state": CHAT_FINAL, "reason": maybe(CHAT_JOB_REASON),
+    **LOAD_EVENT, "asked_mono_s": NUM, "kind": vocab("short", "long"), "http_status": INT, "state": CHAT_FINAL,
+    "reason": maybe(CHAT_JOB_REASON),
     "stream_epoch": COUNT, "frame_seq": COUNT, "ingest_utc": maybe(ISO), "age_ms_when_asked": COUNT,
     "age_ms_when_answered": COUNT, "historical": maybe(BOOL), "answer_ms": COUNT, "answer_chars": COUNT,
     "cut_short": maybe(BOOL),

@@ -10,15 +10,18 @@ the camera, run commands or establish an identity; nothing here holds a referenc
   CHAT_ADMISSION is not admitted: chat is unavailable, says why, and never reaches the model, except in a guarded
   validation run (``sentinel run --chat-validation``, D77), which exists to make those checks; the page and the
   status then say that chat is being validated, not admitted.
-- **A running question yields (D77).** A scene job that arrives while a question runs ends it at once (the scene
-  worker's ``abort``: the question's request connection is closed and llama-server cancels the task), and so do the
-  question's own deadline (CHAT_DEADLINE_S) and memory pressure (ChatGate: no new question above 4.7 GB for three
-  samples or after repeated scene deadline misses, a running one cancelled above 5.0 GB). A cancelled question says
-  why; it is never retried or queued.
+- **A running question yields (D77, D81).** An incident's scene job that arrives while a question runs ends it at
+  once (the scene worker's ``abort``: the question's request connection is closed and llama-server cancels the
+  task); a periodic scene job lets it finish within the worker's grace (analyzer.SIDE_GRACE_S, PROPOSED), then ends
+  it the same way. So do the question's own deadline (CHAT_DEADLINE_S) and memory pressure (ChatGate: no new
+  question above 4.7 GB for three samples or after repeated scene deadline misses, a running one cancelled above
+  5.0 GB). A cancelled question says why; it is never retried or queued.
 - **The same model, the same worker, monitoring first.** A question runs on the scene worker's own thread
   (``ThreadedSceneAnalyzer.submit_side``), against the same loopback llama-server; no other model or camera
-  connection is started. It is accepted only while that worker is idle, and a scene job that arrives meanwhile runs
-  first. At most one question is pending; another is refused as busy, never queued.
+  connection is started. It is accepted while no other question is pending, also while a scene job runs (D81: on
+  the device a scene job takes about 2.6 s of every 4 s); it starts when no scene job runs or waits, so scene jobs
+  always go first, and one that has not started within CHAT_START_S is given up as busy. At most one question is
+  pending; another is refused as busy, never queued. While it waits it holds its frame's image (one frame).
 - **Bound to an identified frame.** A question takes the newest frame the runtime holds, if, and only if, it is live
   (connected stream, younger than freshness.stale_after_s). Otherwise the answer is that no fresh frame exists, and
   the model is not asked. The answer names that frame (stream epoch and frame number), its ingest time and its age
@@ -351,10 +354,6 @@ class ChatService:
                 when = f"the newest frame is {age / NS_PER_SECOND:.1f} s old (stale after {self._stale_after_s:g} s)"
             return 409, {"state": "no_fresh_frame", "reason": f"{when}; ask again when the camera is live",
                          "frame": frame_facts(frame, age)}
-        if self._scene.busy():
-            del image
-            self._count("busy_scene")
-            return 429, {"state": "busy", "reason": BUSY}
         job = _Job(secrets.token_hex(8), frame_facts(frame, freshness.last_frame_age_ns), now)
         held = [image]  # the frame's image, held only until the question runs (or is dropped)
         del image

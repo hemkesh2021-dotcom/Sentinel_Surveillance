@@ -23,7 +23,7 @@ from sentinel.media.clock import NS_PER_SECOND, FakeClock
 from sentinel.media.frames import FrameStamper
 from sentinel.media.health import assess_frame
 from sentinel.media.recent import RecentFrames
-from sentinel.scene.analyzer import RecentImages, ThreadedSceneAnalyzer
+from sentinel.scene.analyzer import SIDE_GRACE_S, RecentImages, ThreadedSceneAnalyzer
 from sentinel.scene.chat import (
     ADVISORY,
     CHAT_ADMISSION,
@@ -99,7 +99,8 @@ class Rig:
     """A real ThreadedSceneAnalyzer on its own thread, frames on a FakeClock, and a scripted model."""
 
     def __init__(self, *replies: Any, admission: ChatAdmission = ADMITTED, enabled: bool = True,
-                 scene_job: Callable[[AnalysisJob, Any], WorkerOutcome] | None = None) -> None:
+                 scene_job: Callable[[AnalysisJob, Any], WorkerOutcome] | None = None,
+                 grace_s: float = SIDE_GRACE_S) -> None:
         self.clock = FakeClock()
         self.stamper = FrameStamper("cam-1", self.clock)
         self.stamper.connect()
@@ -108,7 +109,8 @@ class Rig:
         self.encoded: list[Any] = []
         self.gate = threading.Event()
         self.gate.set()
-        self.analyzer = ThreadedSceneAnalyzer(scene_job or self.scene_job, RecentImages(), revision="test")
+        self.analyzer = ThreadedSceneAnalyzer(scene_job or self.scene_job, RecentImages(), revision="test",
+                                              side_grace_s=grace_s)
         self.analyzer.start()
         started = self.clock.mono()
         self.service = ChatService(
@@ -297,23 +299,30 @@ def test_a_question_running_past_its_deadline_has_its_request_ended_and_frees_th
     assert code == 202 and r.answer(second["job"])["answer"] == "never used"  # the next reply in turn: nothing late
 
 
-def test_a_scene_job_that_arrives_while_a_question_runs_ends_it_and_starts_at_once(rig) -> None:
-    ran = []
+def _scene_job_for(r: Rig, purpose: JobPurpose) -> AnalysisJob:
+    frame = r.frames.latest()[0]
+    r.analyzer._images.put(frame.key, object())  # type: ignore[attr-defined]  # the lane's job names a held frame
+    return AnalysisJob(job_id="scene-1", frame=frame, purpose=purpose,
+                       incident_id="inc-1" if purpose is JobPurpose.ENRICHMENT else None,
+                       deadline_mono_ns=frame.ingest_mono_ns + 8 * NS_PER_SECOND)
 
+
+def _recorder(ran: list[str]) -> Callable[[AnalysisJob, Any], WorkerOutcome]:
     def scene_job(job: AnalysisJob, image: Any) -> WorkerOutcome:
         ran.append(job.job_id)
         return WorkerOutcome.completed(job.job_id, "{}")
 
-    r = rig(completion("unused"), scene_job=scene_job)
+    return scene_job
+
+
+def test_an_incidents_scene_job_that_arrives_while_a_question_runs_ends_it_at_once(rig) -> None:
+    ran: list[str] = []
+    r = rig(completion("unused"), scene_job=_recorder(ran))
     r.transport.hold.clear()
     r.frame()
     code, first = r.service.ask(ChatQuestion("What is on the table?"))
     assert r.transport.running.wait(5.0)
-    frame = r.frames.latest()[0]
-    r.analyzer._images.put(frame.key, object())  # type: ignore[attr-defined]  # the lane's job names a held frame
-    job = AnalysisJob(job_id="scene-1", frame=frame, purpose=JobPurpose.PERIODIC,
-                      deadline_mono_ns=frame.ingest_mono_ns + 8 * NS_PER_SECOND)
-    r.analyzer.submit(job)
+    r.analyzer.submit(_scene_job_for(r, JobPurpose.ENRICHMENT))
     _until(lambda: ran == ["scene-1"])
     document = r.service.poll(first["job"])[1]
     assert document["state"] == "cancelled" and document["reason"] == (
@@ -324,7 +333,42 @@ def test_a_scene_job_that_arrives_while_a_question_runs_ends_it_and_starts_at_on
     assert waits["max_ever_ms"] == waits["max_ms"]
     counters = r.analyzer.counters
     assert counters["side_preempted"] == 1 and counters["jobs_waited_for_side"] == 1
+    assert counters["side_grace_started"] == 0
     assert r.service.summary()["counters"]["cancelled"] == 1
+
+
+def test_a_periodic_scene_job_ends_a_running_question_when_its_grace_is_over(rig) -> None:
+    ran: list[str] = []
+    r = rig(completion("unused"), scene_job=_recorder(ran), grace_s=0.2)
+    r.transport.hold.clear()
+    r.frame()
+    code, first = r.service.ask(ChatQuestion("What is on the table?"))
+    assert r.transport.running.wait(5.0)
+    r.analyzer.submit(_scene_job_for(r, JobPurpose.PERIODIC))
+    _until(lambda: ran == ["scene-1"])
+    document = r.service.poll(first["job"])[1]
+    assert document["state"] == "cancelled" and document["reason"] == (
+        "a scene job is waiting: monitoring comes first")
+    waits = r.analyzer.side_delays()
+    assert waits["n"] == 1 and 200 <= waits["max_ms"] < 1200 and waits["grace_ms"] == 200  # the grace, then the end
+    counters = r.analyzer.counters
+    assert (counters["side_preempted"], counters["side_preempted_after_grace"]) == (1, 1)
+
+
+def test_a_question_answered_within_the_grace_keeps_its_answer_and_the_scene_job_follows(rig) -> None:
+    ran: list[str] = []
+    r = rig(completion("in time"), scene_job=_recorder(ran), grace_s=5.0)
+    r.transport.hold.clear()
+    r.frame()
+    code, first = r.service.ask(ChatQuestion("What is on the table?"))
+    assert r.transport.running.wait(5.0)
+    r.analyzer.submit(_scene_job_for(r, JobPurpose.PERIODIC))
+    r.transport.hold.set()  # the answer comes within the grace
+    assert r.answer(first["job"])["answer"] == "in time"
+    _until(lambda: ran == ["scene-1"])
+    assert r.transport.aborted == []
+    counters = r.analyzer.counters
+    assert (counters["side_finished_in_grace"], counters["side_preempted"]) == (1, 0)
 
 
 def test_a_question_cancelled_before_its_request_starts_never_reaches_the_model(rig) -> None:
@@ -382,11 +426,13 @@ def test_a_validation_run_may_ask_and_says_it_is_not_admitted_while_others_stay_
     assert never.availability() == {"state": "unavailable", "reason": "no"}  # only where the record allows it
 
 
-def test_monitoring_comes_first_and_nothing_queues(rig) -> None:
+def test_a_question_asked_during_a_scene_job_waits_for_it_and_nothing_queues(rig) -> None:
     hold = threading.Event()
+    order: list[str] = []
 
     def slow_scene(job: AnalysisJob, image: Any) -> WorkerOutcome:
         hold.wait(10.0)
+        order.append("scene")
         return WorkerOutcome.completed(job.job_id, "{}")
 
     r = rig(completion("one"), completion("two"), scene_job=slow_scene)
@@ -397,15 +443,15 @@ def test_monitoring_comes_first_and_nothing_queues(rig) -> None:
     job = AnalysisJob(job_id="scene-1", purpose=JobPurpose.PERIODIC, frame=frame,
                       deadline_mono_ns=frame.ingest_mono_ns + 8 * NS_PER_SECOND)
     r.analyzer.submit(job)  # the scene worker is busy with monitoring
-    code, document = r.service.ask(ChatQuestion("Anything?"))
-    assert (code, document["state"]) == (429, "busy") and "monitoring comes first" in document["reason"]
-    hold.set()
-    assert any(o.kind is OutcomeKind.COMPLETED for _, o in _drain(r.analyzer))
     code, first = r.service.ask(ChatQuestion("Anything?"))
-    assert code == 202
+    assert (code, first["state"]) == (202, "waiting")  # D81: accepted; it starts when the scene job has ended
     code, second = r.service.ask(ChatQuestion("And now?"))
     assert (code, second["state"]) == (429, "busy")  # one question at a time, never queued
+    assert r.transport.bodies == [] and r.encoded == []  # the model is not asked while monitoring runs
+    hold.set()
     assert r.answer(first["job"])["state"] == "answered"
+    assert order == ["scene"] and len(r.transport.bodies) == 1  # after the scene job, once
+    assert any(o.kind is OutcomeKind.COMPLETED for _, o in _drain(r.analyzer))
     code, third = r.service.ask(ChatQuestion("And now?"))
     assert (code, third["state"]) == (429, "busy") and "one question every 4 s" in third["reason"]
     r.clock.advance(4.0)

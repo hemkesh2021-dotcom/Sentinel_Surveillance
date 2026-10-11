@@ -13,10 +13,16 @@ chat-load.jsonl and viewer.jsonl. Limits, all set before any run:
   from STEADY_FROM_S after readiness to the stop at most 5,000,000,000; every sample of the run at most 5,400,000,000.
 - **Scene deadlines (the existing scene.job_timeout_s):** no scene job missed its deadline and no waiting enrichment
   was skipped for it, over the run.
-- **Chat-induced scene delay:** the largest wait of a scene job that arrived while a question ran is at most
-  MAX_CHAT_DELAY_MS. PROPOSED (D80): the maintainer decides it before any run; the reading names the value used.
+- **Chat-induced scene delay:** the largest wait of a scene job that arrived while a question ran, from its
+  submission to its start on the scene worker, is at most MAX_CHAT_DELAY_MS, and the run used the declared grace
+  (GRACE_MS: a periodic job lets a running question finish for that long, then ends it; an incident's job ends it at
+  once; D81). Both PROPOSED (D80, D81): the maintainer decides them before any run; the reading names the values
+  used. llama-server's own cancellation (it notices a closed request about once a second) shows in the next scene
+  job's run time, not in its wait: the run times of the jobs that waited behind a question and of the others are
+  reported (DESCRIPTIVE), and the deadline item bounds the whole.
 - **Cancellation verified:** at least one scene job arrived while a question ran, ended it, and started; the chat
   load saw at least one question cancelled for it. Otherwise the item is MISSING (not exercised), never passing.
+  alpha_load alternates a short and a long question so that both answers and cancellations are likely.
 - **Real answers:** at least one question answered; every answered one names its frame (stream epoch, frame, ingest
   time) and its ages, is marked historical exactly when its frame was STALE_AFTER_MS or older when answered, and is
   1-600 characters long. The answers' text is never read or kept.
@@ -43,6 +49,7 @@ STEADY_LIMIT = 5_000_000_000  # adapters.STEP4_TARGET_STEADY_BYTES
 PEAK_LIMIT = 5_400_000_000  # adapters.STEP4_MAX_PEAK_BYTES
 STEADY_FROM_S = 120.0  # the steady interval starts this long after readiness (model loading and settling excluded)
 MAX_CHAT_DELAY_MS = 2000.0  # PROPOSED (D80): the maintainer's decision before any run
+GRACE_MS = 1500  # analyzer.SIDE_GRACE_S, PROPOSED (D81): the maintainer's decision before any run
 STALE_AFTER_MS = 2000  # freshness.stale_after_s
 CANCELLED_FOR_SCENE = "a scene job is waiting: monitoring comes first"
 VALIDATION_REASON = ("ask about the picture the camera is showing now (validation run: chat is not admitted; its "
@@ -79,6 +86,11 @@ def _starting(run_dir: Path) -> Any:
 def _captures(run_dir: Path, result: Any) -> list[tuple[str, Any]]:
     names = [c.get("name") for c in s5._list(s5._get(result, "captures")) if isinstance(c, dict)]
     return [(name, s5._load(run_dir / f"status-{name}.json")) for name in names]
+
+
+def _counter(counters: Any, key: str) -> Any:
+    """A counter from a status counters object, which lists only those that have counted: absent is 0."""
+    return counters.get(key, 0) if isinstance(counters, dict) else s5.MISSING
 
 
 def _memory(r: s5.Reading, run_dir: Path, result: Any) -> None:
@@ -136,15 +148,18 @@ def read_chat(run_dir: Path, *, face: bool = False) -> s5.Reading:
     waits = s5._get(last, "components", "chat", "scene_waits_behind_chat")
     largest = s5._get(waits, "max_ever_ms")
     exercised = isinstance(s5._get(waits, "n"), int) and s5._get(waits, "n") >= 1
-    r.item(f"chat-induced scene delay: the largest wait behind a question at most {MAX_CHAT_DELAY_MS:g} ms "
-           "(PROPOSED limit, D80)", {"waits": waits} if exercised else s5.MISSING,
-           exercised and isinstance(largest, (int, float)) and largest <= MAX_CHAT_DELAY_MS)
+    shown = {k: s5._get(waits, k) for k in ("n", "median_ms", "max_ms", "max_ever_ms", "grace_ms")}
+    r.item(f"chat-induced scene delay: the largest wait behind a question at most {MAX_CHAT_DELAY_MS:g} ms, with "
+           f"the declared {GRACE_MS} ms grace (PROPOSED, D80 and D81)", shown if exercised else s5.MISSING,
+           exercised and isinstance(largest, (int, float)) and largest <= MAX_CHAT_DELAY_MS
+           and s5._get(waits, "grace_ms") == GRACE_MS)
     worker = s5._get(last, "components", "scene", "worker")
     load = _jsonl(run_dir / "chat-load.jsonl")
     asked = [] if load is s5.MISSING else [x for x in load if "state" in x]
     cancelled = [x for x in asked if x.get("state") == "cancelled" and x.get("reason") == CANCELLED_FOR_SCENE]
-    preempted = s5._get(worker, "side_preempted")
-    value = {"side_preempted": preempted, "jobs_waited_for_side": s5._get(worker, "jobs_waited_for_side"),
+    preempted = _counter(worker, "side_preempted")
+    value = {"side_preempted": preempted, "after_grace": _counter(worker, "side_preempted_after_grace"),
+             "jobs_waited_for_side": _counter(worker, "jobs_waited_for_side"),
              "questions_cancelled_for_a_scene_job": len(cancelled)}
     r.item("cancellation verified: a scene job ended a running question and started; the question says why",
            value if isinstance(preempted, int) and preempted >= 1 and cancelled else s5.MISSING,
@@ -184,10 +199,16 @@ def read_chat(run_dir: Path, *, face: bool = False) -> s5.Reading:
     r.describe("rates at each capture (captured and processed fps)",
                [[name, s5._get(c, "rates", "captured_fps"), s5._get(c, "rates", "processed_fps")]
                 for name, c in captures])
-    states: dict[str, int] = {}
+    states: dict[str, dict[str, int]] = {}
     for x in asked:
-        states[str(x.get("state"))] = states.get(str(x.get("state")), 0) + 1
-    r.describe("chat load: questions by final state", states)
+        kind = states.setdefault(str(x.get("kind")), {})
+        kind[str(x.get("state"))] = kind.get(str(x.get("state")), 0) + 1
+    r.describe("chat load: questions by kind and final state", states)
+    r.describe("scene run time (ms) of the jobs that waited behind a question and of the others (the latest kept)",
+               s5._get(waits, "run_ms"))
+    r.describe("questions that ended by themselves while a scene job waited (within the grace), and accepted while "
+               "a scene job ran", [_counter(worker, "side_finished_in_grace"),
+                                    _counter(worker, "side_accepted_behind_scene")])
     times = sorted(x["answer_ms"] for x in answered if isinstance(x.get("answer_ms"), int))
     r.describe("chat: answer time (ms) median and largest",
                [times[len(times) // 2], times[-1]] if times else None)

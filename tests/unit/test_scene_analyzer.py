@@ -286,7 +286,7 @@ class Asleep:
         del self.condition.notify  # the class's own notify again
 
 
-def test_a_side_request_runs_on_the_worker_only_while_it_is_idle_and_never_queues(
+def test_a_side_request_offered_while_a_scene_job_runs_starts_after_it_and_never_queues(
     stamper: FrameStamper, clock: FakeClock
 ) -> None:
     gate = Gate(open_=False)
@@ -296,18 +296,19 @@ def test_a_side_request_runs_on_the_worker_only_while_it_is_idle_and_never_queue
     images.put(frame.key, "x")
     analyzer.submit(job_for(frame))
     assert gate.started.wait(2)
-    refused = Side()
-    assert refused.submit(analyzer) is False  # a scene job is running: refused, not queued
-    gate.release.set()
-    wait_for(lambda: not analyzer.busy())
     side = Side(open_=False)
-    assert side.submit(analyzer) is True and side.started.wait(2) and analyzer.busy()
-    assert Side().submit(analyzer) is False  # one at a time
+    assert side.submit(analyzer) is True  # D81: accepted while a scene job runs ...
+    assert Side().submit(analyzer) is False  # ... one at a time, never queued
+    assert not side.started.is_set()  # ... and it waits: the worker is still in the scene job
+    gate.release.set()
+    assert side.started.wait(2) and analyzer.busy()
+    assert Side().submit(analyzer) is False  # one at a time while it runs too
     side.release.set()
     assert side.finished.wait(2) and side.log == ["side", "answer"]
     wait_for(lambda: not analyzer.busy())
-    assert refused.log == [] and [job_id for job_id, _ in analyzer.drain()] == ["job-1"]  # never in the scene inbox
-    assert (analyzer.counters["side_refused"], analyzer.counters["side_completed"]) == (2, 1)
+    assert [job_id for job_id, _ in analyzer.drain()] == ["job-1"]  # never in the scene inbox
+    counters = analyzer.counters
+    assert (counters["side_refused"], counters["side_completed"], counters["side_accepted_behind_scene"]) == (2, 1, 1)
     assert analyzer.stop(2.0)
 
 
@@ -339,6 +340,172 @@ def test_scene_jobs_go_first_a_running_side_request_delays_one_and_drops_none(
     assert order == ["job-1", "side", "answer", "side", "answer", "job-2"]
     assert [job_id for job_id, _ in drained(analyzer, 2)] == ["job-1", "job-2"]
     assert analyzer.stop(2.0)
+
+
+class Timers:
+    """The grace's timers, by hand (D81): each started timer is kept, and the test fires it."""
+
+    def __init__(self) -> None:
+        self.started: list[list[object]] = []  # [delay_s, call, cancelled]
+
+    def __call__(self, delay_s: float, call: Callable[[], None]) -> Callable[[], None]:
+        entry: list[object] = [delay_s, call, False]
+        self.started.append(entry)
+
+        def cancel() -> None:
+            entry[2] = True
+
+        return cancel
+
+    def fire(self, index: int = -1, *, even_if_cancelled: bool = False) -> None:
+        _, call, cancelled = self.started[index]
+        if even_if_cancelled or not cancelled:
+            call()  # type: ignore[operator]
+
+
+class Abortable(Side):
+    """A side request whose ``abort`` ends it as closing its connection would: at once, with the reason."""
+
+    def __init__(self, log: list[object] | None = None) -> None:
+        super().__init__(log, open_=False)
+        self.aborted: list[str] = []
+
+    def abort(self, reason: str) -> bool:
+        if self.aborted:
+            return False
+        self.aborted.append(reason)
+        self.result = RuntimeError(reason)
+        self.release.set()
+        return True
+
+    def submit(self, analyzer: ThreadedSceneAnalyzer) -> bool:
+        return analyzer.submit_side(self.work, started=self.on_started, finished=self.on_finished, abort=self.abort)
+
+
+def graced(order: list[object], timers: Timers, grace_s: float = 1.5) -> tuple[ThreadedSceneAnalyzer, RecentImages]:
+    def scene(job: AnalysisJob, image: object) -> WorkerOutcome:
+        order.append(job.job_id)
+        return WorkerOutcome.completed(job.job_id, json.dumps(REPORT))
+
+    images = RecentImages()
+    analyzer = ThreadedSceneAnalyzer(scene, images, revision="1+lfm2-vl", side_grace_s=grace_s, schedule=timers)
+    analyzer.start()
+    return analyzer, images
+
+
+def held_frame(stamper: FrameStamper, clock: FakeClock, images: RecentImages) -> FrameRef:
+    frame = frame_at(stamper, clock)
+    images.put(frame.key, "x")
+    return frame
+
+
+def test_a_periodic_job_lets_a_running_side_request_finish_within_the_grace(
+    stamper: FrameStamper, clock: FakeClock
+) -> None:
+    order: list[object] = []
+    timers = Timers()
+    analyzer, images = graced(order, timers)
+    side = Abortable(order)
+    assert side.submit(analyzer) and side.started.wait(2)
+    analyzer.submit(job_for(held_frame(stamper, clock, images), "job-1"))
+    assert [entry[0] for entry in timers.started] == [1.5] and side.aborted == []  # a grace, not an abort
+    side.release.set()  # the answer comes within the grace
+    wait_for(lambda: order == ["side", "answer", "job-1"])
+    assert timers.started[0][2] is True  # its end cancelled the grace's timer
+    timers.fire(even_if_cancelled=True)  # a timer that fires anyway ends nothing
+    assert side.aborted == []
+    counters = analyzer.counters
+    assert (counters["side_grace_started"], counters["side_finished_in_grace"], counters["side_preempted"]) == (1, 1, 0)
+    assert analyzer.side_delays()["n"] == 1 and analyzer.side_delays()["grace_ms"] == 1500
+    assert analyzer.stop(2.0)
+
+
+def test_when_the_grace_is_over_the_side_request_is_ended_for_the_waiting_periodic_job(
+    stamper: FrameStamper, clock: FakeClock
+) -> None:
+    order: list[object] = []
+    timers = Timers()
+    analyzer, images = graced(order, timers)
+    side = Abortable(order)
+    assert side.submit(analyzer) and side.started.wait(2)
+    analyzer.submit(job_for(held_frame(stamper, clock, images), "job-1"))
+    timers.fire()
+    wait_for(lambda: order[-1:] == ["job-1"])
+    assert side.aborted == ["a scene job is waiting: monitoring comes first"]
+    assert isinstance(order[1], RuntimeError)  # the side request was told why it ended
+    counters = analyzer.counters
+    assert (counters["side_preempted"], counters["side_preempted_after_grace"], counters["side_finished_in_grace"]) == (
+        1, 1, 0)
+    delays = analyzer.side_delays()
+    assert delays["n"] == 1 and delays["run_ms"]["behind_side"]["n"] == 1 and delays["run_ms"]["others"]["n"] == 0
+    assert analyzer.stop(2.0)
+
+
+def test_an_incidents_job_ends_a_running_side_request_at_once(stamper: FrameStamper, clock: FakeClock) -> None:
+    order: list[object] = []
+    timers = Timers()
+    analyzer, images = graced(order, timers)
+    side = Abortable(order)
+    assert side.submit(analyzer) and side.started.wait(2)
+    analyzer.submit(job_for(held_frame(stamper, clock, images), "job-1", incident="inc-1"))
+    wait_for(lambda: order[-1:] == ["job-1"])
+    assert timers.started == [] and side.aborted == ["a scene job is waiting: monitoring comes first"]
+    assert (analyzer.counters["side_preempted"], analyzer.counters["side_preempted_after_grace"]) == (1, 0)
+    assert analyzer.stop(2.0)
+
+
+def test_without_a_grace_a_periodic_job_ends_it_at_once(stamper: FrameStamper, clock: FakeClock) -> None:
+    order: list[object] = []
+    timers = Timers()
+    analyzer, images = graced(order, timers, grace_s=0.0)
+    side = Abortable(order)
+    assert side.submit(analyzer) and side.started.wait(2)
+    analyzer.submit(job_for(held_frame(stamper, clock, images), "job-1"))
+    wait_for(lambda: order[-1:] == ["job-1"])
+    assert timers.started == [] and len(side.aborted) == 1
+    with pytest.raises(ValueError, match="negative"):
+        ThreadedSceneAnalyzer(lambda job, image: None, RecentImages(), revision="1", side_grace_s=-0.1)
+    assert analyzer.stop(2.0)
+
+
+def test_a_late_grace_timer_never_ends_a_later_side_request(stamper: FrameStamper, clock: FakeClock) -> None:
+    order: list[object] = []
+    timers = Timers()
+    analyzer, images = graced(order, timers)
+    first = Abortable(order)
+    assert first.submit(analyzer) and first.started.wait(2)
+    analyzer.submit(job_for(held_frame(stamper, clock, images), "job-1"))
+    first.release.set()
+    wait_for(lambda: order[-1:] == ["job-1"] and not analyzer.busy())
+    second = Abortable(order)
+    assert second.submit(analyzer) and second.started.wait(2)
+    analyzer.submit(job_for(held_frame(stamper, clock, images), "job-2"))  # job-2 waits for the second request
+    timers.fire(0, even_if_cancelled=True)  # the first request's timer, late
+    assert second.aborted == []
+    timers.fire(1)  # the second request's own grace
+    wait_for(lambda: order[-1:] == ["job-2"])
+    assert second.aborted == ["a scene job is waiting: monitoring comes first"] and first.aborted == []
+    assert analyzer.stop(2.0)
+
+
+def test_the_grace_ends_nothing_once_no_scene_job_waits_a_later_job_has_its_own_and_stop_cancels_it(
+    stamper: FrameStamper, clock: FakeClock
+) -> None:
+    order: list[object] = []
+    timers = Timers()
+    analyzer, images = graced(order, timers)
+    side = Abortable(order)
+    assert side.submit(analyzer) and side.started.wait(2)
+    analyzer.submit(job_for(held_frame(stamper, clock, images), "job-1"))
+    analyzer.cancel("job-1")  # the lane gave the waiting job up at its deadline
+    timers.fire()
+    assert side.aborted == []  # nothing waits: the question goes on
+    analyzer.submit(job_for(held_frame(stamper, clock, images), "job-2"))
+    assert len(timers.started) == 2  # a later job's own grace, from its arrival
+    analyzer.submit(job_for(held_frame(stamper, clock, images), "job-3"))  # replaces job-2 within that grace
+    assert len(timers.started) == 2  # the earlier deadline stands
+    assert analyzer.stop(2.0)
+    assert timers.started[1][2] is True and side.aborted == ["the runtime is stopping"]
 
 
 def test_a_pending_side_request_can_be_withdrawn_and_stop_tells_it(stamper: FrameStamper, clock: FakeClock) -> None:

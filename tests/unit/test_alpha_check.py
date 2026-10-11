@@ -41,7 +41,7 @@ NOW = datetime(2026, 10, 12, 9, 0, tzinfo=timezone.utc)
 REPORT = json.dumps({"persons_visible": 1, "fire_or_smoke": False, "threat": "low", "observations": ["a person"],
                      "uncertainty": "low", "summary": "A synthetic report."})
 CAPTURES = ((60.0, "e1"), (180.0, "k1"), (300.0, "a"), (420.0, "e2"), (540.0, "k2"), (590.0, "end"))
-HELD_AT_S = 42.0  # this question is held until the next scene job (every 4 s) ends it
+HELD_AT_S = 42.0  # this question is held until the next periodic scene job (every 4 s) ends it after its grace
 LOOPBACK = [{"family": "tcp", "port": 18081, "scope": "loopback"}, {"family": "tcp", "port": 18090, "scope": "loopback"}]
 
 
@@ -113,6 +113,28 @@ class Model:
             self.holding.clear()
 
 
+class SimTimers:
+    """The scene worker's grace timers on the simulated clock: the run fires each when its time has come."""
+
+    def __init__(self, clock: FakeClock) -> None:
+        self.clock = clock
+        self.pending: list[dict[str, Any]] = []
+
+    def __call__(self, delay_s: float, call: Any) -> Any:
+        entry = {"due": self.clock.monotonic_ns() + round(delay_s * 1e9), "call": call, "cancelled": False}
+        self.pending.append(entry)
+        return lambda: entry.update(cancelled=True)
+
+    def fire_due(self) -> int:
+        now, fired = self.clock.monotonic_ns(), 0
+        for entry in [e for e in self.pending if e["due"] <= now]:
+            self.pending.remove(entry)
+            if not entry["cancelled"]:
+                entry["call"]()
+                fired += 1
+        return fired
+
+
 STARTUP = {
     "memory_policy": {"thp": "workload_disabled", "model_file_release": "post_load"},
     "thp_scope": {"before_launch": {"runtime": 1}, "llama_ready": {"runtime": 1, "scene_server": 1},
@@ -143,8 +165,10 @@ def build_run(mods, root: Path, *, fps: float = 4.0, duration: float = 600.0, pr
     config = parse_config({"config_version": 1, "camera": {"id": "cam-1"}})
     slot, capture = LatestFrame(), Capture(clock)
     images = RecentImages()
+    timers = SimTimers(clock)
     scene = SceneRuntime(ThreadedSceneAnalyzer(lambda job, image: WorkerOutcome.completed(job.job_id, REPORT), images,
-                                               revision="1+lfm2-vl-1.6b-q4_0"), images)
+                                               revision="1+lfm2-vl-1.6b-q4_0", now=clock.monotonic_ns,
+                                               schedule=timers), images)
     db = Database.open(root / "sentinel.db")
     model = Model()
     runtime = DemoRuntime(config, clock, capture=capture, slot=slot,
@@ -158,7 +182,7 @@ def build_run(mods, root: Path, *, fps: float = 4.0, duration: float = 600.0, pr
     t0 = clock.monotonic_ns()
     lines = [json.dumps({"run": "starting", "startup": {**STARTUP, "live_preview": runtime.preview.bounds(),
                                                          "chat": runtime.chat.availability()}})]
-    chat_lines = [json.dumps({"event": "started", "mono_s": ready, "question": mods.load.QUESTION,
+    chat_lines = [json.dumps({"event": "started", "mono_s": ready, "questions": mods.load.QUESTIONS,
                               "every_s": 6.0})]
     viewer_lines, pending, captures, next_status = [], list(CAPTURES), [], 0.0
     held = None  # (asked at, job) of the question held until the next scene job ends it
@@ -169,24 +193,28 @@ def build_run(mods, root: Path, *, fps: float = 4.0, duration: float = 600.0, pr
         slot.publish(CapturedFrame(frame, Image()))
         runtime.step(timeout_s=0)
         deadline = time.monotonic() + 5
+        if timers.fire_due():  # the grace is over: the question ends before the simulated clock moves on
+            while model.holding.is_set() and time.monotonic() < deadline:
+                time.sleep(0.0005)
         while scene.analyzer.busy() and not model.holding.is_set() and time.monotonic() < deadline:
             time.sleep(0.0005)  # scene jobs finish at once here; only the held question stays running
         runtime.step(timeout_s=0)
         if held is not None and not model.holding.is_set():
             status, document = _follow(runtime, *runtime.chat.poll(held[1]))
-            chat_lines.append(json.dumps(mods.load._record(held[0], document, status)))
+            chat_lines.append(json.dumps(mods.load._record(held[0], "long", document, status)))
             held = None
-        if t % 6 == 0 and not scene.analyzer.busy():  # alpha_load's cadence: a question every 6 s
+        if t % 6 == 0 and not scene.analyzer.busy():  # alpha_load's cadence: a question every 6 s, alternating
+            kind = "short" if (t // 6) % 2 else "long"
             model.hold_next = t == HELD_AT_S
-            status, document = runtime.chat.ask(ChatQuestion(mods.load.QUESTION))
-            if model.hold_next or t == HELD_AT_S:
+            status, document = runtime.chat.ask(ChatQuestion(mods.load.QUESTIONS[kind]))
+            if t == HELD_AT_S:
                 deadline = time.monotonic() + 5
                 while not model.holding.is_set() and time.monotonic() < deadline:
                     time.sleep(0.0005)
                 held = (ready + t, document["job"])
             else:
-                chat_lines.append(json.dumps(mods.load._record(ready + t, *reversed(_follow(runtime, status,
-                                                                                             document)))))
+                status, document = _follow(runtime, status, document)
+                chat_lines.append(json.dumps(mods.load._record(ready + t, kind, document, status)))
         if n % int(fps) == 0:  # the viewer's tallies are written here; alpha_load's own are tested on a real page
             viewer_lines.append(json.dumps({"second_mono_s": ready + t, "pictures": 14, "bytes": 14 * 30_000,
                                             "max_age_ms_when_sent": 180, "states": {}}))
@@ -254,8 +282,11 @@ def test_a_run_from_the_real_runtime_passes_every_item(mods, made) -> None:
     assert "MISSING" not in text and "FAIL" not in text
     cancel = line_for(text, "cancellation verified")
     assert '"side_preempted": 1' in cancel and '"questions_cancelled_for_a_scene_job": 1' in cancel
-    assert line_for(text, "chat-induced scene delay").startswith("PASS")
-    assert "DESCRIPTIVE chat load: questions by final state" in text and '"answered"' in text
+    assert '"after_grace": 1' in cancel  # the periodic job let the question run for its grace, then ended it
+    delay = line_for(text, "chat-induced scene delay")
+    assert delay.startswith("PASS") and '"grace_ms": 1500' in delay and '"max_ever_ms": 1500.0' in delay
+    assert 'DESCRIPTIVE chat load: questions by kind and final state: {"long": {"answered": 50, "cancelled": 1}, ' \
+           '"short": {"answered": 49}}' in text
 
 
 def test_the_load_records_never_hold_an_answers_text_and_fit_the_privacy_profiles(mods, made) -> None:
@@ -278,6 +309,8 @@ def edit_last_status(run: Path, change) -> None:
     (lambda s: s["components"]["chat"]["scene_waits_behind_chat"].update(max_ever_ms=2500.0),
      "chat-induced scene delay", "FAIL"),
     (lambda s: s["components"]["chat"]["scene_waits_behind_chat"].update(n=0), "chat-induced scene delay", "MISSING"),
+    (lambda s: s["components"]["chat"]["scene_waits_behind_chat"].update(grace_ms=3000), "chat-induced scene delay",
+     "FAIL"),  # a run with another grace than the declared one
     (lambda s: s["components"]["scene"]["worker"].update(side_preempted=0), "cancellation verified", "MISSING"),
     (lambda s: s["components"]["incidents"].update(signals_dropped=1), "monitoring kept first", "FAIL"),
     (lambda s: s["live"].update(video="stale"), "every capture", "FAIL"),

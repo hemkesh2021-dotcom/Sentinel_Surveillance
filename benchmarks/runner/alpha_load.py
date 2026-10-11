@@ -7,12 +7,14 @@
 Operator tooling, not part of the runtime. Started before the guarded run (D50: nothing under a deadline): each waits
 up to ``--wait-s`` for the page on 127.0.0.1, then works until the page has not answered for GONE_S, and exits 0.
 
-- ``chat`` asks QUESTION (fixed protocol text) every ``--every-s`` seconds through POST /chat, exactly as the page
-  does (its own token, Origin and JSON body), and follows each accepted question to its end. Per question it records
-  numbers and fixed labels only: when it was asked (CLOCK_MONOTONIC, the guard's and the runtime's clock), the state
-  it ended in, the reason label for a refusal or a cancellation, the frame the answer describes (stream epoch, frame,
-  ingest time), its age when asked and answered, whether it was historical, the answer's length and whether it was
-  cut short. **Never the answer's text.**
+- ``chat`` asks every ``--every-s`` seconds through POST /chat, exactly as the page does (its own token, Origin and
+  JSON body), and follows each accepted question to its end. It alternates two fixed protocol questions (QUESTIONS):
+  a short one, which a question started between scene checks should finish, and a long one, whose answer runs to
+  the token bound and so is likely to outlast the gap and be ended for a periodic scene job (D81), so that both paths
+  are exercised. Per question it records numbers and fixed labels only: when it was asked (CLOCK_MONOTONIC, the
+  guard's and the runtime's clock), which question, the state it ended in, the reason label for a refusal or a
+  cancellation, the frame the answer describes (stream epoch, frame, ingest time), its age when asked and answered,
+  whether it was historical, the answer's length and whether it was cut short. **Never the answer's text.**
 - ``view`` pulls live pictures through GET /live/frame as the page's player does (one request at a time, the newest
   newer than the last), and records per second: pictures received, their bytes, and their age when sent (the
   device's clock); never a picture.
@@ -31,7 +33,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-QUESTION = "What is visible in this picture?"
+QUESTIONS = {"short": "What is visible in this picture? Answer in one sentence.",
+             "long": "Describe everything visible in this picture in detail, object by object, with its colour and "
+                     "where it is."}
 GONE_S = 15.0  # the page has not answered for this long: the runtime has stopped
 TOKEN = re.compile(rb'data-token="([0-9a-f]{32})"')
 FRAME = re.compile(r"[0-9]{1,9}-[0-9]{1,12}")
@@ -94,11 +98,11 @@ def _label(text: Any) -> str | None:
     return text[:200] if isinstance(text, str) else None
 
 
-def _record(asked_mono: float, document: dict[str, Any], http_status: int) -> dict[str, Any]:
+def _record(asked_mono: float, kind: str, document: dict[str, Any], http_status: int) -> dict[str, Any]:
     frame = document.get("frame") if isinstance(document.get("frame"), dict) else {}
     answer = document.get("answer")
     return {
-        "asked_mono_s": round(asked_mono, 3), "http_status": http_status,
+        "asked_mono_s": round(asked_mono, 3), "kind": kind, "http_status": http_status,
         "state": document.get("state") if document.get("state") in FINAL else "unreadable",
         "reason": _label(document.get("reason")) if document.get("state") != "answered" else None,
         "stream_epoch": frame.get("stream_epoch"), "frame_seq": frame.get("frame_seq"),
@@ -115,20 +119,22 @@ def chat(out: Path, port: int, every_s: float, wait_s: float) -> int:
         if not _wait_for(page, wait_s):
             sink.write(json.dumps({"event": "page_never_answered"}) + "\n")
             return 0
-        sink.write(json.dumps({"event": "started", "mono_s": round(time.monotonic(), 3), "question": QUESTION,
+        sink.write(json.dumps({"event": "started", "mono_s": round(time.monotonic(), 3), "questions": QUESTIONS,
                                "every_s": every_s}) + "\n")
-        silent_since = None
+        silent_since, n = None, 0
         while True:
             asked = time.monotonic()
+            kind = "short" if n % 2 == 0 else "long"
+            n += 1
             try:
-                status, document = page.json("POST", "/chat", {"question": QUESTION, "history": []})
+                status, document = page.json("POST", "/chat", {"question": QUESTIONS[kind], "history": []})
                 if status == 403:  # a restarted runtime: its new page has a new token
                     page.refresh_token()
                 job = document.get("job") if isinstance(document.get("job"), str) else None
                 while job and document.get("state") in ("sending", "waiting", "answering"):
                     time.sleep(0.5)
                     status, document = page.json("GET", f"/chat/{job}")
-                sink.write(json.dumps(_record(asked, document, status)) + "\n")
+                sink.write(json.dumps(_record(asked, kind, document, status)) + "\n")
                 sink.flush()
                 silent_since = None
             except OSError:

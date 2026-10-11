@@ -186,7 +186,8 @@ def test_busy_no_fresh_frame_and_unavailable_are_said_and_the_draft_is_kept(
     page = opened(browser, f"{served['url']}/")
     camera, analyzer = served["camera"], served["analyzer"]
     try:
-        # Busy: the scene worker is analysing the scene; the question is refused, never queued.
+        # Busy: the scene worker is analysing the scene; the question waits for it (D81) and, when the scene job
+        # outlasts CHAT_START_S, gives up as busy: never queued, never sent to the model.
         served["scene_hold"].clear()
         frame, image = camera.frames.latest()
         analyzer._images.put(frame.key, image)
@@ -195,15 +196,19 @@ def test_busy_no_fresh_frame_and_unavailable_are_said_and_the_draft_is_kept(
         assert wait_until(analyzer.busy, 5.0)
         type_question(page, "What is on the desk?")
         press_ask(page)
-        seen = wait_chat(page, lambda s: s["log"] and last(s)["state"] == "busy", 5.0)
-        assert "Busy: the scene model is busy; monitoring comes first, so ask again shortly." in last(seen)["text"]
-        assert seen["draft"] == "What is on the desk?" and not seen["ask_disabled"]  # kept, to ask again
+        seen = wait_chat(page, lambda s: s["log"] and last(s)["state"] == "waiting", 5.0)
+        assert "Waiting for the scene model" in last(seen)["text"]
+        camera.clock.advance(5.5)  # longer than CHAT_START_S on the runtime's clock
+        seen = wait_chat(page, lambda s: s["log"] and last(s)["state"] == "busy", 8.0)
+        assert "Busy: the scene model stayed busy; monitoring comes first." in last(seen)["text"]
+        assert seen["draft"] == "" and served["model"].questions == []  # it was handed over, then given up
         served["scene_hold"].set()
         assert wait_until(lambda: not analyzer.busy(), 5.0)
         # No fresh frame: the camera stops; the newest frame is old, and the model is not asked.
         served["stop"].set()
         time.sleep(0.5)  # the fake camera's last tick is over
         camera.clock.advance(3.0)
+        type_question(page, "What is on the desk?")
         press_ask(page)
         seen = wait_chat(page, lambda s: len(s["log"]) == 2 and last(s)["state"] == "no_fresh_frame", 5.0)
         assert "No fresh frame: the newest frame is 3." in last(seen)["text"]
