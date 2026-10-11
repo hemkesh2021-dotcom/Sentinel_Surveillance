@@ -297,7 +297,8 @@ OPTIONAL_STATUS = {  # build_status's preview, and DemoRuntime's preview, snapsh
                                                      for k, v in GATE_LIMITS.items()},
     "components.chat.gate.counters.*": INT,
     "components.chat.scene_waits_behind_chat.n": INT,
-    **{f"components.chat.scene_waits_behind_chat.{k}": SECONDS for k in ("median_ms", "max_ms", "last_ms")},
+    **{f"components.chat.scene_waits_behind_chat.{k}": SECONDS for k in ("median_ms", "max_ms", "last_ms",
+                                                                         "max_ever_ms")},
 }
 OPTIONAL_STATUS_KEYS = {"components.preview.counters": PREVIEW_COUNTERS,
                         "components.snapshots.writer": SNAPSHOT_WRITER_COUNTERS,
@@ -574,10 +575,47 @@ RUN_ERR = LogProfile((
 ))
 ACCOUNT = AccountProfile()
 
+# D80: alpha_load's records in a combined run (chat questions and a live viewer): numbers and fixed labels only; the
+# answers' text is never recorded. Every reason the runtime can give a question is declared as fixed text.
+CHAT_JOB_REASON = Either((CHAT_REASON, template(
+    fixed("another question is being answered; ask again when it is done"), r"one question every ([\d.]+) s",
+    fixed("no frame has been received yet, so there is nothing to ask about"),
+    fixed("the newest frame's stream has ended; ask again when the camera is live"),
+    fixed("the newest frame's stream is no longer connected; ask again when the camera is live"),
+    r"the newest frame is ([\d.]+) s old \(stale after ([\d.]+) s\); ask again when the camera is live",
+    fixed("the scene model is busy; monitoring comes first, so ask again shortly"),
+    fixed("the scene model stayed busy; monitoring comes first"), fixed("no answer in time"),
+    fixed("a scene job is waiting: monitoring comes first"), fixed("device memory pressure: monitoring comes first"),
+    fixed("the runtime is stopping"), fixed("cancelled"), fixed("the model did not answer in time"),
+    r"the model could not be reached \(([A-Za-z0-9_:]+)\)", fixed("the model's answer was not usable"),
+    fixed("the model gave an empty answer"), r"the frame could not be encoded \(([A-Za-z0-9_]+)\)",
+    fixed("the question could not be answered"), fixed("only this page may ask"),
+    fixed("a Content-Length is required"), fixed("a JSON body is required"), fixed("request too large"),
+    fixed("request is not JSON"), fixed("request has unexpected fields"), fixed("question missing"),
+    fixed("question empty"), r"question longer than (\d+) characters",
+    r"history must be a list of at most (\d+) exchanges", fixed("history items need a question and an answer"),
+    fixed("the runtime is starting"), fixed("the question could not be taken"))))
+CHAT_FINAL = vocab("answered", "error", "timeout", "busy", "cancelled", "unavailable", "paused", "no_fresh_frame",
+                   "refused", "invalid", "off", "unknown", "unreadable")  # alpha_load.FINAL and its own unreadable
+LOAD_EVENT = {"event": vocab("started", "page_never_answered", "page_gone"), "mono_s": NUM,
+              "question": template(fixed("What is visible in this picture?")), "every_s": NUM}
+CHAT_LOAD = JsonProfile({
+    **LOAD_EVENT, "asked_mono_s": NUM, "http_status": INT, "state": CHAT_FINAL, "reason": maybe(CHAT_JOB_REASON),
+    "stream_epoch": COUNT, "frame_seq": COUNT, "ingest_utc": maybe(ISO), "age_ms_when_asked": COUNT,
+    "age_ms_when_answered": COUNT, "historical": maybe(BOOL), "answer_ms": COUNT, "answer_chars": COUNT,
+    "cut_short": maybe(BOOL),
+}, lines=True)
+VIEWER = JsonProfile({
+    **LOAD_EVENT, "second_mono_s": NUM, "pictures": INT, "bytes": INT, "max_age_ms_when_sent": COUNT,
+    "states.*": INT,
+}, keys={"states": Either((vocab("live", "stale", "offline", "starting", "closed", "busy", "refused", "invalid",
+                                 "off", "error"), template(r"http_(\d{3})")))}, lines=True)
+
 F1_PROFILES: dict[str, Any] = {"dryrun.json": ENROLL, "enroll.json": ENROLL, "list.json": LISTING,
                                "provenance.txt": F1_PROVENANCE, "audit.jsonl": AUDIT}
 F2_PROFILES: dict[str, Any] = {"result.json": RESULT, "guard.jsonl": GUARD, "run.jsonl": RUN, "run.err": RUN_ERR,
                                "account.txt": ACCOUNT, "provenance.txt": F2_PROVENANCE,
+                               "chat-load.jsonl": CHAT_LOAD, "viewer.jsonl": VIEWER,  # a combined run's load (D80)
                                **{f"status-{name}.json": STATUS for name in STATUS_NAMES}}
 PROFILES = {"f1": F1_PROFILES, "f2": F2_PROFILES}
 

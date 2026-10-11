@@ -109,6 +109,7 @@ class ThreadedSceneAnalyzer:
                           Callable[[str], bool] | None] | None = None
         self._running_abort: Callable[[str], bool] | None = None  # the running side request's abort
         self._side_waits_ms: deque[float] = deque(maxlen=SIDE_WAITS_KEPT)
+        self._side_wait_max_ms: float | None = None  # over the whole run, not only the waits kept
         self._running: str | None = None  # a job ID, or SIDE
         self._inbox: deque[tuple[str, WorkerOutcome]] = deque()
         self._stopping = False
@@ -200,13 +201,14 @@ class ThreadedSceneAnalyzer:
         return True
 
     def side_delays(self) -> dict[str, Any]:
-        """How long scene jobs submitted while a side request ran waited to start (ms; the latest SIDE_WAITS_KEPT)."""
+        """How long scene jobs submitted while a side request ran waited to start (ms): the latest SIDE_WAITS_KEPT,
+        and the largest over the whole run."""
         with self._lock:
-            waits = list(self._side_waits_ms)
+            waits, ever = list(self._side_waits_ms), self._side_wait_max_ms
         if not waits:
-            return {"n": 0, "median_ms": None, "max_ms": None, "last_ms": None}
+            return {"n": 0, "median_ms": None, "max_ms": None, "last_ms": None, "max_ever_ms": None}
         return {"n": len(waits), "median_ms": round(statistics.median(waits), 1), "max_ms": round(max(waits), 1),
-                "last_ms": round(waits[-1], 1)}
+                "last_ms": round(waits[-1], 1), "max_ever_ms": round(ever or 0.0, 1)}
 
     def cancel_side(self) -> bool:
         """Drop a side request that has not started; True if one was dropped."""
@@ -258,7 +260,9 @@ class ThreadedSceneAnalyzer:
                     if self._waiting_since is not None:
                         since, behind_side = self._waiting_since
                         if behind_side:
-                            self._side_waits_ms.append((self._now() - since) / 1e6)
+                            waited = (self._now() - since) / 1e6
+                            self._side_waits_ms.append(waited)
+                            self._side_wait_max_ms = max(waited, self._side_wait_max_ms or 0.0)
                             self.counters["jobs_waited_for_side"] += 1
                     self._waiting_since = None
             if side is not None:

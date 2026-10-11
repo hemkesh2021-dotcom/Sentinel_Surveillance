@@ -321,6 +321,7 @@ def test_a_scene_job_that_arrives_while_a_question_runs_ends_it_and_starts_at_on
     assert r.transport.aborted == ["a scene job is waiting: monitoring comes first"]
     waits = r.analyzer.side_delays()
     assert waits["n"] == 1 and waits["max_ms"] < 1000  # it waited only for the question to end, never for an answer
+    assert waits["max_ever_ms"] == waits["max_ms"]
     counters = r.analyzer.counters
     assert counters["side_preempted"] == 1 and counters["jobs_waited_for_side"] == 1
     assert r.service.summary()["counters"]["cancelled"] == 1
@@ -478,7 +479,7 @@ class _IdleThenBusy:
         return False
 
     def side_delays(self) -> dict[str, Any]:
-        return {"n": 0, "median_ms": None, "max_ms": None, "last_ms": None}
+        return {"n": 0, "median_ms": None, "max_ms": None, "last_ms": None, "max_ever_ms": None}
 
 
 @pytest.mark.parametrize(("body", "label"), [
