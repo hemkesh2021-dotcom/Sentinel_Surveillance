@@ -274,7 +274,25 @@ def test_face_recognition_and_identity_counts_are_shown_without_ids(page) -> Non
     text = get(page, "/")[2].decode()
     assert "<span class=name>face</span>" in text and "Face recognition: available" in text
     assert "known 1 (fresh 1, retained 0) · unknown 0 · uncertain 0 · unresolved 1" in text
-    assert "idn-" not in text
+    assert "idn-" not in text and "experimental" not in text
+
+
+def test_face_recognition_in_a_validation_run_is_shown_as_experimental(page) -> None:
+    """D92: in a --face-validation run (the only way face can run before its validation) the chip and the identity
+    counts say "experimental: a validation run, not validated"; the counts themselves are unchanged."""
+    page.state["snapshot"] = {
+        **SNAPSHOT,
+        "components": {**SNAPSHOT["components"], "face": {"state": "available", "problem": None,
+                                                          "validation_run": True, "detection": "full_scale"}},
+        "live": {**SNAPSHOT["live"], "face_recognition": "available", "identity": {
+            "unresolved": 0, "unknown": 0, "known": 1, "uncertain": 0, "fresh": 1, "retained": 0}},
+    }
+    text = get(page, "/")[2].decode()
+    assert "Face recognition: available (experimental: a validation run, not validated)" in text
+    assert "identities (counts only; experimental: a validation run, not validated)" in text
+    assert "known 1 (fresh 1, retained 0)" in text and "idn-" not in text
+    regions = json.loads(get(page, "/status.json?page=1")[2])["page"]["regions"]  # the in-place update too
+    assert "experimental: a validation run, not validated" in regions["caps"]
 
 
 # ---------------------------------------------------------------- incident detail (guide ch. 15, V2-28 display)

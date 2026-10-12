@@ -762,6 +762,15 @@ def _details(summary: str, body: str, *, key: str) -> str:
             f"<div class=body>{body}</div></details>")
 
 
+FACE_EXPERIMENTAL = "experimental: a validation run, not validated"
+
+
+def _face_experimental(components: Mapping[str, Any]) -> bool:
+    """D92: face recognition in a --face-validation run (its admission is PENDING_VALIDATION): what it shows is an
+    experiment, and the page says so wherever it shows face recognition."""
+    return (components.get("face") or {}).get("validation_run") is True
+
+
 def _identity_counts(live: dict[str, Any]) -> str | None:
     counts = live.get("identity") if live else None
     if not counts:
@@ -884,10 +893,13 @@ def _capabilities(live: Mapping[str, Any], components: Mapping[str, Any], runnin
     alerts = ("disabled" if not channels else
               "available" if all(c.get("state") == "available" for c in channels.values()) else "unavailable")
     chips = []
+    experimental = _face_experimental(components)
     for name, state in (("Detector", live.get("detector")), ("Scene analysis", live.get("scene_analysis")),
                         ("Face recognition", live.get("face_recognition")), ("Alerts", alerts)):
         kind = _state_kind(state, running=running)
         word = STATE_LABELS.get(str(state), str(state)).lower()
+        if name == "Face recognition" and experimental:  # D92: a face validation run is never shown as plain
+            word += f" ({FACE_EXPERIMENTAL})"
         label = f"{name}: {word}"
         chips.append(_claim(_badge("ok", label), _badge("off", f"{name}: was {word}", glyph="clock"))
                      if kind == "ok" else _badge(kind, label))
@@ -1024,7 +1036,9 @@ def status_regions(status: Mapping[str, Any], *, theme: str | None = None) -> di
         ("detector", live.get("detector")), ("occupancy", live.get("occupancy")),
         ("why", live.get("occupancy_reason")), ("people (confirmed)",
         None if not live else f"{live.get('people')} ({live.get('confirmed_people')})"),
-        ("face recognition", live.get("face_recognition")), ("identities (counts only)", _identity_counts(live)),
+        ("face recognition", live.get("face_recognition")),
+        ("identities (counts only; " + FACE_EXPERIMENTAL + ")" if _face_experimental(components)
+         else "identities (counts only)", _identity_counts(live)),
         ("scene analysis", live.get("scene_analysis")), *scene_rows])}</table></div>""", key="technical")
     view = status.get("preview")
     return {
