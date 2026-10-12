@@ -2296,3 +2296,131 @@ def test_one_denominator_a_result_with_two_people_is_counted_apart(mods, compari
     assert people == results + 1  # the old lines keep their own denominators, now named apart
     _, cost = _described(text, "production and the comparison's cost")
     assert cost["offered_at_last_capture"] >= cost["yielded_to_comparison"]  # the same capture's two counts
+
+
+# ---------------------------------------------------------------- D89: F2 for the full-scale detection candidate
+
+
+def candidate_f2_run(mods, tmp_path, accepted_scene, *, name: str = "cf2", script=SCRIPT, away_face=None,
+                     marker: str = "candidate", detection: str = "full_scale", duration: float = 600.0) -> Path:
+    """The F2 script run by the real runtime with the candidate's faces (D88's FaceRuns, with its own numbers):
+    ``marker`` names the startup line's face entry (``candidate``, ``production`` or ``comparison``) and ``detection``
+    the FaceRuntime's, which sets the records' schema (``full_scale``: 5; ``deepface``: 3)."""
+    from sentinel.identity.legacy_deepface import CandidateDetection
+
+    root = tmp_path / name
+    root.mkdir()
+    start_root = root / "startup"
+    start_root.mkdir()
+    startup = startup_line(real_face_startup(start_root, accepted_scene, candidate=marker == "candidate",
+                                             comparison=marker == "comparison"))
+
+    def analyze_from(t0):
+        def analyze(frame, image):
+            state, _ = segment(script, (frame.ingest_mono_ns - t0) / 1e9)
+            embedding = FACE if state == "facing" else away_face if state == "away" else None
+            if embedding is None:  # no face at 0.9: never embedded, and no stand-in to drop
+                return FaceRun((), 0, 0, detection=CandidateDetection(None, 47.0, None))
+            face = FaceObservation(frame=frame.key, box=FACE_BOX, quality=0.92, embedding=embedding)
+            return FaceRun((face,), 1, 0, detection=CandidateDetection(None, 48.0, 861.0))
+        return analyze
+
+    return simulate(root, startup, script=script, analyze=analyze_from, detection=detection, duration=duration)
+
+
+def judged(text: str) -> list[tuple[str, str]]:
+    """(verdict, item name) of every judged line; the value is the JSON after the name."""
+    out = []
+    for line in text.splitlines():
+        label, rest = line.split(" ", 1)
+        if label == "DESCRIPTIVE":
+            continue
+        for split in (i for i in range(len(rest)) if rest.startswith(": ", i)):
+            try:
+                json.loads(rest[split + 2:])
+            except ValueError:
+                continue
+            out.append((label, rest[:split]))
+            break
+    return out
+
+
+def test_a_candidate_f2_run_is_judged_item_for_item_as_a_production_run(mods, tmp_path, startup, f1_list,
+                                                                        accepted_scene) -> None:
+    """D89: the same script and account, read once with production's faces (schema 3) and once with the candidate's
+    (schema 5): every judged item, its verdict and its criterion are the same; only the three items that say which
+    detection produced the faces name the candidate."""
+    production = simulate(tmp_path, startup)
+    finish(mods, production, account=account_v3(mods), cues=FORMAT3_CUES)
+    candidate = candidate_f2_run(mods, tmp_path, accepted_scene)
+    finish(mods, candidate, account=account_v3(mods), cues=FORMAT3_CUES)
+    p_result, p_text = reading(mods, production, f1_list)
+    c_result, c_text = reading(mods, candidate, f1_list)
+    assert p_result.ok, p_text
+    assert c_result.ok, c_text
+    assert "MISSING" not in c_text and "FAIL" not in c_text and "NOT_EXERCISED" not in c_text
+    renamed = {
+        "face admitted for this validation run with the full-scale detection candidate (D88): one enrolled identity, "
+        "no problem": "face admitted for this validation run: one enrolled identity, no problem",
+        "each status capture: face available (validation run, 1 enrolled), scene available, video fresh, no channel, "
+        "no delivery row; the candidate's detection": "each status capture: face available (validation run, 1 "
+        "enrolled), scene available, video fresh, no channel, no delivery row",
+        "identity records: schema 5, complete, none dropped": "identity records: schema 3, complete, none dropped"}
+    assert [(label, renamed.get(name, name)) for label, name in judged(c_text)] == judged(p_text)
+    assert line_for(c_text, "A: a known identity is retained").startswith("PASS")
+    records = [json.loads(x) for x in (candidate / "run.jsonl").read_text().splitlines()]
+    assert {x["schema"] for x in records if "identity" in x} == {5}
+    assert json.loads(line_for(c_text, "each status capture").split(": ", 1)[1].split("; the candidate's detection: ",
+                                                                                         1)[1])[0]["detection"] \
+        == "full_scale"
+
+
+@pytest.mark.parametrize("marker, detection", [("production", "full_scale"), ("candidate", "deepface")])
+def test_the_candidates_marker_and_its_records_schema_must_agree(mods, tmp_path, f1_list, accepted_scene, marker,
+                                                                 detection) -> None:
+    out = candidate_f2_run(mods, tmp_path, accepted_scene, marker=marker, detection=detection, duration=70.0)
+    finish(mods, out, account=account_v3(mods), cues=FORMAT3_CUES, counts={}, captures=((60.0, "e1"),))
+    result, text = reading(mods, out, f1_list)
+    assert not result.ok
+    assert line_for(text, "face admitted for this validation run").startswith("PASS")
+    assert line_for(text, "identity records: schema").startswith("FAIL")
+    assert "records with the startup's face" in line_for(text, "identity records: schema")
+
+
+def test_a_candidate_capture_without_the_candidates_marker_fails(mods, tmp_path, f1_list, accepted_scene) -> None:
+    out = candidate_f2_run(mods, tmp_path, accepted_scene, duration=70.0)
+    status = json.loads((out / "status-e1.json").read_text())
+    del status["components"]["face"]["detection"]
+    (out / "status-e1.json").write_text(json.dumps(status))
+    finish(mods, out, account=account_v3(mods), cues=FORMAT3_CUES, counts={})
+    result, text = reading(mods, out, f1_list)
+    assert not result.ok and line_for(text, "each status capture").startswith("MISSING")
+
+
+def test_a_comparison_run_is_still_not_an_f2_run(mods, tmp_path, f1_list, accepted_scene) -> None:
+    out = candidate_f2_run(mods, tmp_path, accepted_scene, marker="comparison", detection="deepface", duration=70.0)
+    finish(mods, out, account=account_v3(mods), cues=FORMAT3_CUES, counts={})
+    result, text = reading(mods, out, f1_list)
+    assert not result.ok and line_for(text, "face admitted for this validation run: one").startswith("FAIL")
+
+
+@pytest.mark.parametrize("case", ["face_visible_while_turned", "face_not_hidden_in_account", "track_lost_while_away"])
+def test_the_candidates_retention_is_never_passed_unless_exercised(mods, tmp_path, f1_list, accepted_scene,
+                                                                   case) -> None:
+    """D89 changes no retention rule: a face still matching while turned, an account saying it was visible, or a
+    person lost to the detector while away before the identity's votes expired (the identity cleared with its track,
+    never counted as retained) leaves retention NOT_EXERCISED."""
+    script = SCRIPT if case != "track_lost_while_away" else (
+        SCRIPT[:3] + ((240, 255, "away", 1), (255, 360, "absent", None)) + SCRIPT[4:])
+    out = candidate_f2_run(mods, tmp_path, accepted_scene, script=script,
+                           away_face=FACE if case == "face_visible_while_turned" else None)
+    account = account_v3(mods, **({"face_hidden_while_turned": "no"} if case == "face_not_hidden_in_account" else {}))
+    finish(mods, out, account=account, cues=FORMAT3_CUES, counts={})
+    result, text = reading(mods, out, f1_list)
+    retention = line_for(text, "A: a known identity is retained")
+    assert not result.ok and retention.startswith("NOT_EXERCISED"), retention
+    if case == "track_lost_while_away":
+        transitions = [json.loads(x) for x in (out / "run.jsonl").read_text().splitlines()
+                       if json.loads(x).get("identity") == "transition"]
+        assert any(t["from"] == "known" and t["to"] == "cleared" for t in transitions)
+        assert '"ended": "cleared"' in retention

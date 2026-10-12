@@ -117,6 +117,8 @@ FULL_SCALE_SCHEMA = 3  # runtime.IDENTITY_FULL_SCALE_SCHEMA: schema 2 plus each 
 COMPARISON_SCHEMA = 4  # runtime.IDENTITY_COMPARISON_SCHEMA: schema 3 plus comparison records (D87)
 CANDIDATE_SCHEMA = 5  # runtime.IDENTITY_CANDIDATE_SCHEMA: schema 2 plus the detection candidate's numbers (D88)
 SCHEMAS = (SCHEMA, DIAGNOSTIC_SCHEMA, FULL_SCALE_SCHEMA, COMPARISON_SCHEMA, CANDIDATE_SCHEMA)
+CANDIDATE_SCHEMAS = (CANDIDATE_SCHEMA,)  # what a run of the full-scale detection candidate writes (D88)
+F2_FACE = {"validation_run": True, "identities_enrolled": 1}  # the startup's face entry of a production F2 run
 FULL_SCALE_KEYS = {"faces", "assigned", "best_score", "best_w_px", "ms"}
 DETECTION_KEYS = {"best_below_score", "best_below_w_px", "detect_ms", "embed_ms"}  # runtime.detection_numbers (D88)
 DETECTION_FULL_SCALE = "full_scale"  # legacy_deepface.DETECTION_FULL_SCALE: the startup line's face "detection"
@@ -557,10 +559,15 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
            isinstance(server, dict) and server.get("state") == "ready" and server.get("problem") is None
            and server.get("layers") == s5.LAYERS and server.get("vision_on_gpu") is True
            and s5._get(start, "scene_problem") is None and s5._get(start, "detector_problem") is None)
-    r.item("face admitted for this validation run: one enrolled identity, no problem",
+    # D89: a run of the full-scale detection candidate (D88) is read by the same criteria; only its startup marker,
+    # the marker in each capture and its records' schema say which detection produced the faces. Every other run is
+    # read exactly as before.
+    candidate = s5._get(start, "face") == CANDIDATE_FACE
+    r.item("face admitted for this validation run: one enrolled identity, no problem" if not candidate else
+           "face admitted for this validation run with the full-scale detection candidate (D88): one enrolled "
+           "identity, no problem",
            {"face": s5._get(start, "face"), "face_problem": s5._get(start, "face_problem")},
-           s5._get(start, "face") == {"validation_run": True, "identities_enrolled": 1}
-           and s5._get(start, "face_problem") is None)
+           s5._get(start, "face") in (F2_FACE, CANDIDATE_FACE) and s5._get(start, "face_problem") is None)
     r.item("no notification channel (Telegram disabled)", s5._get(start, "notifier_problems"),
            s5._get(start, "notifier_problems") == {})
 
@@ -569,14 +576,17 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
     seen = [{"face": s5._get(c, "components", "face", "state"),
              "validation_run": s5._get(c, "components", "face", "validation_run"),
              "enrolled": s5._get(c, "components", "face", "identities_enrolled"),
+             **({"detection": s5._get(c, "components", "face", "detection")} if candidate else {}),
              "scene": s5._get(c, "components", "scene", "state"), "video": s5._get(c, "live", "video"),
              "channels": s5._get(c, "components", "notifications", "channels"),
              "delivery": s5._get(c, "delivery", "totals")} for c in captures]
     r.item("each status capture: face available (validation run, 1 enrolled), scene available, video fresh, "
-           "no channel, no delivery row", seen if seen else MISSING,
+           "no channel, no delivery row" + ("; the candidate's detection" if candidate else ""),
+           seen if seen else MISSING,
            bool(seen) and not s5._has_missing(seen) and all(s["face"] == "available" and s["validation_run"] is True and s["enrolled"] == 1
                               and s["scene"] == "available" and s["video"] == "fresh" and s["channels"] == {}
-                              and isinstance(s["delivery"], dict) and not any(s["delivery"].values()) for s in seen))
+                              and isinstance(s["delivery"], dict) and not any(s["delivery"].values())
+                              and (not candidate or s["detection"] == DETECTION_FULL_SCALE) for s in seen))
     s5._listeners(r, result, {18081, 18090})
     stopped = s5._get(result, "run_output", "stopped")
     r.item("clean shutdown: all stopped (the face worker included), database closed", stopped,
@@ -593,6 +603,8 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
     if len(schemas) > 1:
         problems.append(f"the records mix schemas {schemas}")
     schema = schemas[0] if len(schemas) == 1 else SCHEMA
+    if schemas and candidate != (schema in CANDIDATE_SCHEMAS):  # D89: the marker and the records must agree
+        problems.append(f"schema {schema} records with the startup's face {s5._get(start, 'face')}")
     last = captures[-1] if captures else MISSING
     dropped = s5._get(last, "components", "face", "records", "dropped")
     r.item(f"identity records: schema {schema}, complete, none dropped",
