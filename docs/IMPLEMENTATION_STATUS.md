@@ -460,7 +460,7 @@ Over the whole first sitting (cue k1 to cue a, descriptive): 112 offered, a face
 
 ### The package `~/sentinel-prep/alpha-75d6a20/` (PENDING; nothing has run)
 
-- **Contents** (13 files; manifest `SHA256SUMS` SHA-256 `6e5ea3abbbf44afb38eaae9b35b883bb283dbb0eece7db42787ac7ac447ee6f7`): PROTOCOL.md (why, what changed, A's posture decision, the session with its D50 box, the expected diagnostic outcomes), DECISIONS.md, SOURCE.txt and the blocks a-R, a-D, a-B, a-P, f-P, f-V, fv-D, fv-E, a-H. a-D, a-P, f-P, f-V, fv-D, fv-E and a-H are byte-identical to `alpha-f6ced5e`'s; a-R differs only in its PIN line; a-B only in its checksum list (the same 38 files at `75d6a20`; five changed: `runtime.py`, `demo_runtime.py`, `identity/state.py`, `face_check.py`, `face_evidence.py`). Left out, kept in `alpha-f6ced5e`: a-M0, a-C, f-C, fc-D, fc-E, the observation sheet and the backup files.
+- **Contents** (12 files and the manifest `SHA256SUMS`, SHA-256 `6e5ea3abbbf44afb38eaae9b35b883bb283dbb0eece7db42787ac7ac447ee6f7`): PROTOCOL.md (why, what changed, A's posture decision, the session with its D50 box, the expected diagnostic outcomes), DECISIONS.md, SOURCE.txt and the blocks a-R, a-D, a-B, a-P, f-P, f-V, fv-D, fv-E, a-H. a-D, a-P, f-P, f-V, fv-D, fv-E and a-H are byte-identical to `alpha-f6ced5e`'s; a-R differs only in its PIN line; a-B only in its checksum list (the same 38 files at `75d6a20`; five changed: `runtime.py`, `demo_runtime.py`, `identity/state.py`, `face_check.py`, `face_evidence.py`). Left out, kept in `alpha-f6ced5e`: a-M0, a-C, f-C, fc-D, fc-E, the observation sheet and the backup files.
 - **Pinned to `75d6a20acccf1a781746c26a1d4e24369ad9de45`,** run from the worktree. a-B accepts later commits that change only documents.
 - **Order:** one session after a reboot: a-R, a-D (the first session at this pin only; the same values as for `f6ced5e`), a-B, a-P, f-P, f-V, fv-D, fv-E, a-H. The run, the cues, the account and the criteria are `alpha-f6ced5e`'s f-V.
 - **Expected diagnostic outcomes:** listed in PROTOCOL.md, each with what it would indicate and the next step it would lead to; none passes or fails anything.
@@ -505,7 +505,7 @@ PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m pytest -q -p no:
 # the saved F2 readings: the pinned checker (git archive f6ced5e benchmarks/runner, unpacked in the scratchpad) and the new one, per folder
 env PYTHONPATH=src ~/sentinel-surveillance/.venv/bin/python benchmarks/runner/face_check.py f2 FOLDER --f1 ~/sentinel-runs/d1-checklist/face-20261007T215900Z/f1   # identical, all six folders; each equal to its sealed check.txt apart from the F1-gate line (not run)
 # the package
-cd ~/sentinel-prep/alpha-75d6a20 && sha256sum SHA256SUMS && sha256sum -c SHA256SUMS   # 6e5ea3ab..., 13 OK
+cd ~/sentinel-prep/alpha-75d6a20 && sha256sum SHA256SUMS && sha256sum -c SHA256SUMS   # 6e5ea3ab..., 12 OK
 # each new commit message
 git log -1 --format=%B | grep -ci 'co-authored\|generated with\|claude'   # 0
 ```
