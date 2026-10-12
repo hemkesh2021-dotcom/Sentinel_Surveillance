@@ -41,6 +41,23 @@ normalization, the same ``Facenet512.forward``). Only the detection's scale and 
 production warm-up put Facenet512 there and these functions have the parameters read here, and every comparison checks
 the cache first, so a second recognition model is never loaded. The embedding is returned in memory only; it is
 compared with the enrollment elsewhere and never becomes a vote.
+
+**Full-scale detection candidate (D88, validation runs only, selected explicitly).**
+``select_full_scale_detection()`` replaces DeepFace's detection stage, for every face of every frame, instead of adding
+a pass: the YuNet DeepFace's warm-up built from the pinned weights (taken from its model cache, never created again)
+runs once on the frame at native scale, and only its detections scoring at least YUNET_THRESHOLD, production's own
+threshold, become faces. Each is moved into the frame padded exactly as ``detection.detect_faces`` pads it, converted
+as ``YuNetClient.detect_faces`` would convert a detection on that padded picture without resizing it (``candidate_region``:
+``int()`` in the padded picture's coordinates, where its clamp at 0 never acts on a face inside the frame), cut and
+aligned by DeepFace's own ``extract_face``, reported with ``extract_faces``' own clamps and its 2-decimal confidence,
+divided by 255, and embedded in one ``represent(detector_backend="skip")`` call, which batches the frame's faces as
+production's call does, with the cached Facenet512. From the aligned cut on, every step is production's; only the
+detection's scale and its landmarks' precision differ (production's 640x480 frame is padded to 1280x960 and scaled to
+half, so its boxes and eyes come in 2-pixel steps). A frame without a face at the threshold is never embedded:
+production's whole-frame stand-in with confidence 0, which the adapter drops, does not exist on this path. Thresholds,
+association, ownership, retention, expiry and ambiguity are downstream and unchanged, and so is ``compatibility()``:
+the enrollment's model, alignment and normalization are this path's too. Failures are FaceBackendError labels, never a
+partial result. D86's diagnostic pass and D87's comparison would repeat this detection and are refused with it.
 """
 
 from __future__ import annotations
@@ -88,6 +105,12 @@ COMPARISON_PARAMETERS = {
                   "normalization"},
 }
 REGION_FIELDS = {"x", "y", "w", "h", "left_eye", "right_eye", "confidence"}
+# D88: the face detection stage. DETECTION_DEEPFACE is production's (DeepFace's own, on the padded frame);
+# DETECTION_FULL_SCALE is the candidate, selected explicitly for validation runs only.
+DETECTION_DEEPFACE = "deepface"
+DETECTION_FULL_SCALE = "full_scale"
+DETECTOR_METHODS = ("setInputSize", "setScoreThreshold", "detect")  # cv2.FaceDetectorYN, as DeepFace's client uses it
+CONFIDENCE_DECIMALS = 2  # extract_faces reports round(confidence, 2), and represent passes that on
 
 
 class FaceBackendError(Exception):
@@ -125,6 +148,17 @@ class FullScale:
 
 
 @dataclass(frozen=True)
+class CandidateDetection:
+    """D88: the full-scale detection candidate's own numbers for one frame (validation records only): the best
+    detection under YUNET_THRESHOLD and at least FULL_SCALE_FLOOR (never a face), how long detection took, and how long
+    cutting, aligning and embedding the kept faces took (None when none was kept)."""
+
+    best_below: tuple[float, NormalizedBox] | None
+    detect_ms: float
+    embed_ms: float | None
+
+
+@dataclass(frozen=True)
 class FaceRun:
     """One frame's faces and what was dropped."""
 
@@ -132,6 +166,7 @@ class FaceRun:
     detected: int  # results with a confidence above 0
     fallback_dropped: int  # DeepFace's whole-image "face" with confidence 0
     full_scale: FullScale | None = None  # D86, validation runs only
+    detection: CandidateDetection | None = None  # D88, the candidate's own numbers
 
 
 @dataclass(frozen=True)
@@ -278,9 +313,25 @@ class LegacyDeepFaceBackend:
         self._full_scale: Any = None  # cv2.FaceDetectorYN on the pinned detector weights, when enabled
         self._comparison_wanted = False
         self._recognition_model: Any = None  # D87: the cached Facenet512 the warm-up built, when comparing
+        self._detection = DETECTION_DEEPFACE
+        self._candidate: tuple[Any, Any] | None = None  # D88: DeepFace's cached YuNet and Facenet512, when selected
 
     def __repr__(self) -> str:
         return f"LegacyDeepFaceBackend(loaded={self._runtime is not None})"
+
+    @property
+    def detection(self) -> str:
+        """The face detection stage: DETECTION_DEEPFACE (production) or DETECTION_FULL_SCALE (D88)."""
+        return self._detection
+
+    def select_full_scale_detection(self) -> None:
+        """D88: the full-scale detection candidate replaces DeepFace's detection (call before load(); validation runs
+        only). It excludes D86's diagnostic pass and D87's comparison, which would only repeat its detection."""
+        if self._runtime is not None:
+            raise FaceBackendError("already_loaded")
+        if self._full_scale_wanted:
+            raise FaceBackendError("candidate_excludes_diagnostics")
+        self._detection = DETECTION_FULL_SCALE
 
     @property
     def weight_files(self) -> dict[str, Path]:
@@ -291,6 +342,8 @@ class LegacyDeepFaceBackend:
         """D86: also run the full-scale diagnostic pass (call before load(); validation runs only)."""
         if self._runtime is not None:
             raise FaceBackendError("already_loaded")
+        if self._detection == DETECTION_FULL_SCALE:
+            raise FaceBackendError("candidate_excludes_diagnostics")
         self._full_scale_wanted = True
 
     def enable_comparison(self) -> None:
@@ -336,12 +389,15 @@ class LegacyDeepFaceBackend:
                     str(self._weights_dir / DETECTOR_WEIGHTS[0]), "", (0, 0), FULL_SCALE_FLOOR)
         except Exception as exc:
             raise FaceBackendError("load_failed", type(exc).__name__) from None
-        recognition_model = None
+        recognition_model = candidate = None
         if self._comparison_wanted:
             recognition_model = _comparison_ready(runtime)  # raises a FaceBackendError label when not
+        if self._detection == DETECTION_FULL_SCALE:
+            candidate = _candidate_ready(runtime)  # D88: the warm-up's own models, or a FaceBackendError label
         self._runtime = runtime
         self._compatibility = compatibility
         self._recognition_model = recognition_model
+        self._candidate = candidate
 
     def compatibility(self) -> FaceCompatibility:
         if self._compatibility is None:
@@ -352,6 +408,8 @@ class LegacyDeepFaceBackend:
         """One represent() call on the whole frame (BGR, as decoded)."""
         if self._runtime is None:
             raise FaceBackendError("not_loaded")
+        if self._candidate is not None:
+            return self._candidate_faces(frame, width, height, image)
         run = to_face_run(frame, width, height, self._runtime.DeepFace.represent(img_path=image, **FACE_ARGS))
         if self._full_scale is None:
             return run
@@ -394,6 +452,81 @@ class LegacyDeepFaceBackend:
             raise FaceBackendError("inconsistent_output")
         return embedding
 
+    def _candidate_faces(self, frame: FrameKey, width: int, height: int, image: Any) -> FaceRun:
+        """D88: one frame through the candidate (the module's note): detection at native scale, then production's
+        own cut, alignment, normalization and model. Raises a FaceBackendError label on any failure; never a partial
+        result, and never a model built or loaded."""
+        runtime = self._runtime
+        assert runtime is not None and self._candidate is not None
+        detector, model = self._candidate
+        if _cached_detector(runtime) is not detector:
+            raise FaceBackendError("detector_not_cached")
+        if _cached_recognition_model(runtime) is not model:
+            raise FaceBackendError("model_not_cached")  # represent() would build a second model: never called
+        if width > YUNET_MAX_SIDE or height > YUNET_MAX_SIDE:
+            raise FaceBackendError("frame_too_large")  # YuNet would need it scaled: that is not this candidate
+        started = time.perf_counter()
+        try:
+            detector.setInputSize((width, height))
+            detector.setScoreThreshold(FULL_SCALE_FLOOR)  # DeepFace's client sets its own before each use
+            _, found = detector.detect(image)
+        except Exception as exc:  # noqa: BLE001 - a fixed label
+            raise FaceBackendError("candidate_failed", type(exc).__name__) from None
+        rows = candidate_rows(found)
+        detect_ms = (time.perf_counter() - started) * 1000
+        # Production's detections: OpenCV keeps a float32 score above its float 0.9, which is the same set as these
+        # scores at or above 0.9 in double precision; greedy NMS never lets a lower score suppress a higher one, so
+        # the recording floor leaves this set as a 0.9 threshold would give it.
+        kept = [row for row in rows if row.score >= YUNET_THRESHOLD]
+        below = [(row.score, box) for row in rows if row.score < YUNET_THRESHOLD
+                 for box in (_row_box(row, width, height),) if box is not None]
+        items: list[dict[str, Any]] = []
+        embed_ms = None
+        if kept:
+            started = time.perf_counter()
+            items = self._embed_candidates(runtime, width, height, image, kept)
+            embed_ms = (time.perf_counter() - started) * 1000
+        run = to_face_run(frame, width, height, items)
+        return dataclasses.replace(run, detection=CandidateDetection(
+            max(below, key=lambda c: c[0]) if below else None, detect_ms, embed_ms))
+
+    def _embed_candidates(self, runtime: SimpleNamespace, width: int, height: int, image: Any,
+                          rows: Sequence[FullScaleRow]) -> list[dict[str, Any]]:
+        """D88: the kept detections cut and aligned by DeepFace's extract_face in the padded frame, reported as
+        extract_faces reports them, and embedded in one represent(skip) call: represent's own output items."""
+        width_border, height_border = int(0.5 * width), int(0.5 * height)
+        try:
+            padded = runtime.cv2.copyMakeBorder(image, height_border, height_border, width_border, width_border,
+                                                runtime.cv2.BORDER_CONSTANT, value=[0, 0, 0])
+            crops, reported = [], []
+            for row in rows:
+                detected = runtime.detection.extract_face(
+                    facial_area=runtime.FacialAreaRegion(**candidate_region(row, width_border, height_border)),
+                    img=padded, align=FACE_ARGS["align"], expand_percentage=FACE_ARGS["expand_percentage"],
+                    width_border=width_border, height_border=height_border, detector_backend=DETECTOR_BACKEND)
+                if detected.img.shape[0] == 0 or detected.img.shape[1] == 0:
+                    continue  # extract_faces skips an empty cut too
+                crops.append(detected.img / 255)  # extract_faces divides; represent's skip path does not
+                reported.append((reported_area(detected.facial_area, width, height),
+                                 round(float(row.score), CONFIDENCE_DECIMALS)))
+            del padded
+            if not crops:
+                return []
+            raw = runtime.DeepFace.represent(
+                img_path=crops, model_name=MODEL_NAME, detector_backend="skip", enforce_detection=False,
+                align=FACE_ARGS["align"], expand_percentage=FACE_ARGS["expand_percentage"],
+                normalization=FACE_ARGS["normalization"])
+        except FaceBackendError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a fixed label; nothing partial is returned
+            raise FaceBackendError("candidate_failed", type(exc).__name__) from None
+        per_crop = [raw] if len(crops) == 1 else raw  # represent unwraps the list of a single image
+        if not (isinstance(per_crop, list) and len(per_crop) == len(crops)
+                and all(isinstance(r, list) and len(r) == 1 and isinstance(r[0], Mapping) for r in per_crop)):
+            raise FaceBackendError("inconsistent_output")
+        return [{"facial_area": area, "face_confidence": confidence, "embedding": result[0].get("embedding")}
+                for (area, confidence), result in zip(reported, per_crop)]
+
     def enrollment_photo(self, path: Path) -> tuple[EnrollmentFace | None, str]:
         """Decode a photo with the same OpenCV (EXIF orientation applied) and find its single face."""
         if self._runtime is None:
@@ -412,24 +545,101 @@ def _cached_recognition_model(runtime: SimpleNamespace) -> Any:
     return cache["facial_recognition"].get(MODEL_NAME)
 
 
-def _comparison_ready(runtime: SimpleNamespace) -> Any:
-    """D87, at load: the cached Facenet512 the warm-up built, after checking that the DeepFace functions the
-    comparison calls take the parameters it passes. A FaceBackendError label otherwise (the load fails closed)."""
+def _cached_detector(runtime: SimpleNamespace) -> Any:
+    """D88: the cv2.FaceDetectorYN inside DeepFace's cached YuNet client (``modeling.cached_models``, which the
+    warm-up's represent() filled from the pinned weights file), or None."""
+    cache = getattr(runtime.modeling, "cached_models", None)
+    if not isinstance(cache, Mapping) or not isinstance(cache.get("face_detector"), Mapping):
+        return None
+    detector = getattr(cache["face_detector"].get(DETECTOR_BACKEND), "model", None)
+    if detector is None or not all(callable(getattr(detector, name, None)) for name in DETECTOR_METHODS):
+        return None
+    return detector
+
+
+def _check_calls(runtime: SimpleNamespace, label: str) -> None:
+    """That the DeepFace functions the comparison (D87) and the candidate (D88) call take the parameters they pass,
+    and that FacialAreaRegion has the fields they set; a FaceBackendError ``label`` otherwise."""
     try:
         functions = {"extract_face": runtime.detection.extract_face, "represent": runtime.DeepFace.represent}
         for name, wanted in COMPARISON_PARAMETERS.items():
             if not wanted <= set(inspect.signature(functions[name]).parameters):
-                raise FaceBackendError("comparison_unavailable", name)
+                raise FaceBackendError(label, name)
         if not REGION_FIELDS <= {f.name for f in dataclasses.fields(runtime.FacialAreaRegion)}:
-            raise FaceBackendError("comparison_unavailable", "FacialAreaRegion")
+            raise FaceBackendError(label, "FacialAreaRegion")
     except FaceBackendError:
         raise
     except Exception as exc:  # noqa: BLE001
-        raise FaceBackendError("comparison_unavailable", type(exc).__name__) from None
+        raise FaceBackendError(label, type(exc).__name__) from None
+
+
+def _comparison_ready(runtime: SimpleNamespace) -> Any:
+    """D87, at load: the cached Facenet512 the warm-up built, after checking that the DeepFace functions the
+    comparison calls take the parameters it passes. A FaceBackendError label otherwise (the load fails closed)."""
+    _check_calls(runtime, "comparison_unavailable")
     model = _cached_recognition_model(runtime)
     if model is None:
         raise FaceBackendError("model_not_cached")
     return model
+
+
+def _candidate_ready(runtime: SimpleNamespace) -> tuple[Any, Any]:
+    """D88, at load: (DeepFace's cached YuNet detector, its cached Facenet512), both built by the production warm-up,
+    after the same check of DeepFace's functions. A FaceBackendError label otherwise (the load fails closed)."""
+    _check_calls(runtime, "candidate_unavailable")
+    detector = _cached_detector(runtime)
+    if detector is None:
+        raise FaceBackendError("detector_not_cached")
+    model = _cached_recognition_model(runtime)
+    if model is None:
+        raise FaceBackendError("model_not_cached")
+    return detector, model
+
+
+def candidate_rows(found: Any) -> list[FullScaleRow]:
+    """D88: every YuNet row, in YuNet's order, as its box, eyes and score in frame pixels. A malformed row is an error
+    (DeepFace's own ``int()`` would raise on it), never a face dropped quietly."""
+    rows = []
+    for row in () if found is None else found:
+        try:
+            if len(row) < YUNET_ROW_VALUES:
+                raise ValueError("short row")
+            x, y, w, h, e4x, e4y, e6x, e6y = (float(row[i]) for i in range(8))
+            score = float(row[-1])
+        except (TypeError, ValueError, IndexError):
+            raise FaceBackendError("inconsistent_output") from None
+        if not all(math.isfinite(v) for v in (x, y, w, h, e4x, e4y, e6x, e6y, score)):
+            raise FaceBackendError("inconsistent_output")
+        rows.append(FullScaleRow(x, y, w, h, (e4x, e4y), (e6x, e6y), score))
+    return rows
+
+
+def candidate_region(row: FullScaleRow, width_border: int, height_border: int) -> dict[str, Any]:
+    """D88: what DeepFace 0.0.99's ``YuNetClient.detect_faces`` would report for this detection had it detected on the
+    padded picture without scaling it: the row moved by the borders, then ``int()`` of the box and the eyes, x and y
+    clamped at 0 (the padded picture's edge, which a face inside the frame never reaches; a box reaching past the
+    frame's top or left edge keeps its extent into the black border, as production's does), YuNet's columns 6-7 as
+    ``left_eye`` and 4-5 as ``right_eye``. For a box and eyes inside the frame this is D87's
+    ``padded_region(deepface_region(row))`` exactly; D87 clamped at the frame's edge instead."""
+    return {"x": max(int(row.x + width_border), 0), "y": max(int(row.y + height_border), 0),
+            "w": int(row.w), "h": int(row.h), "confidence": float(row.score),
+            "left_eye": (int(row.eye_6[0] + width_border), int(row.eye_6[1] + height_border)),
+            "right_eye": (int(row.eye_4[0] + width_border), int(row.eye_4[1] + height_border))}
+
+
+def reported_area(area: Any, width: int, height: int) -> dict[str, int]:
+    """D88: DeepFace 0.0.99's ``extract_faces`` report of a cut face (its ``facial_area``) on a frame of this size:
+    ``extract_face`` has already taken the borders off x and y; then x and y at least 0, and the width and height cut
+    at the frame's last column and row (``min(width - x - 1, w)``), as integers."""
+    x, y = max(0, int(area.x)), max(0, int(area.y))
+    return {"x": x, "y": y, "w": min(width - x - 1, int(area.w)), "h": min(height - y - 1, int(area.h))}
+
+
+def _row_box(row: FullScaleRow, width: int, height: int) -> NormalizedBox | None:
+    """A row's box normalized and clamped to the frame as full_scale_pass makes it; None when nothing is inside."""
+    x1, y1 = max(0.0, row.x / width), max(0.0, row.y / height)
+    x2, y2 = min(1.0, (row.x + row.w) / width), min(1.0, (row.y + row.h) / height)
+    return NormalizedBox(x1=x1, y1=y1, x2=x2, y2=y2) if x1 < x2 and y1 < y2 else None
 
 
 def full_scale_pass(detector: Any, width: int, height: int, image: Any, *, rows: bool = False) -> FullScale | None:

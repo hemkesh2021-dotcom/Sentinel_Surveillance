@@ -126,7 +126,8 @@ class Capture:
 
 class Loop:
     def __init__(self, tmp_path: Path, *, analyze=analyze_with(vec(0.97, 0.1, 0.0, 0.05)), face_problem=None,
-                 with_face: bool = True, validation: bool = True, comparator=None) -> None:
+                 with_face: bool = True, validation: bool = True, comparator=None,
+                 detection: str = "deepface") -> None:
         self.clock = FakeClock(utc=NOW)
         self.config = parse_config({"config_version": 1, "camera": {"id": "cam-1"}})
         self.slot = LatestFrame()
@@ -134,7 +135,7 @@ class Loop:
         self.tracker = Tracker()
         self.db = Database.open(tmp_path / "sentinel.db")
         self.worker = FaceWorker(analyze, self.clock, comparator=comparator)
-        face = FaceRuntime(self.worker, 1, validation, comparator is not None) if with_face else None
+        face = FaceRuntime(self.worker, 1, validation, comparator is not None, detection) if with_face else None
         self.runtime = DemoRuntime(
             self.config, self.clock, capture=self.capture, slot=self.slot,
             incidents=IncidentService(self.db, self.clock, incidents=self.config.incidents,
@@ -298,7 +299,7 @@ def face_setup(tmp_path, accepted_scene):
 
 
 def start(setup, *, store=None, backend_error=None, compatibility=COMPAT, validation=True, memfree=7e9,
-          identity=None, policy=None, manifests=None, comparison=False, backend_class=None):
+          identity=None, policy=None, manifests=None, comparison=False, backend_class=None, detection=None):
     calls: list[str] = []
     data = setup.tmp / "data"
     data.mkdir(exist_ok=True)
@@ -317,7 +318,9 @@ def start(setup, *, store=None, backend_error=None, compatibility=COMPAT, valida
     )
     options = RunOptions(data, setup.tmp / "x.engine", face=FaceOptions(setup.tmp / "identity", SECRET,
                                                                        validation_run=validation,
-                                                                       comparison=comparison),
+                                                                       comparison=comparison,
+                                                                       **({"detection": detection} if detection
+                                                                          else {})),
                          **({"memory_policy": policy} if policy is not None else {}))
     assembly = assemble(config, options, devices, FakeClock(), profiles=setup.scene.profiles,
                         face_admissions=setup.admissions)
@@ -552,3 +555,83 @@ def test_the_comparison_flag_needs_validation(tmp_path, monkeypatch, capsys) -> 
     monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
     assert main(_cli(tmp_path, "--face", "--face-comparison"), devices=_refusing_devices()) == 1
     assert "--face-comparison needs --face-validation" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------- D88: the full-scale detection candidate
+
+
+class CandidateBackend(FaceBackend):
+    """A face backend with D86's pass, D87's comparison and D88's candidate (each call recorded)."""
+
+    def enable_full_scale(self) -> None:
+        self.calls.append("enable_full_scale")
+
+    def enable_comparison(self) -> None:
+        self.calls.append("enable_comparison")
+
+    def select_full_scale_detection(self) -> None:
+        self.calls.append("select_full_scale_detection")
+
+
+def test_the_candidate_replaces_the_detection_before_the_load_and_is_marked_at_startup(face_setup) -> None:
+    assembly, calls = start(face_setup, detection="full_scale", backend_class=CandidateBackend)
+    assert calls == ["tracker_load", "select_full_scale_detection", "face_load"]  # D86's pass is not enabled with it
+    assert assembly.startup["face"] == {"validation_run": True, "identities_enrolled": 1, "detection": "full_scale"}
+    assert assembly.runtime.snapshot()["components"]["face"]["detection"] == "full_scale"
+    assembly.database.close()
+    plain, calls = start(face_setup, backend_class=CandidateBackend)  # without the selection: production unchanged
+    assert calls == ["tracker_load", "enable_full_scale", "face_load"]
+    assert plain.startup["face"] == {"validation_run": True, "identities_enrolled": 1}
+    assert "detection" not in plain.runtime.snapshot()["components"]["face"]
+    plain.database.close()
+
+
+def test_the_candidate_is_refused_outside_validation_runs_with_the_comparison_and_without_support(face_setup) -> None:
+    with pytest.raises(StartupRefused, match="face_detection_needs_validation"):
+        start(face_setup, detection="full_scale", validation=False, backend_class=CandidateBackend)
+    with pytest.raises(StartupRefused, match="face_detection_excludes_comparison"):
+        start(face_setup, detection="full_scale", comparison=True, backend_class=CandidateBackend)
+    with pytest.raises(StartupRefused, match="face_detection_unavailable"):
+        start(face_setup, detection="full_scale")  # this backend has no candidate
+    with pytest.raises(StartupRefused, match="face_detection_unknown"):
+        start(face_setup, detection="half_scale", backend_class=CandidateBackend)
+
+
+def test_the_candidate_flag_needs_validation_and_excludes_the_comparison(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
+    assert main(_cli(tmp_path, "--face", "--face-full-scale-detection"), devices=_refusing_devices()) == 1
+    assert "--face-full-scale-detection needs --face-validation" in capsys.readouterr().err
+    monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
+    assert main(_cli(tmp_path, "--face", "--face-validation", "--face-comparison", "--face-full-scale-detection"),
+                devices=_refusing_devices()) == 1
+    assert "use one" in capsys.readouterr().err
+
+
+def test_a_candidate_run_writes_schema_5_with_its_numbers_and_the_same_identity_rules(tmp_path) -> None:
+    """D88: the worker carries the candidate's numbers from its FaceRun to the result record; the faces go through the
+    unchanged association and votes (a match, then a face that does not match)."""
+    from sentinel.identity.legacy_deepface import CandidateDetection
+
+    embeddings = [vec(0.97, 0.1, 0.0, 0.05), vec(0.97, 0.1, 0.0, 0.05), vec(0.0, 0.1, 0.99)]
+
+    def analyze(frame, image):
+        embedding = embeddings.pop(0)
+        face = FaceObservation(frame=frame.key, box=FACE_BOX, quality=0.93, embedding=embedding)
+        below = (0.71, NormalizedBox(x1=0.5, y1=0.5, x2=0.55, y2=0.56))
+        return FaceRun((face,), 1, 0, detection=CandidateDetection(below, 48.5, 870.25))
+
+    loop = Loop(tmp_path, analyze=analyze, detection="full_scale")
+    for _ in range(40):  # three face ticks
+        loop.frame()
+    records = loop.runtime.drain_identity_records()
+    assert {r["schema"] for r in records} == {5}
+    results = [r for r in records if r["identity"] == "result"]
+    assert [r["persons"][0]["label"] for r in results] == ["match", "match", "unknown"]
+    assert all(r["detection"] == {"best_below_score": 0.71, "best_below_w_px": 32, "detect_ms": 48.5,
+                                  "embed_ms": 870.2} for r in results)  # rounded to 0.1 ms
+    assert all("full_scale" not in r for r in results)
+    assert [(t["from"], t["to"]) for t in records if t["identity"] == "transition"] == [
+        ("unresolved", "known"), ("known", "uncertain")]
+    face = loop.runtime.snapshot()["components"]["face"]
+    assert face["detection"] == "full_scale" and "comparison_results" not in face
+    loop.close()

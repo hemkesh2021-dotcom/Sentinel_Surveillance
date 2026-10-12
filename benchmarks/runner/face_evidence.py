@@ -414,6 +414,7 @@ STARTUP = {  # the runtime's ``starting`` line (demo_runtime.assemble and cli)
     "detector_problem": maybe(TEXT), "scene_problem": maybe(TEXT), "face_problem": maybe(TEXT),
     "notifier_problems.*": maybe(TEXT), "face.validation_run": BOOL, "face.identities_enrolled": INT,
     "face.comparison": BOOL,  # D87, only in --face-comparison runs
+    "face.detection": vocab("full_scale"),  # D88, only in --face-full-scale-detection runs
     "status_page": maybe(LOOPBACK_URL),
     **OPTIONAL_STARTUP,
 }
@@ -441,6 +442,9 @@ IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransitio
     # schema 3 (D86, runtime.full_scale_numbers): counts and numbers only
     "full_scale": NULL, "full_scale.faces": INT, "full_scale.assigned": INT, "full_scale.best_score": maybe(NUM),
     "full_scale.best_w_px": COUNT, "full_scale.ms": NUM,
+    # schema 5 (D88, runtime.detection_numbers): numbers only
+    "detection": NULL, "detection.best_below_score": maybe(NUM), "detection.best_below_w_px": COUNT,
+    "detection.detect_ms": NUM, "detection.embed_ms": maybe(NUM),
     "track_id": INT, "from": vocab(*IDENTITY_STATES), "to": vocab(*IDENTITY_STATES, "cleared"),
     "identity_id": maybe(IDN), "basis": maybe(BASIS), "last_vote_age_ms": COUNT, "reason": TRANSITION_REASON,
     "mono_ns": INT,
@@ -469,6 +473,7 @@ STARTING_SUMMARY = {  # step5_guard._starting_summary
     "detector_memory_before": NULL, "detector_memory_before.*": COUNT,
     "face_memory_before": NULL, "face_memory_before.*": COUNT,
     "face": NULL, "face.validation_run": BOOL, "face.identities_enrolled": INT, "face.comparison": BOOL,
+    "face.detection": vocab("full_scale"),  # D88
 }
 STARTING_SUMMARY_KEYS = {"releases": RELEASE_COMPONENTS, "releases.*": RELEASE_ROLES, "notifier_problems": CHANNELS,
                          "scene_memory_before": MEMFREE_KEYS, "detector_memory_before": MEMFREE_KEYS,
@@ -536,6 +541,7 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
     **nest("components.scene.server", SCENE_SERVER), "components.scene.lane.*": INT, "components.scene.worker.*": INT,
     "components.face.state": CAPABILITY, "components.face.problem": maybe(TEXT),
     "components.face.identities_enrolled": INT, "components.face.validation_run": BOOL,
+    "components.face.detection": vocab("full_scale"),  # D88
     **{f"components.face.records.{k}": INT for k in ("kept", "dropped", "limit")},
     "components.face.results.*": INT, "components.face.worker.state": WORKER, "components.face.worker.busy": BOOL,
     "components.face.worker.waiting": BOOL, "components.face.worker.counters.*": INT,

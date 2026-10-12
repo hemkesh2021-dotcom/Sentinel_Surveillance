@@ -54,6 +54,9 @@ IDENTITY_FULL_SCALE_SCHEMA = 3
 # Schema 4 (D87), what face validation runs with --face-comparison write: schema 3, plus a "comparison" record for each
 # person eligible for the full-scale comparison (ComparisonRecord).
 IDENTITY_COMPARISON_SCHEMA = 4
+# Schema 5 (D88), what face validation runs with the full-scale detection candidate write: schema 2, plus each
+# result's own detection numbers (detection_numbers); no full-scale pass or comparison exists in those runs.
+IDENTITY_CANDIDATE_SCHEMA = 5
 DIAGNOSTIC_DECIMALS = 3
 PRODUCTION_OUTCOMES_KEPT = 16  # recent face results' outcomes, by frame, for the comparison records (D87)
 # DeepFace 0.0.99's YuNet threshold for production detections (legacy_deepface.YUNET_THRESHOLD; test-tied): the
@@ -63,7 +66,7 @@ FULL_SCALE_COUNTED = 0.9
 
 def _schema(schema: int) -> int:
     if schema not in (IDENTITY_RECORD_SCHEMA, IDENTITY_DIAGNOSTIC_SCHEMA, IDENTITY_FULL_SCALE_SCHEMA,
-                      IDENTITY_COMPARISON_SCHEMA):
+                      IDENTITY_COMPARISON_SCHEMA, IDENTITY_CANDIDATE_SCHEMA):
         raise ValueError(f"unknown identity record schema {schema!r}")
     return schema
 
@@ -111,23 +114,26 @@ class FaceResultRecord:
     persons: tuple[tuple[int, str, str, str | None, str], ...]  # track ID, ownership, vote kind, identity ID, label
     processing_ms: float | None = None
     error: str | None = None
-    diagnostics: tuple[FaceDiagnostics, ...] = ()  # one per entry of ``persons``; written with schema 2 and 3
-    full_scale: dict[str, Any] | None = None  # full_scale_numbers; written with schema 3
+    diagnostics: tuple[FaceDiagnostics, ...] = ()  # one per entry of ``persons``; written with schema 2 and later
+    full_scale: dict[str, Any] | None = None  # full_scale_numbers; written with schemas 3 and 4
+    detection: dict[str, Any] | None = None  # detection_numbers; written with schema 5
 
     def record(self, schema: int = IDENTITY_RECORD_SCHEMA) -> dict[str, object]:
         persons = [{"track_id": track, "ownership": ownership, "vote": vote, "identity_id": identity, "label": label}
                    for track, ownership, vote, identity, label in self.persons]
         if _schema(schema) >= IDENTITY_DIAGNOSTIC_SCHEMA:
             if len(self.diagnostics) != len(persons):
-                raise ValueError("every person on a schema 2 or 3 result needs its diagnostics")
+                raise ValueError("every person on a schema 2 or later result needs its diagnostics")
             persons = [person | numbers.fields() for person, numbers in zip(persons, self.diagnostics)]
         record = {"identity": "result", "schema": schema, "stream_epoch": self.stream_epoch,
                   "frame_seq": self.frame_seq, "frame_mono_ns": self.frame_mono_ns,
                   "applied_mono_ns": self.applied_mono_ns, "outcome": self.outcome, "faces": self.faces,
                   "processing_ms": None if self.processing_ms is None else round(self.processing_ms, 1),
                   "error": self.error, "persons": persons}
-        if schema >= IDENTITY_FULL_SCALE_SCHEMA:
+        if schema in (IDENTITY_FULL_SCALE_SCHEMA, IDENTITY_COMPARISON_SCHEMA):
             record["full_scale"] = self.full_scale
+        elif schema == IDENTITY_CANDIDATE_SCHEMA:
+            record["detection"] = self.detection
         return record
 
 
@@ -307,6 +313,7 @@ class EdgeCore:
         processing_ms: float | None = None,
         error: str | None = None,
         full_scale: Any = None,
+        detection: Any = None,
     ) -> CoreOutput:
         """A face result for an earlier sampled frame, with the tracker's people on that same frame.
 
@@ -347,7 +354,8 @@ class EdgeCore:
             tuple((v.key.track_id, v.ownership.value,
                    "none" if v.vote is None else "unknown" if v.vote == UNKNOWN_VOTE else "match",
                    v.vote if v.vote else None, v.label) for v in votes),
-            processing_ms, error, diagnostics, full_scale_numbers(full_scale, frame, persons, self._geometry))
+            processing_ms, error, diagnostics, full_scale_numbers(full_scale, frame, persons, self._geometry),
+            detection_numbers(detection, frame))
         return dataclasses.replace(self._finish(freshness, []), face_result=record)
 
     def on_face_comparison(self, outcome: ComparisonOutcome) -> ComparisonRecord:
@@ -598,3 +606,16 @@ def full_scale_numbers(full_scale: Any, frame: FrameRef, persons: Sequence[Track
             "best_score": None if best is None else round(best[0], DIAGNOSTIC_DECIMALS),
             "best_w_px": None if best is None else round((best[1].x2 - best[1].x1) * frame.native_width),
             "ms": round(full_scale.ms, 1)}
+
+
+def detection_numbers(detection: Any, frame: FrameRef) -> dict[str, Any] | None:
+    """D88: the full-scale detection candidate's own numbers for one result: the best detection under the 0.9 threshold
+    (its score and its width in frame pixels; never a face, a box or an image) and the times to detect and to embed
+    (None when no face was kept)."""
+    if detection is None:
+        return None
+    best = detection.best_below
+    return {"best_below_score": None if best is None else round(best[0], DIAGNOSTIC_DECIMALS),
+            "best_below_w_px": None if best is None else round((best[1].x2 - best[1].x1) * frame.native_width),
+            "detect_ms": round(detection.detect_ms, 1),
+            "embed_ms": None if detection.embed_ms is None else round(detection.embed_ms, 1)}

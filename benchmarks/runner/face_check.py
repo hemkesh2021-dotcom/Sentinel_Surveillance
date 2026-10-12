@@ -79,6 +79,16 @@ privacy counts); then, once the account is locked, DESCRIPTIVE lines over window
 before the stop cue). Each line names the account answers it depends on and says whether they support it, leave it
 QUALIFIED (unknown) or CONTRADICTED; an answer never suppresses a line that does not depend on it. A failed comparison
 is counted as failed, never as a nonmatch; a similarity is compared with MATCH_THRESHOLD descriptively only.
+
+**The candidate reading** (``face_check.py candidate``, D88; descriptive, validates nothing, F2's criteria untouched):
+the same execution items for a run with the full-scale detection candidate selected (the startup line's face
+``detection``, the records in schema 5: schema 2 plus each result's own detection numbers), then, only for such a run,
+DESCRIPTIVE lines over the same W: production's work and time, monitoring and memory, detection and votes per person,
+the schema-2 diagnostics and the identity time. **One denominator (D88's correction):** the per-person line counts the
+person on each applied result whose frame had exactly one person, and counts results with more people apart, so
+result-level numbers (D86's pass, the candidate's own) and person-level ones (the face, the vote) count the same people;
+the natural and comparison readings gain the same line beside their older ones, whose denominators are unchanged and
+named (people, or results).
 """
 
 from __future__ import annotations
@@ -105,8 +115,12 @@ SCHEMA = 1
 DIAGNOSTIC_SCHEMA = 2  # runtime.IDENTITY_DIAGNOSTIC_SCHEMA: schema 1 plus each result person's diagnostic numbers
 FULL_SCALE_SCHEMA = 3  # runtime.IDENTITY_FULL_SCALE_SCHEMA: schema 2 plus each result's full-scale pass (D86)
 COMPARISON_SCHEMA = 4  # runtime.IDENTITY_COMPARISON_SCHEMA: schema 3 plus comparison records (D87)
-SCHEMAS = (SCHEMA, DIAGNOSTIC_SCHEMA, FULL_SCALE_SCHEMA, COMPARISON_SCHEMA)
+CANDIDATE_SCHEMA = 5  # runtime.IDENTITY_CANDIDATE_SCHEMA: schema 2 plus the detection candidate's numbers (D88)
+SCHEMAS = (SCHEMA, DIAGNOSTIC_SCHEMA, FULL_SCALE_SCHEMA, COMPARISON_SCHEMA, CANDIDATE_SCHEMA)
 FULL_SCALE_KEYS = {"faces", "assigned", "best_score", "best_w_px", "ms"}
+DETECTION_KEYS = {"best_below_score", "best_below_w_px", "detect_ms", "embed_ms"}  # runtime.detection_numbers (D88)
+DETECTION_FULL_SCALE = "full_scale"  # legacy_deepface.DETECTION_FULL_SCALE: the startup line's face "detection"
+RECORDING_FLOOR = 0.3  # legacy_deepface.FULL_SCALE_FLOOR: what the full-scale passes report under 0.9
 ID = re.compile(r"^idn-[0-9a-f]{12}$")
 NS = 1_000_000_000
 # The runtime's identity values (config.IdentityConfig defaults; test-tied).
@@ -216,8 +230,10 @@ def _record_problem(kind: Any, item: dict) -> str | None:
         return f"{kind}: schema {schema!r}, not one of {list(SCHEMAS)}"
     if kind == "comparison":
         return _comparison_problem(item)
-    if kind == "result" and schema >= FULL_SCALE_SCHEMA:
+    if kind == "result" and schema in (FULL_SCALE_SCHEMA, COMPARISON_SCHEMA):
         keys = keys | {"full_scale"}
+    elif kind == "result" and schema == CANDIDATE_SCHEMA:
+        keys = keys | {"detection"}
     if set(item) != keys:
         return f"{kind}: fields {sorted(set(item) ^ keys)} differ from schema {schema}"
     if kind == "tick":
@@ -228,8 +244,10 @@ def _record_problem(kind: Any, item: dict) -> str | None:
         if not (_int(item["frame_mono_ns"]) and _int(item["applied_mono_ns"]) and item["outcome"] in OUTCOMES
                 and isinstance(item["persons"], list)):
             return "result: a field has the wrong type or value"
-        if schema >= FULL_SCALE_SCHEMA and not _full_scale_fits(item["full_scale"]):
+        if schema in (FULL_SCALE_SCHEMA, COMPARISON_SCHEMA) and not _full_scale_fits(item["full_scale"]):
             return "result: its full-scale numbers are malformed"
+        if schema == CANDIDATE_SCHEMA and not _detection_fits(item["detection"], item["faces"], item["outcome"]):
+            return "result: its detection numbers are malformed"
         person_keys = PERSON_KEYS if schema == SCHEMA else DIAGNOSTIC_PERSON_KEYS
         for person in item["persons"]:
             if not isinstance(person, dict) or set(person) != person_keys or not _int(person["track_id"]) \
@@ -286,6 +304,23 @@ def _full_scale_fits(numbers: Any) -> bool:
     if best is None:
         return width is None and numbers["faces"] == 0
     return _number(best, 0.0, 1.0) and _int(width) and width >= 0 and (numbers["faces"] == 0 or best >= 0.9)
+
+
+def _detection_fits(numbers: Any, faces: Any, outcome: Any) -> bool:
+    """Schema 5's candidate numbers of one result (D88): absent exactly when the analysis failed; otherwise the best
+    detection under 0.9 (at or above the recording floor; rounding can only reach 0.9 itself) with its width, or
+    neither, the detection's time, and an embedding time whenever a face was kept."""
+    if numbers is None:
+        return outcome == "failed" or faces is None
+    if not (isinstance(numbers, dict) and set(numbers) == DETECTION_KEYS and _number(numbers["detect_ms"], 0.0, math.inf)
+            and (numbers["embed_ms"] is None or _number(numbers["embed_ms"], 0.0, math.inf))):
+        return False
+    if _int(faces) and faces > 0 and numbers["embed_ms"] is None:
+        return False
+    best, width = numbers["best_below_score"], numbers["best_below_w_px"]
+    if best is None:
+        return width is None
+    return _number(best, RECORDING_FLOOR, 0.9) and _int(width) and width >= 0
 
 
 def _diagnostics_fit(person: dict) -> bool:
@@ -702,6 +737,9 @@ def read_natural(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None]
                {k: [round(a, 1), round(b, 1)] for k, (a, b) in windows.items()})
     line = Timeline(records, round(printed * NS), float(duration))
     _diagnose(r, line, windows, names=NATURAL_WINDOWS, full_scale=True)
+    r.describe(PER_PERSON + ", and D86's pass on the same people",
+               {name: _per_person(line, windows[name], "full_scale") for name in NATURAL_WINDOWS})
+    r.describe(IDENTITY_TIME, {name: _identity_time(line, windows[name]) for name in NATURAL_WINDOWS})
     r.describe("guard peak pressure, min MemFree, min MemAvailable (B)",
                [s5._get(result, "guard", k) for k in s5.GUARD_FIGURES])
     return r
@@ -831,6 +869,9 @@ def read_comparison(directory: Path, f1: Path, gate: tuple[Path, Path, Path | No
         depends = (_support(account, {**SEATED_CONTEXT, **ATTRIBUTION}) if "similarity to the closest" in text
                    else context)
         r.lines.append(text.replace("DESCRIPTIVE ", f"DESCRIPTIVE [{depends}] ", 1))  # the same place
+    both = _support(account, {**SEATED_CONTEXT, **ATTRIBUTION})
+    _say(r, both, PER_PERSON + ", and D86's pass on the same people, in W", _per_person(line, window, "full_scale"))
+    _say(r, both, IDENTITY_TIME + ", in W", _identity_time(line, window))
     stop = s5._get(result, "stop")
     stop = stop if isinstance(stop, dict) else {}
     requested, after_launch = stop.get("requested_at_s"), s5._get(result, "child", "ready_after_s")
@@ -842,6 +883,129 @@ def read_comparison(directory: Path, f1: Path, gate: tuple[Path, Path, Path | No
     return r
 
 
+CANDIDATE_FACE = {"validation_run": True, "identities_enrolled": 1, "detection": DETECTION_FULL_SCALE}
+
+
+def read_candidate(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | None = None) -> Reading:
+    """D88, the full-scale detection candidate's natural recognition check: the comparison check's execution items (the
+    same 300 s seated run, cues and format-6 account), then, once the account is locked, DESCRIPTIVE lines over the
+    same window W, each with the answers it depends on. It validates nothing, judges no recognition and changes no
+    F2 criterion: production numbers only, with no shadow pass beside them."""
+    r = Reading()
+    if gate is not None:
+        ok, lines = f1_gate(*gate)
+        r.item("F1 basis for this run: the run's own F1 validated, or the maintainer's accepted corrected F1 reading "
+               "of it", dict(line.split("=", 1) for line in lines), ok and f1.resolve() == (gate[0] / "f1").resolve())
+    result = s5._load(directory / "result.json")
+    s5._supervision(r, result, "duration_stop", 0)
+    start = s5._get(result, "run_output", "starting")
+    r.item("face admitted for this validation run with the full-scale detection candidate: one enrolled identity, no "
+           "problem", {"face": s5._get(start, "face"), "face_problem": s5._get(start, "face_problem")},
+           s5._get(start, "face") == CANDIDATE_FACE and s5._get(start, "face_problem") is None)
+    stopped = s5._get(result, "run_output", "stopped")
+    r.item("clean shutdown: all stopped (the face worker included), database closed", stopped,
+           isinstance(stopped, dict) and stopped.get("all_stopped") is True and stopped.get("database_closed") is True
+           and (stopped.get("stopped") or {}).get("face_worker") is True)
+    saved = [s5._load(directory / f"status-{c.get('name')}.json") for c in s5._list(s5._get(result, "captures"))
+             if isinstance(c, dict) and (directory / f"status-{c.get('name')}.json").is_file()]
+    last = saved[-1] if saved else MISSING
+    records, problems, _, _ = read_records(directory / "run.jsonl")
+    total = sum(len(v) for v in records.values())
+    schemas = sorted({item["schema"] for kind in records.values() for item in kind})
+    dropped = s5._get(last, "components", "face", "records", "dropped")
+    r.item(f"identity records: schema {CANDIDATE_SCHEMA}, complete, none dropped, no comparison record",
+           {"records": {k: len(v) for k, v in records.items()}, "schemas": schemas, "problems": problems[:5],
+            "dropped": dropped} if total else MISSING,
+           total > 0 and not problems and schemas == [CANDIDATE_SCHEMA] and dropped == 0
+           and not records.get("comparison") and total < MAX_IDENTITY_RECORDS)
+    ready = s5._get(result, "child", "ready_mono_s")
+    cues = _cue_offsets(result)
+    duration = s5._get(result, "parameters", "duration_s")
+    r.item(f"the run's {face_account.COMPARISON_DURATION_S} s and every cue printed within {CUE_TOLERANCE_S:g} s of "
+           "its time", {"duration_s": duration, "cues_s_after_t0": {k: round(v, 2) for k, v in cues.items()}},
+           duration == face_account.COMPARISON_DURATION_S
+           and all(name in cues and 0 <= cues[name] - at <= CUE_TOLERANCE_S
+                   for name, at in face_account.COMPARISON_CUE_AT_S.items()))
+    account, problem, fmt = _account(directory)
+    r.item("account saved and locked before any result was shown", problem or "locked", account is not None)
+    if account is not None:
+        review = (face_account.review_separate(account, face_account.FIELDS_V6) if fmt == 6
+                  else [f"format {fmt} is not this check's account (format 6)"])
+        r.item("account in format 6, every answer yes, no or unknown (unknown is accepted)", review,
+               fmt == 6 and review[-1].endswith(": yes"))
+    _counts_items(r, directory)
+    if account is None or fmt != 6 or problems or not isinstance(ready, float) or "t0" not in cues \
+            or "stop" not in cues or schemas != [CANDIDATE_SCHEMA] or s5._get(start, "face") != CANDIDATE_FACE:
+        return r  # described only from the candidate's usable records, a time base and a locked account
+    window = _comparison_window(cues)
+    line = Timeline(records, round((cues["t0"] + ready) * NS), float(duration))
+    r.describe("window W (s after T0: the washout after T0 and before the stop cue)",
+               [round(window[0], 1), round(window[1], 1)])
+    r.describe("account answers (each line below names those it depends on)",
+               {k: account.get(k) for k in (*SEATED_CONTEXT, *ATTRIBUTION)})
+    none = _support(account, {})
+    _candidate_cost(r, line, window, last, none)
+    _monitoring(r, result, last, none)
+    context, both = _support(account, SEATED_CONTEXT), _support(account, {**SEATED_CONTEXT, **ATTRIBUTION})
+    _say(r, both, PER_PERSON + ", and where no face was assigned the best detection under 0.9, in W",
+         _per_person(line, window, "candidate"))
+    diagnostics = Reading()
+    _diagnose(diagnostics, line, {"W": window}, names=("W",))
+    for text in diagnostics.lines:
+        depends = both if "similarity to the closest" in text else context
+        r.lines.append(text.replace("DESCRIPTIVE ", f"DESCRIPTIVE [{depends}] ", 1))
+    _say(r, both, IDENTITY_TIME + ", in W", _identity_time(line, window))
+    stop = s5._get(result, "stop")
+    stop = stop if isinstance(stop, dict) else {}
+    requested, after_launch = stop.get("requested_at_s"), s5._get(result, "child", "ready_after_s")
+    _say(r, none, "the run's end (s after T0): the stop warning cue, the guard's stop request, the exit after it",
+         {"stop_cue": round(cues["stop"], 3),
+          "stop_requested": round(requested - after_launch, 3) if isinstance(requested, (int, float))
+          and isinstance(after_launch, (int, float)) else None,
+          "exited_after_stop_request_s": stop.get("exited_after_stop_s"), "requested_by": stop.get("requested_by")})
+    return r
+
+
+def _candidate_cost(r: Reading, line: Timeline, window: tuple[float, float], last: Any, none: str) -> None:
+    """D88: production's own work and time with the candidate, from the records (whole run, and W), and the worker's
+    counters at the last capture beside the ticks offered by then (never mixed with the whole run's counts)."""
+    worker = s5._get(last, "components", "face", "worker", "counters")
+    applied = [x for x in line.results if x["outcome"] == "applied"]
+    in_w = [x for x in line.in_window(line.results, window)]
+    detections = [x["detection"] for x in applied if x.get("detection") is not None]
+    _say(r, none, "production with the candidate, whole run (records): offered and skipped ticks, results by outcome, "
+         "error labels, results applied per offered tick; processing, detection and embedding ms (embedding only "
+         "where a face was kept) and frame-to-applied ms; the worker's processing time as a share of W (results in "
+         "W); and the worker's counters at the last capture",
+         {"offered": sum(1 for t in line.ticks if t["tick"] == "offered"),
+          "skipped_no_person": sum(1 for t in line.ticks if t["tick"] == "skipped_no_person"),
+          "results": {o: sum(1 for x in line.results if x["outcome"] == o) for o in sorted(OUTCOMES)
+                      if any(x["outcome"] == o for x in line.results)},
+          "errors": {e: sum(1 for x in line.results if x["error"] == e)
+                     for e in sorted({x["error"] for x in line.results if x["error"]})},
+          "applied_per_offered": round(len(applied) / max(1, sum(1 for t in line.ticks if t["tick"] == "offered")), 3),
+          "processing_ms": _spread([x["processing_ms"] for x in applied if x["processing_ms"] is not None]),
+          "detect_ms": _spread([d["detect_ms"] for d in detections]),
+          "embed_ms": _spread([d["embed_ms"] for d in detections if d["embed_ms"] is not None]),
+          "frame_to_applied_ms": _spread([(x["applied"] - x["t"]) * 1000 for x in applied]),
+          "processing_share_of_w": round(sum(x["processing_ms"] or 0 for x in in_w) / 1000 / (window[1] - window[0]), 4)
+          if window[1] > window[0] else None,
+          "worker_at_last_capture": {k: worker.get(k, 0) for k in ("offered", "started", "completed", "errors",
+                                                                    "replaced", "expired_before_start",
+                                                                    "fallback_dropped")}
+          if isinstance(worker, dict) else MISSING})
+
+
+def _monitoring(r: Reading, result: Any, last: Any, none: str) -> None:
+    frames, rates = s5._get(last, "frames"), s5._get(last, "rates")
+    _say(r, none, "monitoring at the last capture (frames processed, replaced, failed; processed fps) and the guard's "
+         "memory figures (B)",
+               {"frames": {k: frames.get(k) for k in ("captured", "processed", "replaced", "failed")}
+                if isinstance(frames, dict) else MISSING,
+                "processed_fps": rates.get("processed_fps") if isinstance(rates, dict) else MISSING,
+                "guard": [s5._get(result, "guard", k) for k in s5.GUARD_FIGURES]})
+
+
 def _comparison_cost(r: Reading, result: Any, last: Any, line: Timeline, comparisons: list[dict],
                      window: tuple[float, float], none: str) -> None:
     """D87: what the comparison cost, and what production lost to it (never the cost of a production replacement)."""
@@ -851,25 +1015,20 @@ def _comparison_cost(r: Reading, result: Any, last: Any, line: Timeline, compari
     in_w = [c for c in attempted if window[0] <= c["t"] < window[1]]
     applied = [x for x in line.results if x["outcome"] == "applied"]
     _say(r, none, "production and the comparison's cost, whole run: offered ticks, results by outcome, ticks yielded to "
-         "comparisons (at the last capture), production processing ms and frame-to-applied ms, comparison ms, and the "
-         "comparisons' share of W's time",
+         "comparisons and the ticks offered by then (both at the last capture), production processing ms and "
+         "frame-to-applied ms, comparison ms, and the comparisons' share of W's time",
                {"offered": offered,
                 "results": {o: sum(1 for x in line.results if x["outcome"] == o) for o in sorted(OUTCOMES)
                             if any(x["outcome"] == o for x in line.results)},
                 "yielded_to_comparison": worker.get("yielded_to_comparison", 0) if isinstance(worker, dict) else MISSING,
+                "offered_at_last_capture": worker.get("offered", 0) if isinstance(worker, dict) else MISSING,
                 "production_processing_ms": _spread([x["processing_ms"] for x in applied
                                                      if x["processing_ms"] is not None]),
                 "frame_to_applied_ms": _spread([(x["applied"] - x["t"]) * 1000 for x in applied]),
                 "comparison_ms": _spread([c["ms"] for c in attempted]),
                 "comparison_share_of_w": round(sum(c["ms"] for c in in_w) / 1000 / (window[1] - window[0]), 4)
                 if window[1] > window[0] else None})
-    frames, rates = s5._get(last, "frames"), s5._get(last, "rates")
-    _say(r, none, "monitoring at the last capture (frames processed, replaced, failed; processed fps) and the guard's "
-         "memory figures (B)",
-               {"frames": {k: frames.get(k) for k in ("captured", "processed", "replaced", "failed")}
-                if isinstance(frames, dict) else MISSING,
-                "processed_fps": rates.get("processed_fps") if isinstance(rates, dict) else MISSING,
-                "guard": [s5._get(result, "guard", k) for k in s5.GUARD_FIGURES]})
+    _monitoring(r, result, last, none)
 
 
 def _controls(comparisons: list[dict], results: list[dict]) -> dict:
@@ -1205,6 +1364,55 @@ def _diagnose(r: Reading, line: Timeline, windows: dict, names: tuple[str, ...] 
                    "width in frame pixels and the pass's ms, each [min, median, max])", full)
 
 
+def _per_person(line: Timeline, window: tuple[float, float], kind: str) -> dict:
+    """One denominator for every share in it (D88's correction): the person on each applied result in the window
+    whose frame had exactly one person, so result-level numbers (D86's pass, the candidate's own) and person-level
+    ones (the assigned face, the vote) count the same people. Results with more people are counted apart, never mixed
+    in. ``kind``: "full_scale" (schemas 3 and 4: D86's pass beside production), "candidate" (schema 5) or "plain"."""
+    applied = [x for x in line.in_window(line.results, window) if x["outcome"] == "applied"]
+    single = [x for x in applied if len(x["persons"]) == 1]
+    people = [x["persons"][0] for x in single]
+    face = [p["ownership"] == "assigned" for p in people]
+    labels = sorted({p["label"] for p in people})
+    out: dict[str, Any] = {
+        "applied_results": len(applied), "one_person": len(single), "more_people_apart": len(applied) - len(single),
+        "face_assigned": sum(face), "ambiguous": sum(1 for p in people if p["ownership"] == "ambiguous"),
+        "votes": {label: sum(1 for p in people if p["label"] == label) for label in labels}}
+    if kind == "full_scale":
+        passes = [(f, x["full_scale"]["assigned"] > 0) for f, x in zip(face, single) if x.get("full_scale") is not None]
+        out["full_scale_pass"] = {"results": len(passes), "both": sum(1 for f, g in passes if f and g),
+                                  "production_only": sum(1 for f, g in passes if f and not g),
+                                  "full_scale_only": sum(1 for f, g in passes if g and not f),
+                                  "neither": sum(1 for f, g in passes if not (f or g))}
+    elif kind == "candidate":
+        without = [x["detection"] for f, x in zip(face, single) if not f and x.get("detection") is not None]
+        below = [d["best_below_score"] for d in without if d["best_below_score"] is not None]
+        out["without_a_face"] = {"n": len(without), "best_below_0.9": _spread(below),
+                                 "no_detection_at_the_floor": len(without) - len(below)}
+    return out
+
+
+def _identity_time(line: Timeline, window: tuple[float, float]) -> dict:
+    """How long identities were KNOWN within the window, in person-seconds over every track (each KNOWN interval clipped
+    to the window; one still open when the records end runs to the run's end), the KNOWN intervals overlapping it,
+    the entries into KNOWN within it, and the state each interval ending within it went to."""
+    start, end = window
+    intervals = [i for _, i in line.known_overlapping(window)]
+    known = sum(min(end, line.end_s if i["end"] is None else i["end"]) - max(start, i["start"]) for i in intervals)
+    ended = [i["end_to"] for i in intervals if i["end"] is not None and start <= i["end"] < end]
+    return {"window_s": round(end - start, 1), "known_s": round(known, 1), "known_intervals": len(intervals),
+            "entries_into_known": sum(1 for t in line.in_window(line.transitions, window)
+                                      if t["to"] == "known" and t["from"] != "known"),
+            "ended_to": {state: ended.count(state) for state in sorted(set(ended))}}
+
+
+PER_PERSON = ("detection and votes per person (D88's single denominator: the person on each applied result whose frame "
+              "had exactly one person; results with more people counted apart): faces assigned, ambiguous, votes by "
+              "label")
+IDENTITY_TIME = ("identity time (person-seconds KNOWN within the window, KNOWN intervals overlapping it, entries into "
+                 "KNOWN, and the state each interval ending within it went to)")
+
+
 # ---------------------------------------------------------------- F1 reading
 
 
@@ -1457,6 +1665,13 @@ def main(argv: list[str] | None = None) -> int:
     comparison.add_argument("--run", type=Path, help="with --identity-dir: also require this run's F1 basis (see gate)")
     comparison.add_argument("--identity-dir", type=Path)
     comparison.add_argument("--recheck-root", type=Path, help="where accepted corrected F1 readings are (see gate)")
+    candidate = commands.add_parser("candidate", help="read the full-scale detection candidate's natural check "
+                                     "(descriptive, D88)")
+    candidate.add_argument("directory", type=Path)
+    candidate.add_argument("--f1", type=Path, required=True, help="F1's evidence directory")
+    candidate.add_argument("--run", type=Path, help="with --identity-dir: also require this run's F1 basis (see gate)")
+    candidate.add_argument("--identity-dir", type=Path)
+    candidate.add_argument("--recheck-root", type=Path, help="where accepted corrected F1 readings are (see gate)")
     recheck = commands.add_parser("f1-recheck", help="a corrected F1 reading of a run, made afterwards")
     recheck.add_argument("directory", type=Path, help="the recheck directory (face_recheck.py run)")
     recheck.add_argument("--run", type=Path, required=True)
@@ -1478,8 +1693,9 @@ def main(argv: list[str] | None = None) -> int:
         if (args.run is None) != (args.identity_dir is None):
             parser.error(f"{args.part}: --run and --identity-dir go together")
         gate_args = None if args.run is None else (args.run, args.identity_dir, args.recheck_root)
-        if args.part in ("natural", "comparison"):
-            reading = (read_natural if args.part == "natural" else read_comparison)(args.directory, args.f1, gate_args)
+        if args.part in ("natural", "comparison", "candidate"):
+            read = {"natural": read_natural, "comparison": read_comparison, "candidate": read_candidate}[args.part]
+            reading = read(args.directory, args.f1, gate_args)
             for line in reading.lines:
                 print(line)
             print(f"face-{args.part}: " + ("execution complete (descriptive only; it validates nothing)"

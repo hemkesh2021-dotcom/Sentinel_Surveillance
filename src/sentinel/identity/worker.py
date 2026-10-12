@@ -76,6 +76,7 @@ class FaceResult:
     error: str | None
     processing_ms: float
     full_scale: Any = None  # D86: the adapter's diagnostic full-scale pass (legacy_deepface.FullScale), when enabled
+    detection: Any = None  # D88: the full-scale detection candidate's numbers (legacy_deepface.CandidateDetection)
 
 
 class FaceWorker:
@@ -273,7 +274,7 @@ class FaceWorker:
             self.counters["faces_returned"] += len(run.faces)
             self._latencies.append(elapsed)
         return FaceResult(job.frame, job.persons, tuple(run.faces), None, elapsed,
-                          getattr(run, "full_scale", None))
+                          getattr(run, "full_scale", None), getattr(run, "detection", None))
 
 
 def _percentiles(values: Sequence[float]) -> dict[str, float | int | None]:

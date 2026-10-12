@@ -139,9 +139,11 @@ def mods(monkeypatch):
 # ---------------------------------------------------------------- the real startup's face fields
 
 
-def real_face_startup(root: Path, accepted_scene, *, comparison: bool = False) -> dict[str, Any]:
+def real_face_startup(root: Path, accepted_scene, *, comparison: bool = False,
+                      candidate: bool = False) -> dict[str, Any]:
     """assemble()'s face fields and post_load_release()'s face record, as `sentinel run --face` writes them (with
-    ``comparison``, as `--face-validation --face-comparison` writes them, D87)."""
+    ``comparison``, as `--face-validation --face-comparison` writes them, D87; with ``candidate``, as
+    `--face-validation --face-full-scale-detection` writes them, D88)."""
     scene = accepted_scene()
     weights = root / "weights"
     weights.mkdir()
@@ -155,7 +157,8 @@ def real_face_startup(root: Path, accepted_scene, *, comparison: bool = False) -
     backend = SimpleNamespace(weight_files={n: weights / n for n in RELEASE_FILE_ROLES["face"]}, load=lambda: None,
                               compatibility=lambda: COMPAT, faces=lambda *a: FaceRun((), 0, 0),
                               **({"enable_full_scale": lambda: None, "enable_comparison": lambda: None,
-                                  "embed_full_scale": lambda *a: FACE} if comparison else {}))
+                                  "embed_full_scale": lambda *a: FACE} if comparison else {}),
+                              **({"select_full_scale_detection": lambda: None} if candidate else {}))
     config = parse_config({"config_version": 1, "camera": {"id": "cam-1"}, "adapters": [{
         "adapter_id": FACE_ADAPTER_ID, "contract_version": 1, "implementation_revision": "1", "enabled": True,
         "input_kinds": ["frame"], "output_kinds": ["face.observation"], "model_revision": "facenet512-yunet",
@@ -168,7 +171,8 @@ def real_face_startup(root: Path, accepted_scene, *, comparison: bool = False) -
                       identity_store=lambda d: SimpleNamespace(exists=lambda: True, load=lambda s: GALLERY))
     (root / "data").mkdir()
     assembly = assemble(config, RunOptions(root / "data", root / "x.engine", face=FaceOptions(
-        root / "identity", Secret("a long synthetic passphrase"), validation_run=True, comparison=comparison)),
+        root / "identity", Secret("a long synthetic passphrase"), validation_run=True, comparison=comparison,
+        **({"detection": "full_scale"} if candidate else {}))),
         devices, FakeClock(),
         profiles=scene.profiles, face_admissions={admission.profile_id: admission})
     assembly.database.close()
@@ -246,7 +250,7 @@ def segment(script, t: float) -> tuple[str, int | None]:
 
 def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: float = 4.0,
              duration: float = 600.0, combined: bool = False, analyze=None, comparator=None,
-             captures=CAPTURES) -> Path:
+             captures=CAPTURES, detection: str = "deepface") -> Path:
     """Run the real runtime through ``script`` and write the F2 directory as the package's blocks would.
 
     ``combined`` (D78): with the live view, incident snapshots and chat in a validation run as well, each used during
@@ -293,7 +297,7 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
                           incidents=IncidentService(db, clock, incidents=config.incidents,
                                                     notifications=config.notifications),
                           tracker=PersonTracker(tracker), scene=scene,
-                          face=FaceRuntime(worker, 1, True, comparator is not None),
+                          face=FaceRuntime(worker, 1, True, comparator is not None, detection),
                           enrollment=GALLERY.enrollment(), status_refresh_s=0.0, **extra)
     runtime.start()
     if combined:  # what assemble adds to the starting line for these flags, from the same objects
@@ -619,7 +623,18 @@ def test_the_checker_matches_the_runtimes_schema_and_values(mods) -> None:
     numbers = FaceDiagnostics((0.1, 0.2, 0.3, 0.9), 0.8, (40, 50), 0.95, 0.75)
     diagnostic = FaceResultRecord(0, 1, 5, 6, "applied", 1, ((1, "assigned", "match", ENROLLED, "match"),),
                                   diagnostics=(numbers,)).record(IDENTITY_DIAGNOSTIC_SCHEMA)
-    assert (check.DIAGNOSTIC_SCHEMA, check.SCHEMAS) == (IDENTITY_DIAGNOSTIC_SCHEMA, (1, 2, 3, 4))
+    assert (check.DIAGNOSTIC_SCHEMA, check.SCHEMAS) == (IDENTITY_DIAGNOSTIC_SCHEMA, (1, 2, 3, 4, 5))
+    # D88: schema 5, the candidate's records, and its constants
+    from sentinel.identity.legacy_deepface import DETECTION_FULL_SCALE, FULL_SCALE_FLOOR, CandidateDetection
+    from sentinel.runtime import IDENTITY_CANDIDATE_SCHEMA, detection_numbers
+    assert (check.CANDIDATE_SCHEMA, check.DETECTION_FULL_SCALE, check.RECORDING_FLOOR) == (
+        IDENTITY_CANDIDATE_SCHEMA, DETECTION_FULL_SCALE, FULL_SCALE_FLOOR)
+    detection = detection_numbers(CandidateDetection((0.62, FACE_BOX), 47.25, 861.0),
+                                  SimpleNamespace(native_width=640))
+    assert set(detection) == check.DETECTION_KEYS and check._detection_fits(detection, 1, "applied")
+    candidate = FaceResultRecord(0, 1, 5, 6, "applied", 1, ((1, "assigned", "match", ENROLLED, "match"),),
+                                 diagnostics=(numbers,), detection=detection).record(IDENTITY_CANDIDATE_SCHEMA)
+    assert check._record_problem("result", candidate) is None and "full_scale" not in candidate
     from sentinel.identity.legacy_deepface import YUNET_THRESHOLD
     from sentinel.runtime import FULL_SCALE_COUNTED, IDENTITY_FULL_SCALE_SCHEMA, full_scale_numbers
     assert check.FULL_SCALE_SCHEMA == IDENTITY_FULL_SCALE_SCHEMA and FULL_SCALE_COUNTED == YUNET_THRESHOLD
@@ -2108,3 +2123,176 @@ def test_format_6_accepts_unknown_answers_and_is_schema_text(mods, tmp_path) -> 
                                                        "looked_at_camera_on_purpose", "other_faces_in_view", "notes"]
     assert mods.account.main(["enter", str(tmp_path / "x"), "--format", "6"]) == 2  # not a run directory
     assert mods.account.COMPARISON_CUE_AT_S == {"t0": 0, "stop": 290} and mods.account.COMPARISON_DURATION_S == 300
+
+
+# ---------------------------------------------------------------- D88: the full-scale detection candidate's reading
+
+
+def candidate_run(mods, tmp_path, accepted_scene, name: str = "cand") -> Path:
+    """The real runtime with the candidate selected for 300 s, seated throughout: the candidate finds the face except
+    in every fourth 10 s block (then the best detection under 0.9 is at 0.84, or there is none in alternate such
+    blocks); the face found matches, except on frames whose sequence number is a multiple of 5."""
+    from sentinel.identity.legacy_deepface import CandidateDetection
+
+    root = tmp_path / name
+    root.mkdir()
+    start_root = root / "startup"
+    start_root.mkdir()
+    startup = startup_line(real_face_startup(start_root, accepted_scene, candidate=True))
+
+    def analyze_from(t0):
+        def analyze(frame, image):
+            block = int((frame.ingest_mono_ns - t0) / 1e9 // 10)
+            if block % 4 == 3:
+                below = (0.84, NormalizedBox(x1=0.2, y1=0.2, x2=0.28, y2=0.3)) if block % 8 == 3 else None
+                return FaceRun((), 0, 0, detection=CandidateDetection(below, 47.5, None))
+            embedding = NOBODY if frame.frame_seq % 5 == 0 else FACE
+            face = FaceObservation(frame=frame.key, box=FACE_BOX, quality=0.92, embedding=embedding)
+            return FaceRun((face,), 1, 0, detection=CandidateDetection(None, 48.0, 861.0))
+        return analyze
+
+    return simulate(root, startup, script=((0, 301, "facing", 1),), duration=300.0, analyze=analyze_from,
+                    captures=COMPARISON_CAPTURES, detection="full_scale")
+
+
+@pytest.fixture
+def candidate_out(mods, tmp_path, accepted_scene):
+    out = candidate_run(mods, tmp_path, accepted_scene)
+    pristine = tmp_path / "pristine"
+    shutil.copytree(out, pristine)
+    finish(mods, out, account=account_v6(mods), cues=COMPARISON_CUES, cued_format=6, duration_s=300.0,
+           captures=COMPARISON_CAPTURES)
+    return SimpleNamespace(out=out, pristine=pristine)
+
+
+def _candidate_text(mods, out, f1) -> tuple[Any, str]:
+    reading = mods.check.read_candidate(out, f1)
+    return reading, "\n".join(reading.lines)
+
+
+def test_the_candidate_reading_checks_execution_then_describes_production_numbers(mods, candidate_out,
+                                                                                 f1_list) -> None:
+    reading, text = _candidate_text(mods, candidate_out.out, f1_list)
+    assert reading.ok, text
+    assert line_for(text, "identity records: schema 5").startswith("PASS")
+    assert line_for(text, "face admitted for this validation run with the full-scale detection candidate").startswith(
+        "PASS")
+    assert line_for(text, "account in format 6").startswith("PASS") and "never printed" not in text
+    records = [json.loads(x) for x in (candidate_out.out / "run.jsonl").read_text().splitlines()]
+    assert {x["schema"] for x in records if "identity" in x} == {5}
+    starting = next(x for x in records if x.get("run") == "starting")
+    assert starting["startup"]["face"] == {"validation_run": True, "identities_enrolled": 1, "detection": "full_scale"}
+    results = [x for x in records if x.get("identity") == "result" and x["outcome"] == "applied"]
+    label, cost = _described(text, "production with the candidate")
+    assert label == "depends on no account answer"
+    assert cost["detect_ms"] == [47.5, 48.0, 48.0] and cost["embed_ms"] == [861.0, 861.0, 861.0]
+    assert cost["results"] == {"applied": len(results)} and cost["errors"] == {}
+    assert cost["worker_at_last_capture"]["fallback_dropped"] == 0
+    label, people = _described(text, "detection and votes per person")
+    assert label == ("SUPPORTED by stayed_seated=yes, worked_as_usual=yes, looked_at_camera_on_purpose=no, "
+                     "other_faces_in_view=no")
+    w = mods.check._comparison_window(COMPARISON_CUES)
+    t0 = 1_000_000_000
+    in_w = [x for x in results if w[0] <= (x["frame_mono_ns"] - t0 - 100_000_000) / 1e9 < w[1]]
+    assert people["one_person"] == len(in_w) and people["more_people_apart"] == 0
+    assert people["face_assigned"] == sum(1 for x in in_w if x["faces"])
+    assert people["votes"]["match"] + people["votes"]["unknown"] == people["face_assigned"]
+    assert people["votes"]["no_face"] == people["one_person"] - people["face_assigned"]
+    without = people["without_a_face"]
+    assert without["n"] == people["votes"]["no_face"] and without["best_below_0.9"] == [0.84, 0.84, 0.84]
+    assert 0 < without["no_detection_at_the_floor"] < without["n"]
+    label, identity = _described(text, "identity time")
+    assert label.startswith("SUPPORTED") and 0 < identity["known_s"] <= identity["window_s"]
+    assert identity["entries_into_known"] >= 1 and identity["window_s"] == round(w[1] - w[0], 1)
+    assert "full-scale" not in text.split("account answers", 1)[1].split("diagnostics:")[0]  # no shadow pass lines
+    assert mods.evidence.read(candidate_out.out / "run.jsonl", "f2").nonconforming == []
+    for name in ("c1", "c2", "c3", "end"):
+        assert mods.evidence.read(candidate_out.out / f"status-{name}.json", "f2").nonconforming == []
+    assert mods.check.main(["candidate", str(candidate_out.out), "--f1", str(f1_list)]) == 0
+
+
+def test_a_candidate_run_is_not_read_as_the_comparison_and_the_comparison_not_as_the_candidate(
+        mods, candidate_out, f1_list, tmp_path, accepted_scene) -> None:
+    reading, text = _comparison_text(mods, candidate_out.out, f1_list)
+    assert not reading.ok and line_for(text, "identity records: schema 4").startswith("FAIL")
+    assert line_for(text, "face admitted for this validation run with the full-scale comparison").startswith("FAIL")
+    comparison = comparison_run(mods, tmp_path, accepted_scene, name="other")
+    finish(mods, comparison, account=account_v6(mods), cues=COMPARISON_CUES, cued_format=6, duration_s=300.0,
+           captures=COMPARISON_CAPTURES, counts={})
+    reading, text = _candidate_text(mods, comparison, f1_list)
+    assert not reading.ok and line_for(text, "identity records: schema 5").startswith("FAIL")
+    assert line_for(text, "face admitted for this validation run with the full-scale detection").startswith("FAIL")
+    assert not any(line.startswith("DESCRIPTIVE") for line in reading.lines)
+
+
+@pytest.mark.parametrize("change", [
+    lambda r: r["detection"].update(best_below_score=0.95) if r["detection"] else None,  # a face, not under 0.9
+    lambda r: r["detection"].update(best_below_score=0.2) if r["detection"] else None,  # under the recording floor
+    lambda r: r["detection"].update(best_below_w_px=None) if r["detection"]["best_below_score"] else None,
+    lambda r: r["detection"].update(embed_ms=None) if r["faces"] else None,  # a face kept but never embedded
+    lambda r: r["detection"].update(detect_ms=None),
+    lambda r: r["detection"].update(embedding=[0.1]),
+    lambda r: r.update(detection=None),
+    lambda r: r.update(full_scale=None),  # schema 5 has no full-scale pass
+    lambda r: r.pop("detection"),
+    lambda r: r.update(schema=3),
+])
+def test_schema_5_results_must_carry_fitting_candidate_numbers(mods, candidate_out, f1_list, change) -> None:
+    def edit(lines):
+        for item in lines:
+            if item.get("identity") == "result" and item["outcome"] == "applied":
+                change(item)
+        return lines
+
+    _mutate(candidate_out.pristine, edit)
+    finish(mods, candidate_out.pristine, account=account_v6(mods), cues=COMPARISON_CUES, cued_format=6,
+           duration_s=300.0, captures=COMPARISON_CAPTURES, counts={})
+    reading, text = _candidate_text(mods, candidate_out.pristine, f1_list)
+    assert not reading.ok and line_for(text, "identity records: schema 5").startswith("FAIL")
+    assert not any(line.startswith("DESCRIPTIVE") for line in reading.lines)
+
+
+def test_nothing_is_described_before_the_candidates_locked_account(mods, candidate_out, f1_list) -> None:
+    finish(mods, candidate_out.pristine, account=None, cues=COMPARISON_CUES, cued_format=6, duration_s=300.0,
+           captures=COMPARISON_CAPTURES, counts={})
+    reading, text = _candidate_text(mods, candidate_out.pristine, f1_list)
+    assert not reading.ok and not any(line.startswith("DESCRIPTIVE") for line in reading.lines)
+    assert line_for(text, "account saved and locked").startswith("FAIL")
+
+
+def test_one_denominator_a_result_with_two_people_is_counted_apart(mods, comparison_out, f1_list) -> None:
+    """D88's correction: in the comparison check's reading the faces line counted people (207) and the full-scale line
+    results (206), because one result had two people. The per-person line counts only results with one person, so
+    D86's result-level numbers and the person-level face and vote describe the same people."""
+    window = mods.check._comparison_window(COMPARISON_CUES)
+
+    def edit(lines):
+        for item in lines:
+            if item.get("identity") == "result" and item["outcome"] == "applied" and item["persons"][0]["face"]:
+                t = (item["frame_mono_ns"] - 1_100_000_000) / 1e9
+                if window[0] + 20 <= t < window[1]:  # one result inside W gains a second, faceless person
+                    item["persons"].append({**item["persons"][0], "track_id": 7, "ownership": "no_face",
+                                            "vote": "none", "identity_id": None, "label": "no_face", "face": None,
+                                            "similarity": None, "box": [0.6, 0.3, 0.9, 0.9], "confidence": 0.45})
+                    break
+        return lines
+
+    before = _described(_comparison_text(mods, comparison_out.out, f1_list)[1], "detection and votes per person")[1]
+    _mutate(comparison_out.pristine, edit)
+    finish(mods, comparison_out.pristine, account=account_v6(mods), cues=COMPARISON_CUES, cued_format=6,
+           duration_s=300.0, captures=COMPARISON_CAPTURES, counts={})
+    reading, text = _comparison_text(mods, comparison_out.pristine, f1_list)
+    assert reading.ok, text
+    after = _described(text, "detection and votes per person")[1]
+    assert (after["applied_results"], after["one_person"], after["more_people_apart"]) == (
+        before["applied_results"], before["one_person"] - 1, 1)
+    assert after["face_assigned"] == before["face_assigned"] - 1  # that result's person left out, never mixed in
+    assert after["full_scale_pass"]["results"] == after["one_person"]
+    assert sum(after["full_scale_pass"][k] for k in ("both", "production_only", "full_scale_only", "neither")) == \
+        after["one_person"]
+    assert after["full_scale_pass"]["both"] + after["full_scale_pass"]["production_only"] == after["face_assigned"]
+    people = _described(text, "diagnostics: assigned faces per window")[1]["W"]["people"]
+    results = _described(text, "the full-scale face pass per window")[1]["W"]["results"]
+    assert people == results + 1  # the old lines keep their own denominators, now named apart
+    _, cost = _described(text, "production and the comparison's cost")
+    assert cost["offered_at_last_capture"] >= cost["yielded_to_comparison"]  # the same capture's two counts

@@ -23,6 +23,7 @@ from .adapters import resolve
 from .config import CaptureConfig, ConfigError, IncidentsConfig, NotificationsConfig, SentinelConfig, load_config
 from .demo_runtime import DATABASE_NAME, Devices, FaceOptions, RunOptions, SceneOptions, StartupRefused, assemble
 from .identity.gallery import DEFAULT_IDENTITY_DIR
+from .identity.legacy_deepface import DETECTION_DEEPFACE, DETECTION_FULL_SCALE
 from .incidents.snapshots import SnapshotPolicy
 from .identity.vault import (
     MIN_NEW_SECRET_CHARS,
@@ -368,6 +369,13 @@ def main(
         help="with --face-validation (D87, diagnostic): within a fixed budget, embed faces found only by the full-scale "
         "pass and record their similarity to the enrollment (never a vote); identity records become schema 4",
     )
+    run.add_argument(
+        "--face-full-scale-detection", action="store_true",
+        help="with --face-validation (D88, a candidate, not enabled otherwise): replace DeepFace's half-scale face "
+        "detection with the same pinned YuNet at native scale, then DeepFace's own alignment and the same Facenet512, "
+        "taken from the loaded models; thresholds and identity rules unchanged; identity records become schema 5. "
+        "Not with --face-comparison",
+    )
     run.add_argument("--identity-dir", type=Path, default=DEFAULT_IDENTITY_DIR,
                      help=f"the private (0700) identity directory (default {DEFAULT_IDENTITY_DIR})")
     run.add_argument(
@@ -689,6 +697,13 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
     if args.face_comparison and not args.face_validation:
         print("run: --face-comparison needs --face-validation", file=sys.stderr)
         return 1
+    if args.face_full_scale_detection and not args.face_validation:
+        print("run: --face-full-scale-detection needs --face-validation", file=sys.stderr)
+        return 1
+    if args.face_full_scale_detection and args.face_comparison:
+        print("run: --face-full-scale-detection replaces the detection --face-comparison compares with; use one",
+              file=sys.stderr)
+        return 1
     if args.live_preview and not args.status_port:
         print("run: --live-preview needs the status page (--status-port other than 0)", file=sys.stderr)
         return 1
@@ -704,7 +719,8 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
             print(f"run: identity_secret_missing ({SECRET_ENV} is not set)", file=sys.stderr)
             return 1
         face = FaceOptions(identity_dir=args.identity_dir.expanduser(), secret=secret,
-                           validation_run=args.face_validation, comparison=args.face_comparison)
+                           validation_run=args.face_validation, comparison=args.face_comparison,
+                           detection=DETECTION_FULL_SCALE if args.face_full_scale_detection else DETECTION_DEEPFACE)
     del secret
     scene = None
     if args.scene:

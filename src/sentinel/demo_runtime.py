@@ -53,6 +53,11 @@ diagnostic full-scale face pass's counts (D86; runtime.full_scale_numbers), neve
 of an analysed frame after that frame's production result (identity.comparison), and each eligible person's outcome
 becomes a "comparison" record: its kind, disposition, the candidate's score and width, and the best similarity to the
 enrollment (runtime.ComparisonRecord), never a vote.
+With ``--face-full-scale-detection`` instead (D88, validation runs only; schema 5) the face adapter's detection stage is
+the full-scale candidate (legacy_deepface): the same capture, the same loaded detector and recognition models, one
+detection and one embedding per analysed frame, and each result also carries the candidate's own numbers
+(runtime.detection_numbers). Neither D86's pass nor D87's comparison runs with it; everything after the faces
+(association, votes, identity state, retention, records' privacy) is unchanged.
 The gallery is sealed (sentinel.identity.vault) and opened at startup with a passphrase the
 operator types; startup refuses on a sealing error, and a missing or empty gallery leaves face recognition
 unavailable without loading the model. The face adapter needs its own admission record, which starts
@@ -114,7 +119,7 @@ from .contracts import FrameKey, FrameRef, StreamIdentity, TrackStatus
 from .identity.gallery import GalleryDocument
 from .identity.association import AssociationGeometry
 from .identity.comparison import ComparisonPolicy, FullScaleComparator
-from .identity.legacy_deepface import FaceBackendError, static_difference
+from .identity.legacy_deepface import DETECTION_DEEPFACE, DETECTION_FULL_SCALE, FaceBackendError, static_difference
 from .identity.vault import Secret, VaultError
 from .identity.worker import FaceWorker
 from .incidents.service import IncidentService, RecordOutcome
@@ -151,6 +156,7 @@ from .memory_policy import (
 )
 from .rules.zones import ZonePhase
 from .runtime import (
+    IDENTITY_CANDIDATE_SCHEMA,
     IDENTITY_COMPARISON_SCHEMA,
     IDENTITY_FULL_SCALE_SCHEMA,
     IDENTITY_RECORD_SCHEMA,
@@ -223,6 +229,7 @@ class FaceRuntime:
     identities: int  # enrolled identities in the opened gallery (a count; IDs stay out of the status)
     validation_run: bool
     comparison: bool = False  # D87: the worker has a full-scale comparator (validation runs only)
+    detection: str = DETECTION_DEEPFACE  # D88: DETECTION_FULL_SCALE when the candidate is selected
 
 
 @dataclass
@@ -341,10 +348,13 @@ class DemoRuntime:
             scene_problem=self._scene_problem,
         )
         self._identity_records: deque[dict[str, Any]] = deque()
-        # A face validation run's records carry the diagnostic numbers (schema 3, D84 and D86), and with the full-scale
-        # comparison its records too (schema 4, D87); other runs, schema 1.
-        self._identity_schema = (IDENTITY_RECORD_SCHEMA if face is None or not face.validation_run
-                                 else IDENTITY_COMPARISON_SCHEMA if face.comparison else IDENTITY_FULL_SCALE_SCHEMA)
+        # A face validation run's records carry the diagnostic numbers (schema 3, D84 and D86), with the full-scale
+        # comparison its records too (schema 4, D87), and with the full-scale detection candidate its own numbers
+        # instead of D86's (schema 5, D88); other runs, schema 1.
+        self._identity_schema = (
+            IDENTITY_RECORD_SCHEMA if face is None or not face.validation_run
+            else IDENTITY_CANDIDATE_SCHEMA if face.detection == DETECTION_FULL_SCALE
+            else IDENTITY_COMPARISON_SCHEMA if face.comparison else IDENTITY_FULL_SCALE_SCHEMA)
         self._snapshots = snapshots
         # D74: chat reads frames only when it can be used (admitted, with the scene model); otherwise it keeps none.
         chat_allowed = chat_admission.admitted or (chat_validation and chat_admission.validation_allowed)
@@ -485,7 +495,8 @@ class DemoRuntime:
             if result is not None:
                 self._handle(self._core.on_face_outcome(result.frame, result.persons, result.faces,
                                                         self._capture.connected, processing_ms=result.processing_ms,
-                                                        error=result.error, full_scale=result.full_scale))
+                                                        error=result.error, full_scale=result.full_scale,
+                                                        detection=result.detection))
             for comparison in self._face.worker.drain_comparisons():  # D87: after their frames' production results
                 self._keep_record(self._core.on_face_comparison(comparison).record(self._identity_schema))
         if self._pending:
@@ -766,6 +777,7 @@ class DemoRuntime:
             "state": Capability.AVAILABLE.value,
             "problem": None,
             "validation_run": self._face.validation_run,
+            **({"detection": self._face.detection} if self._face.detection != DETECTION_DEEPFACE else {}),
             "identities_enrolled": self._face.identities,
             "worker": self._face.worker.status(),
             "results": self._core.identity_counters,
@@ -903,6 +915,7 @@ class FaceOptions:
     secret: Secret
     validation_run: bool = False  # --face-validation: the only way to use a PENDING_VALIDATION admission
     comparison: bool = False  # --face-comparison (D87): the full-scale comparison; validation runs only
+    detection: str = DETECTION_DEEPFACE  # --face-full-scale-detection (D88): DETECTION_FULL_SCALE; validation runs only
     weights_dir: Path | None = None  # DeepFace's weights; None: ~/.deepface/weights
     min_free_bytes: int = 1_500_000_000  # the detector's provisional precheck, reused (U18 open)
 
@@ -1227,9 +1240,20 @@ def assemble(
             raise StartupRefused("face_not_admitted: no face backend on this runtime")
         if options.face.comparison and not options.face.validation_run:
             raise StartupRefused("face_comparison_needs_validation: --face-comparison is for --face-validation runs")
+        candidate = options.face.detection == DETECTION_FULL_SCALE
+        if options.face.detection not in (DETECTION_DEEPFACE, DETECTION_FULL_SCALE):
+            raise StartupRefused(f"face_detection_unknown: {options.face.detection!r}")
+        if candidate and not options.face.validation_run:
+            raise StartupRefused("face_detection_needs_validation: the full-scale detection candidate is for "
+                                 "--face-validation runs")
+        if candidate and options.face.comparison:
+            raise StartupRefused("face_detection_excludes_comparison: the full-scale detection candidate replaces the "
+                                 "detection the comparison compares with")
         face_backend = devices.face_backend(options.face.weights_dir)
         if options.face.comparison and not hasattr(face_backend, "enable_comparison"):
             raise StartupRefused("face_comparison_unavailable: this face backend has no full-scale comparison")
+        if candidate and not hasattr(face_backend, "select_full_scale_detection"):
+            raise StartupRefused("face_detection_unavailable: this face backend has no full-scale detection candidate")
         face_weights = _weights_dir(face_backend, options.face.weights_dir)
         problem = face_admission(config, options.face, profiles=profiles, admissions=face_admissions, policy=policy,
                                  weights_dir=face_weights)
@@ -1326,12 +1350,16 @@ def assemble(
         if options.face is not None:
             startup["face"] = {"validation_run": options.face.validation_run,
                                "identities_enrolled": 0 if gallery is None else len(gallery.identities),
-                               **({"comparison": True} if options.face.comparison else {})}
+                               **({"comparison": True} if options.face.comparison else {}),
+                               **({"detection": DETECTION_FULL_SCALE}
+                                  if options.face.detection == DETECTION_FULL_SCALE else {})}
             if face_problem is None and gallery is not None:
                 face_problem, memory = memfree_problem(devices.meminfo, options.face.min_free_bytes)
                 startup["face_memory_before"] = memory
             if face_problem is None and gallery is not None:
-                if options.face.validation_run and hasattr(face_backend, "enable_full_scale"):
+                if options.face.detection == DETECTION_FULL_SCALE:  # D88: assemble() refuses it outside validation
+                    face_backend.select_full_scale_detection()  # replaces the detection; no D86 pass repeats it
+                elif options.face.validation_run and hasattr(face_backend, "enable_full_scale"):
                     face_backend.enable_full_scale()  # D86: the diagnostic full-scale pass, validation runs only
                 if options.face.comparison:  # D87: assemble() refuses it outside a validation run
                     face_backend.enable_comparison()
@@ -1360,7 +1388,7 @@ def assemble(
                     clock, interval_ns=config.identity.face_interval_ns,
                     pending_max_age_ns=config.identity.face_pending_max_age_ns, comparator=comparator)
                 face = FaceRuntime(worker, len(gallery.identities), options.face.validation_run,
-                                   comparator is not None)
+                                   comparator is not None, options.face.detection)
             startup["face_problem"] = face_problem
 
         slot = LatestFrame()
