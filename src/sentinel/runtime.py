@@ -225,8 +225,15 @@ class EdgeCore:
         enrollment: Enrollment | None = None,
         scene_id_prefix: str | None = None,
         scene_problem: str | None = None,
+        shadow: Any = None,
+        capture: Any = None,
     ) -> None:
         self._config = config
+        # D91, the enrollment experiment (validation runs with the candidate only; assemble() decides): a working
+        # gallery compared read only (identity.experiment.Shadow), or a capture collecting the one person's faces for
+        # a working gallery written at shutdown (identity.experiment.Capture). Neither ever votes.
+        self._shadow = shadow
+        self._capture = capture
         self._clock = clock
         self._freshness = FreshnessMonitor(config.freshness, clock)
         self._tracks = TrackTable(config.freshness.track_expiry_ns)
@@ -359,7 +366,10 @@ class EdgeCore:
             for ownership in association.face_ownership:
                 self.face_counters[f"faces_{ownership.value}"] += 1
             votes = self._identities.observe(persons, faces, association)
-            diagnostics = _diagnostics(frame, persons, faces, association.face_of, votes, geometry)
+            diagnostics = _diagnostics(frame, persons, faces, association.face_of, votes, geometry, self._shadow)
+            if self._capture is not None and len(persons) == 1 and len(votes) == 1 \
+                    and votes[0].similarity is not None:  # D91: the only person's face, as the vote compared it
+                self._capture.offer(frame.ingest_mono_ns, faces[association.face_of[votes[0].key]].embedding)
         self.face_counters[f"results_{outcome}"] += 1
         self._production_outcomes[(frame.stream_epoch, frame.frame_seq)] = outcome
         while len(self._production_outcomes) > PRODUCTION_OUTCOMES_KEPT:
@@ -589,10 +599,12 @@ def _diagnostics(
     face_of: dict[TrackKey, int],
     votes: Sequence[VoteRecord],
     geometry: Sequence[Any] = (),
+    shadow: Any = None,
 ) -> tuple[FaceDiagnostics, ...]:
     """Each vote's person, in the votes' order: its box and confidence, its assigned face's size and score, and the
     vote's similarity. Only numbers are taken from a face; its embedding stays where it is. D90: the similarity's
-    prototype position, and the assigned face's geometry when the face stage gave one per face (``geometry``)."""
+    prototype position, and the assigned face's geometry when the face stage gave one per face (``geometry``). D91:
+    with a working gallery (``shadow``), its best similarity and prototype position wherever the vote computed one."""
     by_key = {person.key: person for person in persons}
     out = []
     for vote in votes:
@@ -606,7 +618,8 @@ def _diagnostics(
             None if face is None else face.quality, vote.similarity, vote.prototype,
             None if face is None else face_geometry_numbers(
                 face, geometry[index] if len(geometry) == len(faces) else None, frame.native_width,
-                frame.native_height)))
+                frame.native_height),
+            None if shadow is None or face is None or vote.similarity is None else shadow.numbers(face.embedding)))
     return tuple(out)
 
 

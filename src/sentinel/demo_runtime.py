@@ -59,7 +59,10 @@ detector and recognition models, one detection and one embedding per analysed fr
 candidate's own numbers (runtime.detection_numbers) and, per person, the position of the prototype behind the vote's
 similarity and the assigned face's geometry (D90, runtime.face_geometry_numbers). Neither D86's pass nor D87's
 comparison runs with it; everything after the faces (association, votes, identity state, retention, records' privacy)
-is unchanged.
+is unchanged. The camera-side enrollment experiment (D91, identity.experiment) runs only with it: ``--face-capture-gallery``
+keeps the one person's compared faces in memory and writes a separate working gallery at the stop (a "capture" record,
+numbers only), and ``--face-shadow-gallery`` compares each compared face with such a gallery read only (schema 6's
+"shadow"); the original gallery alone votes and is never written.
 The gallery is sealed (sentinel.identity.vault) and opened at startup with a passphrase the
 operator types; startup refuses on a sealing error, and a missing or empty gallery leaves face recognition
 unavailable without loading the model. The face adapter needs its own admission record, which starts
@@ -95,7 +98,7 @@ import hashlib
 import threading
 import time
 from collections import Counter, OrderedDict, deque
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -121,6 +124,8 @@ from .contracts import FrameKey, FrameRef, StreamIdentity, TrackStatus
 from .identity.gallery import GalleryDocument
 from .identity.association import AssociationGeometry
 from .identity.comparison import ComparisonPolicy, FullScaleComparator
+from .identity.experiment import Capture as ExperimentCapture
+from .identity.experiment import ExperimentRefused, Shadow, open_shadow, same_directory
 from .identity.legacy_deepface import DETECTION_DEEPFACE, DETECTION_FULL_SCALE, FaceBackendError, static_difference
 from .identity.vault import Secret, VaultError
 from .identity.worker import FaceWorker
@@ -232,6 +237,12 @@ class FaceRuntime:
     validation_run: bool
     comparison: bool = False  # D87: the worker has a full-scale comparator (validation runs only)
     detection: str = DETECTION_DEEPFACE  # D88: DETECTION_FULL_SCALE when the candidate is selected
+    shadow: Any = None  # D91: a working gallery compared read only (identity.experiment.Shadow)
+    capture: Any = None  # D91: the capture of a working gallery, written at shutdown (identity.experiment.Capture)
+
+    @property
+    def experiment(self) -> str | None:
+        return "shadow" if self.shadow is not None else "capture" if self.capture is not None else None
 
 
 @dataclass
@@ -348,6 +359,8 @@ class DemoRuntime:
                               else Capability.UNAVAILABLE if face_problem is not None else Capability.DISABLED),
             enrollment=enrollment if face is not None else None,
             scene_problem=self._scene_problem,
+            shadow=face.shadow if face is not None else None,
+            capture=face.capture if face is not None else None,
         )
         self._identity_records: deque[dict[str, Any]] = deque()
         # A face validation run's records carry the diagnostic numbers (schema 3, D84 and D86), with the full-scale
@@ -458,6 +471,9 @@ class DemoRuntime:
         stopped: dict[str, bool] = {"capture": self._capture.stop(capture.open_timeout_s + capture.read_timeout_s + 1.0)}
         if self._face is not None:
             stopped["face_worker"] = self._face.worker.stop(FACE_STOP_TIMEOUT_S)
+            if self._face.capture is not None:  # D91: after the worker stops (a result in flight is not applied,
+                # as in every run); the working gallery is written or refused once, and its record is numbers only
+                self._keep_record({**self._face.capture.finish(), "schema": self._identity_schema})
         if self._scene is not None:
             self._scene.analyzer.stop(0.0)  # drop a waiting job; a running request ends when the server goes
             if self._scene.server is not None:
@@ -781,6 +797,7 @@ class DemoRuntime:
             "problem": None,
             "validation_run": self._face.validation_run,
             **({"detection": self._face.detection} if self._face.detection != DETECTION_DEEPFACE else {}),
+            **({"experiment": self._face.experiment} if self._face.experiment is not None else {}),
             "identities_enrolled": self._face.identities,
             "worker": self._face.worker.status(),
             "results": self._core.identity_counters,
@@ -919,6 +936,10 @@ class FaceOptions:
     validation_run: bool = False  # --face-validation: the only way to use a PENDING_VALIDATION admission
     comparison: bool = False  # --face-comparison (D87): the full-scale comparison; validation runs only
     detection: str = DETECTION_DEEPFACE  # --face-full-scale-detection (D88): DETECTION_FULL_SCALE; validation runs only
+    # D91, the camera-side enrollment experiment (validation runs with the candidate only; one of the two):
+    shadow_dir: Path | None = None  # --face-shadow-gallery: a working gallery compared read only, never voting
+    capture_dir: Path | None = None  # --face-capture-gallery: where the capture's working gallery is written
+    capture_consent_date: str | None = None  # --face-capture-consent-date, the enrolled person's, for that gallery
     weights_dir: Path | None = None  # DeepFace's weights; None: ~/.deepface/weights
     min_free_bytes: int = 1_500_000_000  # the detector's provisional precheck, reused (U18 open)
 
@@ -1170,6 +1191,44 @@ def _weights_dir(backend: Any, requested: Path | None) -> Path:
     return default_weights_dir() if requested is None else Path(requested)
 
 
+def _experiment_options(face: FaceOptions) -> None:
+    """D91's refusals that need nothing opened: one experiment at a time, only in a validation run with the
+    full-scale detection candidate, never in the original gallery's directory, and a capture's consent date."""
+    if face.shadow_dir is None and face.capture_dir is None:
+        return
+    if face.shadow_dir is not None and face.capture_dir is not None:
+        raise StartupRefused("face_experiment_one_kind: a capture and a shadow comparison are separate runs")
+    if not face.validation_run or face.detection != DETECTION_FULL_SCALE:
+        raise StartupRefused("face_experiment_needs_candidate: the enrollment experiment runs only in validation runs "
+                             "with --face-full-scale-detection")
+    directory = face.shadow_dir if face.shadow_dir is not None else face.capture_dir
+    if same_directory(directory, face.identity_dir):
+        raise StartupRefused("face_experiment_same_gallery: the working gallery is never the original's directory")
+    if face.capture_dir is not None:
+        try:
+            date.fromisoformat(face.capture_consent_date or "")
+        except ValueError:
+            raise StartupRefused("face_capture_consent_date: the enrolled person's consent date (YYYY-MM-DD) is "
+                                 "needed for a capture") from None
+
+
+def _experiment(face: FaceOptions | None, gallery: GalleryDocument | None, devices: Devices,
+                match_threshold: float) -> tuple[Shadow | None, ExperimentCapture | None]:
+    """D91: the working gallery opened read only (shadow), or the capture prepared; refused, with nothing written,
+    when the original has no identity or the working gallery does not fit (identity.experiment)."""
+    if face is None or (face.shadow_dir is None and face.capture_dir is None):
+        return None, None
+    if gallery is None:
+        raise StartupRefused("face_experiment_needs_enrollment: no usable original gallery to compare with")
+    try:
+        if face.shadow_dir is not None:
+            return open_shadow(devices.identity_store(face.shadow_dir), face.secret, gallery), None
+        return None, ExperimentCapture(devices.identity_store(face.capture_dir), face.secret, gallery,
+                                       str(face.capture_consent_date), match_threshold)
+    except ExperimentRefused as exc:
+        raise StartupRefused(exc.label) from None
+
+
 def open_gallery(store: Any, secret: Secret) -> tuple[GalleryDocument | None, str | None]:
     """(document, face problem): a missing or empty gallery or a pinned-field mismatch leaves face recognition
     unavailable (nothing to load). A sealing error (wrong passphrase, tampering, permissions) raises StartupRefused."""
@@ -1252,6 +1311,7 @@ def assemble(
         if candidate and options.face.comparison:
             raise StartupRefused("face_detection_excludes_comparison: the full-scale detection candidate replaces the "
                                  "detection the comparison compares with")
+        _experiment_options(options.face)  # D91: before anything loads
         face_backend = devices.face_backend(options.face.weights_dir)
         if options.face.comparison and not hasattr(face_backend, "enable_comparison"):
             raise StartupRefused("face_comparison_unavailable: this face backend has no full-scale comparison")
@@ -1263,6 +1323,7 @@ def assemble(
         if problem is not None:
             raise StartupRefused(f"face_not_admitted: {problem}")
         gallery, face_problem = open_gallery(devices.identity_store(options.face.identity_dir), options.face.secret)
+        shadow, experiment_capture = _experiment(options.face, gallery, devices, config.identity.match_threshold)
     startup: dict[str, Any] = {"memory_policy": policy.labels()}
     if thp_off:
         before_launch = {"runtime": ops.thp_enabled("self")}
@@ -1355,7 +1416,9 @@ def assemble(
                                "identities_enrolled": 0 if gallery is None else len(gallery.identities),
                                **({"comparison": True} if options.face.comparison else {}),
                                **({"detection": DETECTION_FULL_SCALE}
-                                  if options.face.detection == DETECTION_FULL_SCALE else {})}
+                                  if options.face.detection == DETECTION_FULL_SCALE else {}),
+                               **({"shadow": True} if options.face.shadow_dir is not None else {}),
+                               **({"capture": True} if options.face.capture_dir is not None else {})}
             if face_problem is None and gallery is not None:
                 face_problem, memory = memfree_problem(devices.meminfo, options.face.min_free_bytes)
                 startup["face_memory_before"] = memory
@@ -1391,7 +1454,7 @@ def assemble(
                     clock, interval_ns=config.identity.face_interval_ns,
                     pending_max_age_ns=config.identity.face_pending_max_age_ns, comparator=comparator)
                 face = FaceRuntime(worker, len(gallery.identities), options.face.validation_run,
-                                   comparator is not None, options.face.detection)
+                                   comparator is not None, options.face.detection, shadow, experiment_capture)
             startup["face_problem"] = face_problem
 
         slot = LatestFrame()

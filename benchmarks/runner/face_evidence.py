@@ -33,7 +33,7 @@ import face_account
 NOT_COUNTED = frozenset({"SHA256SUMS", "check.txt", "secret-counts-camera.txt", "secret-counts-identity.txt"})
 STATUS_NAMES = ("e1", "k1", "a", "e2", "k2", "end", "n1", "look", "turn", "n2",
                 "c1", "c2", "c3")  # F2's, the natural check's and the comparison check's (D87)
-CUE_NAMES = ("t0", "k1", "a", "e2", "k2", "stop", "look", "turn", "n2")  # F2's and the natural check's
+CUE_NAMES = ("t0", "k1", "a", "e2", "k2", "stop", "look", "turn", "n2")  # F2's, the natural check's, D91's
 RECHECK_NAME = r"face-\d{8}T\d{6}Z-f1-[0-9a-f]{7}-\d{8}T\d{6}Z"  # ~/sentinel-runs/recheck/<run>-f1-<pin>-<UTC>
 
 
@@ -170,6 +170,8 @@ VOTE_NOTES = ("face matched", "face matched nobody", "face matches more than one
               "embedding from an incompatible model", "no identities enrolled")  # state._NOTE_LABELS' keys
 TICKS = vocab("offered", "skipped_no_person", "stopping")  # identity.worker TICK_*
 COMPARISON_KINDS = ("full_scale_only", "both")  # identity.comparison.Kind
+CAPTURE_REFUSALS = ("too_few_faces", "too_few_prototypes", "inconsistent_capture", "capture_target_has_gallery",
+                    "capture_not_verified", "capture_write_failed")  # identity.experiment.CAPTURE_REFUSALS (D91)
 COMPARISON_DISPOSITIONS = ("completed", "failed", "production_not_applied", "skipped_one_per_result",
                            "skipped_stopping", "skipped_production_waiting", "skipped_no_landmarks",
                            "skipped_stale", "skipped_cap", "skipped_interval",
@@ -357,7 +359,7 @@ class KeyValueProfile:
 @dataclass(frozen=True)
 class AccountProfile:
     """F2's account.txt, as face_account renders it: its header, then ``key=value   # comment`` per field. The
-    header names the format (1 to 6, as face_account.FORMATS lists them), and each value is checked against that
+    header names the format (1 to 8, as face_account.FORMATS lists them), and each value is checked against that
     format's field."""
 
 
@@ -415,6 +417,7 @@ STARTUP = {  # the runtime's ``starting`` line (demo_runtime.assemble and cli)
     "notifier_problems.*": maybe(TEXT), "face.validation_run": BOOL, "face.identities_enrolled": INT,
     "face.comparison": BOOL,  # D87, only in --face-comparison runs
     "face.detection": vocab("full_scale"),  # D88, only in --face-full-scale-detection runs
+    "face.shadow": BOOL, "face.capture": BOOL,  # D91, only in the enrollment experiment's runs
     "status_page": maybe(LOOPBACK_URL),
     **OPTIONAL_STARTUP,
 }
@@ -430,7 +433,8 @@ STATUS_LINE = {  # cli.status_line
     "degraded[]": DEGRADED,
 }
 IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransition, ComparisonRecord
-    "identity": vocab("tick", "result", "transition", "comparison"), "schema": INT, "stream_epoch": INT, "frame_seq": INT,
+    "identity": vocab("tick", "result", "transition", "comparison", "capture"), "schema": INT, "stream_epoch": INT,
+    "frame_seq": INT,
     "frame_mono_ns": INT, "tick": TICKS, "tracks[]": INT, "applied_mono_ns": INT, "outcome": OUTCOMES,
     "faces": COUNT, "processing_ms": SECONDS, "error": maybe(TEXT), "persons[].track_id": INT,
     "persons[].ownership": vocab(*OWNERSHIP), "persons[].vote": vocab("none", "unknown", "match"),
@@ -453,6 +457,10 @@ IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransitio
     "persons[].geometry.eyes": NULL, "persons[].geometry.eyes.roll_deg": NUM,
     "persons[].geometry.eyes.spacing_px": NUM,
     "persons[].shadow": NULL, "persons[].shadow.similarity": NUM, "persons[].shadow.prototype": INT,
+    # D91, the capture's record at the stop (identity.experiment.Capture.finish): fixed labels and numbers only
+    "written": BOOL, "refused": maybe(vocab(*CAPTURE_REFUSALS)), "faces_kept": INT, "faces_dropped_over_cap": INT,
+    "faces_in_span": INT, "prototypes": INT, "min_best_to_others": maybe(NUM), "similarity_to_original[]": NUM,
+    "verified": BOOL,
     "track_id": INT, "from": vocab(*IDENTITY_STATES), "to": vocab(*IDENTITY_STATES, "cleared"),
     "identity_id": maybe(IDN), "basis": maybe(BASIS), "last_vote_age_ms": COUNT, "reason": TRANSITION_REASON,
     "mono_ns": INT,
@@ -482,6 +490,7 @@ STARTING_SUMMARY = {  # step5_guard._starting_summary
     "face_memory_before": NULL, "face_memory_before.*": COUNT,
     "face": NULL, "face.validation_run": BOOL, "face.identities_enrolled": INT, "face.comparison": BOOL,
     "face.detection": vocab("full_scale"),  # D88
+    "face.shadow": BOOL, "face.capture": BOOL,  # D91
 }
 STARTING_SUMMARY_KEYS = {"releases": RELEASE_COMPONENTS, "releases.*": RELEASE_ROLES, "notifier_problems": CHANNELS,
                          "scene_memory_before": MEMFREE_KEYS, "detector_memory_before": MEMFREE_KEYS,
@@ -550,6 +559,7 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
     "components.face.state": CAPABILITY, "components.face.problem": maybe(TEXT),
     "components.face.identities_enrolled": INT, "components.face.validation_run": BOOL,
     "components.face.detection": vocab("full_scale"),  # D88
+    "components.face.experiment": vocab("shadow", "capture"),  # D91
     **{f"components.face.records.{k}": INT for k in ("kept", "dropped", "limit")},
     "components.face.results.*": INT, "components.face.worker.state": WORKER, "components.face.worker.busy": BOOL,
     "components.face.worker.waiting": BOOL, "components.face.worker.counters.*": INT,

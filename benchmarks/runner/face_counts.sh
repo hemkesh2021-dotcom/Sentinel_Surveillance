@@ -3,7 +3,8 @@
 # Every search term reaches face_privacy.py on stdin, written by bash's printf builtin, so no process ever has a
 # term in its command line, and nothing here prints a term. Each function writes "<file> <key>=<n>" lines on stdout
 # (face_check reads them) and exits 2 with nothing on stdout if a term it needs is missing.
-# Variables read: SENTINEL_IDENTITY_PASSPHRASE (F1c/F2p), N1 and N2 (FN), PHOTO_NAMES (F1b), SENTINEL_RTSP_URL (F2b).
+# Variables read: SENTINEL_IDENTITY_PASSPHRASE (F1c/F2p), N1 and N2 (FN), PHOTO_NAMES (F1b), SENTINEL_RTSP_URL (F2b),
+# and N3 when set (D91: a non-enrolled participant's first name, typed at x-N's hidden prompt).
 
 FACE_PY=(.venv/bin/python)  # the repository venv (tests point it at their interpreter)
 
@@ -13,8 +14,8 @@ face_counts_f1() {  # F1_DIR AUDIT_FILE: the passphrase, the names and the photo
     | "${FACE_PY[@]}" benchmarks/runner/face_privacy.py f1 "$1" --audit "$2"
 }
 
-face_counts_f2() {  # F2_DIR: the passphrase and the names in F2's evidence (F2e)
-  { printf 'passphrase=%s\0' "${SENTINEL_IDENTITY_PASSPHRASE-}"; printf 'name=%s\0' "${N1-}" "${N2-}"; } \
+face_counts_f2() {  # F2_DIR: the passphrase and the names in F2's evidence (F2e); N3 too when it is set (D91)
+  { printf 'passphrase=%s\0' "${SENTINEL_IDENTITY_PASSPHRASE-}"; printf 'name=%s\0' "${N1-}" "${N2-}" ${N3:+"$N3"}; } \
     | "${FACE_PY[@]}" benchmarks/runner/face_privacy.py f2 "$1"
 }
 

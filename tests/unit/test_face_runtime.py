@@ -128,7 +128,7 @@ class Capture:
 class Loop:
     def __init__(self, tmp_path: Path, *, analyze=analyze_with(vec(0.97, 0.1, 0.0, 0.05)), face_problem=None,
                  with_face: bool = True, validation: bool = True, comparator=None,
-                 detection: str = "deepface") -> None:
+                 detection: str = "deepface", shadow=None, capture=None) -> None:
         self.clock = FakeClock(utc=NOW)
         self.config = parse_config({"config_version": 1, "camera": {"id": "cam-1"}})
         self.slot = LatestFrame()
@@ -136,7 +136,8 @@ class Loop:
         self.tracker = Tracker()
         self.db = Database.open(tmp_path / "sentinel.db")
         self.worker = FaceWorker(analyze, self.clock, comparator=comparator)
-        face = FaceRuntime(self.worker, 1, validation, comparator is not None, detection) if with_face else None
+        face = (FaceRuntime(self.worker, 1, validation, comparator is not None, detection, shadow, capture)
+                if with_face else None)
         self.runtime = DemoRuntime(
             self.config, self.clock, capture=self.capture, slot=self.slot,
             incidents=IncidentService(self.db, self.clock, incidents=self.config.incidents,
@@ -300,7 +301,8 @@ def face_setup(tmp_path, accepted_scene):
 
 
 def start(setup, *, store=None, backend_error=None, compatibility=COMPAT, validation=True, memfree=7e9,
-          identity=None, policy=None, manifests=None, comparison=False, backend_class=None, detection=None):
+          identity=None, policy=None, manifests=None, comparison=False, backend_class=None, detection=None,
+          stores=None, face_extra=None):
     calls: list[str] = []
     data = setup.tmp / "data"
     data.mkdir(exist_ok=True)
@@ -315,13 +317,14 @@ def start(setup, *, store=None, backend_error=None, compatibility=COMPAT, valida
         notifiers=lambda config: ({}, {}),
         face_backend=lambda weights_dir: (backend_class or FaceBackend)(setup.weights, calls, error=backend_error,
                                                                         compatibility=compatibility),
-        identity_store=lambda directory: store if store is not None else Store(),
+        identity_store=lambda directory: ((stores or {}).get(Path(directory))
+                                          or (store if store is not None else Store())),
     )
     options = RunOptions(data, setup.tmp / "x.engine", face=FaceOptions(setup.tmp / "identity", SECRET,
                                                                        validation_run=validation,
                                                                        comparison=comparison,
                                                                        **({"detection": detection} if detection
-                                                                          else {})),
+                                                                          else {}), **(face_extra or {})),
                          **({"memory_policy": policy} if policy is not None else {}))
     assembly = assemble(config, options, devices, FakeClock(), profiles=setup.scene.profiles,
                         face_admissions=setup.admissions)
@@ -647,3 +650,149 @@ def test_a_candidate_run_writes_schema_6_with_its_numbers_and_the_same_identity_
     face = loop.runtime.snapshot()["components"]["face"]
     assert face["detection"] == "full_scale" and "comparison_results" not in face
     loop.close()
+
+
+# ---------------------------------------------------------------- D91: the camera-side enrollment experiment
+
+
+WORK = Path("/synthetic/identity-experiment")  # a working gallery's directory (the stores are fakes or tmp)
+CANDIDATE = {"detection": "full_scale", "backend_class": None}
+
+
+def _candidate(face_setup, **kwargs):
+    return start(face_setup, detection="full_scale", backend_class=CandidateBackend, **kwargs)
+
+
+@pytest.mark.parametrize("change, label", [
+    (dict(face_extra={"shadow_dir": WORK}, detection=None), "face_experiment_needs_candidate"),
+    (dict(face_extra={"shadow_dir": WORK, "capture_dir": WORK, "capture_consent_date": "2026-10-14"}),
+     "face_experiment_one_kind"),
+    (dict(face_extra={"shadow_dir": "SELF"}), "face_experiment_same_gallery"),
+    (dict(face_extra={"capture_dir": WORK}), "face_capture_consent_date"),
+    (dict(face_extra={"capture_dir": WORK, "capture_consent_date": "14 October"}), "face_capture_consent_date"),
+    (dict(face_extra={"shadow_dir": WORK}, stores={WORK: Store(None)}), "face_shadow_missing"),
+    (dict(face_extra={"shadow_dir": WORK}, stores={WORK: Store(GALLERY.model_copy(update={
+        "compatibility": COMPAT.model_copy(update={"numpy_version": "2.3.0"})}))}),
+     "face_shadow_incompatible:numpy_version"),
+    (dict(face_extra={"shadow_dir": WORK}, stores={WORK: Store(GALLERY.model_copy(update={"identities": (
+        GALLERY.identities[0].model_copy(update={"identity_id": "idn-00000000000b"}),)}))}),
+     "face_shadow_unknown_identity"),
+    (dict(face_extra={"capture_dir": WORK, "capture_consent_date": "2026-10-14"}, stores={WORK: Store(GALLERY)}),
+     "face_capture_target_has_gallery"),
+    (dict(face_extra={"shadow_dir": WORK}, store=Store(None), stores={WORK: Store(GALLERY)}),
+     "face_experiment_needs_enrollment"),
+])
+def test_the_experiment_is_refused_before_anything_loads_unless_it_fits(face_setup, change, label) -> None:
+    change = dict(change)
+    if change.get("face_extra", {}).get("shadow_dir") == "SELF":
+        change["face_extra"] = {"shadow_dir": face_setup.tmp / "identity" / "." }  # the original's own directory
+    detection = change.pop("detection", "full_scale")
+    with pytest.raises(StartupRefused, match=label):
+        start(face_setup, detection=detection, backend_class=CandidateBackend, **change)
+    assert not (face_setup.tmp / "data" / "sentinel.db").exists()  # refused before the database opens
+
+
+@pytest.mark.parametrize("kind", ["shadow", "capture"])
+def test_an_experiment_run_is_marked_at_startup_and_in_the_status(face_setup, kind) -> None:
+    extra = {"shadow_dir": WORK} if kind == "shadow" else {"capture_dir": WORK, "capture_consent_date": "2026-10-14"}
+    assembly, calls = _candidate(face_setup, face_extra=extra, stores={WORK: Store(GALLERY if kind == "shadow"
+                                                                                   else None)})
+    assert calls == ["tracker_load", "select_full_scale_detection", "face_load"]
+    assert assembly.startup["face"] == {"validation_run": True, "identities_enrolled": 1, "detection": "full_scale",
+                                        kind: True}
+    assert assembly.runtime.snapshot()["components"]["face"]["experiment"] == kind
+    assembly.database.close()
+    plain, _ = _candidate(face_setup)
+    assert "experiment" not in plain.runtime.snapshot()["components"]["face"]
+    plain.database.close()
+
+
+def _candidate_analyze(embeddings, people_per_result=None):
+    from sentinel.identity.legacy_deepface import CandidateDetection, FaceGeometry
+
+    geometry = FaceGeometry((121.0, 104.0, 58.5, 63.0), (138.0, 128.0), (161.5, 126.5))
+
+    def analyze(frame, image):
+        embedding = embeddings(frame) if callable(embeddings) else embeddings.pop(0)
+        face = FaceObservation(frame=frame.key, box=FACE_BOX, quality=0.93, embedding=embedding)
+        return FaceRun((face,), 1, 0, detection=CandidateDetection(None, 48.0, 861.0), geometry=(geometry,))
+    return analyze
+
+
+def test_a_shadow_run_records_the_working_gallerys_numbers_and_votes_only_from_the_original(tmp_path) -> None:
+    from sentinel.identity.experiment import Shadow
+    from sentinel.identity.matching import EnrolledIdentity, Enrollment
+
+    near, other = vec(0.97, 0.1, 0.0, 0.05), vec(0.0, 0.1, 0.99)
+    work = Enrollment(model_revision="synthetic", dimension=512, identities=(EnrolledIdentity(
+        identity_id="idn-00000000000a", prototypes=(vec(0.0, 0.0, 0.0, 1.0), near)),))
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    shadowed = Loop(tmp_path / "a", analyze=_candidate_analyze([near, near, other]), detection="full_scale",
+                    shadow=Shadow(work, 2))
+    plain = Loop(tmp_path / "b", analyze=_candidate_analyze([near, near, other]), detection="full_scale")
+    for _ in range(40):  # three face ticks
+        shadowed.frame()
+        plain.frame()
+    with_shadow, without = shadowed.runtime.drain_identity_records(), plain.runtime.drain_identity_records()
+    strip = [{**r, "persons": [{**p, "shadow": None} for p in r["persons"]]} if r["identity"] == "result" else r
+             for r in with_shadow]
+    assert strip == without  # only the shadow numbers differ: the votes, labels, states and transitions are the same
+    shadows = [r["persons"][0]["shadow"] for r in with_shadow if r["identity"] == "result"]
+    assert shadows[:2] == [{"similarity": 1.0, "prototype": 1}] * 2  # the working gallery's own copy of that face
+    assert shadows[2]["prototype"] in (0, 1) and shadows[2]["similarity"] < 0.70
+    assert [r["persons"][0]["label"] for r in with_shadow if r["identity"] == "result"] == ["match", "match", "unknown"]
+    shadowed.close()
+    plain.close()
+
+
+def test_a_capture_run_offers_only_the_one_persons_compared_faces_and_writes_once_at_the_stop(tmp_path) -> None:
+    from sentinel.identity.experiment import CAPTURE_SEGMENTS, Capture
+    from sentinel.identity.gallery import IdentityStore
+
+    sealer = Sealer(kdf_n=2**14)
+    try:
+        sealer.check()
+    except VaultError as exc:
+        pytest.skip(f"the system Python's cryptography is not usable here ({exc.label})")
+    store = IdentityStore(tmp_path / "work", sealer)
+    capture = Capture(store, SECRET, GALLERY, "2026-10-14", 0.70)
+    (tmp_path / "run").mkdir()
+    faces = {"n": 0}
+
+    def embedding(frame):
+        faces["n"] += 1
+        return vec(0.97, 0.1, 0.0, 0.05 + 0.001 * (faces["n"] % 7))
+
+    loop = Loop(tmp_path / "run", analyze=_candidate_analyze(embedding), detection="full_scale", capture=capture)
+    for _ in range(int(80 * 15)):  # 80 s at 15 fps: a face tick a second
+        loop.frame()
+    kept = capture.kept
+    assert 75 <= kept <= 81 and not store.exists()  # nothing written while the run lasts
+    two = PERSON + [RawTrack(2, 400.0, 100.0, 500.0, 400.0, 0.9)]
+    for _ in range(45):  # three ticks with two people: the face is not the only person's, so it is not kept
+        loop.frame(persons=two)
+    assert capture.kept == kept
+    loop.close()
+    (record,) = [r for r in loop.runtime.drain_identity_records() if r["identity"] == "capture"]
+    assert record["written"] is True and record["verified"] is True and record["refused"] is None
+    assert record["schema"] == 6 and record["prototypes"] == CAPTURE_SEGMENTS and record["faces_kept"] == kept
+    (identity,) = store.load(SECRET).identities
+    assert identity.identity_id == "idn-00000000000a" and len(identity.prototypes) == CAPTURE_SEGMENTS
+    assert "embedding" not in json.dumps(record) and capture.kept == 0
+
+
+def test_the_experiment_flags_need_the_candidate_and_go_one_at_a_time(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
+    assert main(_cli(tmp_path, "--face", "--face-validation", "--face-shadow-gallery", str(tmp_path / "w")),
+                devices=_refusing_devices()) == 1
+    assert "--face-shadow-gallery needs --face-validation and --face-full-scale-detection" in capsys.readouterr().err
+    monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
+    assert main(_cli(tmp_path, "--face", "--face-validation", "--face-full-scale-detection", "--face-shadow-gallery",
+                     str(tmp_path / "w"), "--face-capture-gallery", str(tmp_path / "x"), "--face-capture-consent-date",
+                     "2026-10-14"), devices=_refusing_devices()) == 1
+    assert "separate runs" in capsys.readouterr().err
+    monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
+    assert main(_cli(tmp_path, "--face", "--face-validation", "--face-full-scale-detection", "--face-capture-gallery",
+                     str(tmp_path / "x")), devices=_refusing_devices()) == 1
+    assert "go together" in capsys.readouterr().err

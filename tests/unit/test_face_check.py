@@ -141,7 +141,7 @@ def mods(monkeypatch):
 
 
 def real_face_startup(root: Path, accepted_scene, *, comparison: bool = False,
-                      candidate: bool = False) -> dict[str, Any]:
+                      candidate: bool = False, experiment: str | None = None) -> dict[str, Any]:
     """assemble()'s face fields and post_load_release()'s face record, as `sentinel run --face` writes them (with
     ``comparison``, as `--face-validation --face-comparison` writes them, D87; with ``candidate``, as
     `--face-validation --face-full-scale-detection` writes them, D88)."""
@@ -169,11 +169,15 @@ def real_face_startup(root: Path, accepted_scene, *, comparison: bool = False,
                       scene_server=lambda o, p: None, scene_request=lambda p, t: None,
                       meminfo=lambda: {"MemFree": 5_000_000_000, "MemAvailable": 6_000_000_000},
                       notifiers=lambda c: ({}, {}), face_backend=lambda w: backend,
-                      identity_store=lambda d: SimpleNamespace(exists=lambda: True, load=lambda s: GALLERY))
+                      identity_store=lambda d: SimpleNamespace(
+                          exists=lambda: Path(d).name != "capture-target", load=lambda s: GALLERY))
     (root / "data").mkdir()
+    extra = ({"shadow_dir": root / "working"} if experiment == "shadow" else
+             {"capture_dir": root / "capture-target", "capture_consent_date": "2026-10-14"}
+             if experiment == "capture" else {})
     assembly = assemble(config, RunOptions(root / "data", root / "x.engine", face=FaceOptions(
         root / "identity", Secret("a long synthetic passphrase"), validation_run=True, comparison=comparison,
-        **({"detection": "full_scale"} if candidate else {}))),
+        **({"detection": "full_scale"} if candidate else {}), **extra)),
         devices, FakeClock(),
         profiles=scene.profiles, face_admissions={admission.profile_id: admission})
     assembly.database.close()
@@ -251,7 +255,7 @@ def segment(script, t: float) -> tuple[str, int | None]:
 
 def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: float = 4.0,
              duration: float = 600.0, combined: bool = False, analyze=None, comparator=None,
-             captures=CAPTURES, detection: str = "deepface") -> Path:
+             captures=CAPTURES, detection: str = "deepface", shadow=None, experiment_capture=None) -> Path:
     """Run the real runtime through ``script`` and write the F2 directory as the package's blocks would.
 
     ``combined`` (D78): with the live view, incident snapshots and chat in a validation run as well, each used during
@@ -298,7 +302,8 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
                           incidents=IncidentService(db, clock, incidents=config.incidents,
                                                     notifications=config.notifications),
                           tracker=PersonTracker(tracker), scene=scene,
-                          face=FaceRuntime(worker, 1, True, comparator is not None, detection),
+                          face=FaceRuntime(worker, 1, True, comparator is not None, detection, shadow,
+                                           experiment_capture),
                           enrollment=GALLERY.enrollment(), status_refresh_s=0.0, **extra)
     runtime.start()
     if combined:  # what assemble adds to the starting line for these flags, from the same objects
@@ -390,8 +395,9 @@ def save_account(mods, out: Path, account: dict[str, str], cued_format: int = 3)
     """A format-1 account (the face-0f7855e package's) as that helper saved and locked it; a format-2 account through
     the current helper's prompts (an unknown reading's uncertainty is not asked); a cued account (format 3, or 4 when
     asked: the same keys) through the helper's prompts."""
-    if cued_format in (5, 6):  # the natural seated check's (D86) or the comparison's (D87) account, by prompts
-        fields = mods.account.FIELDS_V5 if cued_format == 5 else mods.account.FIELDS_V6
+    if cued_format in (5, 6, 7, 8):  # the natural check's (D86), the comparison's (D87) or D91's, by prompts
+        fields = {5: mods.account.FIELDS_V5, 6: mods.account.FIELDS_V6, 7: mods.account.FIELDS_V7,
+                  8: mods.account.FIELDS_V8}[cued_format]
         answers = iter([account[f.key] for f in fields] + ["SAVE"])
         assert mods.account.enter(out, ask=lambda prompt: next(answers), say=lambda text: None,
                                   account_format_number=cued_format) == 0
@@ -652,6 +658,12 @@ def test_the_checker_matches_the_runtimes_schema_and_values(mods) -> None:
     assert (check.GEOMETRY_SCHEMA, check.RAW_BOUNDS, check.MAX_PROTOTYPES) == (
         IDENTITY_GEOMETRY_SCHEMA, RAW_BOUNDS, MAX_PROTOTYPES)
     assert check.CANDIDATE_SCHEMAS == (IDENTITY_CANDIDATE_SCHEMA, IDENTITY_GEOMETRY_SCHEMA)
+    # D91: the capture's record, its refusals and minimum, and the experiment's markers
+    from sentinel.identity import experiment
+    assert check.CAPTURE_REFUSALS == experiment.CAPTURE_REFUSALS == mods.evidence.CAPTURE_REFUSALS
+    assert check.CAPTURE_MIN_PROTOTYPES == experiment.CAPTURE_MIN_PROTOTYPES
+    assert check.EXPERIMENT_CUES[6] == mods.account.COMPARISON_CUE_AT_S
+    assert check.EXPERIMENT_CUES[8] == mods.account.NON_ENROLLED_CUE_AT_S
     from sentinel.identity.legacy_deepface import YUNET_THRESHOLD
     from sentinel.runtime import FULL_SCALE_COUNTED, IDENTITY_FULL_SCALE_SCHEMA, full_scale_numbers
     assert check.FULL_SCALE_SCHEMA == IDENTITY_FULL_SCALE_SCHEMA and FULL_SCALE_COUNTED == YUNET_THRESHOLD
@@ -1149,7 +1161,7 @@ def test_a_format_4_account_is_schema_text_and_the_helper_offers_it(mods, tmp_pa
     assert read.nonconforming == [] and read.content == [(f"line {len(mods.account.FIELDS_V4) + 1}: notes",
                                                           "a note that is never printed")]
     with pytest.raises(SystemExit):
-        mods.account.main(["enter", str(run), "--format", "7"])  # 6 is the comparison's (D87)
+        mods.account.main(["enter", str(run), "--format", "9"])  # 6 is the comparison's (D87), 7 and 8 D91's
 
 
 # ---------------------------------------------------------------- the turn and the departure as intervals
@@ -1581,6 +1593,21 @@ def test_the_f2_workflow_counts_through_bash_and_validates(mods, f2_evidence, f1
         assert set(found) == files and all(set(v) == keys and not any(v.values()) for v in found.values()), found
     result = mods.check.read_f2(f2_evidence, f1_list)
     assert result.ok, "\n".join(result.lines)
+
+
+def test_a_participants_name_is_searched_only_when_given(mods, f2_evidence) -> None:
+    """D91: x-N's hidden prompt sets N3 (a non-enrolled participant's first name); face_counts_f2 searches it with the
+    operator's names, and without it every count is as before."""
+    account = f2_evidence / "account.txt"
+    account.write_text(account.read_text().replace("a note that is never printed", "Rosalind sat here"))
+    before = parse(bash_counts("face_counts_f2", str(f2_evidence)).stdout)
+    assert before["account.txt"]["name"] == 0
+    found = bash_counts("face_counts_f2", str(f2_evidence), env={**TERMS, "N3": "Rosalind"})
+    assert found.returncode == 0, found.stderr
+    after = parse(found.stdout)
+    assert after["account.txt"]["name"] == 1
+    assert {f: v for f, v in after.items() if f != "account.txt"} == {f: v for f, v in before.items()
+                                                                     if f != "account.txt"}
 
 
 F2_LEAKS = {
@@ -2532,3 +2559,240 @@ def test_the_candidates_retention_is_never_passed_unless_exercised(mods, tmp_pat
                        if json.loads(x).get("identity") == "transition"]
         assert any(t["from"] == "known" and t["to"] == "cleared" for t in transitions)
         assert '"ended": "cleared"' in retention
+
+
+# ---------------------------------------------------------------- D91: the camera-side enrollment experiment
+
+
+class WorkStore:
+    """A working gallery's directory, in memory (the capture writes it once; nothing is sealed here)."""
+
+    def __init__(self) -> None:
+        self.document, self.audits = None, []
+
+    def exists(self) -> bool:
+        return self.document is not None
+
+    def ensure_directory(self) -> None:
+        pass
+
+    def save(self, document, secret) -> None:
+        self.document = document
+
+    def load(self, secret):
+        return self.document
+
+    def audit(self, action, identity_id=None, **counts) -> None:
+        self.audits.append((action, identity_id, counts))
+
+
+DRIFT = vec(0.62, 0.78, 0.0, 0.05)  # a face of the enrolled person that the photo prototype does not reach (< 0.70)
+NON_ENROLLED_CUES = {"t0": 0.0, "look": 150.0, "stop": 290.0}
+
+
+def account_v7(**changes: str) -> dict[str, str]:
+    return {"consented_to_capture": "yes", "stayed_seated": "yes", "worked_as_usual": "yes",
+            "other_faces_in_view": "no", "notes": "a note that is never printed", **changes}
+
+
+def account_v8(**changes: str) -> dict[str, str]:
+    return {"participant_not_enrolled": "yes", "participant_consented": "yes", "participant_stayed_seated": "yes",
+            "participant_looked_at_cue": "yes", "only_participant_in_view": "yes",
+            "notes": "a note that is never printed", **changes}
+
+
+def experiment_run(mods, tmp_path, accepted_scene, *, kind: str, faces, name: str = "exp", work=None):
+    """The real runtime with the candidate for 300 s, seated throughout, as a capture run (``kind`` "capture") or with
+    a working gallery compared read only ("shadow"); ``faces(t)`` gives each analysed frame's embedding."""
+    from sentinel.identity.experiment import Capture, Shadow
+    from sentinel.identity.legacy_deepface import CandidateDetection
+
+    root = tmp_path / name
+    root.mkdir()
+    start_root = root / "startup"
+    start_root.mkdir()
+    startup = startup_line(real_face_startup(start_root, accepted_scene, candidate=True, experiment=kind))
+
+    def analyze_from(t0):
+        def analyze(frame, image):
+            face = FaceObservation(frame=frame.key, box=FACE_BOX, quality=0.92,
+                                   embedding=faces((frame.ingest_mono_ns - t0) / 1e9))
+            return FaceRun((face,), 1, 0, detection=CandidateDetection(None, 48.0, 861.0))
+        return analyze
+
+    store = WorkStore()
+    shadow = capture = None
+    if kind == "shadow":
+        shadow = Shadow((work or GALLERY).enrollment(), 1)
+    else:
+        capture = Capture(store, Secret("a long synthetic passphrase"), GALLERY, "2026-10-14", 0.70)
+    out = simulate(root, startup, script=((0, 301, "facing", 1),), duration=300.0, analyze=analyze_from,
+                   captures=COMPARISON_CAPTURES, detection="full_scale", shadow=shadow, experiment_capture=capture)
+    return out, store
+
+
+def test_a_capture_reading_says_whether_its_working_gallery_may_be_used(mods, tmp_path, accepted_scene,
+                                                                         f1_list) -> None:
+    out, store = experiment_run(mods, tmp_path, accepted_scene, kind="capture",
+                                faces=lambda t: FACE if int(t) % 3 else DRIFT)
+    finish(mods, out, account=account_v7(), cues=COMPARISON_CUES, cued_format=7, duration_s=300.0,
+           captures=COMPARISON_CAPTURES)
+    reading = mods.check.read_capture(out, f1_list)
+    text = "\n".join(reading.lines)
+    assert reading.ok, text
+    assert line_for(text, "the working gallery: written, read back and verified").startswith("PASS")
+    assert line_for(text, "the capture's conditions").startswith("PASS")
+    label, numbers = _described(text, "the capture's numbers")
+    assert label.startswith("SUPPORTED") and numbers["prototypes"] == 8 and len(numbers["similarity_to_original"]) == 8
+    (identity,) = store.document.identities
+    assert identity.identity_id == ENROLLED and len(identity.prototypes) == 8  # the working gallery, never the original
+    for path in sorted(out.iterdir()):  # the capture's record and account fit the privacy profile
+        if path.is_file() and path.name not in mods.check.NOT_COUNTED:
+            assert mods.evidence.read(path, "f2").nonconforming == [], path.name
+    assert mods.check.main(["capture", str(out), "--f1", str(f1_list)]) == 0
+
+
+@pytest.mark.parametrize("change", [{"other_faces_in_view": "yes"}, {"consented_to_capture": "unknown"},
+                                    {"stayed_seated": "no"}])
+def test_a_capture_with_another_face_no_consent_or_a_move_is_not_usable(mods, tmp_path, accepted_scene, f1_list,
+                                                                        change) -> None:
+    out, _ = experiment_run(mods, tmp_path, accepted_scene, kind="capture", faces=lambda t: FACE)
+    finish(mods, out, account=account_v7(**change), cues=COMPARISON_CUES, cued_format=7, duration_s=300.0,
+           captures=COMPARISON_CAPTURES, counts={})
+    reading = mods.check.read_capture(out, f1_list)
+    text = "\n".join(reading.lines)
+    assert not reading.ok and line_for(text, "the capture's conditions").startswith("FAIL")
+    assert line_for(text, "the working gallery: written").startswith("PASS")  # written, but not to be used
+
+
+def test_a_refused_capture_is_read_as_not_usable(mods, tmp_path, accepted_scene, f1_list) -> None:
+    out, store = experiment_run(mods, tmp_path, accepted_scene, kind="capture",
+                                faces=lambda t: FACE if 60 <= t <= 72 or t < 30 else NOBODY)  # mostly someone else
+    finish(mods, out, account=account_v7(), cues=COMPARISON_CUES, cued_format=7, duration_s=300.0,
+           captures=COMPARISON_CAPTURES, counts={})
+    reading = mods.check.read_capture(out, f1_list)
+    text = "\n".join(reading.lines)
+    assert not reading.ok and store.document is None
+    assert '"refused": "inconsistent_capture"' in line_for(text, "the working gallery: written")
+
+
+def test_a_genuine_session_is_compared_face_by_face_and_replayed_under_each_gallery(mods, tmp_path, accepted_scene,
+                                                                                   f1_list) -> None:
+    from sentinel.identity.gallery import GalleryDocument, GalleryIdentity
+    work = GalleryDocument(compatibility=COMPAT, identities=(GalleryIdentity(
+        identity_id=ENROLLED, enrolled_utc=NOW, consent_date="2026-10-14", consent_scope=CONSENT_SCOPE,
+        prototypes=(DRIFT, FACE)),))
+    out, _ = experiment_run(mods, tmp_path, accepted_scene, kind="shadow", work=work,
+                            faces=lambda t: DRIFT if 100 <= t < 160 else FACE)
+    finish(mods, out, account=account_v6(mods), cues=COMPARISON_CUES, cued_format=6, duration_s=300.0,
+           captures=COMPARISON_CAPTURES)
+    reading = mods.check.read_experiment(out, f1_list)
+    text = "\n".join(reading.lines)
+    assert reading.ok, text
+    label, paired = _described(text, "paired comparison on the same faces")
+    assert label.startswith("SUPPORTED")
+    assert paired["faces"] == paired["with_working"] > 0
+    assert paired["working_only"] == paired["at_or_above"]["working"] - paired["at_or_above"]["original"] > 0
+    assert paired["original_only"] == 0 and paired["at_or_above"]["either"] == paired["at_or_above"]["working"]
+    _, replay = _described(text, "identity time replayed")
+    assert replay["replay_original"]["known_s"] == replay["runtime_original"]["known_s"]  # the replay is the rule
+    assert replay["replay_working"]["known_s"] > replay["replay_original"]["known_s"]
+    assert replay["replay_either"]["known_s"] == replay["replay_working"]["known_s"]
+    for path in sorted(out.iterdir()):
+        if path.is_file() and path.name not in mods.check.NOT_COUNTED:
+            assert mods.evidence.read(path, "f2").nonconforming == [], path.name
+    assert mods.check.main(["experiment", str(out), "--f1", str(f1_list)]) == 0
+
+
+def test_a_non_enrolled_session_counts_any_face_at_the_threshold_with_either_gallery(mods, tmp_path, accepted_scene,
+                                                                                    f1_list) -> None:
+    out, _ = experiment_run(mods, tmp_path, accepted_scene, kind="shadow", faces=lambda t: NOBODY)
+    result = json.loads((out / "run.jsonl").read_text().splitlines()[0])
+    assert result["startup"]["face"]["shadow"] is True
+    cues = NON_ENROLLED_CUES
+    finish(mods, out, account=account_v8(), cues=cues, cued_format=8, duration_s=300.0,
+           captures=COMPARISON_CAPTURES)
+    reading = mods.check.read_experiment(out, f1_list)
+    text = "\n".join(reading.lines)
+    assert reading.ok, text
+    kind = line_for(text, "session kind and account answers")
+    assert json.loads(kind.split(": ", 1)[1])["kind"] == "non-enrolled"
+    _, paired = _described(text, "paired comparison on the same faces")
+    assert paired["faces"] > 0 and paired["at_or_above"] == {"original": 0, "working": 0, "either": 0}
+    assert _described(text, "the same, within 30 s of the look cue")[1]["faces"] > 0
+    _, replay = _described(text, "identity time replayed")
+    assert all(replay[k]["known_s"] == 0.0 for k in ("replay_original", "replay_working", "replay_either"))
+
+
+def test_an_experiment_session_needs_its_marker_its_shadows_and_its_cues(mods, tmp_path, accepted_scene,
+                                                                         f1_list) -> None:
+    out, _ = experiment_run(mods, tmp_path, accepted_scene, kind="shadow", faces=lambda t: FACE)
+
+    def drop_one_shadow(lines):
+        for item in lines:
+            if item.get("identity") == "result" and item["outcome"] == "applied" and item["persons"] \
+                    and item["persons"][0]["similarity"] is not None:
+                item["persons"][0]["shadow"] = None
+                break
+        return lines
+
+    _mutate(out, drop_one_shadow)
+    finish(mods, out, account=account_v8(), cues={"t0": 0.0, "stop": 290.0}, cued_format=8, duration_s=300.0,
+           captures=COMPARISON_CAPTURES, counts={})
+    reading = mods.check.read_experiment(out, f1_list)
+    text = "\n".join(reading.lines)
+    assert not reading.ok and not any(line.startswith("DESCRIPTIVE paired") for line in reading.lines)
+    assert line_for(text, "identity records: schema 6").startswith("FAIL")
+    assert line_for(text, "the run's 300 s and every cue").startswith("FAIL")  # format 8's look cue is missing
+    capture_run, _ = experiment_run(mods, tmp_path, accepted_scene, kind="capture", faces=lambda t: FACE, name="cap")
+    finish(mods, capture_run, account=account_v6(mods), cues=COMPARISON_CUES, cued_format=6, duration_s=300.0,
+           captures=COMPARISON_CAPTURES, counts={})
+    reading = mods.check.read_experiment(capture_run, f1_list)  # a capture run is not an evaluation session
+    assert not reading.ok and line_for("\n".join(reading.lines),
+                                       "face admitted for this validation run").startswith("FAIL")
+    assert not mods.check.read_f2(capture_run, f1_list).ok  # nor an F2 run
+
+
+@pytest.mark.parametrize("change", [
+    lambda c: c.update(written=True, refused="too_few_faces"),
+    lambda c: c.update(verified=True, written=False, refused="too_few_faces"),
+    lambda c: c.update(refused="something_else"),
+    lambda c: c.update(prototypes=9),
+    lambda c: c.update(similarity_to_original=[0.5]),
+    lambda c: c.update(faces_in_span=10_000),
+    lambda c: c.update(schema=5),
+    lambda c: c.update(embedding=[0.1]),
+])
+def test_the_capture_record_must_fit_its_outcome(mods, tmp_path, accepted_scene, f1_list, change) -> None:
+    out, _ = experiment_run(mods, tmp_path, accepted_scene, kind="capture", faces=lambda t: FACE)
+
+    def edit(lines):
+        for item in lines:
+            if item.get("identity") == "capture":
+                change(item)
+        return lines
+
+    _mutate(out, edit)
+    finish(mods, out, account=account_v7(), cues=COMPARISON_CUES, cued_format=7, duration_s=300.0,
+           captures=COMPARISON_CAPTURES, counts={})
+    reading = mods.check.read_capture(out, f1_list)
+    assert not reading.ok and line_for("\n".join(reading.lines), "identity records: schema").startswith("FAIL")
+
+
+def test_the_replay_is_the_runtimes_rule_on_runs_with_contradictions_and_lost_tracks(mods, tmp_path, accepted_scene,
+                                                                                      startup) -> None:
+    """The replay used for the working gallery reproduces, with the original's labels, the KNOWN time the runtime
+    itself recorded: on the F2 script (absences, a turn, a track lost and a new one) and on a seated run with
+    intermittent unknown votes."""
+    runs = [(simulate(tmp_path, startup), 600.0)]
+    runs.append((candidate_run(mods, tmp_path, accepted_scene, name="intermittent"), 300.0))
+    for out, duration in runs:
+        records, problems, _, _ = mods.check.read_records(out / "run.jsonl")
+        assert not problems
+        line = mods.check.Timeline(records, 1_000_000_000, duration)
+        for window in ((15.0, 275.0), (0.0, duration), (100.0, 400.0)):
+            runtime = mods.check._identity_time(line, window)
+            replay = mods.check._replay_known(line, window, lambda p: p["label"] if p["label"] in ("match", "unknown")
+                                              else None)
+            assert replay["known_s"] == runtime["known_s"], (out, window, replay, runtime)
+            assert replay["entries_into_known"] == runtime["entries_into_known"], (out, window)

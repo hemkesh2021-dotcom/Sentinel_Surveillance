@@ -377,6 +377,20 @@ def main(
         "(D90: with each face's geometry and prototype position). "
         "Not with --face-comparison",
     )
+    run.add_argument(
+        "--face-capture-gallery", type=Path, metavar="DIR",
+        help="with --face-validation --face-full-scale-detection (D91, the camera-side enrollment experiment): keep, in "
+        "memory, the one person's compared faces and at the stop write a separate working gallery into DIR (a new "
+        "private directory, never the original's) from faces chosen at fixed times, sealed with the same passphrase; "
+        "nothing votes differently and the original is never written",
+    )
+    run.add_argument("--face-capture-consent-date", metavar="YYYY-MM-DD",
+                     help="with --face-capture-gallery: the enrolled person's consent date for that working gallery")
+    run.add_argument(
+        "--face-shadow-gallery", type=Path, metavar="DIR",
+        help="with --face-validation --face-full-scale-detection (D91): open the working gallery in DIR read only and "
+        "record each compared face's similarity to it (schema 6 \"shadow\"); only the original votes",
+    )
     run.add_argument("--identity-dir", type=Path, default=DEFAULT_IDENTITY_DIR,
                      help=f"the private (0700) identity directory (default {DEFAULT_IDENTITY_DIR})")
     run.add_argument(
@@ -701,6 +715,17 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
     if args.face_full_scale_detection and not args.face_validation:
         print("run: --face-full-scale-detection needs --face-validation", file=sys.stderr)
         return 1
+    experiment = [flag for flag, value in (("--face-capture-gallery", args.face_capture_gallery),
+                                           ("--face-shadow-gallery", args.face_shadow_gallery)) if value is not None]
+    if experiment and not (args.face_validation and args.face_full_scale_detection):
+        print(f"run: {experiment[0]} needs --face-validation and --face-full-scale-detection", file=sys.stderr)
+        return 1
+    if len(experiment) > 1:
+        print("run: a capture and a shadow comparison are separate runs; use one", file=sys.stderr)
+        return 1
+    if (args.face_capture_consent_date is not None) != (args.face_capture_gallery is not None):
+        print("run: --face-capture-gallery and --face-capture-consent-date go together", file=sys.stderr)
+        return 1
     if args.face_full_scale_detection and args.face_comparison:
         print("run: --face-full-scale-detection replaces the detection --face-comparison compares with; use one",
               file=sys.stderr)
@@ -721,7 +746,11 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
             return 1
         face = FaceOptions(identity_dir=args.identity_dir.expanduser(), secret=secret,
                            validation_run=args.face_validation, comparison=args.face_comparison,
-                           detection=DETECTION_FULL_SCALE if args.face_full_scale_detection else DETECTION_DEEPFACE)
+                           detection=DETECTION_FULL_SCALE if args.face_full_scale_detection else DETECTION_DEEPFACE,
+                           shadow_dir=None if args.face_shadow_gallery is None else args.face_shadow_gallery.expanduser(),
+                           capture_dir=(None if args.face_capture_gallery is None
+                                        else args.face_capture_gallery.expanduser()),
+                           capture_consent_date=args.face_capture_consent_date)
     del secret
     scene = None
     if args.scene:

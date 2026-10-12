@@ -41,6 +41,11 @@ movement: the operator sits and works as usual for the whole run. Four separate 
 usual; looked toward the camera on purpose; other faces in view), each yes / no / unknown. ``unknown`` is an accepted
 answer here, not an incomplete account: face_check's comparison reading qualifies only the lines that depend on it.
 
+**Formats 7 and 8** (D91, the camera-side enrollment experiment; ``enter --format 7`` or ``8``): the capture's account
+(consent to the capture, stayed seated, worked as usual, other faces in view) and a non-enrolled participant's session
+(not enrolled, consented, stayed seated, looked toward the camera at the 2:30 cue, nobody else in view), each a set of
+separate yes / no / unknown answers as in format 6. Never a name.
+
 ``check`` shows a saved account, read only, with its lock state. Stdlib only.
 """
 
@@ -226,9 +231,49 @@ INTRO_V6 = (
 )
 COMPARISON_CUE_AT_S = {"t0": 0, "stop": 290}  # the guard's cues: T0, and the stop warning 10 s before the stop
 COMPARISON_DURATION_S = 300  # the run stops by itself 300 s after T0
-SEPARATE_FORMATS = (6,)  # formats whose answers are read one by one: unknown is accepted, never "incomplete"
+# Format 7 (D91): the camera-side enrollment capture's account: the enrolled person, alone, seated and working as
+# usual, and their consent to this capture being kept in a separate working gallery. Separate answers; unknown accepted.
+HEADER_V7 = ("# camera-side enrollment capture account, format 7, entered with benchmarks/runner/face_account.py; "
+             "values as typed")
+FIELDS_V7 = (
+    Field("consented_to_capture", "choice", "yes / no: before the run you (the enrolled person) agreed that numbers "
+          "computed from your face during this run may be kept in a separate working gallery for the enrollment "
+          "experiment, revocable at any time", YES_NO),
+    *FIELDS_V6[:2],  # stayed_seated, worked_as_usual
+    *FIELDS_V1[9:],  # other_faces_in_view, notes
+)
+INTRO_V7 = (
+    "Your camera-side enrollment capture account (format 7). Four separate questions about the whole run. Answer each\n"
+    "on its own: yes or no, or unknown if you are not sure; the reading says what an unknown answer leaves open.\n"
+    "Nothing here shows an identity result."
+)
+# Format 8 (D91): a session in which a consenting person who is not enrolled sits at the seat (the enrolled person out
+# of view), for the experiment's false-acceptance numbers. Separate answers; unknown accepted.
+HEADER_V8 = ("# non-enrolled participant session account, format 8, entered with benchmarks/runner/face_account.py; "
+             "values as typed")
+NON_ENROLLED_CUE_AT_S = {"t0": 0, "look": 150, "stop": 290}  # the guard's cues; the run stops at 300 s
+NON_ENROLLED_LOOK_S = 10  # the participant looks toward the camera for about this long after the look cue
+FIELDS_V8 = (
+    Field("participant_not_enrolled", "choice", "yes / no: the person seated in the camera's view during the run is "
+          "not enrolled in Sentinel (not the enrolled person, and never enrolled)", YES_NO),
+    Field("participant_consented", "choice", "yes / no: before the run the participant agreed to sit in the camera's "
+          "view for this check, knowing that only numbers are kept (no picture, no name)", YES_NO),
+    Field("participant_stayed_seated", "choice", "yes / no: from the T0 cue until the run stopped by itself the "
+          "participant stayed seated at the usual seat and did not leave", YES_NO),
+    Field("participant_looked_at_cue", "choice", "yes / no: at the 2:30 cue the participant looked toward the camera "
+          "for about 10 s, then carried on as before", YES_NO),
+    Field("only_participant_in_view", "choice", "yes / no: from the T0 cue until the run stopped nobody else (you "
+          "included), and no photo or screen showing a face, was in the camera's view", YES_NO),
+    FIELDS_V1[-1],  # notes
+)
+INTRO_V8 = (
+    "The non-enrolled participant session's account (format 8), answered with the participant. Five separate\n"
+    "questions about the whole run: yes or no, or unknown if you are not sure. Never type a name. Nothing here shows\n"
+    "an identity result."
+)
+SEPARATE_FORMATS = (6, 7, 8)  # formats whose answers are read one by one: unknown is accepted, never "incomplete"
 FORMATS = {HEADER_V1: (1, FIELDS_V1), HEADER: (2, FIELDS), HEADER_V3: (3, FIELDS_V3), HEADER_V4: (4, FIELDS_V4),
-           HEADER_V5: (5, FIELDS_V5), HEADER_V6: (6, FIELDS_V6)}
+           HEADER_V5: (5, FIELDS_V5), HEADER_V6: (6, FIELDS_V6), HEADER_V7: (7, FIELDS_V7), HEADER_V8: (8, FIELDS_V8)}
 INTRO = (
     "Your F2 account (format 2). Answer from what you noted; type unknown for anything you did not note or are not\n"
     "sure of. First: how many whole seconds after the T0 cue you started the stopwatch (0 if at the cue, as far as\n"
@@ -309,7 +354,8 @@ def review(values: dict[str, str], fields: tuple[Field, ...] = FIELDS) -> list[s
 
 
 def review_separate(values: dict[str, str], fields: tuple[Field, ...] = FIELDS_V6) -> list[str]:
-    """Format 6: every answer present and accepted (yes, no or unknown); unknown answers are listed, not refused."""
+    """Formats 6 to 8: every answer present and accepted (yes, no or unknown); unknown answers are listed, not
+    refused."""
     unknown, invalid = [], []
     for field in fields:
         if field.kind == "text":
@@ -384,8 +430,9 @@ def enter(run_dir: Path, ask: Callable[[str], str] = input, say: Callable[[str],
           account_format_number: int = 2) -> int:
     """Format 2 (D66), or format 3 (D79, cued) or 4 (D85, cued, the 4:00 head turn stated) when asked for."""
     fields, header, intro = {3: (FIELDS_V3, HEADER_V3, INTRO_V3), 4: (FIELDS_V4, HEADER_V4, INTRO_V4),
-                             5: (FIELDS_V5, HEADER_V5, INTRO_V5),
-                             6: (FIELDS_V6, HEADER_V6, INTRO_V6)}.get(account_format_number, (FIELDS, HEADER, INTRO))
+                             5: (FIELDS_V5, HEADER_V5, INTRO_V5), 6: (FIELDS_V6, HEADER_V6, INTRO_V6),
+                             7: (FIELDS_V7, HEADER_V7, INTRO_V7),
+                             8: (FIELDS_V8, HEADER_V8, INTRO_V8)}.get(account_format_number, (FIELDS, HEADER, INTRO))
     checker = review_separate if account_format_number in SEPARATE_FORMATS else review
     problem = not_ready(run_dir)
     if problem is not None:
@@ -466,10 +513,11 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     enter_parser = commands.add_parser("enter", help="answer each item; saving locks the account")
     enter_parser.add_argument("run_dir", type=Path)
-    enter_parser.add_argument("--format", type=int, choices=(2, 3, 4, 5, 6), default=2,
+    enter_parser.add_argument("--format", type=int, choices=(2, 3, 4, 5, 6, 7, 8), default=2,
                               help="2 (D66, the default), 3 (D79, cued), 4 (D85, cued, the 4:00 head turn stated), 5 "
-                                   "(D86, the natural seated check) or 6 (D87, the natural recognition comparison); 3 "
-                                   "to 6 only with the maintainer's approval")
+                                   "(D86, the natural seated check), 6 (D87, the natural recognition comparison), 7 "
+                                   "(D91, the enrollment experiment's capture) or 8 (D91, a non-enrolled participant's "
+                                   "session); 3 to 8 only with the maintainer's approval")
     commands.add_parser("check", help="show a saved account and its lock state").add_argument("run_dir", type=Path)
     args = parser.parse_args(argv)
     if args.command == "enter":

@@ -184,6 +184,11 @@ TRANSITION_KEYS = {"identity", "schema", "stream_epoch", "track_id", "from", "to
                    "last_vote_age_ms", "reason", "mono_ns"}
 COMPARISON_KEYS = {"identity", "schema", "stream_epoch", "frame_seq", "frame_mono_ns", "track_id", "kind",
                    "disposition", "score", "w_px", "similarity", "ms", "error"}  # runtime.ComparisonRecord (D87)
+CAPTURE_KEYS = {"identity", "schema", "written", "refused", "faces_kept", "faces_dropped_over_cap", "faces_in_span",
+                "prototypes", "min_best_to_others", "similarity_to_original", "verified"}  # D91, Capture.finish
+CAPTURE_REFUSALS = ("too_few_faces", "too_few_prototypes", "inconsistent_capture", "capture_target_has_gallery",
+                    "capture_not_verified", "capture_write_failed")  # identity.experiment.CAPTURE_REFUSALS
+CAPTURE_MIN_PROTOTYPES = 4  # identity.experiment.CAPTURE_MIN_PROTOTYPES
 COMPARISON_KINDS = ("full_scale_only", "both")
 ATTEMPTED = ("completed", "failed", "production_not_applied")  # dispositions with a time; the rest were skipped
 COMPARISON_DISPOSITIONS = (*ATTEMPTED, "skipped_one_per_result", "skipped_stopping", "skipped_production_waiting",
@@ -242,7 +247,7 @@ def read_records(path: Path) -> tuple[dict[str, list[dict]], list[str], dict | N
 
 def _record_problem(kind: Any, item: dict) -> str | None:
     keys = {"tick": TICK_KEYS, "result": RESULT_KEYS, "transition": TRANSITION_KEYS,
-            "comparison": COMPARISON_KEYS}.get(kind)
+            "comparison": COMPARISON_KEYS, "capture": CAPTURE_KEYS}.get(kind)
     if keys is None:
         return f"unknown identity record {kind!r}"
     schema = item.get("schema")
@@ -250,6 +255,8 @@ def _record_problem(kind: Any, item: dict) -> str | None:
         return f"{kind}: schema {schema!r}, not one of {list(SCHEMAS)}"
     if kind == "comparison":
         return _comparison_problem(item)
+    if kind == "capture":
+        return _capture_problem(item)
     if kind == "result" and schema in (FULL_SCALE_SCHEMA, COMPARISON_SCHEMA):
         keys = keys | {"full_scale"}
     elif kind == "result" and schema in CANDIDATE_SCHEMAS:
@@ -308,6 +315,27 @@ def _comparison_problem(item: dict) -> str | None:
     if (item["error"] is not None) != failed or (failed and not (isinstance(item["error"], str)
                                                                  and ERROR_LABEL.match(item["error"]))):
         return "comparison: a fixed error label exactly when failed"
+    return None
+
+
+def _capture_problem(item: dict) -> str | None:
+    """D91: the capture's record (schema 6 only): written exactly when nothing refused it, verified only when written,
+    a fixed refusal label, counts that fit together, and one similarity to the original per prototype (or none)."""
+    if item["schema"] != GEOMETRY_SCHEMA:
+        return f"capture: schema {item['schema']!r}; the capture's record is schema {GEOMETRY_SCHEMA}"
+    if set(item) != CAPTURE_KEYS:
+        return f"capture: fields {sorted(set(item) ^ CAPTURE_KEYS)} differ from schema {GEOMETRY_SCHEMA}"
+    counts = ("faces_kept", "faces_dropped_over_cap", "faces_in_span", "prototypes")
+    similarities = item["similarity_to_original"]
+    if not (all(_int(item[k]) and item[k] >= 0 for k in counts) and item["faces_in_span"] <= item["faces_kept"]
+            and item["prototypes"] <= MAX_PROTOTYPES and type(item["written"]) is bool
+            and type(item["verified"]) is bool and (item["refused"] is None or item["refused"] in CAPTURE_REFUSALS)
+            and (item["min_best_to_others"] is None or _number(item["min_best_to_others"], -1.0, 1.0))
+            and isinstance(similarities, list) and all(_number(v, -1.0, 1.0) for v in similarities)
+            and len(similarities) in (0, item["prototypes"])):
+        return "capture: a field has the wrong type or value"
+    if item["written"] != (item["refused"] is None) or (item["verified"] and not item["written"]):
+        return "capture: written exactly when nothing refused it, and verified only when written"
     return None
 
 
@@ -1516,6 +1544,234 @@ IDENTITY_TIME = ("identity time (person-seconds KNOWN within the window, KNOWN i
                  "KNOWN, and the state each interval ending within it went to)")
 
 
+# ---------------------------------------------------------------- D91: the camera-side enrollment experiment
+
+CAPTURE_FACE = {**CANDIDATE_FACE, "capture": True}  # the startup's face entry of a capture run
+SHADOW_FACE = {**CANDIDATE_FACE, "shadow": True}  # ... and of a run compared with the working gallery
+CAPTURE_CONDITIONS = {"consented_to_capture": "yes", "stayed_seated": "yes", "other_faces_in_view": "no"}
+NON_ENROLLED_CONTEXT = {"participant_not_enrolled": "yes", "participant_consented": "yes",
+                        "participant_stayed_seated": "yes", "only_participant_in_view": "yes"}
+LOOK_WINDOW_S = 30.0  # the look cue's interval described apart: from the cue, its 10 s allowance and a margin
+EXPERIMENT_CUES = {6: face_account.COMPARISON_CUE_AT_S, 8: face_account.NON_ENROLLED_CUE_AT_S}
+
+
+def _experiment_execution(r: Reading, directory: Path, f1: Path, gate: Any, face: dict, name: str,
+                          formats: tuple[int, ...], records_check: Any) -> tuple[Any, ...] | None:
+    """The execution items the capture and the shadow runs share with the candidate's reading; None when nothing can
+    be described (no usable records, time base or locked account), else what the descriptions need."""
+    if gate is not None:
+        ok, lines = f1_gate(*gate)
+        r.item("F1 basis for this run: the run's own F1 validated, or the maintainer's accepted corrected F1 reading "
+               "of it", dict(line.split("=", 1) for line in lines), ok and f1.resolve() == (gate[0] / "f1").resolve())
+    result = s5._load(directory / "result.json")
+    s5._supervision(r, result, "duration_stop", 0)
+    start = s5._get(result, "run_output", "starting")
+    r.item(f"face admitted for this validation run with the full-scale detection candidate and {name}: one "
+           "enrolled identity, no problem", {"face": s5._get(start, "face"), "face_problem": s5._get(start,
+                                                                                                   "face_problem")},
+           s5._get(start, "face") == face and s5._get(start, "face_problem") is None)
+    stopped = s5._get(result, "run_output", "stopped")
+    r.item("clean shutdown: all stopped (the face worker included), database closed", stopped,
+           isinstance(stopped, dict) and stopped.get("all_stopped") is True and stopped.get("database_closed") is True
+           and (stopped.get("stopped") or {}).get("face_worker") is True)
+    saved = [s5._load(directory / f"status-{c.get('name')}.json") for c in s5._list(s5._get(result, "captures"))
+             if isinstance(c, dict) and (directory / f"status-{c.get('name')}.json").is_file()]
+    last = saved[-1] if saved else MISSING
+    records, problems, _, _ = read_records(directory / "run.jsonl")
+    total = sum(len(v) for v in records.values())
+    schemas = sorted({item["schema"] for kind in records.values() for item in kind})
+    dropped = s5._get(last, "components", "face", "records", "dropped")
+    extra = records_check(records)
+    r.item(f"identity records: schema {GEOMETRY_SCHEMA}, complete, none dropped, no comparison record; {extra[0]}",
+           {"records": {k: len(v) for k, v in records.items()}, "schemas": schemas, "problems": problems[:5],
+            "dropped": dropped} if total else MISSING,
+           total > 0 and not problems and schemas == [GEOMETRY_SCHEMA] and dropped == 0
+           and not records.get("comparison") and extra[1] and total < MAX_IDENTITY_RECORDS)
+    ready = s5._get(result, "child", "ready_mono_s")
+    cues = _cue_offsets(result)
+    duration = s5._get(result, "parameters", "duration_s")
+    account, problem, fmt = _account(directory)
+    expected = EXPERIMENT_CUES.get(fmt, face_account.COMPARISON_CUE_AT_S)
+    r.item(f"the run's {face_account.COMPARISON_DURATION_S} s and every cue printed within {CUE_TOLERANCE_S:g} s of "
+           "its time", {"duration_s": duration, "cues_s_after_t0": {k: round(v, 2) for k, v in cues.items()}},
+           duration == face_account.COMPARISON_DURATION_S
+           and all(name in cues and 0 <= cues[name] - at <= CUE_TOLERANCE_S for name, at in expected.items()))
+    r.item("account saved and locked before any result was shown", problem or "locked", account is not None)
+    if account is not None:
+        fields = {f: face_account.FORMATS[h][1] for h, (f, _) in face_account.FORMATS.items()}.get(fmt)
+        review = (face_account.review_separate(account, fields) if fmt in formats
+                  else [f"format {fmt} is not this run's account (format {' or '.join(map(str, formats))})"])
+        r.item(f"account in format {' or '.join(map(str, formats))}, every answer yes, no or unknown (unknown is "
+               "accepted)", review, fmt in formats and review[-1].endswith(": yes"))
+    _counts_items(r, directory)
+    if account is None or fmt not in formats or problems or not isinstance(ready, float) or "t0" not in cues \
+            or "stop" not in cues or schemas != [GEOMETRY_SCHEMA] or s5._get(start, "face") != face:
+        return None
+    window = _comparison_window(cues)
+    line = Timeline(records, round((cues["t0"] + ready) * NS), float(duration))
+    r.describe("window W (s after T0: the washout after T0 and before the stop cue)",
+               [round(window[0], 1), round(window[1], 1)])
+    return line, window, account, fmt, records, cues
+
+
+def read_capture(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | None = None) -> Reading:
+    """D91, the capture: the candidate's execution items, then whether the working gallery it wrote may be used (written,
+    read back and verified, at least CAPTURE_MIN_PROTOTYPES consistent prototypes, and the account's consent, seat and
+    no other face), then DESCRIPTIVE numbers. It validates no recognition."""
+    r = Reading()
+
+    def one_capture(records: dict) -> tuple[str, bool]:
+        return "exactly one capture record", len(records.get("capture", [])) == 1
+
+    found = _experiment_execution(r, directory, f1, gate, CAPTURE_FACE, "the capture", (7,), one_capture)
+    if found is None:
+        return r
+    line, window, account, _, records, _ = found
+    (capture,) = records["capture"]
+    r.item(f"the working gallery: written, read back and verified, from at least {CAPTURE_MIN_PROTOTYPES} prototypes "
+           "consistent at the match threshold", {k: capture[k] for k in ("written", "refused", "verified",
+                                                                         "prototypes")},
+           capture["written"] is True and capture["verified"] is True and capture["refused"] is None
+           and capture["prototypes"] >= CAPTURE_MIN_PROTOTYPES)
+    conditions = {k: account.get(k) for k in CAPTURE_CONDITIONS}
+    r.item("the capture's conditions (consent to the capture, stayed seated, no other face in view); otherwise the "
+           "working gallery must not be used: purge it and capture again", conditions, conditions == CAPTURE_CONDITIONS)
+    depends = _support(account, CAPTURE_CONDITIONS)
+    _say(r, depends, "the capture's numbers: faces kept and over the cap, faces in the selection span, prototypes, the "
+         "consistency check's smallest best similarity among them, and each prototype's best similarity to the "
+         "original gallery (descriptive; nothing was selected by it)",
+         {k: capture[k] for k in ("faces_kept", "faces_dropped_over_cap", "faces_in_span", "prototypes",
+                                  "min_best_to_others", "similarity_to_original")})
+    context = _support(account, {**CAPTURE_CONDITIONS, "worked_as_usual": "yes"})
+    _say(r, context, PER_PERSON + ", and where no face was assigned the best detection under 0.9, in W",
+         _per_person(line, window, "candidate"))
+    _say(r, context, IDENTITY_TIME + ", in W (the original gallery's, as the runtime decided)",
+         _identity_time(line, window))
+    r.describe(GEOMETRY_LINE.replace("diagnostics: ", "", 1), {"W": _geometry_by_vote(line, window)})
+    return r
+
+
+def _label(similarity: Any) -> str | None:
+    return None if similarity is None else "match" if similarity >= MATCH_THRESHOLD else "unknown"
+
+
+def read_experiment(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | None = None) -> Reading:
+    """D91, an evaluation session with the working gallery compared read only: a genuine session (format 6, the
+    enrolled person working as usual) or a non-enrolled participant's (format 8). Execution items, then DESCRIPTIVE
+    paired numbers on the same faces: the original's votes (as the runtime decided), the working gallery's at the
+    unchanged MATCH_THRESHOLD, and either's (the larger similarity, what one gallery holding both prototype sets would
+    give; such a gallery would need more than MAX_PROTOTYPES, so it is a comparison, not a configuration), and KNOWN
+    time replayed under the unchanged identity rule for each. It validates nothing and changes no gallery."""
+    r = Reading()
+
+    def shadows(records: dict) -> tuple[str, bool]:
+        compared = [p for x in records.get("result", []) if x["outcome"] == "applied" for p in x["persons"]
+                    if p.get("similarity") is not None]
+        return ("no capture record, and every compared face compared with the working gallery too",
+                not records.get("capture") and all(p.get("shadow") is not None for p in compared))
+
+    found = _experiment_execution(r, directory, f1, gate, SHADOW_FACE, "the working gallery compared read only",
+                                  (6, 8), shadows)
+    if found is None:
+        return r
+    line, window, account, fmt, _, cues = found
+    if fmt == 6:
+        kind, context = "genuine", _support(account, {**SEATED_CONTEXT, **ATTRIBUTION})
+    else:
+        kind, context = "non-enrolled", _support(account, NON_ENROLLED_CONTEXT)
+    r.describe("session kind and account answers (each line below names those it depends on)",
+               {"kind": kind, **{k: v for k, v in account.items() if k != "notes"}})
+    _say(r, context, PER_PERSON + ", and where no face was assigned the best detection under 0.9, in W",
+         _per_person(line, window, "candidate"))
+    _say(r, context, "paired comparison on the same faces (one-person results in W with a computed similarity; "
+         f"MATCH_THRESHOLD {MATCH_THRESHOLD:g} unchanged): faces at or above it with the original (as the runtime "
+         "voted), with the working gallery and with either; both, the original only, the working gallery only, "
+         "neither; each gallery's similarities [min, median, max]", _paired(line, window))
+    if fmt == 8 and "look" in cues:
+        look = (cues["look"], cues["look"] + LOOK_WINDOW_S)
+        _say(r, _support(account, {**NON_ENROLLED_CONTEXT, "participant_looked_at_cue": "yes"}),
+             f"the same, within {LOOK_WINDOW_S:g} s of the look cue (s after T0 {round(look[0], 1)})",
+             _paired(line, look))
+    _say(r, context, "identity time replayed by the unchanged rule (2 consecutive matches within 30 s on a track), "
+         "in W: KNOWN person-seconds, intervals and entries with the original (the runtime's own, and its replay, "
+         "which must agree), with the working gallery and with either", {
+             "runtime_original": _identity_time(line, window),
+             "replay_original": _replay_known(line, window, lambda p: p["label"] if p["label"] in ("match", "unknown")
+                                              else None),
+             "replay_working": _replay_known(line, window, lambda p: _label((p.get("shadow") or {}).get("similarity"))),
+             "replay_either": _replay_known(line, window, lambda p: _label(None if p.get("similarity") is None else
+                                                                           max(p["similarity"],
+                                                                               (p.get("shadow") or {}).get(
+                                                                                   "similarity", -1.0))))})
+    r.describe(GEOMETRY_LINE.replace("diagnostics: ", "", 1), {"W": _geometry_by_vote(line, window)})
+    return r
+
+
+def _paired(line: Timeline, window: tuple[float, float]) -> dict:
+    applied = [x for x in line.in_window(line.results, window) if x["outcome"] == "applied" and len(x["persons"]) == 1]
+    people = [x["persons"][0] for x in applied if x["persons"][0].get("similarity") is not None]
+    original = [p["similarity"] for p in people]
+    working = [p["shadow"]["similarity"] for p in people if p.get("shadow") is not None]
+    pairs = [(p["similarity"] >= MATCH_THRESHOLD, p["shadow"]["similarity"] >= MATCH_THRESHOLD) for p in people
+             if p.get("shadow") is not None]
+    return {"faces": len(people), "with_working": len(pairs),
+            "at_or_above": {"original": sum(a for a, _ in pairs), "working": sum(b for _, b in pairs),
+                            "either": sum(a or b for a, b in pairs)},
+            "both": sum(a and b for a, b in pairs), "original_only": sum(a and not b for a, b in pairs),
+            "working_only": sum(b and not a for a, b in pairs), "neither": sum(not (a or b) for a, b in pairs),
+            "similarity": {"original": _spread(original), "working": _spread(working)}}
+
+
+def _replay_known(line: Timeline, window: tuple[float, float], label_of: Any) -> dict:
+    """KNOWN under one gallery's labels, replayed by the runtime's rule: per track, the votes applied by each moment, in
+    frame order, within VOTE_TTL_S of their frame; KNOWN while the newest CONFIRMATIONS are matches; a clear the
+    runtime recorded drops the track's votes. Person-seconds within the window, the KNOWN intervals overlapping it and
+    the entries into KNOWN inside it. A track the runtime lost without recording a clear (its state was unresolved
+    with the original) is not cut here: the original's replay, compared with the runtime's own time, shows whether
+    that mattered."""
+    votes: dict[tuple[int, int], list[tuple[float, float, str]]] = {}
+    for x in line.results:
+        if x["outcome"] != "applied":
+            continue
+        for p in x["persons"]:
+            label = label_of(p)
+            if label is not None:
+                votes.setdefault((x["stream_epoch"], p["track_id"]), []).append((x["t"], x["applied"], label))
+    clears: dict[tuple[int, int], list[float]] = {}
+    for t in line.transitions:
+        if t["to"] == "cleared":
+            clears.setdefault((t["stream_epoch"], t["track_id"]), []).append(t["t"])
+    start, end = window[0], min(window[1], line.end_s)  # nothing is known after the run ends
+    total, intervals, entries = 0.0, 0, 0
+    for key, track in votes.items():
+        track.sort()
+        cut = sorted(clears.get(key, ()))
+
+        def known(at: float) -> bool:
+            last_clear = max((c for c in cut if c <= at), default=None)
+            held = [v for v in track if v[1] <= at + 1e-9 and 0 <= at - v[0] < VOTE_TTL_S
+                    and (last_clear is None or v[1] > last_clear)]
+            return len(held) >= CONFIRMATIONS and all(v[2] == "match" for v in held[-CONFIRMATIONS:])
+
+        events = sorted({v[1] for v in track} | {v[0] + VOTE_TTL_S for v in track} | set(cut))
+        state, since = False, None
+        for at in events + [math.inf]:
+            now = known(at) if at != math.inf else False
+            if now and not state:
+                since = at
+                if start <= at < end:
+                    entries += 1
+            elif state and not now:
+                lo, hi = max(start, since), min(end, at)
+                if hi > lo:
+                    total += hi - lo
+                    intervals += 1
+                elif since < end and at > start:
+                    intervals += 1
+            state = now
+    return {"known_s": round(total, 1), "known_intervals": intervals, "entries_into_known": entries}
+
+
 # ---------------------------------------------------------------- F1 reading
 
 
@@ -1775,6 +2031,16 @@ def main(argv: list[str] | None = None) -> int:
     candidate.add_argument("--run", type=Path, help="with --identity-dir: also require this run's F1 basis (see gate)")
     candidate.add_argument("--identity-dir", type=Path)
     candidate.add_argument("--recheck-root", type=Path, help="where accepted corrected F1 readings are (see gate)")
+    for part, text in (("capture", "read the enrollment experiment's capture (D91): whether its working gallery may "
+                                    "be used"),
+                       ("experiment", "read an enrollment experiment session (D91, descriptive): genuine (format 6) "
+                                      "or a non-enrolled participant's (format 8)")):
+        sub = commands.add_parser(part, help=text)
+        sub.add_argument("directory", type=Path)
+        sub.add_argument("--f1", type=Path, required=True, help="F1's evidence directory")
+        sub.add_argument("--run", type=Path, help="with --identity-dir: also require this run's F1 basis (see gate)")
+        sub.add_argument("--identity-dir", type=Path)
+        sub.add_argument("--recheck-root", type=Path, help="where accepted corrected F1 readings are (see gate)")
     recheck = commands.add_parser("f1-recheck", help="a corrected F1 reading of a run, made afterwards")
     recheck.add_argument("directory", type=Path, help="the recheck directory (face_recheck.py run)")
     recheck.add_argument("--run", type=Path, required=True)
@@ -1796,13 +2062,21 @@ def main(argv: list[str] | None = None) -> int:
         if (args.run is None) != (args.identity_dir is None):
             parser.error(f"{args.part}: --run and --identity-dir go together")
         gate_args = None if args.run is None else (args.run, args.identity_dir, args.recheck_root)
-        if args.part in ("natural", "comparison", "candidate"):
-            read = {"natural": read_natural, "comparison": read_comparison, "candidate": read_candidate}[args.part]
+        if args.part in ("natural", "comparison", "candidate", "experiment"):
+            read = {"natural": read_natural, "comparison": read_comparison, "candidate": read_candidate,
+                    "experiment": read_experiment}[args.part]
             reading = read(args.directory, args.f1, gate_args)
             for line in reading.lines:
                 print(line)
             print(f"face-{args.part}: " + ("execution complete (descriptive only; it validates nothing)"
                                            if reading.ok else "execution incomplete"))
+            return 0 if reading.ok else 1
+        if args.part == "capture":
+            reading = read_capture(args.directory, args.f1, gate_args)
+            for line in reading.lines:
+                print(line)
+            print("face-capture: " + ("the working gallery may be used in the experiment (it validates nothing)"
+                                      if reading.ok else "the working gallery is not usable"))
             return 0 if reading.ok else 1
         reading, verdict = read_f2(args.directory, args.f1, gate_args), "face-f2"
     for line in reading.lines:
