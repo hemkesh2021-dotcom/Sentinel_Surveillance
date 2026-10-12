@@ -70,7 +70,15 @@ detector's confidence, the assigned face's size in frame pixels and the face det
 similarity to the closest enrolled identity. A run's records share one schema. Every item is judged the same way for
 both; schema 2's numbers must agree with their labels (a face only where one was assigned, a similarity only where
 one was computed, a match at or above MATCH_THRESHOLD and an unknown vote at or below it), and they add DESCRIPTIVE
-diagnostics per judged window, which are never judged.
+diagnostics per judged window, which are never judged. Schema 3 (D86) adds each result's full-scale pass. Schema 4 (D87,
+``--face-comparison`` runs) is schema 3 plus "comparison" records, each checked against its own disposition.
+
+**The comparison reading** (``face_check.py comparison``, D87; descriptive, validates nothing): execution items first
+(the run, the records in schema 4, the cues, a locked format-6 account in which every answer is yes, no or unknown, the
+privacy counts); then, once the account is locked, DESCRIPTIVE lines over window W (WASHOUT_S after T0 to WASHOUT_S
+before the stop cue). Each line names the account answers it depends on and says whether they support it, leave it
+QUALIFIED (unknown) or CONTRADICTED; an answer never suppresses a line that does not depend on it. A failed comparison
+is counted as failed, never as a nonmatch; a similarity is compared with MATCH_THRESHOLD descriptively only.
 """
 
 from __future__ import annotations
@@ -96,7 +104,8 @@ from operator_account import seconds as stopwatch_seconds
 SCHEMA = 1
 DIAGNOSTIC_SCHEMA = 2  # runtime.IDENTITY_DIAGNOSTIC_SCHEMA: schema 1 plus each result person's diagnostic numbers
 FULL_SCALE_SCHEMA = 3  # runtime.IDENTITY_FULL_SCALE_SCHEMA: schema 2 plus each result's full-scale pass (D86)
-SCHEMAS = (SCHEMA, DIAGNOSTIC_SCHEMA, FULL_SCALE_SCHEMA)
+COMPARISON_SCHEMA = 4  # runtime.IDENTITY_COMPARISON_SCHEMA: schema 3 plus comparison records (D87)
+SCHEMAS = (SCHEMA, DIAGNOSTIC_SCHEMA, FULL_SCALE_SCHEMA, COMPARISON_SCHEMA)
 FULL_SCALE_KEYS = {"faces", "assigned", "best_score", "best_w_px", "ms"}
 ID = re.compile(r"^idn-[0-9a-f]{12}$")
 NS = 1_000_000_000
@@ -139,6 +148,13 @@ FACE_KEYS = {"w_px", "h_px", "score"}
 SIMILARITY_LABELS = {"match", "unknown", "margin"}  # the labels for which the runtime computed a similarity
 TRANSITION_KEYS = {"identity", "schema", "stream_epoch", "track_id", "from", "to", "identity_id", "basis",
                    "last_vote_age_ms", "reason", "mono_ns"}
+COMPARISON_KEYS = {"identity", "schema", "stream_epoch", "frame_seq", "frame_mono_ns", "track_id", "kind",
+                   "disposition", "score", "w_px", "similarity", "ms", "error"}  # runtime.ComparisonRecord (D87)
+COMPARISON_KINDS = ("full_scale_only", "both")
+ATTEMPTED = ("completed", "failed", "production_not_applied")  # dispositions with a time; the rest were skipped
+COMPARISON_DISPOSITIONS = (*ATTEMPTED, "skipped_one_per_result", "skipped_stopping", "skipped_production_waiting",
+                           "skipped_no_landmarks", "skipped_stale", "skipped_cap", "skipped_interval", "skipped_quota")
+ERROR_LABEL = re.compile(r"^[a-z_]+(:[A-Za-z0-9_]+)?$")
 TICKS = {"offered", "skipped_no_person", "stopping"}
 OUTCOMES = {"applied", "failed", "rejected_not_live", "rejected_boot", "rejected_age", "ignored_face_unavailable"}
 STATES = {"unresolved", "unknown", "known", "uncertain", "cleared"}
@@ -161,7 +177,7 @@ def _int(value: Any) -> bool:
 
 def read_records(path: Path) -> tuple[dict[str, list[dict]], list[str], dict | None, dict | None]:
     """(records by kind, schema problems, starting line, stopped line) from the runtime's stdout file."""
-    records: dict[str, list[dict]] = {"tick": [], "result": [], "transition": []}
+    records: dict[str, list[dict]] = {"tick": [], "result": [], "transition": []}  # "comparison" only when present
     problems: list[str] = []
     starting = stopped = None
     try:
@@ -186,18 +202,21 @@ def read_records(path: Path) -> tuple[dict[str, list[dict]], list[str], dict | N
         if problem is not None:
             problems.append(f"line {number}: {problem}")
         else:
-            records[kind].append(item)
+            records.setdefault(kind, []).append(item)
     return records, problems, starting, stopped
 
 
 def _record_problem(kind: Any, item: dict) -> str | None:
-    keys = {"tick": TICK_KEYS, "result": RESULT_KEYS, "transition": TRANSITION_KEYS}.get(kind)
+    keys = {"tick": TICK_KEYS, "result": RESULT_KEYS, "transition": TRANSITION_KEYS,
+            "comparison": COMPARISON_KEYS}.get(kind)
     if keys is None:
         return f"unknown identity record {kind!r}"
     schema = item.get("schema")
     if schema not in SCHEMAS or type(schema) is not int:
         return f"{kind}: schema {schema!r}, not one of {list(SCHEMAS)}"
-    if kind == "result" and schema == FULL_SCALE_SCHEMA:
+    if kind == "comparison":
+        return _comparison_problem(item)
+    if kind == "result" and schema >= FULL_SCALE_SCHEMA:
         keys = keys | {"full_scale"}
     if set(item) != keys:
         return f"{kind}: fields {sorted(set(item) ^ keys)} differ from schema {schema}"
@@ -209,7 +228,7 @@ def _record_problem(kind: Any, item: dict) -> str | None:
         if not (_int(item["frame_mono_ns"]) and _int(item["applied_mono_ns"]) and item["outcome"] in OUTCOMES
                 and isinstance(item["persons"], list)):
             return "result: a field has the wrong type or value"
-        if schema == FULL_SCALE_SCHEMA and not _full_scale_fits(item["full_scale"]):
+        if schema >= FULL_SCALE_SCHEMA and not _full_scale_fits(item["full_scale"]):
             return "result: its full-scale numbers are malformed"
         person_keys = PERSON_KEYS if schema == SCHEMA else DIAGNOSTIC_PERSON_KEYS
         for person in item["persons"]:
@@ -225,6 +244,29 @@ def _record_problem(kind: Any, item: dict) -> str | None:
                 and (item["identity_id"] is None or ID.match(str(item["identity_id"])))
                 and ((item["to"] == "known") == (item["identity_id"] is not None))):
             return "transition: a field has the wrong type or value"
+    return None
+
+
+def _comparison_problem(item: dict) -> str | None:
+    """D87: a comparison record (schema 4 only) whose fields fit its disposition: a similarity exactly when completed,
+    a time exactly when attempted, a fixed error label exactly when failed, a candidate counted at 0.9 or above."""
+    if item["schema"] != COMPARISON_SCHEMA:
+        return f"comparison: schema {item['schema']!r}; comparison records are schema {COMPARISON_SCHEMA}"
+    if set(item) != COMPARISON_KEYS:
+        return f"comparison: fields {sorted(set(item) ^ COMPARISON_KEYS)} differ from schema {COMPARISON_SCHEMA}"
+    disposition = item["disposition"]
+    if not (all(_int(item[k]) for k in ("stream_epoch", "frame_seq", "frame_mono_ns", "track_id", "w_px"))
+            and item["w_px"] >= 0 and item["kind"] in COMPARISON_KINDS and disposition in COMPARISON_DISPOSITIONS
+            and _number(item["score"], 0.9, 1.0)):
+        return "comparison: a field has the wrong type or value"
+    completed, attempted, failed = disposition == "completed", disposition in ATTEMPTED, disposition == "failed"
+    if (item["similarity"] is not None) != completed or (completed and not _number(item["similarity"], -1.0, 1.0)):
+        return "comparison: a similarity exactly when completed"
+    if (item["ms"] is not None) != attempted or (attempted and not _number(item["ms"], 0.0, math.inf)):
+        return "comparison: a time exactly when attempted"
+    if (item["error"] is not None) != failed or (failed and not (isinstance(item["error"], str)
+                                                                 and ERROR_LABEL.match(item["error"]))):
+        return "comparison: a fixed error label exactly when failed"
     return None
 
 
@@ -663,6 +705,204 @@ def read_natural(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None]
     r.describe("guard peak pressure, min MemFree, min MemAvailable (B)",
                [s5._get(result, "guard", k) for k in s5.GUARD_FIGURES])
     return r
+
+# D87: the account answers each comparison line depends on, and the answer that supports it.
+ATTRIBUTION = {"other_faces_in_view": "no"}  # the faces compared are the operator's
+SEATED_CONTEXT = {"stayed_seated": "yes", "worked_as_usual": "yes", "looked_at_camera_on_purpose": "no"}
+
+
+def _support(account: dict[str, str], expected: dict[str, str]) -> str:
+    """How the account bears on a line: SUPPORTED, QUALIFIED (an answer unknown) or CONTRADICTED (an answer differs)."""
+    if not expected:
+        return "depends on no account answer"
+    contradicted = [f"{k}={account.get(k)}" for k, v in expected.items()
+                    if account.get(k) not in (v, face_account.UNKNOWN, None)]
+    unknown = [f"{k}=unknown" for k, v in expected.items() if account.get(k) in (face_account.UNKNOWN, None)]
+    if contradicted:
+        return "CONTRADICTED by " + ", ".join(contradicted + unknown)
+    if unknown:
+        return "QUALIFIED: " + ", ".join(unknown)
+    return "SUPPORTED by " + ", ".join(f"{k}={v}" for k, v in expected.items())
+
+
+def _say(r: Reading, depends: str, name: str, value: Any) -> None:
+    """A DESCRIPTIVE line with the account answers it depends on, always right after DESCRIPTIVE."""
+    r.lines.append(f"DESCRIPTIVE [{depends}] {name}: {s5._text(value)}")
+
+
+def _comparison_window(cues: dict[str, float]) -> tuple[float, float]:
+    """W: WASHOUT_S after T0 to WASHOUT_S before the stop cue (an assumption, as every washout here)."""
+    return cues["t0"] + WASHOUT_S, cues["stop"] - WASHOUT_S
+
+
+def read_comparison(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | None = None) -> Reading:
+    """D87, the natural recognition comparison: execution items (PASS, FAIL or MISSING), then, once the account is
+    locked, DESCRIPTIVE lines each with the answers it depends on. It validates nothing and judges no recognition."""
+    r = Reading()
+    if gate is not None:
+        ok, lines = f1_gate(*gate)
+        r.item("F1 basis for this run: the run's own F1 validated, or the maintainer's accepted corrected F1 reading "
+               "of it", dict(line.split("=", 1) for line in lines), ok and f1.resolve() == (gate[0] / "f1").resolve())
+    result = s5._load(directory / "result.json")
+    s5._supervision(r, result, "duration_stop", 0)
+    start = s5._get(result, "run_output", "starting")
+    r.item("face admitted for this validation run with the full-scale comparison: one enrolled identity, no problem",
+           {"face": s5._get(start, "face"), "face_problem": s5._get(start, "face_problem")},
+           s5._get(start, "face") == {"validation_run": True, "identities_enrolled": 1, "comparison": True}
+           and s5._get(start, "face_problem") is None)
+    stopped = s5._get(result, "run_output", "stopped")
+    r.item("clean shutdown: all stopped (the face worker included), database closed", stopped,
+           isinstance(stopped, dict) and stopped.get("all_stopped") is True and stopped.get("database_closed") is True
+           and (stopped.get("stopped") or {}).get("face_worker") is True)
+    saved = [s5._load(directory / f"status-{c.get('name')}.json") for c in s5._list(s5._get(result, "captures"))
+             if isinstance(c, dict) and (directory / f"status-{c.get('name')}.json").is_file()]
+    last = saved[-1] if saved else MISSING
+    records, problems, _, _ = read_records(directory / "run.jsonl")
+    total = sum(len(v) for v in records.values())
+    schemas = sorted({item["schema"] for kind in records.values() for item in kind})
+    dropped = s5._get(last, "components", "face", "records", "dropped")
+    worker = s5._get(last, "components", "face", "worker", "counters")
+    outbox = (worker.get("comparison_outcomes_dropped", 0) if isinstance(worker, dict) else MISSING)
+    r.item(f"identity records: schema {COMPARISON_SCHEMA}, complete, none dropped (records or comparison outcomes)",
+           {"records": {k: len(v) for k, v in records.items()}, "schemas": schemas, "problems": problems[:5],
+            "dropped": dropped, "comparison_outcomes_dropped": outbox} if total else MISSING,
+           total > 0 and not problems and schemas == [COMPARISON_SCHEMA] and dropped == 0 and outbox == 0
+           and total < MAX_IDENTITY_RECORDS)
+    ready = s5._get(result, "child", "ready_mono_s")
+    cues = _cue_offsets(result)
+    duration = s5._get(result, "parameters", "duration_s")
+    r.item(f"the run's {face_account.COMPARISON_DURATION_S} s and every cue printed within {CUE_TOLERANCE_S:g} s of "
+           "its time", {"duration_s": duration, "cues_s_after_t0": {k: round(v, 2) for k, v in cues.items()}},
+           duration == face_account.COMPARISON_DURATION_S
+           and all(name in cues and 0 <= cues[name] - at <= CUE_TOLERANCE_S
+                   for name, at in face_account.COMPARISON_CUE_AT_S.items()))
+    account, problem, fmt = _account(directory)
+    r.item("account saved and locked before any result was shown", problem or "locked", account is not None)
+    if account is not None:
+        review = (face_account.review_separate(account, face_account.FIELDS_V6) if fmt == 6
+                  else [f"format {fmt} is not the comparison's account (format 6)"])
+        r.item("account in format 6, every answer yes, no or unknown (unknown is accepted)", review,
+               fmt == 6 and review[-1].endswith(": yes"))
+    _counts_items(r, directory)
+    if account is None or fmt != 6 or problems or not isinstance(ready, float) or "t0" not in cues \
+            or "stop" not in cues:
+        return r  # described only from usable records, a time base and a locked account (whatever its answers)
+    window = _comparison_window(cues)
+    line = Timeline(records, round((cues["t0"] + ready) * NS), float(duration))
+    for t in records.get("comparison", ()):
+        t["t"] = line.rel(t["frame_mono_ns"])
+    comparisons = records.get("comparison", [])
+    in_w = [c for c in comparisons if window[0] <= c["t"] < window[1]]
+    r.describe("window W (s after T0: the washout after T0 and before the stop cue)",
+               [round(window[0], 1), round(window[1], 1)])
+    r.describe("account answers (each line below names those it depends on)",
+               {k: account.get(k) for k in (*SEATED_CONTEXT, *ATTRIBUTION)})
+    none = _support(account, {})
+    _say(r, none, "comparison accounting, whole run and W, by kind and disposition",
+               {scope: {kind: {d: sum(1 for c in items if c["kind"] == kind and c["disposition"] == d)
+                               for d in COMPARISON_DISPOSITIONS
+                               if any(c["kind"] == kind and c["disposition"] == d for c in items)}
+                        for kind in COMPARISON_KINDS}
+                for scope, items in (("run", comparisons), ("W", in_w))})
+    _say(r, none, "comparison failures by label, whole run (counted as failed, never as nonmatches)",
+               {label: sum(1 for c in comparisons if c["error"] == label)
+                for label in sorted({c["error"] for c in comparisons if c["error"]})})
+    _comparison_cost(r, result, last, line, comparisons, window, none)
+    attribution = _support(account, ATTRIBUTION)
+    only = [c for c in in_w if c["kind"] == "full_scale_only" and c["disposition"] == "completed"]
+    values = [c["similarity"] for c in only]
+    _say(r, attribution, f"full-scale-only faces in W: similarity of each completed comparison to the enrollment, "
+         f"[min, median, max], and how many at or above / below the unchanged {MATCH_THRESHOLD:g} (descriptive; never "
+         f"a vote)",
+               {"completed": len(only), "similarity": _spread(values),
+                "at_or_above": sum(1 for v in values if v >= MATCH_THRESHOLD),
+                "below": sum(1 for v in values if v < MATCH_THRESHOLD),
+                "failed": sum(1 for c in in_w if c["kind"] == "full_scale_only" and c["disposition"] == "failed"),
+                "production_not_applied": sum(1 for c in in_w if c["kind"] == "full_scale_only"
+                                              and c["disposition"] == "production_not_applied")})
+    _say(r, attribution, f"controls in W: the comparison's similarity minus production's on the same frame and "
+         f"person, [min, median, max], and whether both fall on the same side of {MATCH_THRESHOLD:g}",
+               _controls(in_w, records["result"]))
+    _comparison_sampling(r, in_w, none)
+    context = _support(account, SEATED_CONTEXT)
+    diagnostics = Reading()
+    _diagnose(diagnostics, line, {"W": window}, names=("W",), full_scale=True)
+    for text in diagnostics.lines:
+        depends = (_support(account, {**SEATED_CONTEXT, **ATTRIBUTION}) if "similarity to the closest" in text
+                   else context)
+        r.lines.append(text.replace("DESCRIPTIVE ", f"DESCRIPTIVE [{depends}] ", 1))  # the same place
+    stop = s5._get(result, "stop")
+    stop = stop if isinstance(stop, dict) else {}
+    requested, after_launch = stop.get("requested_at_s"), s5._get(result, "child", "ready_after_s")
+    _say(r, none, "the run's end (s after T0): the stop warning cue, the guard's stop request, the exit after it",
+         {"stop_cue": round(cues["stop"], 3),
+          "stop_requested": round(requested - after_launch, 3) if isinstance(requested, (int, float))
+          and isinstance(after_launch, (int, float)) else None,
+          "exited_after_stop_request_s": stop.get("exited_after_stop_s"), "requested_by": stop.get("requested_by")})
+    return r
+
+
+def _comparison_cost(r: Reading, result: Any, last: Any, line: Timeline, comparisons: list[dict],
+                     window: tuple[float, float], none: str) -> None:
+    """D87: what the comparison cost, and what production lost to it (never the cost of a production replacement)."""
+    worker = s5._get(last, "components", "face", "worker", "counters")
+    offered = sum(1 for t in line.ticks if t["tick"] == "offered")
+    attempted = [c for c in comparisons if c["disposition"] in ATTEMPTED]
+    in_w = [c for c in attempted if window[0] <= c["t"] < window[1]]
+    applied = [x for x in line.results if x["outcome"] == "applied"]
+    _say(r, none, "production and the comparison's cost, whole run: offered ticks, results by outcome, ticks yielded to "
+         "comparisons (at the last capture), production processing ms and frame-to-applied ms, comparison ms, and the "
+         "comparisons' share of W's time",
+               {"offered": offered,
+                "results": {o: sum(1 for x in line.results if x["outcome"] == o) for o in sorted(OUTCOMES)
+                            if any(x["outcome"] == o for x in line.results)},
+                "yielded_to_comparison": worker.get("yielded_to_comparison", 0) if isinstance(worker, dict) else MISSING,
+                "production_processing_ms": _spread([x["processing_ms"] for x in applied
+                                                     if x["processing_ms"] is not None]),
+                "frame_to_applied_ms": _spread([(x["applied"] - x["t"]) * 1000 for x in applied]),
+                "comparison_ms": _spread([c["ms"] for c in attempted]),
+                "comparison_share_of_w": round(sum(c["ms"] for c in in_w) / 1000 / (window[1] - window[0]), 4)
+                if window[1] > window[0] else None})
+    frames, rates = s5._get(last, "frames"), s5._get(last, "rates")
+    _say(r, none, "monitoring at the last capture (frames processed, replaced, failed; processed fps) and the guard's "
+         "memory figures (B)",
+               {"frames": {k: frames.get(k) for k in ("captured", "processed", "replaced", "failed")}
+                if isinstance(frames, dict) else MISSING,
+                "processed_fps": rates.get("processed_fps") if isinstance(rates, dict) else MISSING,
+                "guard": [s5._get(result, "guard", k) for k in s5.GUARD_FIGURES]})
+
+
+def _controls(comparisons: list[dict], results: list[dict]) -> dict:
+    """Pairs a completed control with production's similarity for the same frame and person, when it has one."""
+    production = {(x["stream_epoch"], x["frame_seq"], p["track_id"]): p.get("similarity")
+                  for x in results if x["outcome"] == "applied" for p in x["persons"]}
+    pairs, unpaired = [], 0
+    for c in comparisons:
+        if c["kind"] != "both" or c["disposition"] != "completed":
+            continue
+        theirs = production.get((c["stream_epoch"], c["frame_seq"], c["track_id"]))
+        if theirs is None:
+            unpaired += 1
+        else:
+            pairs.append((c["similarity"], theirs))
+    same = sum(1 for mine, theirs in pairs if (mine >= MATCH_THRESHOLD) == (theirs >= MATCH_THRESHOLD))
+    return {"pairs": len(pairs), "unpaired": unpaired,
+            "difference": _spread([round(mine - theirs, 3) for mine, theirs in pairs]),
+            "same_side": same, "opposite_side": len(pairs) - same}
+
+
+def _comparison_sampling(r: Reading, comparisons: list[dict], none: str) -> None:
+    """Whether the compared full-scale-only faces differ from the eligible ones that were not compared."""
+    eligible = [c for c in comparisons if c["kind"] == "full_scale_only"]
+    compared = [c for c in eligible if c["disposition"] in ATTEMPTED]
+    skipped = [c for c in eligible if c["disposition"] not in ATTEMPTED]
+    _say(r, none, "sampling in W, full-scale-only: compared and not compared, each with the candidates' score and width "
+         "[min, median, max] and the first and last time (s after T0)",
+               {name: {"n": len(items), "score": _spread([c["score"] for c in items]),
+                       "w_px": _spread([c["w_px"] for c in items]),
+                       "first_last": None if not items else [round(items[0]["t"], 1), round(items[-1]["t"], 1)]}
+                for name, items in (("compared", compared), ("not_compared", skipped))})
+
 
 def _declared(r: Reading, account: dict[str, str]) -> None:
     """Item 15 for a format-2 account (D66): the start delay known, with its upper end at most DELAY_MAX_S."""
@@ -1211,6 +1451,12 @@ def main(argv: list[str] | None = None) -> int:
     natural.add_argument("--run", type=Path, help="with --identity-dir: also require this run's F1 basis (see gate)")
     natural.add_argument("--identity-dir", type=Path)
     natural.add_argument("--recheck-root", type=Path, help="where accepted corrected F1 readings are (see gate)")
+    comparison = commands.add_parser("comparison", help="read the natural recognition comparison (descriptive, D87)")
+    comparison.add_argument("directory", type=Path)
+    comparison.add_argument("--f1", type=Path, required=True, help="F1's evidence directory")
+    comparison.add_argument("--run", type=Path, help="with --identity-dir: also require this run's F1 basis (see gate)")
+    comparison.add_argument("--identity-dir", type=Path)
+    comparison.add_argument("--recheck-root", type=Path, help="where accepted corrected F1 readings are (see gate)")
     recheck = commands.add_parser("f1-recheck", help="a corrected F1 reading of a run, made afterwards")
     recheck.add_argument("directory", type=Path, help="the recheck directory (face_recheck.py run)")
     recheck.add_argument("--run", type=Path, required=True)
@@ -1232,12 +1478,12 @@ def main(argv: list[str] | None = None) -> int:
         if (args.run is None) != (args.identity_dir is None):
             parser.error(f"{args.part}: --run and --identity-dir go together")
         gate_args = None if args.run is None else (args.run, args.identity_dir, args.recheck_root)
-        if args.part == "natural":
-            reading = read_natural(args.directory, args.f1, gate_args)
+        if args.part in ("natural", "comparison"):
+            reading = (read_natural if args.part == "natural" else read_comparison)(args.directory, args.f1, gate_args)
             for line in reading.lines:
                 print(line)
-            print("face-natural: " + ("execution complete (descriptive only; it validates nothing)" if reading.ok
-                                      else "execution incomplete"))
+            print(f"face-{args.part}: " + ("execution complete (descriptive only; it validates nothing)"
+                                           if reading.ok else "execution incomplete"))
             return 0 if reading.ok else 1
         reading, verdict = read_f2(args.directory, args.f1, gate_args), "face-f2"
     for line in reading.lines:

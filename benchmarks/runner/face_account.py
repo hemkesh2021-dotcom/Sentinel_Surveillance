@@ -36,6 +36,11 @@ stated, in the cue and in the account alike: a head turn within 5 s, seated, the
 chair not moved until 6:00, and no face, not even in profile, visible to the camera. Same keys, cues, allowances,
 windows and criteria as format 3; only those two questions' wording differs.
 
+**Format 6** (D87; ``enter --format 6``): the natural recognition comparison's account, not an F2 account. No timed
+movement: the operator sits and works as usual for the whole run. Four separate questions (stayed seated; worked as
+usual; looked toward the camera on purpose; other faces in view), each yes / no / unknown. ``unknown`` is an accepted
+answer here, not an incomplete account: face_check's comparison reading qualifies only the lines that depend on it.
+
 ``check`` shows a saved account, read only, with its lock state. Stdlib only.
 """
 
@@ -201,8 +206,29 @@ INTRO_V5 = (
     "cue and not before it? Answer yes or no, or unknown if you are not sure. Then whether anyone else was in view.\n"
     "Nothing here shows an identity result."
 )
+# Format 6 (D87): the natural recognition comparison's account. Separate observations about the whole run, so an
+# uncertain answer qualifies only the readings that depend on it (face_check comparison); unknown is accepted.
+HEADER_V6 = ("# natural recognition comparison account, format 6, entered with benchmarks/runner/face_account.py; "
+             "values as typed")
+FIELDS_V6 = (
+    Field("stayed_seated", "choice", "yes / no: from the T0 cue until the run stopped by itself you stayed seated in "
+          "your usual chair and place, and never stood up or left", YES_NO),
+    Field("worked_as_usual", "choice", "yes / no: from the T0 cue until the run stopped you worked at the Mac as you "
+          "normally do (glances anywhere are part of that)", YES_NO),
+    Field("looked_at_camera_on_purpose", "choice", "yes / no: at any time from the T0 cue until the run stopped you "
+          "looked toward the camera on purpose", YES_NO),
+    *FIELDS_V1[9:],  # other_faces_in_view, notes
+)
+INTRO_V6 = (
+    "Your natural recognition comparison account (format 6). Four separate questions about the whole run. Answer each\n"
+    "on its own: yes or no, or unknown if you are not sure; an unknown answer affects only the readings that depend\n"
+    "on it. Nothing here shows an identity result."
+)
+COMPARISON_CUE_AT_S = {"t0": 0, "stop": 290}  # the guard's cues: T0, and the stop warning 10 s before the stop
+COMPARISON_DURATION_S = 300  # the run stops by itself 300 s after T0
+SEPARATE_FORMATS = (6,)  # formats whose answers are read one by one: unknown is accepted, never "incomplete"
 FORMATS = {HEADER_V1: (1, FIELDS_V1), HEADER: (2, FIELDS), HEADER_V3: (3, FIELDS_V3), HEADER_V4: (4, FIELDS_V4),
-           HEADER_V5: (5, FIELDS_V5)}
+           HEADER_V5: (5, FIELDS_V5), HEADER_V6: (6, FIELDS_V6)}
 INTRO = (
     "Your F2 account (format 2). Answer from what you noted; type unknown for anything you did not note or are not\n"
     "sure of. First: how many whole seconds after the T0 cue you started the stopwatch (0 if at the cue, as far as\n"
@@ -282,6 +308,24 @@ def review(values: dict[str, str], fields: tuple[Field, ...] = FIELDS) -> list[s
     ]
 
 
+def review_separate(values: dict[str, str], fields: tuple[Field, ...] = FIELDS_V6) -> list[str]:
+    """Format 6: every answer present and accepted (yes, no or unknown); unknown answers are listed, not refused."""
+    unknown, invalid = [], []
+    for field in fields:
+        if field.kind == "text":
+            continue
+        value = values.get(field.key)
+        if value is None or value == "" or accepted(field, value)[0] != value:
+            invalid.append(f"{field.key}={value if value is not None else '(missing)'}")
+        elif value == UNKNOWN:
+            unknown.append(field.key)
+    return [
+        "Unknown (accepted; each reading names the answers it depends on): " + (", ".join(unknown) or "none"),
+        "Not an accepted value: " + ("; ".join(invalid) if invalid else "none"),
+        "Answered (yes, no or unknown everywhere): " + ("yes" if not invalid else "no"),
+    ]
+
+
 def render(values: dict[str, str], fields: tuple[Field, ...] = FIELDS, header: str = HEADER) -> str:
     lines = [header] + [f"{f.key}={values[f.key]}" + (f"   # {f.comment}" if f.comment else "") for f in fields]
     return "\n".join(lines) + "\n"
@@ -340,7 +384,9 @@ def enter(run_dir: Path, ask: Callable[[str], str] = input, say: Callable[[str],
           account_format_number: int = 2) -> int:
     """Format 2 (D66), or format 3 (D79, cued) or 4 (D85, cued, the 4:00 head turn stated) when asked for."""
     fields, header, intro = {3: (FIELDS_V3, HEADER_V3, INTRO_V3), 4: (FIELDS_V4, HEADER_V4, INTRO_V4),
-                             5: (FIELDS_V5, HEADER_V5, INTRO_V5)}.get(account_format_number, (FIELDS, HEADER, INTRO))
+                             5: (FIELDS_V5, HEADER_V5, INTRO_V5),
+                             6: (FIELDS_V6, HEADER_V6, INTRO_V6)}.get(account_format_number, (FIELDS, HEADER, INTRO))
+    checker = review_separate if account_format_number in SEPARATE_FORMATS else review
     problem = not_ready(run_dir)
     if problem is not None:
         say(f"STOP: {problem}. Nothing written.")
@@ -357,7 +403,7 @@ def enter(run_dir: Path, ask: Callable[[str], str] = input, say: Callable[[str],
             values[fields[index].key] = _answer(index, values, ask, say, fields)
         while True:
             say("Your account (not saved yet):")
-            for line in listing(values, fields) + review(values, fields):
+            for line in listing(values, fields) + checker(values, fields):
                 say(line)
             choice = ask("Type SAVE to write and lock it, a number to re-enter that item, or QUIT: ").strip()
             if choice == "SAVE":
@@ -402,7 +448,8 @@ def check(run_dir: Path, say: Callable[[str], None] = print) -> int:
     values = parse(text)
     say(f"Account in {path} (read only), " + (f"format {known[0]}:" if known else "an unrecognised format:"))
     fields = known[1] if known else FIELDS
-    for line in listing(values, fields) + review(values, fields):
+    checker = review_separate if known and known[0] in SEPARATE_FORMATS else review
+    for line in listing(values, fields) + checker(values, fields):
         say(line)
     recorded = lock_state(run_dir)
     if recorded is None:
@@ -419,9 +466,10 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     enter_parser = commands.add_parser("enter", help="answer each item; saving locks the account")
     enter_parser.add_argument("run_dir", type=Path)
-    enter_parser.add_argument("--format", type=int, choices=(2, 3, 4, 5), default=2,
-                              help="2 (D66, the default), 3 (D79, cued), 4 (D85, cued, the 4:00 head turn stated) or 5 "
-                                   "(D86, the natural seated check); 3 to 5 only with the maintainer's approval")
+    enter_parser.add_argument("--format", type=int, choices=(2, 3, 4, 5, 6), default=2,
+                              help="2 (D66, the default), 3 (D79, cued), 4 (D85, cued, the 4:00 head turn stated), 5 "
+                                   "(D86, the natural seated check) or 6 (D87, the natural recognition comparison); 3 "
+                                   "to 6 only with the maintainer's approval")
     commands.add_parser("check", help="show a saved account and its lock state").add_argument("run_dir", type=Path)
     args = parser.parse_args(argv)
     if args.command == "enter":

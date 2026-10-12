@@ -363,6 +363,11 @@ def main(
         "--face-validation", action="store_true",
         help="with --face: allow a face admission that is PENDING_VALIDATION, for the guarded device validation only",
     )
+    run.add_argument(
+        "--face-comparison", action="store_true",
+        help="with --face-validation (D87, diagnostic): within a fixed budget, embed faces found only by the full-scale "
+        "pass and record their similarity to the enrollment (never a vote); identity records become schema 4",
+    )
     run.add_argument("--identity-dir", type=Path, default=DEFAULT_IDENTITY_DIR,
                      help=f"the private (0700) identity directory (default {DEFAULT_IDENTITY_DIR})")
     run.add_argument(
@@ -681,6 +686,9 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
     if args.face_validation and not args.face:
         print("run: --face-validation needs --face", file=sys.stderr)
         return 1
+    if args.face_comparison and not args.face_validation:
+        print("run: --face-comparison needs --face-validation", file=sys.stderr)
+        return 1
     if args.live_preview and not args.status_port:
         print("run: --live-preview needs the status page (--status-port other than 0)", file=sys.stderr)
         return 1
@@ -696,7 +704,7 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
             print(f"run: identity_secret_missing ({SECRET_ENV} is not set)", file=sys.stderr)
             return 1
         face = FaceOptions(identity_dir=args.identity_dir.expanduser(), secret=secret,
-                           validation_run=args.face_validation)
+                           validation_run=args.face_validation, comparison=args.face_comparison)
     del secret
     scene = None
     if args.scene:

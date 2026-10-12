@@ -139,8 +139,9 @@ def mods(monkeypatch):
 # ---------------------------------------------------------------- the real startup's face fields
 
 
-def real_face_startup(root: Path, accepted_scene) -> dict[str, Any]:
-    """assemble()'s face fields and post_load_release()'s face record, as `sentinel run --face` writes them."""
+def real_face_startup(root: Path, accepted_scene, *, comparison: bool = False) -> dict[str, Any]:
+    """assemble()'s face fields and post_load_release()'s face record, as `sentinel run --face` writes them (with
+    ``comparison``, as `--face-validation --face-comparison` writes them, D87)."""
     scene = accepted_scene()
     weights = root / "weights"
     weights.mkdir()
@@ -152,7 +153,9 @@ def real_face_startup(root: Path, accepted_scene) -> dict[str, Any]:
                               face_hz=1.0, model_weights=facts["facenet512_weights.h5"],
                               detector_weights=facts["face_detection_yunet_2023mar.onnx"], deepface_version="0.0.99")
     backend = SimpleNamespace(weight_files={n: weights / n for n in RELEASE_FILE_ROLES["face"]}, load=lambda: None,
-                              compatibility=lambda: COMPAT, faces=lambda *a: FaceRun((), 0, 0))
+                              compatibility=lambda: COMPAT, faces=lambda *a: FaceRun((), 0, 0),
+                              **({"enable_full_scale": lambda: None, "enable_comparison": lambda: None,
+                                  "embed_full_scale": lambda *a: FACE} if comparison else {}))
     config = parse_config({"config_version": 1, "camera": {"id": "cam-1"}, "adapters": [{
         "adapter_id": FACE_ADAPTER_ID, "contract_version": 1, "implementation_revision": "1", "enabled": True,
         "input_kinds": ["frame"], "output_kinds": ["face.observation"], "model_revision": "facenet512-yunet",
@@ -165,7 +168,8 @@ def real_face_startup(root: Path, accepted_scene) -> dict[str, Any]:
                       identity_store=lambda d: SimpleNamespace(exists=lambda: True, load=lambda s: GALLERY))
     (root / "data").mkdir()
     assembly = assemble(config, RunOptions(root / "data", root / "x.engine", face=FaceOptions(
-        root / "identity", Secret("a long synthetic passphrase"), validation_run=True)), devices, FakeClock(),
+        root / "identity", Secret("a long synthetic passphrase"), validation_run=True, comparison=comparison)),
+        devices, FakeClock(),
         profiles=scene.profiles, face_admissions={admission.profile_id: admission})
     assembly.database.close()
     release = post_load_release(MemoryOps(release=lambda path: {"result": "returned_0", "returncode": 0, "error": None,
@@ -241,7 +245,8 @@ def segment(script, t: float) -> tuple[str, int | None]:
 
 
 def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: float = 4.0,
-             duration: float = 600.0, combined: bool = False) -> Path:
+             duration: float = 600.0, combined: bool = False, analyze=None, comparator=None,
+             captures=CAPTURES) -> Path:
     """Run the real runtime through ``script`` and write the F2 directory as the package's blocks would.
 
     ``combined`` (D78): with the live view, incident snapshots and chat in a validation run as well, each used during
@@ -254,6 +259,8 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
     slot, capture, tracker = LatestFrame(), Capture(clock), Tracker()
     t0 = clock.monotonic_ns()
 
+    analyze_override = analyze
+
     def analyze(frame, image):
         state, _ = segment(script, (frame.ingest_mono_ns - t0) / 1e9)
         embedding = FACE if state == "facing" else away_face if state == "away" else None
@@ -261,7 +268,9 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
             return FaceRun((), 0, 1)  # DeepFace's no-face fallback, dropped
         return FaceRun((FaceObservation(frame=frame.key, box=FACE_BOX, quality=0.9, embedding=embedding),), 1, 0)
 
-    worker = FaceWorker(analyze, clock)
+    if analyze_override is not None:
+        analyze = analyze_override(t0)
+    worker = FaceWorker(analyze, clock, comparator=comparator)
     images = RecentImages()
     scene = SceneRuntime(ThreadedSceneAnalyzer(lambda job, image: WorkerOutcome.completed(job.job_id, REPORT), images,
                                                revision="1+lfm2-vl-1.6b-q4_0"), images)
@@ -283,7 +292,8 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
     runtime = DemoRuntime(config, clock, capture=capture, slot=slot,
                           incidents=IncidentService(db, clock, incidents=config.incidents,
                                                     notifications=config.notifications),
-                          tracker=PersonTracker(tracker), scene=scene, face=FaceRuntime(worker, 1, True),
+                          tracker=PersonTracker(tracker), scene=scene,
+                          face=FaceRuntime(worker, 1, True, comparator is not None),
                           enrollment=GALLERY.enrollment(), status_refresh_s=0.0, **extra)
     runtime.start()
     if combined:  # what assemble adds to the starting line for these flags, from the same objects
@@ -291,7 +301,8 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
                                           "snapshots": {**opened, "policy": store.policy.describe()},
                                           "chat": runtime.chat.availability()}}
     lines = [json.dumps(startup)]
-    pending, captures, next_status = list(CAPTURES), [], 0.0
+    pending, captures = list(captures), []
+    next_status = 0.0
     for n in range(1, int(duration * fps) + 1):
         t = n / fps
         state, track = segment(script, t)
@@ -334,7 +345,7 @@ F2_PROVENANCE = ("f2_launch_utc=2026-10-08T09:00:00Z\nboot_id=0f1e2d3c-4b5a-6978
 
 def finish(mods, out: Path, *, cue_delay_s: float = 0.1, account: dict[str, str] | None = ACCOUNT,
            counts: dict[str, int] | None = None, cues: dict[str, float] | None = None, cued_format: int = 3,
-           duration_s: float = 600.0) -> None:
+           duration_s: float = 600.0, captures=CAPTURES) -> None:
     """result.json as the guard writes it, then the account and the counts, in the package's order (the counts by
     face_counts.sh unless ``counts`` fakes them)."""
     ready = 1.0  # FakeClock's default start (seconds), the runtime's T0
@@ -347,7 +358,7 @@ def finish(mods, out: Path, *, cue_delay_s: float = 0.1, account: dict[str, str]
         "leftovers": {"llama_server_after_exit": 0, "llama_server_left": 0, "runtime_group_left": False,
                       "listeners_after": []},
         "captures": json.loads((out / "captures.json").read_text()) if (out / "captures.json").exists() else
-        [{"name": name, "at_s": at, "status": "saved", "listeners": LOOPBACK} for at, name in CAPTURES],
+        [{"name": name, "at_s": at, "status": "saved", "listeners": LOOPBACK} for at, name in captures],
         "cues": [{"name": name, "at_s": float(at), "printed_after_launch_s": 70.0 + at + cue_delay_s,
                   "printed_mono_s": ready + at + cue_delay_s} for name, at in (cues or {"t0": 0.0}).items()],
         "run_output": mods.guard.read_run_output(out / "run.jsonl"),
@@ -374,10 +385,11 @@ def save_account(mods, out: Path, account: dict[str, str], cued_format: int = 3)
     """A format-1 account (the face-0f7855e package's) as that helper saved and locked it; a format-2 account through
     the current helper's prompts (an unknown reading's uncertainty is not asked); a cued account (format 3, or 4 when
     asked: the same keys) through the helper's prompts."""
-    if cued_format == 5:  # the natural seated check's account (D86), through the prompts
-        answers = iter([account[f.key] for f in mods.account.FIELDS_V5] + ["SAVE"])
+    if cued_format in (5, 6):  # the natural seated check's (D86) or the comparison's (D87) account, by prompts
+        fields = mods.account.FIELDS_V5 if cued_format == 5 else mods.account.FIELDS_V6
+        answers = iter([account[f.key] for f in fields] + ["SAVE"])
         assert mods.account.enter(out, ask=lambda prompt: next(answers), say=lambda text: None,
-                                  account_format_number=5) == 0
+                                  account_format_number=cued_format) == 0
         return
     if any(key.endswith("_within_20_s") for key in account):  # format 3 (D79) or 4 (D85), through the prompts
         fields = {3: mods.account.FIELDS_V3, 4: mods.account.FIELDS_V4}[cued_format]
@@ -607,7 +619,7 @@ def test_the_checker_matches_the_runtimes_schema_and_values(mods) -> None:
     numbers = FaceDiagnostics((0.1, 0.2, 0.3, 0.9), 0.8, (40, 50), 0.95, 0.75)
     diagnostic = FaceResultRecord(0, 1, 5, 6, "applied", 1, ((1, "assigned", "match", ENROLLED, "match"),),
                                   diagnostics=(numbers,)).record(IDENTITY_DIAGNOSTIC_SCHEMA)
-    assert (check.DIAGNOSTIC_SCHEMA, check.SCHEMAS) == (IDENTITY_DIAGNOSTIC_SCHEMA, (1, 2, 3))
+    assert (check.DIAGNOSTIC_SCHEMA, check.SCHEMAS) == (IDENTITY_DIAGNOSTIC_SCHEMA, (1, 2, 3, 4))
     from sentinel.identity.legacy_deepface import YUNET_THRESHOLD
     from sentinel.runtime import FULL_SCALE_COUNTED, IDENTITY_FULL_SCALE_SCHEMA, full_scale_numbers
     assert check.FULL_SCALE_SCHEMA == IDENTITY_FULL_SCALE_SCHEMA and FULL_SCALE_COUNTED == YUNET_THRESHOLD
@@ -618,6 +630,16 @@ def test_the_checker_matches_the_runtimes_schema_and_values(mods) -> None:
     assert set(diagnostic["persons"][0]["face"]) == check.FACE_KEYS
     assert check.MATCH_THRESHOLD == defaults.match_threshold
     assert set(tick_record(frame, [], TICK_OFFERED, IDENTITY_DIAGNOSTIC_SCHEMA)) == check.TICK_KEYS
+    # D87: schema 4's comparison records, their kinds and dispositions
+    from sentinel.identity.comparison import Disposition, Kind
+    from sentinel.runtime import IDENTITY_COMPARISON_SCHEMA, ComparisonRecord
+    comparison = ComparisonRecord(0, 1, 5, 1, "both", "completed", 0.93, 58, 0.8, 812.0, None).record()
+    assert set(comparison) == check.COMPARISON_KEYS and check.COMPARISON_SCHEMA == IDENTITY_COMPARISON_SCHEMA
+    assert set(check.COMPARISON_KINDS) == {k.value for k in Kind}
+    assert set(check.COMPARISON_DISPOSITIONS) == {d.value for d in Disposition}
+    assert check._comparison_problem(comparison) is None
+    assert set(mods.evidence.COMPARISON_KINDS) == set(check.COMPARISON_KINDS)
+    assert set(mods.evidence.COMPARISON_DISPOSITIONS) == set(check.COMPARISON_DISPOSITIONS)
 
 
 # ---------------------------------------------------------------- D84: schema 2's diagnostic numbers
@@ -1095,7 +1117,7 @@ def test_a_format_4_account_is_schema_text_and_the_helper_offers_it(mods, tmp_pa
     assert read.nonconforming == [] and read.content == [(f"line {len(mods.account.FIELDS_V4) + 1}: notes",
                                                           "a note that is never printed")]
     with pytest.raises(SystemExit):
-        mods.account.main(["enter", str(run), "--format", "6"])
+        mods.account.main(["enter", str(run), "--format", "7"])  # 6 is the comparison's (D87)
 
 
 # ---------------------------------------------------------------- the turn and the departure as intervals
@@ -1903,3 +1925,186 @@ def test_the_natural_check_reads_execution_then_describes_each_phase(mods, tmp_p
     declared = mods.check.read_natural(twin, f1_list)
     assert not declared.ok and line_for("\n".join(declared.lines), "every cue printed").startswith("FAIL")
     assert not any(line.startswith("DESCRIPTIVE diagnostics") for line in declared.lines)  # no phases without it
+
+
+# ---------------------------------------------------------------- D87: the natural recognition comparison
+
+
+COMPARISON_CUES = {"t0": 0.0, "stop": 290.0}
+COMPARISON_CAPTURES = ((60.0, "c1"), (150.0, "c2"), (240.0, "c3"), (290.0, "end"))
+NOBODY = vec(0.0, 0.1, 0.99)
+
+
+def account_v6(mods, **changes: str) -> dict[str, str]:
+    return {"stayed_seated": "yes", "worked_as_usual": "yes", "looked_at_camera_on_purpose": "no",
+            "other_faces_in_view": "no", "notes": "a note that is never printed", **changes}
+
+
+def comparison_run(mods, tmp_path, accepted_scene, name: str = "cmp") -> Path:
+    """The real runtime with a real comparator for 300 s: seated throughout; production finds the face in alternate
+    10 s blocks; the full-scale pass finds it always. The comparison's embedding matches, does not match, or fails,
+    by the frame's sequence number."""
+    from sentinel.identity.association import AssociationGeometry
+    from sentinel.identity.comparison import FullScaleComparator
+    from sentinel.identity.legacy_deepface import FaceBackendError, FullScale, FullScaleRow
+
+    root = tmp_path / name
+    root.mkdir()
+    start_root = root / "startup"
+    start_root.mkdir()
+    startup = startup_line(real_face_startup(start_root, accepted_scene, comparison=True))
+    row = FullScaleRow(121.0, 106.0, 58.0, 62.0, (135.0, 125.0), (160.0, 126.0), 0.93)
+    full = FullScale(((0.93, FACE_BOX),), 48.0, (row,))
+
+    def analyze_from(t0):
+        def analyze(frame, image):
+            block = int((frame.ingest_mono_ns - t0) / 1e9 // 10)
+            faces = (FaceObservation(frame=frame.key, box=FACE_BOX, quality=0.9, embedding=FACE),) if block % 2 else ()
+            return FaceRun(faces, len(faces), 1 - len(faces), full)
+        return analyze
+
+    def embed(frame, image, candidate):
+        if frame.frame_seq % 7 == 0:
+            raise FaceBackendError("empty_crop")
+        return NOBODY if frame.frame_seq % 3 == 0 else FACE
+
+    comparator = FullScaleComparator(embed, AssociationGeometry())
+    out = simulate(root, startup, script=((0, 301, "facing", 1),), duration=300.0, analyze=analyze_from,
+                   comparator=comparator, captures=COMPARISON_CAPTURES)
+    return out
+
+
+@pytest.fixture
+def comparison_out(mods, tmp_path, accepted_scene):
+    out = comparison_run(mods, tmp_path, accepted_scene)
+    pristine = tmp_path / "pristine"
+    shutil.copytree(out, pristine)
+    finish(mods, out, account=account_v6(mods), cues=COMPARISON_CUES, cued_format=6, duration_s=300.0,
+           captures=COMPARISON_CAPTURES)
+    return SimpleNamespace(out=out, pristine=pristine)
+
+
+def _comparison_text(mods, out, f1) -> tuple[Any, str]:
+    reading = mods.check.read_comparison(out, f1)
+    return reading, "\n".join(reading.lines)
+
+
+def _described(text: str, start: str) -> tuple[str, Any]:
+    """(the dependency label, the value) of the DESCRIPTIVE line whose name contains ``start``: the label is always
+    right after DESCRIPTIVE, the value is the JSON after the name."""
+    line = next(line for line in text.splitlines() if line.startswith("DESCRIPTIVE [") and start in line)
+    label = line[len("DESCRIPTIVE ["):line.index("] ")]
+    at = line.find(": ")
+    while at != -1:
+        try:
+            return label, json.loads(line[at + 2:])
+        except ValueError:
+            at = line.find(": ", at + 1)
+    raise AssertionError(f"no value in {line!r}")
+
+
+def test_the_comparison_reading_checks_execution_then_describes_with_dependencies(mods, comparison_out,
+                                                                                  f1_list) -> None:
+    reading, text = _comparison_text(mods, comparison_out.out, f1_list)
+    assert reading.ok, text
+    assert line_for(text, "identity records: schema 4").startswith("PASS")
+    assert line_for(text, "face admitted for this validation run with the full-scale comparison").startswith("PASS")
+    assert line_for(text, "account in format 6").startswith("PASS") and "never printed" not in text
+    records = [json.loads(x) for x in (comparison_out.out / "run.jsonl").read_text().splitlines()]
+    comparisons = [x for x in records if x.get("identity") == "comparison"]
+    assert comparisons and {x["schema"] for x in records if "identity" in x} == {4}
+    label, accounting = _described(text, "comparison accounting")
+    assert label == "depends on no account answer"
+    assert sum(sum(v.values()) for v in accounting["run"].values()) == len(comparisons)
+    label, similarity = _described(text, "full-scale-only faces in W")
+    assert label == "SUPPORTED by other_faces_in_view=no"
+    completed = [c for c in comparisons if c["kind"] == "full_scale_only" and c["disposition"] == "completed"]
+    assert similarity["completed"] >= 1 and similarity["at_or_above"] + similarity["below"] == similarity["completed"]
+    assert similarity["below"] >= 1 and similarity["failed"] >= 1  # failures are counted apart, never as nonmatches
+    assert {c["similarity"] for c in completed} <= {0.993, 0.0}  # FACE and NOBODY against the enrolled vec(1.0)
+    label, controls = _described(text, "controls in W")
+    assert label.startswith("SUPPORTED") and controls["pairs"] + controls["unpaired"] >= 0
+    label, cost = _described(text, "production and the comparison's cost")
+    assert label == "depends on no account answer" and cost["comparison_ms"] is not None
+    assert _described(text, "sampling in W")[0] == "depends on no account answer"
+    assert _described(text, "diagnostics: person continuity")[0] == (
+        "SUPPORTED by stayed_seated=yes, worked_as_usual=yes, looked_at_camera_on_purpose=no")
+    assert mods.evidence.read(comparison_out.out / "run.jsonl", "f2").nonconforming == []
+    assert mods.evidence.read(comparison_out.out / "account.txt", "f2").nonconforming == []
+    for name in ("c1", "c2", "c3", "end"):
+        assert mods.evidence.read(comparison_out.out / f"status-{name}.json", "f2").nonconforming == []
+
+
+@pytest.mark.parametrize(("change", "context", "attribution"), [
+    ({"worked_as_usual": "unknown"}, "QUALIFIED: worked_as_usual=unknown", "SUPPORTED by other_faces_in_view=no"),
+    ({"looked_at_camera_on_purpose": "yes"}, "CONTRADICTED by looked_at_camera_on_purpose=yes",
+     "SUPPORTED by other_faces_in_view=no"),
+    ({"other_faces_in_view": "unknown"}, "SUPPORTED by stayed_seated=yes, worked_as_usual=yes, "
+     "looked_at_camera_on_purpose=no", "QUALIFIED: other_faces_in_view=unknown"),
+    ({"other_faces_in_view": "yes"}, "SUPPORTED by stayed_seated=yes, worked_as_usual=yes, "
+     "looked_at_camera_on_purpose=no", "CONTRADICTED by other_faces_in_view=yes"),
+])
+def test_an_uncertain_answer_qualifies_only_the_lines_that_depend_on_it(mods, comparison_out, f1_list, change, context,
+                                                                       attribution) -> None:
+    baseline = _comparison_text(mods, comparison_out.out, f1_list)[1]
+    finish(mods, comparison_out.pristine, account=account_v6(mods, **change), cues=COMPARISON_CUES, cued_format=6,
+           duration_s=300.0, captures=COMPARISON_CAPTURES, counts={})
+    reading, text = _comparison_text(mods, comparison_out.pristine, f1_list)
+    assert reading.ok, text  # an unknown or unexpected answer is accepted: the run's execution is unaffected
+    assert _described(text, "diagnostics: person continuity")[0] == context
+    assert _described(text, "full-scale-only faces in W")[0] == attribution
+    assert _described(text, "controls in W")[0] == attribution
+    for start in ("comparison accounting", "production and the comparison's cost", "sampling in W",
+                  "monitoring at the last capture"):  # never suppressed or relabelled by an answer
+        assert _described(text, start) == _described(baseline, start)
+    assert _described(text, "full-scale-only faces in W")[1] == _described(baseline, "full-scale-only faces in W")[1]
+
+
+def test_nothing_is_described_before_a_locked_format_6_account(mods, comparison_out, f1_list) -> None:
+    finish(mods, comparison_out.pristine, account=None, cues=COMPARISON_CUES, cued_format=6, duration_s=300.0,
+           captures=COMPARISON_CAPTURES, counts={})
+    reading, text = _comparison_text(mods, comparison_out.pristine, f1_list)
+    assert not reading.ok and not any(line.startswith("DESCRIPTIVE") for line in reading.lines)
+    assert line_for(text, "account saved and locked").startswith("FAIL")
+
+
+@pytest.mark.parametrize("change", [
+    lambda c: c.update(similarity=0.5) if c["disposition"].startswith("skipped") else None,
+    lambda c: c.update(similarity=None) if c["disposition"] == "completed" else None,
+    lambda c: c.update(ms=None) if c["disposition"] == "completed" else None,
+    lambda c: c.update(error="empty_crop") if c["disposition"] == "completed" else None,
+    lambda c: c.update(error="a free text error") if c["disposition"] == "failed" else None,
+    lambda c: c.update(score=0.85),
+    lambda c: c.update(kind="other"),
+    lambda c: c.update(schema=3),
+    lambda c: c.update(embedding=[0.1]),
+])
+def test_comparison_records_must_fit_their_disposition(mods, comparison_out, f1_list, change) -> None:
+    def edit(lines):
+        for item in lines:
+            if item.get("identity") == "comparison":
+                change(item)
+        return lines
+
+    _mutate(comparison_out.pristine, edit)
+    finish(mods, comparison_out.pristine, account=account_v6(mods), cues=COMPARISON_CUES, cued_format=6,
+           duration_s=300.0, captures=COMPARISON_CAPTURES, counts={})
+    reading, text = _comparison_text(mods, comparison_out.pristine, f1_list)
+    assert not reading.ok and line_for(text, "identity records: schema 4").startswith("FAIL")
+    assert not any(line.startswith("DESCRIPTIVE") for line in reading.lines)
+
+
+def test_format_6_accepts_unknown_answers_and_is_schema_text(mods, tmp_path) -> None:
+    out = tmp_path / "run"
+    out.mkdir()
+    (out / "provenance.txt").write_text(F2_PROVENANCE)
+    (out / "result.json").write_text("{}")
+    save_account(mods, out, account_v6(mods, stayed_seated="unknown"), 6)
+    values = mods.account.parse((out / "account.txt").read_text())
+    review = mods.account.review_separate(values)
+    assert review[0].endswith(": stayed_seated") and review[-1].endswith(": yes")
+    assert mods.evidence.read(out / "account.txt", "f2").nonconforming == []
+    assert [f.key for f in mods.account.FIELDS_V6] == ["stayed_seated", "worked_as_usual",
+                                                       "looked_at_camera_on_purpose", "other_faces_in_view", "notes"]
+    assert mods.account.main(["enter", str(tmp_path / "x"), "--format", "6"]) == 2  # not a run directory
+    assert mods.account.COMPARISON_CUE_AT_S == {"t0": 0, "stop": 290} and mods.account.COMPARISON_DURATION_S == 300

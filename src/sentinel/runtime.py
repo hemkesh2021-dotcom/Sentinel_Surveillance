@@ -15,7 +15,7 @@ Not thread-safe: call it from one loop thread.
 from __future__ import annotations
 
 import dataclasses
-from collections import Counter
+from collections import Counter, OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -23,6 +23,7 @@ from typing import Any
 from .config import SentinelConfig
 from .contracts import Evidence, FrameRef, StreamIdentity, TrackKey, TrackObservation, TrackStatus
 from .identity.association import AssociationGeometry, FaceObservation, Ownership, associate
+from .identity.comparison import ComparisonOutcome, Disposition
 from .identity.matching import Enrollment
 from .identity.state import UNKNOWN_VOTE, IdentityPolicy, IdentityResolver, IdentityState, TrackIdentity, VoteRecord
 from .jobs import WorkerOutcome
@@ -50,14 +51,19 @@ IDENTITY_RECORD_SCHEMA = 1  # the "identity" stdout records: tick, result and tr
 IDENTITY_DIAGNOSTIC_SCHEMA = 2
 # Schema 3 (D86), what face validation runs write: schema 2, plus each result's full-scale pass (full_scale_numbers).
 IDENTITY_FULL_SCALE_SCHEMA = 3
+# Schema 4 (D87), what face validation runs with --face-comparison write: schema 3, plus a "comparison" record for each
+# person eligible for the full-scale comparison (ComparisonRecord).
+IDENTITY_COMPARISON_SCHEMA = 4
 DIAGNOSTIC_DECIMALS = 3
+PRODUCTION_OUTCOMES_KEPT = 16  # recent face results' outcomes, by frame, for the comparison records (D87)
 # DeepFace 0.0.99's YuNet threshold for production detections (legacy_deepface.YUNET_THRESHOLD; test-tied): the
 # full-scale pass's faces are counted at the same score, so its counts compare like for like.
 FULL_SCALE_COUNTED = 0.9
 
 
 def _schema(schema: int) -> int:
-    if schema not in (IDENTITY_RECORD_SCHEMA, IDENTITY_DIAGNOSTIC_SCHEMA, IDENTITY_FULL_SCALE_SCHEMA):
+    if schema not in (IDENTITY_RECORD_SCHEMA, IDENTITY_DIAGNOSTIC_SCHEMA, IDENTITY_FULL_SCALE_SCHEMA,
+                      IDENTITY_COMPARISON_SCHEMA):
         raise ValueError(f"unknown identity record schema {schema!r}")
     return schema
 
@@ -120,9 +126,39 @@ class FaceResultRecord:
                   "applied_mono_ns": self.applied_mono_ns, "outcome": self.outcome, "faces": self.faces,
                   "processing_ms": None if self.processing_ms is None else round(self.processing_ms, 1),
                   "error": self.error, "persons": persons}
-        if schema == IDENTITY_FULL_SCALE_SCHEMA:
+        if schema >= IDENTITY_FULL_SCALE_SCHEMA:
             record["full_scale"] = self.full_scale
         return record
+
+
+@dataclass(frozen=True)
+class ComparisonRecord:
+    """D87: one person eligible for the full-scale comparison on one analysed frame, as numbers and fixed labels: the
+    kind (``full_scale_only`` or the ``both`` control), its disposition, the full-scale candidate's score and width, and,
+    when completed, the best cosine similarity of its embedding to the enrollment (never a vote, an identity ID, an
+    embedding or an image); ``ms`` when it was attempted; ``error`` (a fixed label) when it failed."""
+
+    stream_epoch: int
+    frame_seq: int
+    frame_mono_ns: int
+    track_id: int
+    kind: str
+    disposition: str
+    score: float
+    w_px: int
+    similarity: float | None
+    ms: float | None
+    error: str | None
+
+    def record(self, schema: int = IDENTITY_COMPARISON_SCHEMA) -> dict[str, object]:
+        if _schema(schema) != IDENTITY_COMPARISON_SCHEMA:
+            raise ValueError("comparison records are schema 4 only")
+        return {"identity": "comparison", "schema": schema, "stream_epoch": self.stream_epoch,
+                "frame_seq": self.frame_seq, "frame_mono_ns": self.frame_mono_ns, "track_id": self.track_id,
+                "kind": self.kind, "disposition": self.disposition, "score": round(self.score, DIAGNOSTIC_DECIMALS),
+                "w_px": self.w_px,
+                "similarity": None if self.similarity is None else round(self.similarity, DIAGNOSTIC_DECIMALS),
+                "ms": None if self.ms is None else round(self.ms, 1), "error": self.error}
 
 
 @dataclass(frozen=True)
@@ -208,6 +244,10 @@ class EdgeCore:
         self._reported: dict[TrackKey, tuple[str, str | None, str | None]] = {}
         self._last_detected: FrameRef | None = None
         self._sequence = 0
+        # D87: recent face results' outcomes by frame (epoch, sequence), so that a comparison is completed only for a
+        # frame whose production result was applied; and the comparisons' final dispositions (never identity counters).
+        self._production_outcomes: OrderedDict[tuple[int, int], str] = OrderedDict()
+        self.comparison_counters: Counter[str] = Counter()
 
     @property
     def lane(self) -> SceneLane | None:
@@ -298,6 +338,9 @@ class EdgeCore:
             votes = self._identities.observe(persons, faces, association)
             diagnostics = _diagnostics(frame, persons, faces, association.face_of, votes)
         self.face_counters[f"results_{outcome}"] += 1
+        self._production_outcomes[(frame.stream_epoch, frame.frame_seq)] = outcome
+        while len(self._production_outcomes) > PRODUCTION_OUTCOMES_KEPT:
+            self._production_outcomes.popitem(last=False)
         record = FaceResultRecord(
             frame.stream_epoch, frame.frame_seq, frame.ingest_mono_ns, now.ns, outcome,
             None if faces is None else len(faces),
@@ -306,6 +349,26 @@ class EdgeCore:
                    v.vote if v.vote else None, v.label) for v in votes),
             processing_ms, error, diagnostics, full_scale_numbers(full_scale, frame, persons, self._geometry))
         return dataclasses.replace(self._finish(freshness, []), face_result=record)
+
+    def on_face_comparison(self, outcome: ComparisonOutcome) -> ComparisonRecord:
+        """D87: one comparison outcome as a record. A completed comparison gets its best similarity to the enrollment
+        (``IdentityResolver.diagnostic_similarity``, read only) when that frame's production result was applied and face
+        recognition is available; otherwise it is ``production_not_applied`` and its embedding is discarded. Nothing
+        here votes or changes identity state, tracks, counters or live state; the embedding is never kept."""
+        disposition, similarity, error = outcome.disposition, None, outcome.error
+        if disposition is Disposition.COMPLETED:
+            applied = self._production_outcomes.get((outcome.frame.stream_epoch, outcome.frame.frame_seq)) == "applied"
+            if not applied or self._face_recognition is not Capability.AVAILABLE or outcome.embedding is None:
+                disposition = Disposition.PRODUCTION_NOT_APPLIED
+            else:
+                similarity = self._identities.diagnostic_similarity(outcome.embedding)
+                if similarity is None:
+                    disposition, error = Disposition.FAILED, "no_comparable_enrollment"
+        self.comparison_counters[f"{outcome.kind.value}:{disposition.value}"] += 1
+        frame = outcome.frame
+        return ComparisonRecord(frame.stream_epoch, frame.frame_seq, frame.ingest_mono_ns, outcome.track_id,
+                                outcome.kind.value, disposition.value, outcome.score, outcome.width_px, similarity,
+                                outcome.ms, error)
 
     def on_scene_outcome(
         self, job_id: str, outcome: WorkerOutcome, connected: StreamIdentity | None

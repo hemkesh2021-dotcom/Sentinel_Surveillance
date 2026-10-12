@@ -160,6 +160,15 @@ class IdentityResolver:
             for key in [k for k in table if k not in keep]:
                 del table[key]
 
+    def diagnostic_similarity(self, embedding: Sequence[float]) -> float | None:
+        """D87: the best cosine similarity of an embedding to the enrollment, exactly as a vote computes it
+        (``best_match``), for a diagnostic comparison. Read only: no vote, note, counter or state changes. None when
+        nothing is enrolled or the embedding's dimension differs."""
+        enrollment = self._enrollment
+        if enrollment is None or enrollment.is_empty or len(embedding) != enrollment.dimension:
+            return None
+        return best_match(embedding, enrollment).similarity
+
     def _vote(self, face: FaceObservation) -> tuple[str | None, str, float | None]:
         """The face's vote (an identity ID or UNKNOWN_VOTE), or None, why, and the best similarity if computed."""
         enrollment = self._enrollment

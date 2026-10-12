@@ -31,7 +31,8 @@ import face_account
 
 # Files written after the counts, or the counts themselves; never counted (face_check uses the same set).
 NOT_COUNTED = frozenset({"SHA256SUMS", "check.txt", "secret-counts-camera.txt", "secret-counts-identity.txt"})
-STATUS_NAMES = ("e1", "k1", "a", "e2", "k2", "end", "n1", "look", "turn", "n2")  # F2's and the natural check's
+STATUS_NAMES = ("e1", "k1", "a", "e2", "k2", "end", "n1", "look", "turn", "n2",
+                "c1", "c2", "c3")  # F2's, the natural check's and the comparison check's (D87)
 CUE_NAMES = ("t0", "k1", "a", "e2", "k2", "stop", "look", "turn", "n2")  # F2's and the natural check's
 RECHECK_NAME = r"face-\d{8}T\d{6}Z-f1-[0-9a-f]{7}-\d{8}T\d{6}Z"  # ~/sentinel-runs/recheck/<run>-f1-<pin>-<UTC>
 
@@ -168,6 +169,11 @@ VOTE_LABELS = ("match", "unknown", "margin", "low_quality", "incompatible", "no_
 VOTE_NOTES = ("face matched", "face matched nobody", "face matches more than one identity", "face quality too low",
               "embedding from an incompatible model", "no identities enrolled")  # state._NOTE_LABELS' keys
 TICKS = vocab("offered", "skipped_no_person", "stopping")  # identity.worker TICK_*
+COMPARISON_KINDS = ("full_scale_only", "both")  # identity.comparison.Kind
+COMPARISON_DISPOSITIONS = ("completed", "failed", "production_not_applied", "skipped_one_per_result",
+                           "skipped_stopping", "skipped_production_waiting", "skipped_no_landmarks",
+                           "skipped_stale", "skipped_cap", "skipped_interval",
+                           "skipped_quota")  # identity.comparison.Disposition
 OUTCOMES = vocab("applied", "failed", "rejected_not_live", "rejected_boot", "rejected_age",
                  "ignored_face_unavailable")  # runtime.FaceResultRecord.outcome
 SEVERITY = vocab("info", "warning", "critical")  # rules.scene_hazard.Severity
@@ -351,7 +357,7 @@ class KeyValueProfile:
 @dataclass(frozen=True)
 class AccountProfile:
     """F2's account.txt, as face_account renders it: its header, then ``key=value   # comment`` per field. The
-    header names the format (1 to 4, as face_account.FORMATS lists them), and each value is checked against that
+    header names the format (1 to 6, as face_account.FORMATS lists them), and each value is checked against that
     format's field."""
 
 
@@ -407,6 +413,7 @@ STARTUP = {  # the runtime's ``starting`` line (demo_runtime.assemble and cli)
     "thp_disable.reason": maybe(TEXT),
     "detector_problem": maybe(TEXT), "scene_problem": maybe(TEXT), "face_problem": maybe(TEXT),
     "notifier_problems.*": maybe(TEXT), "face.validation_run": BOOL, "face.identities_enrolled": INT,
+    "face.comparison": BOOL,  # D87, only in --face-comparison runs
     "status_page": maybe(LOOPBACK_URL),
     **OPTIONAL_STARTUP,
 }
@@ -421,8 +428,8 @@ STATUS_LINE = {  # cli.status_line
     "capture.state": CAPTURE, "capture.stream_epoch": COUNT, "capture.reconnects": INT, "pending_signals": INT,
     "degraded[]": DEGRADED,
 }
-IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransition
-    "identity": vocab("tick", "result", "transition"), "schema": INT, "stream_epoch": INT, "frame_seq": INT,
+IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransition, ComparisonRecord
+    "identity": vocab("tick", "result", "transition", "comparison"), "schema": INT, "stream_epoch": INT, "frame_seq": INT,
     "frame_mono_ns": INT, "tick": TICKS, "tracks[]": INT, "applied_mono_ns": INT, "outcome": OUTCOMES,
     "faces": COUNT, "processing_ms": SECONDS, "error": maybe(TEXT), "persons[].track_id": INT,
     "persons[].ownership": vocab(*OWNERSHIP), "persons[].vote": vocab("none", "unknown", "match"),
@@ -437,6 +444,9 @@ IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransitio
     "track_id": INT, "from": vocab(*IDENTITY_STATES), "to": vocab(*IDENTITY_STATES, "cleared"),
     "identity_id": maybe(IDN), "basis": maybe(BASIS), "last_vote_age_ms": COUNT, "reason": TRANSITION_REASON,
     "mono_ns": INT,
+    # schema 4 (D87, runtime.ComparisonRecord): fixed labels and numbers only ("error" is shared with results)
+    "kind": vocab(*COMPARISON_KINDS), "disposition": vocab(*COMPARISON_DISPOSITIONS), "score": NUM, "w_px": INT,
+    "similarity": maybe(NUM), "ms": maybe(NUM),
 }
 RUN = JsonProfile({
     "run": vocab("starting", "stopped"), **nest("startup", STARTUP),
@@ -458,7 +468,7 @@ STARTING_SUMMARY = {  # step5_guard._starting_summary
     "scene_memory_before": NULL, "scene_memory_before.*": COUNT,
     "detector_memory_before": NULL, "detector_memory_before.*": COUNT,
     "face_memory_before": NULL, "face_memory_before.*": COUNT,
-    "face": NULL, "face.validation_run": BOOL, "face.identities_enrolled": INT,
+    "face": NULL, "face.validation_run": BOOL, "face.identities_enrolled": INT, "face.comparison": BOOL,
 }
 STARTING_SUMMARY_KEYS = {"releases": RELEASE_COMPONENTS, "releases.*": RELEASE_ROLES, "notifier_problems": CHANNELS,
                          "scene_memory_before": MEMFREE_KEYS, "detector_memory_before": MEMFREE_KEYS,
@@ -530,6 +540,12 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
     "components.face.results.*": INT, "components.face.worker.state": WORKER, "components.face.worker.busy": BOOL,
     "components.face.worker.waiting": BOOL, "components.face.worker.counters.*": INT,
     **{f"components.face.worker.processing_ms.{k}": SECONDS for k in ("n", "p50", "p95", "p99", "max")},
+    # D87: the comparator's status and the runtime's final dispositions (counts and numbers only)
+    "components.face.worker.comparison.counters.*": INT,
+    **{f"components.face.worker.comparison.ms.{k}": SECONDS for k in ("n", "min", "p50", "max")},
+    **{f"components.face.worker.comparison.policy.{k}": NUM for k in ("interval_s", "cap", "control_share",
+                                                                       "max_frame_age_s")},
+    "components.face.comparison_results.*": INT,
     "components.incidents.state": vocab("ok", "degraded"), "components.incidents.problem": maybe(TEXT),
     "components.incidents.annotation_problem": maybe(TEXT), "components.incidents.durability": PENDING_DURABILITY,
     **{f"components.incidents.{k}": INT for k in ("pending_limit", "pending_signals", "signals_dropped")},
@@ -570,7 +586,14 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
     "components.face.results": FACE_COUNTERS,  # runtime face_counters
     "components.face.worker.counters": vocab(  # identity.worker counters
         "ticks", "skipped_no_person", "replaced", "offered", "abandoned_at_stop", "expired_before_start", "started",
-        "results_replaced", "errors", "completed", "faces_detected", "fallback_dropped", "faces_returned"),
+        "results_replaced", "errors", "completed", "faces_detected", "fallback_dropped", "faces_returned",
+        "yielded_to_comparison", "comparison_outcomes_dropped", "comparison_plan_errors"),  # D87
+    "components.face.worker.comparison.counters": Either((  # identity.comparison counters; failure labels are content
+        vocab(*(f"{stage}_{kind}" for stage in ("eligible", "attempted", "completed", "failed")
+                for kind in COMPARISON_KINDS), *(d for d in COMPARISON_DISPOSITIONS if d.startswith("skipped_"))),
+        template(r"failed:([a-z_]+(?::[A-Za-z0-9_]+)?)"))),
+    "components.face.comparison_results": vocab(*(f"{kind}:{d}" for kind in COMPARISON_KINDS
+                                                  for d in COMPARISON_DISPOSITIONS)),
     "components.notifications.channels": CHANNELS,
     "components.notifications.worker.counters": vocab("sent", "retry", "dead", "late_outcome", "lease_expired"),
     "delivery.totals": vocab("queued", "attempted", "delivered", "failed", "ambiguous"),

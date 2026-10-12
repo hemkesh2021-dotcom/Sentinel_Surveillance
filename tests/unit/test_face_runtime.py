@@ -126,15 +126,15 @@ class Capture:
 
 class Loop:
     def __init__(self, tmp_path: Path, *, analyze=analyze_with(vec(0.97, 0.1, 0.0, 0.05)), face_problem=None,
-                 with_face: bool = True, validation: bool = True) -> None:
+                 with_face: bool = True, validation: bool = True, comparator=None) -> None:
         self.clock = FakeClock(utc=NOW)
         self.config = parse_config({"config_version": 1, "camera": {"id": "cam-1"}})
         self.slot = LatestFrame()
         self.capture = Capture(self.clock, self.slot)
         self.tracker = Tracker()
         self.db = Database.open(tmp_path / "sentinel.db")
-        self.worker = FaceWorker(analyze, self.clock)
-        face = FaceRuntime(self.worker, 1, validation) if with_face else None
+        self.worker = FaceWorker(analyze, self.clock, comparator=comparator)
+        face = FaceRuntime(self.worker, 1, validation, comparator is not None) if with_face else None
         self.runtime = DemoRuntime(
             self.config, self.clock, capture=self.capture, slot=self.slot,
             incidents=IncidentService(self.db, self.clock, incidents=self.config.incidents,
@@ -298,7 +298,7 @@ def face_setup(tmp_path, accepted_scene):
 
 
 def start(setup, *, store=None, backend_error=None, compatibility=COMPAT, validation=True, memfree=7e9,
-          identity=None, policy=None, manifests=None):
+          identity=None, policy=None, manifests=None, comparison=False, backend_class=None):
     calls: list[str] = []
     data = setup.tmp / "data"
     data.mkdir(exist_ok=True)
@@ -311,12 +311,13 @@ def start(setup, *, store=None, backend_error=None, compatibility=COMPAT, valida
         scene_request=lambda port, timeout: None,
         meminfo=lambda: {"MemFree": int(memfree), "MemAvailable": 7_000_000_000},
         notifiers=lambda config: ({}, {}),
-        face_backend=lambda weights_dir: FaceBackend(setup.weights, calls, error=backend_error,
-                                                     compatibility=compatibility),
+        face_backend=lambda weights_dir: (backend_class or FaceBackend)(setup.weights, calls, error=backend_error,
+                                                                        compatibility=compatibility),
         identity_store=lambda directory: store if store is not None else Store(),
     )
     options = RunOptions(data, setup.tmp / "x.engine", face=FaceOptions(setup.tmp / "identity", SECRET,
-                                                                       validation_run=validation),
+                                                                       validation_run=validation,
+                                                                       comparison=comparison),
                          **({"memory_policy": policy} if policy is not None else {}))
     assembly = assemble(config, options, devices, FakeClock(), profiles=setup.scene.profiles,
                         face_admissions=setup.admissions)
@@ -476,3 +477,78 @@ def test_the_adapters_full_scale_pass_reaches_the_validation_record(tmp_path) ->
     assert result["schema"] == 3 and result["faces"] == 0
     assert result["full_scale"] == {"faces": 1, "assigned": 1, "best_score": 0.97, "best_w_px": 58, "ms": 21.0}
     loop.close()
+
+
+# ---------------------------------------------------------------- D87: the full-scale comparison
+
+
+class ComparingBackend(FaceBackend):
+    """A face backend with D86's pass and D87's comparison (enable order recorded)."""
+
+    def enable_full_scale(self) -> None:
+        self.calls.append("enable_full_scale")
+
+    def enable_comparison(self) -> None:
+        self.calls.append("enable_comparison")
+
+    def embed_full_scale(self, width, height, image, row):
+        return vec(0.97, 0.1, 0.0, 0.05)
+
+
+def test_a_comparison_run_writes_schema_4_with_comparison_records_and_changes_no_identity(tmp_path) -> None:
+    """D87: a full-scale-only face is embedded after its frame's production result, within the budget (one in 4 s),
+    and recorded with its similarity; production found no face, so the identity stays unresolved."""
+    from sentinel.identity.association import AssociationGeometry
+    from sentinel.identity.comparison import FullScaleComparator
+    from sentinel.identity.legacy_deepface import FullScale, FullScaleRow
+
+    row = FullScaleRow(121.0, 106.0, 58.0, 62.0, (135.0, 125.0), (160.0, 126.0), 0.97)
+
+    def analyze(frame, image):
+        return FaceRun((), 0, 1, FullScale(((0.97, FACE_BOX),), 21.0, (row,)))
+
+    comparator = FullScaleComparator(lambda frame, image, r: vec(0.97, 0.1, 0.0, 0.05), AssociationGeometry())
+    loop = Loop(tmp_path, analyze=analyze, comparator=comparator)
+    for _ in range(40):  # three face ticks in about 2.7 s of frame time
+        loop.frame()
+    records = loop.runtime.drain_identity_records()
+    assert {r["schema"] for r in records} == {4}
+    assert [r["identity"] for r in records].count("result") == 3 and "transition" not in {r["identity"] for r in records}
+    comparisons = [r for r in records if r["identity"] == "comparison"]
+    assert [(c["kind"], c["disposition"]) for c in comparisons] == [
+        ("full_scale_only", "completed"), ("full_scale_only", "skipped_interval"),
+        ("full_scale_only", "skipped_interval")]
+    assert comparisons[0]["similarity"] == 0.993 and comparisons[0]["w_px"] == 58 and comparisons[0]["ms"] >= 0
+    results = [r for r in records if r["identity"] == "result"]
+    assert [r["frame_seq"] for r in results] == [c["frame_seq"] for c in comparisons]
+    assert all(records.index(c) > records.index(r) for c, r in zip(comparisons, results))  # production first
+    snapshot = loop.runtime.snapshot()
+    face = snapshot["components"]["face"]
+    assert face["comparison_results"] == {"full_scale_only:completed": 1, "full_scale_only:skipped_interval": 2}
+    assert face["worker"]["comparison"]["counters"]["attempted_full_scale_only"] == 1
+    assert face["results"].get("votes_match", 0) == 0 and snapshot["live"]["identity"]["known"] == 0
+    assert "embedding" not in json.dumps(snapshot) and "0.993" not in json.dumps(snapshot)
+    loop.close()
+
+
+def test_the_comparison_is_enabled_after_the_full_scale_pass_and_before_the_load(face_setup) -> None:
+    assembly, calls = start(face_setup, comparison=True, backend_class=ComparingBackend)
+    assert calls == ["tracker_load", "enable_full_scale", "enable_comparison", "face_load"]
+    assert assembly.startup["face"] == {"validation_run": True, "identities_enrolled": 1, "comparison": True}
+    assembly.database.close()
+    plain, _ = start(face_setup, backend_class=ComparingBackend)
+    assert plain.startup["face"] == {"validation_run": True, "identities_enrolled": 1}  # unchanged without it
+    plain.database.close()
+
+
+def test_the_comparison_is_refused_outside_validation_runs_and_without_support(face_setup) -> None:
+    with pytest.raises(StartupRefused, match="face_comparison_needs_validation"):
+        start(face_setup, comparison=True, validation=False, backend_class=ComparingBackend)
+    with pytest.raises(StartupRefused, match="face_comparison_unavailable"):
+        start(face_setup, comparison=True)  # this backend has no comparison
+
+
+def test_the_comparison_flag_needs_validation(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
+    assert main(_cli(tmp_path, "--face", "--face-comparison"), devices=_refusing_devices()) == 1
+    assert "--face-comparison needs --face-validation" in capsys.readouterr().err

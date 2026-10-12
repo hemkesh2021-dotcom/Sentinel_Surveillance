@@ -48,7 +48,11 @@ processed live frame that has people, and EdgeCore applies each result to that f
 transition is kept as an opaque record (``drain_identity_records``). In a ``--face-validation`` run the records are
 schema 3: each result's person also carries numbers for diagnosing a failed validation (its box and detector
 confidence, its face's size and score, the vote's similarity; runtime.FaceDiagnostics), and each result the
-diagnostic full-scale face pass's counts (D86; runtime.full_scale_numbers), never an image, embedding or name.
+diagnostic full-scale face pass's counts (D86; runtime.full_scale_numbers), never an image, embedding or name. With
+``--face-comparison`` as well (D87, schema 4) the worker embeds, within a predeclared budget, one full-scale candidate
+of an analysed frame after that frame's production result (identity.comparison), and each eligible person's outcome
+becomes a "comparison" record: its kind, disposition, the candidate's score and width, and the best similarity to the
+enrollment (runtime.ComparisonRecord), never a vote.
 The gallery is sealed (sentinel.identity.vault) and opened at startup with a passphrase the
 operator types; startup refuses on a sealing error, and a missing or empty gallery leaves face recognition
 unavailable without loading the model. The face adapter needs its own admission record, which starts
@@ -108,6 +112,8 @@ from .alerts.telegram import NotifierUnavailable, TelegramNotifier
 from .config import CaptureConfig, NotificationsConfig, SentinelConfig
 from .contracts import FrameKey, FrameRef, StreamIdentity, TrackStatus
 from .identity.gallery import GalleryDocument
+from .identity.association import AssociationGeometry
+from .identity.comparison import ComparisonPolicy, FullScaleComparator
 from .identity.legacy_deepface import FaceBackendError, static_difference
 from .identity.vault import Secret, VaultError
 from .identity.worker import FaceWorker
@@ -144,7 +150,14 @@ from .memory_policy import (
     release_file_cache,
 )
 from .rules.zones import ZonePhase
-from .runtime import IDENTITY_FULL_SCALE_SCHEMA, IDENTITY_RECORD_SCHEMA, CoreOutput, EdgeCore, tick_record
+from .runtime import (
+    IDENTITY_COMPARISON_SCHEMA,
+    IDENTITY_FULL_SCALE_SCHEMA,
+    IDENTITY_RECORD_SCHEMA,
+    CoreOutput,
+    EdgeCore,
+    tick_record,
+)
 from .scene.analyzer import IMAGES_KEPT, RecentImages, ThreadedSceneAnalyzer
 from .scene.chat import CHAT_ADMISSION, ChatAdmission, ChatService
 from .scene.chat_gate import SAMPLE_INTERVAL_S as CHAT_GATE_SAMPLE_S, ChatGate, read_pressure
@@ -209,6 +222,7 @@ class FaceRuntime:
     worker: FaceWorker
     identities: int  # enrolled identities in the opened gallery (a count; IDs stay out of the status)
     validation_run: bool
+    comparison: bool = False  # D87: the worker has a full-scale comparator (validation runs only)
 
 
 @dataclass
@@ -327,9 +341,10 @@ class DemoRuntime:
             scene_problem=self._scene_problem,
         )
         self._identity_records: deque[dict[str, Any]] = deque()
-        # A face validation run's records carry the diagnostic numbers (schema 3, D84 and D86); other runs, schema 1.
-        self._identity_schema = (IDENTITY_FULL_SCALE_SCHEMA if face is not None and face.validation_run
-                                 else IDENTITY_RECORD_SCHEMA)
+        # A face validation run's records carry the diagnostic numbers (schema 3, D84 and D86), and with the full-scale
+        # comparison its records too (schema 4, D87); other runs, schema 1.
+        self._identity_schema = (IDENTITY_RECORD_SCHEMA if face is None or not face.validation_run
+                                 else IDENTITY_COMPARISON_SCHEMA if face.comparison else IDENTITY_FULL_SCALE_SCHEMA)
         self._snapshots = snapshots
         # D74: chat reads frames only when it can be used (admitted, with the scene model); otherwise it keeps none.
         chat_allowed = chat_admission.admitted or (chat_validation and chat_admission.validation_allowed)
@@ -471,6 +486,8 @@ class DemoRuntime:
                 self._handle(self._core.on_face_outcome(result.frame, result.persons, result.faces,
                                                         self._capture.connected, processing_ms=result.processing_ms,
                                                         error=result.error, full_scale=result.full_scale))
+            for comparison in self._face.worker.drain_comparisons():  # D87: after their frames' production results
+                self._keep_record(self._core.on_face_comparison(comparison).record(self._identity_schema))
         if self._pending:
             self._handle(None)
         self._observe_chat_gate()
@@ -752,6 +769,8 @@ class DemoRuntime:
             "identities_enrolled": self._face.identities,
             "worker": self._face.worker.status(),
             "results": self._core.identity_counters,
+            **({"comparison_results": dict(sorted(self._core.comparison_counters.items()))}
+               if self._face.comparison else {}),
             "records": {"kept": self.counters["identity_records_kept"],
                         "dropped": self.counters["identity_records_dropped"], "limit": MAX_IDENTITY_RECORDS},
         }
@@ -883,6 +902,7 @@ class FaceOptions:
     identity_dir: Path
     secret: Secret
     validation_run: bool = False  # --face-validation: the only way to use a PENDING_VALIDATION admission
+    comparison: bool = False  # --face-comparison (D87): the full-scale comparison; validation runs only
     weights_dir: Path | None = None  # DeepFace's weights; None: ~/.deepface/weights
     min_free_bytes: int = 1_500_000_000  # the detector's provisional precheck, reused (U18 open)
 
@@ -1205,7 +1225,11 @@ def assemble(
     if options.face is not None:
         if devices.face_backend is None or devices.identity_store is None:
             raise StartupRefused("face_not_admitted: no face backend on this runtime")
+        if options.face.comparison and not options.face.validation_run:
+            raise StartupRefused("face_comparison_needs_validation: --face-comparison is for --face-validation runs")
         face_backend = devices.face_backend(options.face.weights_dir)
+        if options.face.comparison and not hasattr(face_backend, "enable_comparison"):
+            raise StartupRefused("face_comparison_unavailable: this face backend has no full-scale comparison")
         face_weights = _weights_dir(face_backend, options.face.weights_dir)
         problem = face_admission(config, options.face, profiles=profiles, admissions=face_admissions, policy=policy,
                                  weights_dir=face_weights)
@@ -1301,13 +1325,16 @@ def assemble(
         face = None
         if options.face is not None:
             startup["face"] = {"validation_run": options.face.validation_run,
-                               "identities_enrolled": 0 if gallery is None else len(gallery.identities)}
+                               "identities_enrolled": 0 if gallery is None else len(gallery.identities),
+                               **({"comparison": True} if options.face.comparison else {})}
             if face_problem is None and gallery is not None:
                 face_problem, memory = memfree_problem(devices.meminfo, options.face.min_free_bytes)
                 startup["face_memory_before"] = memory
             if face_problem is None and gallery is not None:
                 if options.face.validation_run and hasattr(face_backend, "enable_full_scale"):
                     face_backend.enable_full_scale()  # D86: the diagnostic full-scale pass, validation runs only
+                if options.face.comparison:  # D87: assemble() refuses it outside a validation run
+                    face_backend.enable_comparison()
                 try:
                     face_backend.load()  # the weights' SHA-256, the CPU pin and the DeepFace version first
                 except FaceBackendError as exc:
@@ -1321,11 +1348,19 @@ def assemble(
                             ops, "face", face_backend.weight_files)
             if face_problem is None and gallery is not None:
                 backend = face_backend
+                comparator = None
+                if options.face.comparison:
+                    comparator = FullScaleComparator(
+                        lambda frame, image, row: backend.embed_full_scale(frame.native_width, frame.native_height,
+                                                                           image, row),
+                        AssociationGeometry(config.identity.head_fraction, config.identity.min_face_inside),
+                        ComparisonPolicy(max_frame_age_ns=config.identity.face_result_max_age_ns))
                 worker = FaceWorker(
                     lambda frame, image: backend.faces(frame.key, frame.native_width, frame.native_height, image),
                     clock, interval_ns=config.identity.face_interval_ns,
-                    pending_max_age_ns=config.identity.face_pending_max_age_ns)
-                face = FaceRuntime(worker, len(gallery.identities), options.face.validation_run)
+                    pending_max_age_ns=config.identity.face_pending_max_age_ns, comparator=comparator)
+                face = FaceRuntime(worker, len(gallery.identities), options.face.validation_run,
+                                   comparator is not None)
             startup["face_problem"] = face_problem
 
         slot = LatestFrame()

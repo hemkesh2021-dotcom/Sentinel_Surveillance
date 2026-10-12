@@ -256,8 +256,9 @@ def test_a_failed_result_has_no_diagnostics_and_an_unknown_schema_is_refused() -
     frame, persons = world.frame((1, LEFT), dt=1.0)
     failed = world.faces(frame, persons, None).face_result
     assert failed.record(IDENTITY_DIAGNOSTIC_SCHEMA)["persons"] == []
+    assert "full_scale" in failed.record(4)  # D87: schema 4 is schema 3's result record, unchanged
     with pytest.raises(ValueError):
-        failed.record(4)
+        failed.record(5)
 
 
 @pytest.mark.parametrize(("make", "outcome"), [
