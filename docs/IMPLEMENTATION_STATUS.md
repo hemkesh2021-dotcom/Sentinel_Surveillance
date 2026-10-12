@@ -535,6 +535,10 @@ Not proposed: another generic natural run; any threshold, retention, confirmatio
 
 Identity continuity through a chair turn and occlusion; the candidate's formal F2 (its own pinned package, F2's reading accepting schema 5 and the candidate's marker with every criterion unchanged, and its away-window posture decided first); the combined face and chat validation. The candidate stays selectable for validation runs only; face recognition stays `PENDING_VALIDATION`; acceptance is pending.
 
+### The package `alpha-9460548`, kept
+
+It still verifies (12 OK, manifest `24575afa…`), and from `f807258` its a-B refuses at the branch head ("code differs from 9460548"), by design: a-B compares `tests` as well as `src`, `benchmarks` and `config`, and that commit added one test (no code under `src`, `benchmarks` or `config` changed since the pin). `~/sentinel-prep/alpha-9460548.NOTE.txt` beside it says so. No next package is prepared.
+
 ### Tests
 
 - **New** (`f807258`, `test_identity_continuity.py`): one unknown vote after matches gives UNCERTAIN at once; one match after it leaves UNCERTAIN; a second consecutive match restores KNOWN; two unknown votes in a row give UNKNOWN on the same track with no identity; faces without a vote change only the basis (UNKNOWN retained, UNCERTAIN not resolved by waiting); one track throughout, never cleared. Two scratch mutations of `identity/state.py` (the newest vote alone deciding; a majority keeping KNOWN) both failed it; the unmutated copy passed.
