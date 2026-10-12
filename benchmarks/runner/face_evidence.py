@@ -351,7 +351,8 @@ class KeyValueProfile:
 @dataclass(frozen=True)
 class AccountProfile:
     """F2's account.txt, as face_account renders it: its header, then ``key=value   # comment`` per field. The
-    header names the format (1, read only, or 2), and each value is checked against that format's field."""
+    header names the format (1 to 4, as face_account.FORMATS lists them), and each value is checked against that
+    format's field."""
 
 
 @dataclass(frozen=True)

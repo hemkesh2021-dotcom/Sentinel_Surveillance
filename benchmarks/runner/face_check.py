@@ -31,6 +31,9 @@ runtime's records). Judged windows come from the account, never from the schedul
   [max(0, d - v), d + v]; the clamp at 0 assumes the stopwatch cannot be started before a cue that comes at
   readiness. A movement then lies in the interval [r - u + max(0, d - v), r + u + d + v] after T0. The account's
   times are aligned to T0 here, never by the operator. Item 15 needs the delay's upper end d + v <= DELAY_MAX_S.
+- **Formats 3 and 4** (D79 cued; D85 the same, with the 4:00 head turn stated in the cue and the account): no
+  stopwatch; each movement lies in [cue, cue + allowance] from the guard's own cue times, where the account says it
+  was done within its allowance and every cue was printed on time. Format 4 is read exactly as format 3.
 
 With lo and hi each movement's interval ends (lo = hi = t in format 1), every window starts W after the latest
 time its opening movement could have happened and ends W before the earliest time its closing movement could have
@@ -368,10 +371,10 @@ def _cues_on_time(offsets: dict[str, float]) -> bool:
 
 def _bounds(account: dict[str, str], fmt: int, cues: dict[str, float] | None = None) -> dict[str, tuple[float, float]] | None:
     """Each movement's interval (lo, hi) in seconds after T0; None if any reading, uncertainty or the delay is
-    unknown or malformed. Format 1: [t, t], the reading taken as exact, as it always was. Format 3 (D79): [cue, cue +
+    unknown or malformed. Format 1: [t, t], the reading taken as exact, as it always was. Formats 3 and 4: [cue, cue +
     allowance] from the guard's own cue times, only where the account says the movement was done within its allowance
     after its cue (yes), and only when every cue was printed on time."""
-    if fmt == 3:
+    if fmt in face_account.CUED_FORMATS:
         if cues is None or not _cues_on_time(cues):
             return None
         bounds3 = {}
@@ -512,12 +515,13 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
     if account is None:
         return r
     if fmt is None:
-        r.item("account complete and in order", "the account's header names none of formats 1, 2 and 3", False)
+        r.item("account complete and in order", "the account's header names none of formats 1 to 4", False)
         return r
-    fields = {1: face_account.FIELDS_V1, 2: face_account.FIELDS, 3: face_account.FIELDS_V3}[fmt]
+    fields = {1: face_account.FIELDS_V1, 2: face_account.FIELDS, 3: face_account.FIELDS_V3,
+              4: face_account.FIELDS_V4}[fmt]
     review = face_account.review(account, fields)
     r.item("account complete and in order", review, review[-1] == "Complete and in order: yes")
-    cues = _cue_offsets(result) if fmt == 3 else None
+    cues = _cue_offsets(result) if fmt in face_account.CUED_FORMATS else None
     if fmt == 1:
         declared = {k: account.get(k) for k in ("stopwatch_started_at_t0", "stayed_until_stop", "other_faces_in_view")}
         r.item("stopwatch started at the T0 cue; stayed until the stop; no other face in view", declared,
@@ -529,7 +533,7 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
     duration = s5._get(result, "parameters", "duration_s")
     bounds = _bounds(account, fmt, cues)
     windows = _windows(bounds, duration) if bounds is not None and isinstance(duration, (int, float)) else None
-    if fmt == 3 and bounds is not None:
+    if fmt in face_account.CUED_FORMATS and bounds is not None:
         r.describe("account movements from the guard's cues: the cue (s after T0) and the interval its allowance "
                    "allows", {k: [face_account.CUE_OF[k], round(bounds[k][0], 2), round(bounds[k][1], 2)]
                               for k in face_account.TIMES})
@@ -575,8 +579,8 @@ def _declared(r: Reading, account: dict[str, str]) -> None:
 
 
 def _declared_cued(r: Reading, account: dict[str, str], cues: dict[str, float]) -> None:
-    """Item 15 for a format-3 account (D79): every movement cue printed on time by the guard, every movement done
-    within its allowance after its cue; stayed until the stop; no other face in view."""
+    """Item 15 for a format-3 or format-4 account (D79, D85): every movement cue printed on time by the guard, every
+    movement done within its allowance after its cue; stayed until the stop; no other face in view."""
     value = {"cues_s_after_t0": {name: (round(cues[name], 2) if name in cues else None)
                                  for name in face_account.CUE_AT_S},
              "within_allowance": {key: account.get(face_account.within_key(key)) for key in face_account.TIMES},

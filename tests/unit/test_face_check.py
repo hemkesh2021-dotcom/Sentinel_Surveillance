@@ -333,7 +333,7 @@ F2_PROVENANCE = ("f2_launch_utc=2026-10-08T09:00:00Z\nboot_id=0f1e2d3c-4b5a-6978
 
 
 def finish(mods, out: Path, *, cue_delay_s: float = 0.1, account: dict[str, str] | None = ACCOUNT,
-           counts: dict[str, int] | None = None, cues: dict[str, float] | None = None) -> None:
+           counts: dict[str, int] | None = None, cues: dict[str, float] | None = None, cued_format: int = 3) -> None:
     """result.json as the guard writes it, then the account and the counts, in the package's order (the counts by
     face_counts.sh unless ``counts`` fakes them)."""
     ready = 1.0  # FakeClock's default start (seconds), the runtime's T0
@@ -354,7 +354,7 @@ def finish(mods, out: Path, *, cue_delay_s: float = 0.1, account: dict[str, str]
     (out / "result.json").write_text(json.dumps(result))
     (out / "provenance.txt").write_text(F2_PROVENANCE)
     if account is not None:
-        save_account(mods, out, account)
+        save_account(mods, out, account, cued_format)
     if counts is None:  # F2e's counts, by the real workflow
         for function, name in (("face_counts_camera", "secret-counts-camera.txt"),
                                ("face_counts_f2", "secret-counts-identity.txt")):
@@ -369,13 +369,15 @@ def finish(mods, out: Path, *, cue_delay_s: float = 0.1, account: dict[str, str]
         f"{n} nonconforming={counts.get('nonconforming', 0)}\n" for n in names))
 
 
-def save_account(mods, out: Path, account: dict[str, str]) -> None:
+def save_account(mods, out: Path, account: dict[str, str], cued_format: int = 3) -> None:
     """A format-1 account (the face-0f7855e package's) as that helper saved and locked it; a format-2 account through
-    the current helper's prompts (an unknown reading's uncertainty is not asked)."""
-    if any(key.endswith("_within_20_s") for key in account):  # format 3 (D79), through the helper's prompts
-        answers = iter([account[f.key] for f in mods.account.FIELDS_V3] + ["SAVE"])
+    the current helper's prompts (an unknown reading's uncertainty is not asked); a cued account (format 3, or 4 when
+    asked: the same keys) through the helper's prompts."""
+    if any(key.endswith("_within_20_s") for key in account):  # format 3 (D79) or 4 (D85), through the prompts
+        fields = {3: mods.account.FIELDS_V3, 4: mods.account.FIELDS_V4}[cued_format]
+        answers = iter([account[f.key] for f in fields] + ["SAVE"])
         assert mods.account.enter(out, ask=lambda prompt: next(answers), say=lambda text: None,
-                                  account_format_number=3) == 0
+                                  account_format_number=cued_format) == 0
         return
     if "stopwatch_started_at_t0" in account:
         data = mods.account.render(account, mods.account.FIELDS_V1, mods.account.HEADER_V1).encode()
@@ -1021,6 +1023,61 @@ def test_both_formats_are_schema_text_to_the_privacy_profile(mods, tmp_path) -> 
     assert read.nonconforming == [] and ("line 9: turned_away_uncertainty_s", "7") in read.content
     path.write_text("# another header\n" + mods.account.render(ACCOUNT_V2).split("\n", 1)[1])
     assert mods.evidence.read(path, "f2").nonconforming == ["line 1: header"]
+
+
+# ---------------------------------------------------------------- D85: format 4, the 4:00 head turn stated
+
+
+def test_format_4_is_format_3_with_the_4_00_posture_stated(mods) -> None:
+    """The same keys in the same order; only the turn's and the face-hidden question's wording differ, and they ask for
+    what the 4:00 cue asks: a head turn within 5 s and not before the cue, seated, torso upright where it was, the
+    chair not moved until 6:00, no face visible, not even in profile."""
+    v3, v4 = mods.account.FIELDS_V3, mods.account.FIELDS_V4
+    assert [f.key for f in v4] == [f.key for f in v3] and [f.kind for f in v4] == [f.kind for f in v3]
+    changed = {f4.key for f3, f4 in zip(v3, v4) if f3 != f4}
+    assert changed == {"turned_away_within_5_s", "face_hidden_while_turned"}
+    comment = {f.key: f.comment for f in v4}
+    for words in ("within 5 s after the 4:00 cue", "not before it", "turned your head away", "until the 6:00 cue",
+                  "stayed seated", "torso upright", "chair not moved"):
+        assert words in comment["turned_away_within_5_s"], words
+    for words in ("until the 6:00 cue", "could not see your face at all", "not even in profile"):
+        assert words in comment["face_hidden_while_turned"], words
+    assert mods.account.FORMATS[mods.account.HEADER_V4] == (4, v4) and mods.account.CUED_FORMATS == (3, 4)
+    assert mods.account.FORMATS[mods.account.HEADER_V3] == (3, v3)  # format 3 unchanged: saved accounts read as before
+
+
+@pytest.mark.parametrize(("change", "item", "label"), [
+    ({}, None, None),  # every answer yes: the same reading as format 3
+    ({"face_hidden_while_turned": "no"}, "A: a known identity is retained", "NOT_EXERCISED"),
+    ({"turned_away_within_5_s": "unknown"}, "judged windows from the account's intervals", "MISSING"),
+])
+def test_a_format_4_account_is_read_exactly_as_format_3(mods, tmp_path, startup, f1_list, change, item, label) -> None:
+    run = simulate(tmp_path, startup)
+    twin = tmp_path / "twin"
+    shutil.copytree(run, twin)
+    finish(mods, run, account=account_v3(mods, **change), cues=FORMAT3_CUES)
+    finish(mods, twin, account=account_v3(mods, **change), cues=FORMAT3_CUES, cued_format=4)
+    assert (twin / "account.txt").read_text().splitlines()[0] == mods.account.HEADER_V4
+    three, (result, four) = reading(mods, run, f1_list)[1], reading(mods, twin, f1_list)
+    assert four == three
+    if item is None:
+        assert result.ok, four
+    else:
+        assert not result.ok and line_for(four, item).startswith(label)
+
+
+def test_a_format_4_account_is_schema_text_and_the_helper_offers_it(mods, tmp_path) -> None:
+    run = tmp_path / "f2"
+    run.mkdir()
+    (run / "provenance.txt").write_text(F2_PROVENANCE)
+    assert mods.account.main(["enter", str(run), "--format", "4"]) == 2  # accepted; refused only as the run is unfinished
+    (run / "result.json").write_text("{}")
+    save_account(mods, run, account_v3(mods), cued_format=4)
+    read = mods.evidence.read(run / "account.txt", "f2")
+    assert read.nonconforming == [] and read.content == [(f"line {len(mods.account.FIELDS_V4) + 1}: notes",
+                                                          "a note that is never printed")]
+    with pytest.raises(SystemExit):
+        mods.account.main(["enter", str(run), "--format", "5"])
 
 
 # ---------------------------------------------------------------- the turn and the departure as intervals

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The F2 operator account (V2-25 live validation): what the operator actually did, entered before any result.
 
-    python3 benchmarks/runner/face_account.py enter F2_DIR [--format 3]
+    python3 benchmarks/runner/face_account.py enter F2_DIR [--format 3|4]
     python3 benchmarks/runner/face_account.py check F2_DIR
 
 ``enter`` asks for each item in turn and writes ``F2_DIR/account.txt`` (key=value) in **format 2** (D66):
@@ -30,6 +30,11 @@ guard prints each movement's cue and records when (face_check reads those times 
 only answers, for each movement, whether it was done within its allowance after its cue, and not before it (yes / no /
 unknown), plus the same three questions about the face and the room. Each movement's interval is then [cue, cue +
 allowance]; the judged windows, their washout and minimum, and every other criterion are unchanged.
+
+**Format 4** (D85, the maintainer's instruction, 2026-10-12; ``enter --format 4``): format 3 with the 4:00 posture
+stated, in the cue and in the account alike: a head turn within 5 s, seated, the torso upright where it was and the
+chair not moved until 6:00, and no face, not even in profile, visible to the camera. Same keys, cues, allowances,
+windows and criteria as format 3; only those two questions' wording differs.
 
 ``check`` shows a saved account, read only, with its lock state. Stdlib only.
 """
@@ -152,7 +157,26 @@ INTRO_V3 = (
     "before the cue? Answer yes or no, or unknown if you are not sure. Then the three questions about your face and the\n"
     "room. Nothing here shows an identity result."
 )
-FORMATS = {HEADER_V1: (1, FIELDS_V1), HEADER: (2, FIELDS), HEADER_V3: (3, FIELDS_V3)}
+
+# Format 4 (D85, the maintainer's instruction, 2026-10-12): format 3 with the 4:00 posture stated. The same keys, cues,
+# allowances, windows and criteria; only the wording of the turn and of the face-hidden question differs, so that the
+# account asks exactly what the 4:00 cue asks. Formats 1-3 are read exactly as before.
+HEADER_V4 = ("# F2 account, format 4 (cued, head turned), entered with benchmarks/runner/face_account.py; "
+             "values as typed")
+TURN_V4 = Field(within_key("turned_away"), "choice", "yes / no: within 5 s after the 4:00 cue, and not before it, you "
+                "turned your head away from the camera, and until the 6:00 cue you stayed seated with your torso "
+                "upright where it was while you faced the camera and the chair not moved", YES_NO)
+HIDDEN_V4 = Field("face_hidden_while_turned", "choice", "yes / no: from your turn until the 6:00 cue the camera could "
+                  "not see your face at all, not even in profile", YES_NO)
+FIELDS_V4 = tuple({TURN_V4.key: TURN_V4, HIDDEN_V4.key: HIDDEN_V4}.get(f.key, f) for f in FIELDS_V3)
+INTRO_V4 = (
+    "Your F2 account (format 4, cued). For each movement: did you do it within its allowance after its cue, and not\n"
+    "before the cue? At 4:00 the movement is a head turn: seated, torso upright and still, the chair not moved,\n"
+    "no part of your face toward the camera, not even in profile. Answer yes or no, or unknown if you are not\n"
+    "sure. Then the three questions about your face and the room. Nothing here shows an identity result."
+)
+CUED_FORMATS = (3, 4)  # face_check reads both alike: each movement's interval from the guard's cue times
+FORMATS = {HEADER_V1: (1, FIELDS_V1), HEADER: (2, FIELDS), HEADER_V3: (3, FIELDS_V3), HEADER_V4: (4, FIELDS_V4)}
 INTRO = (
     "Your F2 account (format 2). Answer from what you noted; type unknown for anything you did not note or are not\n"
     "sure of. First: how many whole seconds after the T0 cue you started the stopwatch (0 if at the cue, as far as\n"
@@ -288,9 +312,9 @@ def _answer(index: int, values: dict[str, str], ask: Callable[[str], str], say: 
 
 def enter(run_dir: Path, ask: Callable[[str], str] = input, say: Callable[[str], None] = print,
           account_format_number: int = 2) -> int:
-    """Format 2 (D66), or format 3 (D79, cued) when asked for."""
-    fields, header, intro = ((FIELDS_V3, HEADER_V3, INTRO_V3) if account_format_number == 3 else
-                             (FIELDS, HEADER, INTRO))
+    """Format 2 (D66), or format 3 (D79, cued) or 4 (D85, cued, the 4:00 head turn stated) when asked for."""
+    fields, header, intro = {3: (FIELDS_V3, HEADER_V3, INTRO_V3), 4: (FIELDS_V4, HEADER_V4, INTRO_V4)}.get(
+        account_format_number, (FIELDS, HEADER, INTRO))
     problem = not_ready(run_dir)
     if problem is not None:
         say(f"STOP: {problem}. Nothing written.")
@@ -369,8 +393,9 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     enter_parser = commands.add_parser("enter", help="answer each item; saving locks the account")
     enter_parser.add_argument("run_dir", type=Path)
-    enter_parser.add_argument("--format", type=int, choices=(2, 3), default=2,
-                              help="2 (D66, the default) or 3 (D79, cued: only with the maintainer's approval)")
+    enter_parser.add_argument("--format", type=int, choices=(2, 3, 4), default=2,
+                              help="2 (D66, the default), 3 (D79, cued) or 4 (D85, cued, the 4:00 head turn stated); "
+                                   "3 and 4 only with the maintainer's approval")
     commands.add_parser("check", help="show a saved account and its lock state").add_argument("run_dir", type=Path)
     args = parser.parse_args(argv)
     if args.command == "enter":
