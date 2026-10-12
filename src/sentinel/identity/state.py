@@ -82,6 +82,7 @@ class VoteRecord:
     ownership: Ownership
     vote: str | None  # an enrolled identity ID, UNKNOWN_VOTE, or None (no vote)
     label: str  # match, unknown, margin, low_quality, incompatible, no_enrollment, no_face, ambiguous
+    similarity: float | None = None  # the best cosine similarity, when one was computed (match, unknown, margin)
 
 
 @dataclass(frozen=True)
@@ -119,10 +120,10 @@ class IdentityResolver:
                 }.get(ownership, ownership.value)
                 records.append(VoteRecord(key, ownership, None, ownership.value))
                 continue
-            vote, note = self._vote(faces[association.face_of[key]])
+            vote, note, similarity = self._vote(faces[association.face_of[key]])
             self.counters[_NOTE_COUNTERS[note]] += 1
             self._last_note[key] = note
-            records.append(VoteRecord(key, ownership, vote, _NOTE_LABELS[note]))
+            records.append(VoteRecord(key, ownership, vote, _NOTE_LABELS[note], similarity))
             if vote is not None:
                 votes = self._votes.setdefault(key, deque(maxlen=VOTES_KEPT))
                 votes.append(_Vote(person.observed_mono_ns, vote))
@@ -159,21 +160,21 @@ class IdentityResolver:
             for key in [k for k in table if k not in keep]:
                 del table[key]
 
-    def _vote(self, face: FaceObservation) -> tuple[str | None, str]:
-        """The face's vote (an identity ID or UNKNOWN_VOTE), or None, and why."""
+    def _vote(self, face: FaceObservation) -> tuple[str | None, str, float | None]:
+        """The face's vote (an identity ID or UNKNOWN_VOTE), or None, why, and the best similarity if computed."""
         enrollment = self._enrollment
         if enrollment is None or enrollment.is_empty:
-            return None, "no identities enrolled"
+            return None, "no identities enrolled", None
         if face.quality < self._policy.min_quality or face.embedding is None:
-            return None, "face quality too low"
+            return None, "face quality too low", None
         if len(face.embedding) != enrollment.dimension:
-            return None, "embedding from an incompatible model"
+            return None, "embedding from an incompatible model", None
         match = best_match(face.embedding, enrollment)
         if match.similarity < self._policy.match_threshold:
-            return UNKNOWN_VOTE, "face matched nobody"
+            return UNKNOWN_VOTE, "face matched nobody", match.similarity
         if match.runner_up is not None and match.similarity - match.runner_up < self._policy.margin:
-            return None, "face matches more than one identity"
-        return match.identity_id, "face matched"
+            return None, "face matches more than one identity", match.similarity
+        return match.identity_id, "face matched", match.similarity
 
     def _current_votes(self, key: TrackKey, now: MonoInstant) -> list[_Vote]:
         if key.boot_id != now.boot_id:

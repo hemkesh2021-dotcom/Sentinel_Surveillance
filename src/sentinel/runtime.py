@@ -23,7 +23,7 @@ from .config import SentinelConfig
 from .contracts import Evidence, FrameRef, StreamIdentity, TrackKey, TrackObservation, TrackStatus
 from .identity.association import AssociationGeometry, FaceObservation, associate
 from .identity.matching import Enrollment
-from .identity.state import UNKNOWN_VOTE, IdentityPolicy, IdentityResolver, IdentityState, TrackIdentity
+from .identity.state import UNKNOWN_VOTE, IdentityPolicy, IdentityResolver, IdentityState, TrackIdentity, VoteRecord
 from .jobs import WorkerOutcome
 from .live_state import Capability, LiveState, Occupancy, PersonState, SceneStatus
 from .media.clock import Clock, MonoInstant
@@ -45,13 +45,45 @@ class RoutedEvidence:
 
 
 IDENTITY_RECORD_SCHEMA = 1  # the "identity" stdout records: tick, result and transition
+# A face validation run's records: schema 1, plus each result person's diagnostic numbers (FaceDiagnostics).
+IDENTITY_DIAGNOSTIC_SCHEMA = 2
+DIAGNOSTIC_DECIMALS = 3
 
 
-def tick_record(frame: FrameRef, persons: Sequence[TrackObservation], tick: str) -> dict[str, object]:
+def _schema(schema: int) -> int:
+    if schema not in (IDENTITY_RECORD_SCHEMA, IDENTITY_DIAGNOSTIC_SCHEMA):
+        raise ValueError(f"unknown identity record schema {schema!r}")
+    return schema
+
+
+def tick_record(frame: FrameRef, persons: Sequence[TrackObservation], tick: str,
+                schema: int = IDENTITY_RECORD_SCHEMA) -> dict[str, object]:
     """One 1 Hz face tick: its frame, the track IDs on that frame, and what the worker did with it."""
-    return {"identity": "tick", "schema": IDENTITY_RECORD_SCHEMA, "stream_epoch": frame.stream_epoch,
+    return {"identity": "tick", "schema": _schema(schema), "stream_epoch": frame.stream_epoch,
             "frame_seq": frame.frame_seq, "frame_mono_ns": frame.ingest_mono_ns, "tick": tick,
             "tracks": sorted(p.track_id for p in persons)}
+
+
+@dataclass(frozen=True)
+class FaceDiagnostics:
+    """One person's numbers on an applied face result, for validation runs (schema 2): where the person's box was and
+    how sure the detector was, the assigned face's size and score, and how close it came to an enrolled identity.
+    Never an image, an embedding or a name."""
+
+    box: tuple[float, float, float, float]  # the person's box, normalized (x1, y1, x2, y2)
+    confidence: float | None  # the person detector's confidence
+    face_px: tuple[int, int] | None  # the assigned face's width and height in the frame's pixels; None: no face
+    face_score: float | None  # the face detector's confidence for it
+    similarity: float | None  # the best cosine similarity to an enrolled identity, when one was computed
+
+    def fields(self) -> dict[str, object]:
+        def r(value: float | None) -> float | None:
+            return None if value is None else round(value, DIAGNOSTIC_DECIMALS)
+
+        return {"box": [r(v) for v in self.box], "confidence": r(self.confidence),
+                "face": None if self.face_px is None else {"w_px": self.face_px[0], "h_px": self.face_px[1],
+                                                           "score": r(self.face_score)},
+                "similarity": r(self.similarity)}
 
 
 @dataclass(frozen=True)
@@ -67,15 +99,20 @@ class FaceResultRecord:
     persons: tuple[tuple[int, str, str, str | None, str], ...]  # track ID, ownership, vote kind, identity ID, label
     processing_ms: float | None = None
     error: str | None = None
+    diagnostics: tuple[FaceDiagnostics, ...] = ()  # one per entry of ``persons``; written only with schema 2
 
-    def record(self) -> dict[str, object]:
-        return {"identity": "result", "schema": IDENTITY_RECORD_SCHEMA, "stream_epoch": self.stream_epoch,
+    def record(self, schema: int = IDENTITY_RECORD_SCHEMA) -> dict[str, object]:
+        persons = [{"track_id": track, "ownership": ownership, "vote": vote, "identity_id": identity, "label": label}
+                   for track, ownership, vote, identity, label in self.persons]
+        if _schema(schema) == IDENTITY_DIAGNOSTIC_SCHEMA:
+            if len(self.diagnostics) != len(persons):
+                raise ValueError("every person on a schema 2 result needs its diagnostics")
+            persons = [person | numbers.fields() for person, numbers in zip(persons, self.diagnostics)]
+        return {"identity": "result", "schema": schema, "stream_epoch": self.stream_epoch,
                 "frame_seq": self.frame_seq, "frame_mono_ns": self.frame_mono_ns,
                 "applied_mono_ns": self.applied_mono_ns, "outcome": self.outcome, "faces": self.faces,
                 "processing_ms": None if self.processing_ms is None else round(self.processing_ms, 1),
-                "error": self.error,
-                "persons": [{"track_id": track, "ownership": ownership, "vote": vote, "identity_id": identity,
-                             "label": label} for track, ownership, vote, identity, label in self.persons]}
+                "error": self.error, "persons": persons}
 
 
 @dataclass(frozen=True)
@@ -92,8 +129,8 @@ class IdentityTransition:
     reason: str
     mono_ns: int
 
-    def record(self) -> dict[str, object]:
-        return {"identity": "transition", "schema": IDENTITY_RECORD_SCHEMA, "stream_epoch": self.stream_epoch,
+    def record(self, schema: int = IDENTITY_RECORD_SCHEMA) -> dict[str, object]:
+        return {"identity": "transition", "schema": _schema(schema), "stream_epoch": self.stream_epoch,
                 "track_id": self.track_id,
                 "from": self.from_state, "to": self.to_state, "identity_id": self.identity_id, "basis": self.basis,
                 "last_vote_age_ms": self.last_vote_age_ms, "reason": self.reason, "mono_ns": self.mono_ns}
@@ -231,6 +268,7 @@ class EdgeCore:
         freshness = self._freshness.assess(connected)
         now = self._clock.mono()
         votes: list = []
+        diagnostics: tuple[FaceDiagnostics, ...] = ()
         if self._face_recognition is not Capability.AVAILABLE:
             outcome = "ignored_face_unavailable"
         elif faces is None:
@@ -247,6 +285,7 @@ class EdgeCore:
             for ownership in association.face_ownership:
                 self.face_counters[f"faces_{ownership.value}"] += 1
             votes = self._identities.observe(persons, faces, association)
+            diagnostics = _diagnostics(frame, persons, faces, association.face_of, votes)
         self.face_counters[f"results_{outcome}"] += 1
         record = FaceResultRecord(
             frame.stream_epoch, frame.frame_seq, frame.ingest_mono_ns, now.ns, outcome,
@@ -254,7 +293,7 @@ class EdgeCore:
             tuple((v.key.track_id, v.ownership.value,
                    "none" if v.vote is None else "unknown" if v.vote == UNKNOWN_VOTE else "match",
                    v.vote if v.vote else None, v.label) for v in votes),
-            processing_ms, error)
+            processing_ms, error, diagnostics)
         return dataclasses.replace(self._finish(freshness, []), face_result=record)
 
     def on_scene_outcome(
@@ -443,3 +482,26 @@ class EdgeCore:
 
 def _confirmed(tracks: tuple[TrackObservation, ...]) -> int:
     return sum(1 for t in tracks if t.status is TrackStatus.CONFIRMED)
+
+
+def _diagnostics(
+    frame: FrameRef,
+    persons: Sequence[TrackObservation],
+    faces: Sequence[FaceObservation],
+    face_of: dict[TrackKey, int],
+    votes: Sequence[VoteRecord],
+) -> tuple[FaceDiagnostics, ...]:
+    """Each vote's person, in the votes' order: its box and confidence, its assigned face's size and score, and the
+    vote's similarity. Only numbers are taken from a face; its embedding stays where it is."""
+    by_key = {person.key: person for person in persons}
+    out = []
+    for vote in votes:
+        person = by_key[vote.key]
+        index = face_of.get(vote.key)
+        face = None if index is None else faces[index]
+        out.append(FaceDiagnostics(
+            (person.box.x1, person.box.y1, person.box.x2, person.box.y2), person.detector_confidence,
+            None if face is None else (round((face.box.x2 - face.box.x1) * frame.native_width),
+                                       round((face.box.y2 - face.box.y1) * frame.native_height)),
+            None if face is None else face.quality, vote.similarity))
+    return tuple(out)

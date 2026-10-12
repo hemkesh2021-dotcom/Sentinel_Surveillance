@@ -60,6 +60,14 @@ Ticks and votes are placed by their frame's time; a result applied after its fra
 counts where its frame was. Whether a state was justified at a moment uses only results applied by that moment.
 Identity rules follow ``sentinel.identity.state`` with the runtime's configured values (a test ties the constants
 below to the runtime's defaults).
+
+**Identity record schemas.** Schema 1 is read exactly as it always was. Schema 2 (D84: what face validation runs
+write) is schema 1 plus four numbers per result person (runtime.FaceDiagnostics): the person's box and the
+detector's confidence, the assigned face's size in frame pixels and the face detector's score, and the vote's
+similarity to the closest enrolled identity. A run's records share one schema. Every item is judged the same way for
+both; schema 2's numbers must agree with their labels (a face only where one was assigned, a similarity only where
+one was computed, a match at or above MATCH_THRESHOLD and an unknown vote at or below it), and they add DESCRIPTIVE
+diagnostics per judged window, which are never judged.
 """
 
 from __future__ import annotations
@@ -67,9 +75,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import stat
+import statistics
 import sys
 from pathlib import Path
 from typing import Any
@@ -81,12 +91,15 @@ from operator_account import parse as parse_account
 from operator_account import seconds as stopwatch_seconds
 
 SCHEMA = 1
+DIAGNOSTIC_SCHEMA = 2  # runtime.IDENTITY_DIAGNOSTIC_SCHEMA: schema 1 plus each result person's diagnostic numbers
+SCHEMAS = (SCHEMA, DIAGNOSTIC_SCHEMA)
 ID = re.compile(r"^idn-[0-9a-f]{12}$")
 NS = 1_000_000_000
 # The runtime's identity values (config.IdentityConfig defaults; test-tied).
 VOTE_TTL_S = 30.0
 FRESH_S = 3.0
 CONFIRMATIONS = 2
+MATCH_THRESHOLD = 0.70  # cosine similarity; schema 2's similarities are checked against it, never judged
 # This check's proposed values (maintainer review, 2026-10-08).
 WASHOUT_S = 15.0
 MIN_WINDOW_S = 45.0
@@ -116,6 +129,9 @@ TICK_KEYS = {"identity", "schema", "stream_epoch", "frame_seq", "frame_mono_ns",
 RESULT_KEYS = {"identity", "schema", "stream_epoch", "frame_seq", "frame_mono_ns", "applied_mono_ns", "outcome",
                "faces", "processing_ms", "error", "persons"}
 PERSON_KEYS = {"track_id", "ownership", "vote", "identity_id", "label"}
+DIAGNOSTIC_PERSON_KEYS = PERSON_KEYS | {"box", "confidence", "face", "similarity"}  # schema 2
+FACE_KEYS = {"w_px", "h_px", "score"}
+SIMILARITY_LABELS = {"match", "unknown", "margin"}  # the labels for which the runtime computed a similarity
 TRANSITION_KEYS = {"identity", "schema", "stream_epoch", "track_id", "from", "to", "identity_id", "basis",
                    "last_vote_age_ms", "reason", "mono_ns"}
 TICKS = {"offered", "skipped_no_person", "stopping"}
@@ -173,10 +189,11 @@ def _record_problem(kind: Any, item: dict) -> str | None:
     keys = {"tick": TICK_KEYS, "result": RESULT_KEYS, "transition": TRANSITION_KEYS}.get(kind)
     if keys is None:
         return f"unknown identity record {kind!r}"
-    if item.get("schema") != SCHEMA:
-        return f"{kind}: schema {item.get('schema')!r}, not {SCHEMA}"
+    schema = item.get("schema")
+    if schema not in SCHEMAS or type(schema) is not int:
+        return f"{kind}: schema {schema!r}, not one of {list(SCHEMAS)}"
     if set(item) != keys:
-        return f"{kind}: fields {sorted(set(item) ^ keys)} differ from schema {SCHEMA}"
+        return f"{kind}: fields {sorted(set(item) ^ keys)} differ from schema {schema}"
     if kind == "tick":
         if not (_int(item["frame_mono_ns"]) and item["tick"] in TICKS and isinstance(item["tracks"], list)
                 and all(_int(t) for t in item["tracks"])):
@@ -185,18 +202,50 @@ def _record_problem(kind: Any, item: dict) -> str | None:
         if not (_int(item["frame_mono_ns"]) and _int(item["applied_mono_ns"]) and item["outcome"] in OUTCOMES
                 and isinstance(item["persons"], list)):
             return "result: a field has the wrong type or value"
+        person_keys = PERSON_KEYS if schema == SCHEMA else DIAGNOSTIC_PERSON_KEYS
         for person in item["persons"]:
-            if not isinstance(person, dict) or set(person) != PERSON_KEYS or not _int(person["track_id"]) \
+            if not isinstance(person, dict) or set(person) != person_keys or not _int(person["track_id"]) \
                     or person["vote"] not in ("match", "unknown", "none") \
                     or (person["vote"] == "match") != (person["identity_id"] is not None) \
                     or (person["identity_id"] is not None and not ID.match(str(person["identity_id"]))):
-                return "result: a person entry differs from schema 1"
+                return f"result: a person entry differs from schema {schema}"
+            if schema == DIAGNOSTIC_SCHEMA and not _diagnostics_fit(person):
+                return "result: a person entry's diagnostic numbers do not fit its labels"
     else:
         if not (_int(item["mono_ns"]) and _int(item["track_id"]) and item["from"] in STATES and item["to"] in STATES
                 and (item["identity_id"] is None or ID.match(str(item["identity_id"])))
                 and ((item["to"] == "known") == (item["identity_id"] is not None))):
             return "transition: a field has the wrong type or value"
     return None
+
+
+def _number(value: Any, low: float, high: float) -> bool:
+    return type(value) in (int, float) and math.isfinite(value) and low <= value <= high
+
+
+def _diagnostics_fit(person: dict) -> bool:
+    """Schema 2's numbers on one result person, against that person's own labels: a box inside the frame and the
+    detector's confidence; a face (pixels and score) exactly when one was assigned; a similarity exactly when the
+    runtime computed one, on the threshold's side its label says (rounding can only reach the threshold itself)."""
+    box, face, similarity = person["box"], person["face"], person["similarity"]
+    if not (isinstance(box, list) and len(box) == 4 and all(_number(v, 0.0, 1.0) for v in box)
+            and box[0] < box[2] and box[1] < box[3] and _number(person["confidence"], 0.0, 1.0)):
+        return False
+    if (face is None) != (person["ownership"] != "assigned"):
+        return False
+    if face is not None and not (isinstance(face, dict) and set(face) == FACE_KEYS and _int(face["w_px"])
+                                 and _int(face["h_px"]) and face["w_px"] >= 0 and face["h_px"] >= 0
+                                 and _number(face["score"], 0.0, 1.0)):
+        return False
+    if (similarity is None) != (person["label"] not in SIMILARITY_LABELS):
+        return False
+    if similarity is None:
+        return True
+    if not _number(similarity, -1.0, 1.0):
+        return False
+    if person["label"] == "unknown":
+        return similarity <= MATCH_THRESHOLD  # below it, or rounded up to it
+    return similarity >= MATCH_THRESHOLD  # a match, or a margin refusal (decided only at or above it)
 
 
 class Timeline:
@@ -440,9 +489,13 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
 
     records, problems, _, _ = read_records(directory / "run.jsonl")
     total = sum(len(v) for v in records.values())
+    schemas = sorted({item["schema"] for kind in records.values() for item in kind})
+    if len(schemas) > 1:
+        problems.append(f"the records mix schemas {schemas}")
+    schema = schemas[0] if len(schemas) == 1 else SCHEMA
     last = captures[-1] if captures else MISSING
     dropped = s5._get(last, "components", "face", "records", "dropped")
-    r.item("identity records: schema 1, complete, none dropped",
+    r.item(f"identity records: schema {schema}, complete, none dropped",
            {"records": {k: len(v) for k, v in records.items()}, "problems": problems[:5], "dropped": dropped}
            if total else MISSING,
            total > 0 and not problems and dropped == 0 and total < MAX_IDENTITY_RECORDS)
@@ -501,6 +554,8 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
     _identity(r, line, windows, enrolled, account, bounds, fmt)
     _counts_items(r, directory)
     _describe(r, result, line, windows, last, bounds, fmt)
+    if schema == DIAGNOSTIC_SCHEMA:
+        _diagnose(r, line, windows)
     return r
 
 
@@ -730,6 +785,53 @@ def _describe(r: Reading, result: Any, line: Timeline, windows: dict, last: Any,
     r.describe("time to known after sitting down facing the camera (s)" if fmt == 1 else
                "time to known after sitting down facing the camera, from the latest and the earliest possible "
                "sitting time (s)", firsts)
+
+
+def _spread(values: list[float]) -> list[float] | None:
+    """[min, median, max], rounded; None when there is no value."""
+    if not values:
+        return None
+    return [round(min(values), 3), round(statistics.median(values), 3), round(max(values), 3)]
+
+
+def _diagnose(r: Reading, line: Timeline, windows: dict) -> None:
+    """Schema 2 (D84): DESCRIPTIVE diagnostics per judged window, never judged. Whether a person was detected on each
+    tick and on which track; where the people on applied results were and how sure the person detector was; how many
+    of them had a face from the face detector, its size and score; and how close each vote came to the enrolled
+    identity, by vote."""
+    continuity, people, faces, similarity = {}, {}, {}, {}
+    for name in WINDOWS:
+        ticks = line.in_window(line.ticks, windows[name])
+        run = longest = 0
+        for tick in ticks:
+            run = run + 1 if tick["tick"] == "skipped_no_person" else 0
+            longest = max(longest, run)
+        continuity[name] = {"offered": sum(1 for t in ticks if t["tick"] == "offered"),
+                            "skipped_no_person": sum(1 for t in ticks if t["tick"] == "skipped_no_person"),
+                            "longest_skipped_run": longest,
+                            "track_ids": sorted({k for t in ticks if t["tick"] == "offered" for k in t["tracks"]})}
+        persons = [p for x in line.in_window(line.results, windows[name]) if x["outcome"] == "applied"
+                   for p in x["persons"]]
+        assigned = [p["face"] for p in persons if p["face"] is not None]
+        people[name] = None if not persons else {
+            "n": len(persons), "box_median": [round(statistics.median(p["box"][i] for p in persons), 3)
+                                              for i in range(4)],
+            "confidence": _spread([p["confidence"] for p in persons])}
+        faces[name] = None if not persons else {
+            "faces": len(assigned), "people": len(persons), "w_px": _spread([f["w_px"] for f in assigned]),
+            "h_px": _spread([f["h_px"] for f in assigned]), "score": _spread([f["score"] for f in assigned])}
+        votes = {vote: [p["similarity"] for p in persons if p["label"] == vote] for vote in ("match", "unknown")}
+        similarity[name] = None if not persons else {
+            "match_votes": len(votes["match"]), "match": _spread(votes["match"]),
+            "unknown_votes": len(votes["unknown"]), "unknown": _spread(votes["unknown"])}
+    r.describe("diagnostics: person continuity per window (offered and skipped ticks, the longest run of skipped "
+               "ticks, track IDs on offered ticks)", continuity)
+    r.describe("diagnostics: people on applied results per window (median box [x1, y1, x2, y2] as fractions of the "
+               "frame; person detector confidence [min, median, max])", people)
+    r.describe("diagnostics: assigned faces per window (faces among the people on applied results; width and height "
+               "in frame pixels and the face detector's score, each [min, median, max])", faces)
+    r.describe("diagnostics: similarity to the closest enrolled identity per window, by vote ([min, median, max]; "
+               f"the runtime's match threshold is {MATCH_THRESHOLD:g})", similarity)
 
 
 # ---------------------------------------------------------------- F1 reading

@@ -45,7 +45,10 @@ unavailable; nothing is restarted or re-admitted at runtime (V2-19, V2-29).
 Face recognition (V2-25 demo form, ``--face``; off by default): the 1 Hz FaceWorker analyses a private copy of a
 processed live frame that has people, and EdgeCore applies each result to that frame's own people
 (``on_face_outcome``); each tick, each result (with every person's vote and its frame time) and each identity
-transition is kept as an opaque record (``drain_identity_records``). The gallery is sealed (sentinel.identity.vault) and opened at startup with a passphrase the
+transition is kept as an opaque record (``drain_identity_records``). In a ``--face-validation`` run the records are
+schema 2: each result's person also carries numbers for diagnosing a failed validation (its box and detector
+confidence, its face's size and score, the vote's similarity; runtime.FaceDiagnostics), never an image, embedding or
+name. The gallery is sealed (sentinel.identity.vault) and opened at startup with a passphrase the
 operator types; startup refuses on a sealing error, and a missing or empty gallery leaves face recognition
 unavailable without loading the model. The face adapter needs its own admission record, which starts
 PENDING_VALIDATION: only ``--face-validation`` runs may use it. Nothing here shows names, photos or embeddings.
@@ -140,7 +143,7 @@ from .memory_policy import (
     release_file_cache,
 )
 from .rules.zones import ZonePhase
-from .runtime import CoreOutput, EdgeCore, tick_record
+from .runtime import IDENTITY_DIAGNOSTIC_SCHEMA, IDENTITY_RECORD_SCHEMA, CoreOutput, EdgeCore, tick_record
 from .scene.analyzer import IMAGES_KEPT, RecentImages, ThreadedSceneAnalyzer
 from .scene.chat import CHAT_ADMISSION, ChatAdmission, ChatService
 from .scene.chat_gate import SAMPLE_INTERVAL_S as CHAT_GATE_SAMPLE_S, ChatGate, read_pressure
@@ -323,6 +326,9 @@ class DemoRuntime:
             scene_problem=self._scene_problem,
         )
         self._identity_records: deque[dict[str, Any]] = deque()
+        # A face validation run's records carry each person's diagnostic numbers (schema 2); other runs, schema 1.
+        self._identity_schema = (IDENTITY_DIAGNOSTIC_SCHEMA if face is not None and face.validation_run
+                                 else IDENTITY_RECORD_SCHEMA)
         self._snapshots = snapshots
         # D74: chat reads frames only when it can be used (admitted, with the scene model); otherwise it keeps none.
         chat_allowed = chat_admission.admitted or (chat_validation and chat_admission.validation_allowed)
@@ -513,7 +519,7 @@ class DemoRuntime:
             if self._face is not None:
                 tick = self._face.worker.consider(frame, result.persons, captured.image)  # copies it if offered
                 if tick is not None:
-                    self._keep_record(tick_record(frame, result.persons, tick))
+                    self._keep_record(tick_record(frame, result.persons, tick, self._identity_schema))
             return output
         if result.outcome is FrameOutcome.FAILED:
             self.counters["frames_failed"] += 1
@@ -531,9 +537,9 @@ class DemoRuntime:
             if current is not None:
                 self._live = current.state
                 if current.face_result is not None:
-                    self._keep_record(current.face_result.record())
+                    self._keep_record(current.face_result.record(self._identity_schema))
                 for transition in current.identity_transitions:
-                    self._keep_record(transition.record())
+                    self._keep_record(transition.record(self._identity_schema))
                 self._annotate(current)
                 for zone in current.zones:
                     enrich = zone.last_source if zone.phase is ZonePhase.ENTERED else None

@@ -3,17 +3,19 @@ live, with identity retention, clearing and opaque transition records. Synthetic
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from sentinel.config import parse_config
 from sentinel.contracts import FrameRef, NormalizedBox, PixelFormat, TrackObservation, TrackStatus
 from sentinel.identity.association import FaceObservation
-from sentinel.identity.matching import EnrolledIdentity, Enrollment
+from sentinel.identity.matching import EnrolledIdentity, Enrollment, best_match
 from sentinel.identity.state import Basis, IdentityState
 from sentinel.live_state import Capability
 from sentinel.media.clock import FakeClock
 from sentinel.media.frames import FrameStamper
-from sentinel.runtime import EdgeCore
+from sentinel.runtime import IDENTITY_DIAGNOSTIC_SCHEMA, EdgeCore
 
 CONFIG = parse_config({"config_version": 1, "camera": {"id": "cam-1"}})
 A, B = (1.0, 0.0, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0)
@@ -220,6 +222,42 @@ def test_each_face_result_is_recorded_with_its_frame_time_and_each_persons_vote(
                                          "identity_id": None, "label": "unknown"}
     low = world.faces(frame, persons, (head(LEFT), A_FACE), quality=0.2).face_result.record()
     assert low["persons"][0]["vote"] == "none" and low["persons"][0]["label"] == "low_quality"
+
+
+def test_a_validation_runs_result_carries_each_persons_diagnostic_numbers() -> None:
+    """D84: schema 2 adds, per person, the box and detector confidence, the assigned face's size in frame pixels and
+    its score, and the vote's best similarity, rounded; nothing where no face was assigned or no similarity was
+    computed. Schema 1, the default, is unchanged."""
+    world = World()
+    frame, persons = world.frame((1, LEFT), (2, RIGHT), dt=1.0)
+    output = world.faces(frame, persons, (head(LEFT), A_FACE))
+    plain, numbers = output.face_result.record(), output.face_result.record(IDENTITY_DIAGNOSTIC_SCHEMA)
+    assert plain["schema"] == 1 and all(set(p) == {"track_id", "ownership", "vote", "identity_id", "label"}
+                                        for p in plain["persons"])
+    match = round(best_match(A_FACE, ENROLLMENT).similarity, 3)
+    assert numbers == {**plain, "schema": 2, "persons": [
+        {**plain["persons"][0], "box": [0.05, 0.1, 0.35, 0.9], "confidence": 0.9,
+         "face": {"w_px": 90, "h_px": 62, "score": 0.9}, "similarity": match},  # head(LEFT) is 0.14 x 0.13 of 640x480
+        {**plain["persons"][1], "box": [0.6, 0.1, 0.9, 0.9], "confidence": 0.9, "face": None, "similarity": None}]}
+    assert match >= CONFIG.identity.match_threshold
+    frame, persons = world.frame((1, LEFT), dt=1.0)
+    nobody = world.faces(frame, persons, (head(LEFT), NOBODY)).face_result.record(IDENTITY_DIAGNOSTIC_SCHEMA)
+    assert nobody["persons"][0]["label"] == "unknown"
+    assert nobody["persons"][0]["similarity"] == round(best_match(NOBODY, ENROLLMENT).similarity, 3) < 0.7
+    low = world.faces(frame, persons, (head(LEFT), A_FACE), quality=0.2).face_result.record(IDENTITY_DIAGNOSTIC_SCHEMA)
+    assert low["persons"][0]["label"] == "low_quality"
+    assert low["persons"][0]["face"] == {"w_px": 90, "h_px": 62, "score": 0.2}
+    assert low["persons"][0]["similarity"] is None  # never compared
+    assert "embedding" not in json.dumps([numbers, nobody, low])
+
+
+def test_a_failed_result_has_no_diagnostics_and_an_unknown_schema_is_refused() -> None:
+    world = World()
+    frame, persons = world.frame((1, LEFT), dt=1.0)
+    failed = world.faces(frame, persons, None).face_result
+    assert failed.record(IDENTITY_DIAGNOSTIC_SCHEMA)["persons"] == []
+    with pytest.raises(ValueError):
+        failed.record(3)
 
 
 @pytest.mark.parametrize(("make", "outcome"), [

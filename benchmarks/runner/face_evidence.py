@@ -426,6 +426,10 @@ IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransitio
     "faces": COUNT, "processing_ms": SECONDS, "error": maybe(TEXT), "persons[].track_id": INT,
     "persons[].ownership": vocab(*OWNERSHIP), "persons[].vote": vocab("none", "unknown", "match"),
     "persons[].identity_id": maybe(IDN), "persons[].label": vocab(*VOTE_LABELS, *OWNERSHIP),
+    # schema 2 (a validation run's runtime.FaceDiagnostics): numbers only
+    "persons[].box[]": NUM, "persons[].confidence": maybe(NUM), "persons[].face": NULL,
+    "persons[].face.w_px": INT, "persons[].face.h_px": INT, "persons[].face.score": NUM,
+    "persons[].similarity": maybe(NUM),
     "track_id": INT, "from": vocab(*IDENTITY_STATES), "to": vocab(*IDENTITY_STATES, "cleared"),
     "identity_id": maybe(IDN), "basis": maybe(BASIS), "last_vote_age_ms": COUNT, "reason": TRANSITION_REASON,
     "mono_ns": INT,

@@ -126,7 +126,7 @@ class Capture:
 
 class Loop:
     def __init__(self, tmp_path: Path, *, analyze=analyze_with(vec(0.97, 0.1, 0.0, 0.05)), face_problem=None,
-                 with_face: bool = True) -> None:
+                 with_face: bool = True, validation: bool = True) -> None:
         self.clock = FakeClock(utc=NOW)
         self.config = parse_config({"config_version": 1, "camera": {"id": "cam-1"}})
         self.slot = LatestFrame()
@@ -134,7 +134,7 @@ class Loop:
         self.tracker = Tracker()
         self.db = Database.open(tmp_path / "sentinel.db")
         self.worker = FaceWorker(analyze, self.clock)
-        face = FaceRuntime(self.worker, 1, True) if with_face else None
+        face = FaceRuntime(self.worker, 1, validation) if with_face else None
         self.runtime = DemoRuntime(
             self.config, self.clock, capture=self.capture, slot=self.slot,
             incidents=IncidentService(self.db, self.clock, incidents=self.config.incidents,
@@ -186,6 +186,27 @@ def test_the_loop_samples_live_frames_and_reports_opaque_identity_transitions(tm
     assert "embedding" not in text and "0.97" not in text and "idn-00000000000a" not in text  # counts only
     assert loop.runtime.drain_identity_records() == []
     assert loop.close()["stopped"]["face_worker"] is True
+
+
+@pytest.mark.parametrize(("validation", "schema"), [(True, 2), (False, 1)])
+def test_only_a_validation_runs_records_carry_diagnostic_numbers(tmp_path, validation, schema) -> None:
+    """D84: a --face-validation run's identity records are schema 2, each result person with its numbers (the person's
+    box and confidence, its face's size and score, its similarity); any other face run keeps schema 1 unchanged."""
+    loop = Loop(tmp_path, validation=validation)
+    for _ in range(20):  # two face ticks: a known identity, so a transition too
+        loop.frame()
+    records = loop.runtime.drain_identity_records()
+    assert {r["identity"] for r in records} == {"tick", "result", "transition"}
+    assert {r["schema"] for r in records} == {schema}
+    person = next(r for r in records if r["identity"] == "result")["persons"][0]
+    plain = {"track_id": 1, "ownership": "assigned", "vote": "match", "identity_id": "idn-00000000000a",
+             "label": "match"}
+    if validation:  # PERSON is 100-200 x 100-400 px of 640x480; FACE_BOX is 0.09 x 0.13 of it
+        assert person == {**plain, "box": [0.156, 0.208, 0.312, 0.833], "confidence": 0.9,
+                          "face": {"w_px": 58, "h_px": 62, "score": 0.9}, "similarity": 0.993}
+    else:
+        assert person == plain
+    loop.close()
 
 
 def test_an_empty_room_runs_no_face_analysis(tmp_path) -> None:

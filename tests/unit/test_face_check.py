@@ -69,7 +69,13 @@ from sentinel.media.clock import FakeClock
 from sentinel.media.frames import FrameStamper
 from sentinel.memory_policy import RELEASE_FILE_ROLES
 from sentinel.jobs import WorkerOutcome
-from sentinel.runtime import FaceResultRecord, IdentityTransition, tick_record
+from sentinel.runtime import (
+    IDENTITY_DIAGNOSTIC_SCHEMA,
+    FaceDiagnostics,
+    FaceResultRecord,
+    IdentityTransition,
+    tick_record,
+)
 from sentinel.scene.analyzer import RecentImages, ThreadedSceneAnalyzer
 from sentinel.status_page import build_status, read_store
 from sentinel.storage.database import Database
@@ -519,11 +525,13 @@ def _mutate(out: Path, edit) -> None:
 
 
 @pytest.mark.parametrize(("edit", "item", "label"), [
-    # a field missing from one result: the schema changed
+    # a field missing from one result: the schema changed (a validation run writes schema 2, D84)
     (lambda ls: _nth_result(ls, 0, lambda l: {k: v for k, v in l.items() if k != "frame_mono_ns"}),
-     "identity records: schema 1", "FAIL"),
-    # another schema version
-    (lambda ls: [dict(l, schema=2) if l.get("identity") == "tick" else l for l in ls], "identity records", "FAIL"),
+     "identity records: schema 2", "FAIL"),
+    # an unknown schema version
+    (lambda ls: [dict(l, schema=3) if l.get("identity") == "tick" else l for l in ls], "identity records", "FAIL"),
+    # one record kind in schema 1 among schema 2 records: a run's records share one schema
+    (lambda ls: [dict(l, schema=1) if l.get("identity") == "tick" else l for l in ls], "identity records", "FAIL"),
     # most results lost: completion below 0.95
     (lambda ls: [l for n, l in enumerate(ls) if not (l.get("identity") == "result" and n % 3)], "completion", "FAIL"),
     # one processing error
@@ -587,6 +595,126 @@ def test_the_checker_matches_the_runtimes_schema_and_values(mods) -> None:
     assert check.MAX_IDENTITY_RECORDS == demo_runtime.MAX_IDENTITY_RECORDS
     assert set(check.FACE_RELEASES) == set(RELEASE_FILE_ROLES["face"])
     assert check.MIN_COMPLETION == 0.95 and check.SCHEMA == 1
+    # D84: schema 2, the validation runs' records
+    numbers = FaceDiagnostics((0.1, 0.2, 0.3, 0.9), 0.8, (40, 50), 0.95, 0.75)
+    diagnostic = FaceResultRecord(0, 1, 5, 6, "applied", 1, ((1, "assigned", "match", ENROLLED, "match"),),
+                                  diagnostics=(numbers,)).record(IDENTITY_DIAGNOSTIC_SCHEMA)
+    assert (check.DIAGNOSTIC_SCHEMA, check.SCHEMAS) == (IDENTITY_DIAGNOSTIC_SCHEMA, (1, 2))
+    assert set(diagnostic["persons"][0]) == check.DIAGNOSTIC_PERSON_KEYS
+    assert set(diagnostic["persons"][0]["face"]) == check.FACE_KEYS
+    assert check.MATCH_THRESHOLD == defaults.match_threshold
+    assert set(tick_record(frame, [], TICK_OFFERED, IDENTITY_DIAGNOSTIC_SCHEMA)) == check.TICK_KEYS
+
+
+# ---------------------------------------------------------------- D84: schema 2's diagnostic numbers
+
+
+def _value(text: str, start: str) -> Any:
+    line = line_for(text, start)
+    return json.loads(line[line.index(": {") + 2:])
+
+
+def test_a_validation_runs_diagnostics_are_described_per_window_and_never_judged(mods, tmp_path, startup,
+                                                                                  f1_list) -> None:
+    """D84: the scripted validation run's records are schema 2. The reading judges what it always judged and adds,
+    per judged window, the runtime's own numbers: tick continuity, the people's boxes and detector confidence, the
+    faces' size and score, and each vote's similarity."""
+    out = simulate(tmp_path, startup)
+    finish(mods, out)
+    result, text = reading(mods, out, f1_list)
+    assert result.ok, text
+    assert line_for(text, "identity records: schema 2").startswith("PASS")
+    continuity = _value(text, "diagnostics: person continuity")
+    assert continuity["E1"]["offered"] == 0 and continuity["E1"]["track_ids"] == []
+    assert continuity["E1"]["longest_skipped_run"] == continuity["E1"]["skipped_no_person"] > 0
+    assert continuity["A"] == {"offered": 90, "skipped_no_person": 0, "longest_skipped_run": 0, "track_ids": [1]}
+    people = _value(text, "diagnostics: people on applied results")
+    assert people["E1"] is None and people["E2"] is None
+    assert people["K1"] == {"n": 90, "box_median": [0.156, 0.208, 0.312, 0.833], "confidence": [0.9, 0.9, 0.9]}
+    faces = _value(text, "diagnostics: assigned faces")
+    assert faces["K1"] == {"faces": 90, "people": 90, "w_px": [58, 58, 58], "h_px": [62, 62, 62],
+                           "score": [0.9, 0.9, 0.9]}
+    assert faces["A"] == {"faces": 0, "people": 90, "w_px": None, "h_px": None, "score": None}  # turned away
+    similarity = _value(text, "diagnostics: similarity to the closest enrolled identity")
+    assert similarity["K2"] == {"match_votes": 90, "match": [0.993, 0.993, 0.993], "unknown_votes": 0,
+                                "unknown": None}
+    assert similarity["A"] == {"match_votes": 0, "match": None, "unknown_votes": 0, "unknown": None}
+
+
+def test_the_same_run_in_schema_1_reads_exactly_as_before(mods, tmp_path, startup, f1_list) -> None:
+    """Every saved attempt is schema 1 and reads as it always did: the same run without the diagnostic numbers gives
+    the same lines, except the schema's number and the diagnostics, which only schema 2 has."""
+    out = simulate(tmp_path, startup)
+    finish(mods, out)
+    _, with_numbers = reading(mods, out, f1_list)
+
+    def schema_1(lines: list[dict]) -> list[dict]:
+        plain = []
+        for line in lines:
+            if "identity" in line:
+                line = dict(line, schema=1)
+                if line["identity"] == "result":
+                    line["persons"] = [{k: v for k, v in p.items() if k in mods.check.PERSON_KEYS}
+                                       for p in line["persons"]]
+            plain.append(line)
+        return plain
+
+    _mutate(out, schema_1)
+    result, without = reading(mods, out, f1_list)
+    assert result.ok, without
+    assert without.splitlines() == [line.replace("identity records: schema 2", "identity records: schema 1")
+                                    for line in with_numbers.splitlines()
+                                    if not line.startswith("DESCRIPTIVE diagnostics: ")]
+
+
+def _first_match(lines: list[dict], change) -> list[dict]:
+    """The first result person that voted match, changed."""
+    indices = [i for i, l in enumerate(lines) if l.get("identity") == "result" and l["persons"]
+               and l["persons"][0]["label"] == "match"]
+    first = lines[indices[0]]
+    return [dict(l, persons=[change(dict(l["persons"][0]))] + l["persons"][1:]) if l is first else l for l in lines]
+
+
+NO_FACE = {"ownership": "no_face", "vote": "none", "identity_id": None, "label": "no_face", "face": None,
+           "similarity": None}
+
+
+@pytest.mark.parametrize(("change", "fits"), [
+    (lambda p: p, True),  # unchanged: the control
+    (lambda p: dict(p, **NO_FACE), True),  # a consistent no-face entry
+    (lambda p: dict(p, vote="unknown", identity_id=None, label="unknown", similarity=0.7), True),  # rounded up to it
+    (lambda p: dict(p, **{**NO_FACE, "face": {"w_px": 40, "h_px": 50, "score": 0.95}}), False),  # nobody's face
+    (lambda p: dict(p, **{**NO_FACE, "similarity": 0.4}), False),  # a similarity where none was computed
+    (lambda p: dict(p, face=None), False),  # no face where one was assigned
+    (lambda p: dict(p, similarity=None), False),  # a vote without its similarity
+    (lambda p: dict(p, similarity=0.5), False),  # a match below the threshold
+    (lambda p: dict(p, vote="unknown", identity_id=None, label="unknown", similarity=0.9), False),  # unknown above
+    (lambda p: dict(p, box=[0.5, 0.2, 0.4, 0.8]), False),  # x1 after x2
+    (lambda p: dict(p, box=[0.1, 0.2, 0.3]), False),  # three corners
+    (lambda p: dict(p, confidence=None), False),  # a detection without its confidence
+    (lambda p: dict(p, face=dict(p["face"], w_px=40.5)), False),  # pixels as a fraction
+    (lambda p: dict(p, face=dict(p["face"], extra=1)), False),  # an undeclared number
+    (lambda p: dict(p, similarity="0.9"), False),  # a number as text
+])
+def test_diagnostic_numbers_must_fit_their_entrys_labels(mods, tmp_path, startup, f1_list, change, fits) -> None:
+    out = simulate(tmp_path, startup, duration=20.0)  # too short to pass as a whole: only the records are read here
+    _mutate(out, lambda ls: _first_match(ls, change))
+    finish(mods, out, counts={})
+    _, text = reading(mods, out, f1_list)
+    problems = _value(text, "identity records: schema 2")["problems"]
+    if fits:
+        assert problems == [], problems
+    else:
+        assert len(problems) == 1 and problems[0].endswith("diagnostic numbers do not fit its labels"), problems
+
+
+def test_schema_2_numbers_are_schema_text_and_anything_else_is_nonconforming(mods, tmp_path, startup) -> None:
+    """The privacy profile declares the numbers as numbers: a name or text under them is counted, never passed."""
+    out = simulate(tmp_path, startup, duration=20.0)
+    assert mods.evidence.read(out / "run.jsonl", "f2").nonconforming == []
+    _mutate(out, lambda ls: _first_match(ls, lambda p: dict(p, face=dict(p["face"], who="Jane"), similarity="high")))
+    read = mods.evidence.read(out / "run.jsonl", "f2")
+    assert len(read.nonconforming) == 2 and any(text == "Jane" for _, text in read.content), read.nonconforming
 
 
 # ---------------------------------------------------------------- F2 account helper
