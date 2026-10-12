@@ -9,7 +9,10 @@ across a gap). Faces are synthetic 4-D embeddings. What these pin down:
 - a track that stops being current (track_expiry after its last detection) loses its identity, even if the tracker
   later publishes the same ID again: nothing carries over a detection gap, so nothing is inferred from a place, a chair
   or a back of a head;
-- a replacement person on a new track starts unresolved and never inherits; reacquisition needs fresh matches.
+- a replacement person on a new track starts unresolved and never inherits; reacquisition needs fresh matches;
+- intermittent faces that match nobody on one continuous track (session 62, the pattern of the candidate's natural
+  check `alpha-20261012T201549Z`): each ends KNOWN at once, two in a row make UNKNOWN on that same track, a face
+  without a vote changes nothing, and only two consecutive matches restore KNOWN.
 """
 
 from __future__ import annotations
@@ -130,6 +133,29 @@ def test_face_reacquisition_after_a_loss_needs_two_fresh_matches() -> None:
     assert room.person(1).identity is IdentityState.UNRESOLVED  # one match is not enough
     room.frames(1.0, (1, SEAT), face=MATCH)
     assert (room.person(1).identity, room.person(1).identity_basis) == (IdentityState.KNOWN, Basis.FRESH)
+
+
+def test_intermittent_unknown_votes_on_one_track_end_known_at_once_and_only_two_matches_restore_it() -> None:
+    room = known(Room())
+    room.frames(1.0, (1, SEAT), face=NOBODY)  # one face that matches nobody after two matches: not known, at once
+    assert room.person(1).identity is IdentityState.UNCERTAIN
+    room.frames(1.0, (1, SEAT), face=MATCH)  # the last two votes still disagree
+    assert room.person(1).identity is IdentityState.UNCERTAIN
+    room.frames(1.0, (1, SEAT), face=MATCH)
+    assert (room.person(1).identity, room.person(1).identity_basis) == (IdentityState.KNOWN, Basis.FRESH)
+    room.frames(2.0, (1, SEAT), face=NOBODY)  # two in a row: unknown on the same track, never a stranger label
+    assert (room.person(1).identity, room.person(1).identity_id) == (IdentityState.UNKNOWN, None)
+    room.frames(5.0, (1, SEAT), face=())  # faces without a vote change nothing but the basis
+    assert (room.person(1).identity, room.person(1).identity_basis) == (IdentityState.UNKNOWN, Basis.RETAINED)
+    room.frames(1.0, (1, SEAT), face=MATCH)
+    room.frames(5.0, (1, SEAT), face=())  # still contradictory: retained as uncertain, not resolved by waiting
+    assert room.person(1).identity is IdentityState.UNCERTAIN
+    room.frames(1.0, (1, SEAT), face=MATCH)  # a second consecutive match, the hidden faces between adding no vote
+    assert (room.person(1).identity, room.person(1).identity_id) == (IdentityState.KNOWN, ENROLLED)
+    assert [(t["from"], t["to"]) for t in room.transitions] == [
+        ("unresolved", "known"), ("known", "uncertain"), ("uncertain", "known"), ("known", "uncertain"),
+        ("uncertain", "unknown"), ("unknown", "unknown"), ("unknown", "uncertain"), ("uncertain", "known")]
+    assert {t["track_id"] for t in room.transitions} == {1}  # one track throughout: never cleared
 
 
 def test_departure_clears_the_identity_and_the_room_reads_empty() -> None:
