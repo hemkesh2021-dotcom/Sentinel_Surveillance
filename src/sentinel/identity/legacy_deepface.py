@@ -159,6 +159,18 @@ class CandidateDetection:
 
 
 @dataclass(frozen=True)
+class FaceGeometry:
+    """D90: where one kept face was detected, as the detector returned it (validation records only; numbers, never an
+    image): YuNet's own box (x, y, w, h) and eye landmarks in frame pixels, unrounded and not clipped to the frame, so
+    a box may reach past an edge. The corrected box the face was reported and associated with is its
+    FaceObservation's. None stands for a value the detector did not give."""
+
+    raw_box: tuple[float, float, float, float] | None
+    right_eye: tuple[float, float] | None  # YuNet's columns 4-5 (DeepFace's right_eye)
+    left_eye: tuple[float, float] | None  # YuNet's columns 6-7 (DeepFace's left_eye)
+
+
+@dataclass(frozen=True)
 class FaceRun:
     """One frame's faces and what was dropped."""
 
@@ -167,6 +179,7 @@ class FaceRun:
     fallback_dropped: int  # DeepFace's whole-image "face" with confidence 0
     full_scale: FullScale | None = None  # D86, validation runs only
     detection: CandidateDetection | None = None  # D88, the candidate's own numbers
+    geometry: tuple[FaceGeometry | None, ...] = ()  # D90, the candidate's: one per face, in ``faces``' order
 
 
 @dataclass(frozen=True)
@@ -239,10 +252,14 @@ def _pixel_box(item: Mapping[str, Any]) -> tuple[float, float, float, float]:
     return x, y, w, h
 
 
-def to_face_run(frame: FrameKey, width: int, height: int, raw: Sequence[Mapping[str, Any]]) -> FaceRun:
-    """DeepFace ``represent()`` output for one frame as FaceObservations; confidence-0 fallbacks are dropped."""
-    faces, detected, dropped = [], 0, 0
-    for item in raw:
+def to_face_run(frame: FrameKey, width: int, height: int, raw: Sequence[Mapping[str, Any]],
+                geometry: Sequence[FaceGeometry | None] | None = None) -> FaceRun:
+    """DeepFace ``represent()`` output for one frame as FaceObservations; confidence-0 fallbacks are dropped. D90:
+    ``geometry``, one per item of ``raw``, is kept for the faces kept, in their order."""
+    if geometry is not None and len(geometry) != len(raw):
+        raise FaceBackendError("inconsistent_output")
+    faces, kept, detected, dropped = [], [], 0, 0
+    for index, item in enumerate(raw):
         confidence = _confidence(item)
         if confidence == 0.0:
             dropped += 1
@@ -258,7 +275,9 @@ def to_face_run(frame: FrameKey, width: int, height: int, raw: Sequence[Mapping[
             continue  # nothing of it inside the frame
         faces.append(FaceObservation(frame=frame, box=NormalizedBox(x1=x1, y1=y1, x2=x2, y2=y2),
                                      quality=confidence, embedding=embedding))
-    return FaceRun(tuple(faces), detected, dropped)
+        if geometry is not None:
+            kept.append(geometry[index])
+    return FaceRun(tuple(faces), detected, dropped, geometry=tuple(kept))
 
 
 def enrollment_face(raw: Sequence[Mapping[str, Any]]) -> tuple[EnrollmentFace | None, str]:
@@ -486,7 +505,7 @@ class LegacyDeepFaceBackend:
             started = time.perf_counter()
             items = self._embed_candidates(runtime, width, height, image, kept)
             embed_ms = (time.perf_counter() - started) * 1000
-        run = to_face_run(frame, width, height, items)
+        run = to_face_run(frame, width, height, items, [item.pop("geometry") for item in items])
         return dataclasses.replace(run, detection=CandidateDetection(
             max(below, key=lambda c: c[0]) if below else None, detect_ms, embed_ms))
 
@@ -508,7 +527,7 @@ class LegacyDeepFaceBackend:
                     continue  # extract_faces skips an empty cut too
                 crops.append(detected.img / 255)  # extract_faces divides; represent's skip path does not
                 reported.append((reported_area(detected.facial_area, width, height),
-                                 round(float(row.score), CONFIDENCE_DECIMALS)))
+                                 round(float(row.score), CONFIDENCE_DECIMALS), row_geometry(row)))
             del padded
             if not crops:
                 return []
@@ -524,8 +543,8 @@ class LegacyDeepFaceBackend:
         if not (isinstance(per_crop, list) and len(per_crop) == len(crops)
                 and all(isinstance(r, list) and len(r) == 1 and isinstance(r[0], Mapping) for r in per_crop)):
             raise FaceBackendError("inconsistent_output")
-        return [{"facial_area": area, "face_confidence": confidence, "embedding": result[0].get("embedding")}
-                for (area, confidence), result in zip(reported, per_crop)]
+        return [{"facial_area": area, "face_confidence": confidence, "embedding": result[0].get("embedding"),
+                 "geometry": geometry} for (area, confidence, geometry), result in zip(reported, per_crop)]
 
     def enrollment_photo(self, path: Path) -> tuple[EnrollmentFace | None, str]:
         """Decode a photo with the same OpenCV (EXIF orientation applied) and find its single face."""
@@ -612,6 +631,12 @@ def candidate_rows(found: Any) -> list[FullScaleRow]:
             raise FaceBackendError("inconsistent_output")
         rows.append(FullScaleRow(x, y, w, h, (e4x, e4y), (e6x, e6y), score))
     return rows
+
+
+def row_geometry(row: FullScaleRow) -> FaceGeometry:
+    """D90: a kept detection's own box and eyes, exactly as YuNet returned them (candidate_rows checked they are
+    finite); nothing is clipped, rounded or inferred here."""
+    return FaceGeometry((row.x, row.y, row.w, row.h), row.eye_4, row.eye_6)
 
 
 def candidate_region(row: FullScaleRow, width_border: int, height_border: int) -> dict[str, Any]:

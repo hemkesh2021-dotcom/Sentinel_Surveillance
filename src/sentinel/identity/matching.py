@@ -62,6 +62,9 @@ class Match:
     identity_id: str | None  # best identity, or None if the gallery is empty
     similarity: float  # best cosine similarity
     runner_up: float | None  # best similarity of any other identity
+    # D90: the position of the best identity's closest prototype in its enrollment (the first, on a tie); an opaque
+    # index for validation records, never used to decide anything. None if the gallery is empty.
+    prototype: int | None = None
 
 
 def best_match(embedding: Sequence[float], enrollment: Enrollment) -> Match:
@@ -70,23 +73,18 @@ def best_match(embedding: Sequence[float], enrollment: Enrollment) -> Match:
     norm = _norm(embedding)
     if norm == 0.0 or not math.isfinite(norm):
         raise ValueError("embedding must be finite and non-zero")
-    scores = sorted(
-        (
-            (
-                max(
-                    _dot(embedding, prototype) / (norm * _norm(prototype))
-                    for prototype in identity.prototypes
-                ),
-                identity.identity_id,
-            )
-            for identity in enrollment.identities
-        ),
-        reverse=True,
-    )
+    closest: dict[str, int] = {}
+    ranked = []
+    for identity in enrollment.identities:
+        values = [_dot(embedding, prototype) / (norm * _norm(prototype)) for prototype in identity.prototypes]
+        top = max(values)
+        closest[identity.identity_id] = values.index(top)
+        ranked.append((top, identity.identity_id))
+    scores = sorted(ranked, reverse=True)  # the same (similarity, ID) order as before D90
     if not scores:
         return Match(identity_id=None, similarity=-1.0, runner_up=None)
     best, best_id = scores[0]
-    return Match(best_id, best, scores[1][0] if len(scores) > 1 else None)
+    return Match(best_id, best, scores[1][0] if len(scores) > 1 else None, closest[best_id])
 
 
 def _dot(a: Sequence[float], b: Sequence[float]) -> float:

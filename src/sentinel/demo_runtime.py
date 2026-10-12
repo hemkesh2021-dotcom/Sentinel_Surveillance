@@ -53,11 +53,13 @@ diagnostic full-scale face pass's counts (D86; runtime.full_scale_numbers), neve
 of an analysed frame after that frame's production result (identity.comparison), and each eligible person's outcome
 becomes a "comparison" record: its kind, disposition, the candidate's score and width, and the best similarity to the
 enrollment (runtime.ComparisonRecord), never a vote.
-With ``--face-full-scale-detection`` instead (D88, validation runs only; schema 5) the face adapter's detection stage is
-the full-scale candidate (legacy_deepface): the same capture, the same loaded detector and recognition models, one
-detection and one embedding per analysed frame, and each result also carries the candidate's own numbers
-(runtime.detection_numbers). Neither D86's pass nor D87's comparison runs with it; everything after the faces
-(association, votes, identity state, retention, records' privacy) is unchanged.
+With ``--face-full-scale-detection`` instead (D88, validation runs only; schema 6 from D90, schema 5 before it) the
+face adapter's detection stage is the full-scale candidate (legacy_deepface): the same capture, the same loaded
+detector and recognition models, one detection and one embedding per analysed frame, and each result also carries the
+candidate's own numbers (runtime.detection_numbers) and, per person, the position of the prototype behind the vote's
+similarity and the assigned face's geometry (D90, runtime.face_geometry_numbers). Neither D86's pass nor D87's
+comparison runs with it; everything after the faces (association, votes, identity state, retention, records' privacy)
+is unchanged.
 The gallery is sealed (sentinel.identity.vault) and opened at startup with a passphrase the
 operator types; startup refuses on a sealing error, and a missing or empty gallery leaves face recognition
 unavailable without loading the model. The face adapter needs its own admission record, which starts
@@ -156,9 +158,9 @@ from .memory_policy import (
 )
 from .rules.zones import ZonePhase
 from .runtime import (
-    IDENTITY_CANDIDATE_SCHEMA,
     IDENTITY_COMPARISON_SCHEMA,
     IDENTITY_FULL_SCALE_SCHEMA,
+    IDENTITY_GEOMETRY_SCHEMA,
     IDENTITY_RECORD_SCHEMA,
     CoreOutput,
     EdgeCore,
@@ -350,10 +352,11 @@ class DemoRuntime:
         self._identity_records: deque[dict[str, Any]] = deque()
         # A face validation run's records carry the diagnostic numbers (schema 3, D84 and D86), with the full-scale
         # comparison its records too (schema 4, D87), and with the full-scale detection candidate its own numbers
-        # instead of D86's (schema 5, D88); other runs, schema 1.
+        # instead of D86's and, from D90, each face's geometry and prototype position (schema 6; D88's schema 5 is
+        # read, never written); other runs, schema 1.
         self._identity_schema = (
             IDENTITY_RECORD_SCHEMA if face is None or not face.validation_run
-            else IDENTITY_CANDIDATE_SCHEMA if face.detection == DETECTION_FULL_SCALE
+            else IDENTITY_GEOMETRY_SCHEMA if face.detection == DETECTION_FULL_SCALE
             else IDENTITY_COMPARISON_SCHEMA if face.comparison else IDENTITY_FULL_SCALE_SCHEMA)
         self._snapshots = snapshots
         # D74: chat reads frames only when it can be used (admitted, with the scene model); otherwise it keeps none.
@@ -496,7 +499,7 @@ class DemoRuntime:
                 self._handle(self._core.on_face_outcome(result.frame, result.persons, result.faces,
                                                         self._capture.connected, processing_ms=result.processing_ms,
                                                         error=result.error, full_scale=result.full_scale,
-                                                        detection=result.detection))
+                                                        detection=result.detection, geometry=result.geometry))
             for comparison in self._face.worker.drain_comparisons():  # D87: after their frames' production results
                 self._keep_record(self._core.on_face_comparison(comparison).record(self._identity_schema))
         if self._pending:

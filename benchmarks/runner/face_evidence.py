@@ -445,6 +445,14 @@ IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransitio
     # schema 5 (D88, runtime.detection_numbers): numbers only
     "detection": NULL, "detection.best_below_score": maybe(NUM), "detection.best_below_w_px": COUNT,
     "detection.detect_ms": NUM, "detection.embed_ms": maybe(NUM),
+    # schema 6 (D90 runtime.face_geometry_numbers and the prototype position; D91 the working gallery's similarity):
+    # numbers only, each list of four numbers or null
+    "persons[].prototype": COUNT, "persons[].geometry": NULL, "persons[].geometry.box[]": NUM,
+    "persons[].geometry.raw_box": NULL, "persons[].geometry.raw_box[]": NUM,
+    "persons[].geometry.overhang_px": NULL, "persons[].geometry.overhang_px[]": NUM,
+    "persons[].geometry.eyes": NULL, "persons[].geometry.eyes.roll_deg": NUM,
+    "persons[].geometry.eyes.spacing_px": NUM,
+    "persons[].shadow": NULL, "persons[].shadow.similarity": NUM, "persons[].shadow.prototype": INT,
     "track_id": INT, "from": vocab(*IDENTITY_STATES), "to": vocab(*IDENTITY_STATES, "cleared"),
     "identity_id": maybe(IDN), "basis": maybe(BASIS), "last_vote_age_ms": COUNT, "reason": TRANSITION_REASON,
     "mono_ns": INT,

@@ -48,7 +48,13 @@ from sentinel.identity.state import IdentityState
 from sentinel.live_state import Capability
 from sentinel.media.clock import FakeClock
 from sentinel.media.frames import FrameStamper
-from sentinel.runtime import IDENTITY_CANDIDATE_SCHEMA, EdgeCore
+from sentinel.runtime import (
+    IDENTITY_CANDIDATE_SCHEMA,
+    IDENTITY_GEOMETRY_SCHEMA,
+    RAW_BOUNDS,
+    EdgeCore,
+    face_geometry_numbers,
+)
 
 FRAME = FrameKey(camera_id="cam-1", boot_id="b", run_id="r", stream_epoch=0, frame_seq=1)
 
@@ -452,13 +458,15 @@ CONFIG = parse_config({"config_version": 1, "camera": {"id": "cam-1"}})
 class World:
     """The real EdgeCore, fed the candidate adapter's FaceRuns for frames whose people the test places."""
 
-    def __init__(self, tmp_path, runtime: Runtime) -> None:
+    def __init__(self, tmp_path, runtime: Runtime, *, schema: int = IDENTITY_CANDIDATE_SCHEMA,
+                 enrollment: Enrollment = ENROLLMENT) -> None:
         self.clock = FakeClock()
         self.stamper = FrameStamper("cam-1", self.clock)
         self.stream = self.stamper.connect()
-        self.core = EdgeCore(CONFIG, self.clock, None, face_recognition=Capability.AVAILABLE, enrollment=ENROLLMENT)
+        self.core = EdgeCore(CONFIG, self.clock, None, face_recognition=Capability.AVAILABLE, enrollment=enrollment)
         self.runtime = runtime
         self.backend = backend(tmp_path, runtime)
+        self.schema = schema
         self.transitions: list = []
         self.records: list = []
 
@@ -472,9 +480,9 @@ class World:
         self._keep(self.core.on_frame(frame, persons, self.stream))
         run = self.last_run = self.backend.faces(frame.key, 640, 480, "frame")
         output = self.core.on_face_outcome(frame, persons, run.faces, self.stream, processing_ms=900.0,
-                                           detection=run.detection)
+                                           detection=run.detection, geometry=run.geometry)
         self._keep(output)
-        self.records.append(output.face_result.record(IDENTITY_CANDIDATE_SCHEMA))
+        self.records.append(output.face_result.record(self.schema))
         return self.records[-1]
 
     def person(self, track: int):
@@ -569,3 +577,143 @@ def test_the_candidates_records_carry_its_numbers_and_nothing_else(tmp_path) -> 
     assert record["detection"]["best_below_score"] == 0.44 and record["detection"]["best_below_w_px"] == 30
     text = json.dumps(record)
     assert "embedding" not in text and "0.97" not in text  # numbers only: never an embedding
+
+
+# ---------------------------------------------------------------- D90: each face's geometry and prototype position
+
+
+def _best_match_before_d90(embedding, enrollment):
+    """matching.best_match as it was at 9460548, transcribed: the reference for the similarity and the decision."""
+    from sentinel.identity.matching import _dot, _norm
+
+    norm = _norm(embedding)
+    scores = sorted(((max(_dot(embedding, p) / (norm * _norm(p)) for p in identity.prototypes), identity.identity_id)
+                     for identity in enrollment.identities), reverse=True)
+    best, best_id = scores[0]
+    return best_id, best, scores[1][0] if len(scores) > 1 else None
+
+
+def test_the_matcher_gives_the_closest_prototypes_position_and_exactly_the_same_decision() -> None:
+    import random
+
+    from sentinel.identity.matching import best_match
+
+    rng = random.Random(90)
+    for _ in range(200):
+        identities = tuple(EnrolledIdentity(identity_id=f"idn-{n:012x}", prototypes=tuple(
+            unit(tuple(rng.uniform(-1, 1) for _ in range(512))) for _ in range(rng.randint(1, 8))))
+            for n in range(rng.randint(1, 3)))
+        enrollment = Enrollment(model_revision="synthetic", dimension=512, identities=identities)
+        embedding = unit(tuple(rng.uniform(-1, 1) for _ in range(512)))
+        match = best_match(embedding, enrollment)
+        assert (match.identity_id, match.similarity, match.runner_up) == _best_match_before_d90(embedding, enrollment)
+        (best,) = [i for i in identities if i.identity_id == match.identity_id]
+        values = [best_match(embedding, Enrollment(model_revision="synthetic", dimension=512, identities=(
+            EnrolledIdentity(identity_id=best.identity_id, prototypes=(p,)),))).similarity for p in best.prototypes]
+        assert values[match.prototype] == max(values) and match.prototype == values.index(max(values))
+    twins = Enrollment(model_revision="synthetic", dimension=512, identities=(
+        EnrolledIdentity(identity_id="idn-00000000000a", prototypes=(vec(0.0, 1.0), ENROLLED, ENROLLED)),))
+    assert best_match(MATCHING, twins).prototype == 1  # the first of equal prototypes
+
+
+def test_a_kept_detection_carries_its_own_box_and_eyes_unclipped_beside_the_corrected_box(tmp_path) -> None:
+    from sentinel.identity.legacy_deepface import FaceGeometry
+
+    runtime = Runtime([PAST_THE_EDGE])  # a box starting 3.7 px left of and 0.4 px above the frame
+    run = backend(tmp_path, runtime).faces(FRAME, 640, 480, "frame")
+    (face,), (geometry,) = run.faces, run.geometry
+    assert geometry == FaceGeometry((-3.7, -0.4, 40.2, 50.8), (5.9, 12.1), (25.3, 11.7))  # as YuNet returned it
+    assert (face.box.x1, face.box.y1) == (0.0, 0.0)  # the corrected box: extract_faces' clamp at the frame's edge
+    numbers = face_geometry_numbers(face, geometry, 640, 480)
+    assert numbers["raw_box"][:2] == [round(-3.7 / 640, 3), round(-0.4 / 480, 3)] and numbers["box"][:2] == [0.0, 0.0]
+    assert numbers["overhang_px"] == [3.7, 0.4, 0.0, 0.0]
+    assert numbers["eyes"] == {"roll_deg": round(math.degrees(math.atan2(11.7 - 12.1, 25.3 - 5.9)), 1),
+                               "spacing_px": round(math.hypot(25.3 - 5.9, 11.7 - 12.1), 1)}
+    assert numbers["eyes"]["roll_deg"] == -1.2  # the left eye (image right) slightly higher: a small negative angle
+    nothing = backend(tmp_path, Runtime([yunet(60.0, 60.0, 58.0, 62.0, 0.8)])).faces(FRAME, 640, 480, "frame")
+    assert nothing.faces == () and nothing.geometry == ()  # no face kept, no geometry
+
+
+def test_geometry_inside_the_frame_and_past_the_bottom_right(tmp_path) -> None:
+    run = backend(tmp_path, Runtime([INSIDE, BOTTOM_RIGHT], embeddings=(MATCHING, MATCHING))).faces(
+        FRAME, 640, 480, "frame")
+    inside, corner = (face_geometry_numbers(f, g, 640, 480) for f, g in zip(run.faces, run.geometry))
+    assert inside["overhang_px"] == [0.0, 0.0, 0.0, 0.0]
+    assert all(abs(a - b) <= 1.5 / 480 for a, b in zip(inside["raw_box"], inside["box"]))  # int() of the corrected
+    # 400.5 + 79.99 reaches 0.49 px past the bottom; extract_faces cut the reported height at the last row (479)
+    assert corner["overhang_px"] == [0.0, 0.0, 0.0, 0.5] and corner["box"][3] == round(479 / 480, 3)
+    assert corner["raw_box"][3] == round((400.5 + 79.99) / 480, 3) > 1.0
+
+
+@pytest.mark.parametrize("geometry, unavailable", [
+    (None, {"raw_box", "overhang_px", "eyes"}),  # production's faces: DeepFace reports only the corrected box
+    ("no_eyes", {"eyes"}),
+    ("one_eye", {"eyes"}),
+    ("nan_box", {"raw_box", "overhang_px"}),
+    ("nan_eye", {"eyes"}),
+    ("far_left", {"raw_box", "overhang_px"}),  # beyond RAW_BOUNDS: unavailable, never clipped into range
+    ("far_eye", {"eyes"}),
+    ("empty_box", {"raw_box", "overhang_px"}),
+])
+def test_missing_or_out_of_bounds_detector_values_are_recorded_as_unavailable(geometry, unavailable) -> None:
+    from sentinel.identity.association import FaceObservation
+    from sentinel.identity.legacy_deepface import FaceGeometry
+
+    good = FaceGeometry((60.6, 60.3, 58.7, 62.2), (78.2, 85.2), (101.7, 85.8))
+    made = {None: None, "no_eyes": FaceGeometry(good.raw_box, None, None),
+            "one_eye": FaceGeometry(good.raw_box, good.right_eye, None),
+            "nan_box": FaceGeometry((math.nan, 60.3, 58.7, 62.2), good.right_eye, good.left_eye),
+            "nan_eye": FaceGeometry(good.raw_box, (math.inf, 85.2), good.left_eye),
+            "far_left": FaceGeometry((RAW_BOUNDS[0] * 640 - 1.0, 60.3, 58.7, 62.2), good.right_eye, good.left_eye),
+            "far_eye": FaceGeometry(good.raw_box, good.right_eye, (RAW_BOUNDS[1] * 640 + 1.0, 85.8)),
+            "empty_box": FaceGeometry((60.6, 60.3, 0.0, 62.2), good.right_eye, good.left_eye)}[geometry]
+    face = FaceObservation(frame=FRAME, box=NormalizedBox(x1=60 / 640, y1=60 / 480, x2=118 / 640, y2=122 / 480),
+                           quality=0.93, embedding=MATCHING)
+    numbers = face_geometry_numbers(face, made, 640, 480)
+    assert {key for key, value in numbers.items() if value is None} == unavailable
+    assert numbers["box"] == [round(60 / 640, 3), 0.125, round(118 / 640, 3), round(122 / 480, 3)]  # always there
+    complete = face_geometry_numbers(face, good, 640, 480)
+    assert all(value is not None for value in complete.values())
+
+
+def test_schema_6_records_carry_the_prototype_position_and_the_geometry_and_change_no_vote(tmp_path) -> None:
+    """The same faces through the same core: schema 6 adds numbers per person, and the votes, labels, states and
+    transitions are those of schema 5 (the record's schema is a choice of what to write, never of what to decide)."""
+    two = Enrollment(model_revision="synthetic", dimension=512, identities=(
+        EnrolledIdentity(identity_id="idn-00000000000a", prototypes=(vec(0.0, 1.0), ENROLLED)),))
+    six = World(tmp_path, Runtime(), schema=IDENTITY_GEOMETRY_SCHEMA, enrollment=two)
+    five = World(tmp_path, Runtime(), enrollment=two)
+    edge = (NormalizedBox(x1=0.0, y1=0.0, x2=0.3, y2=0.9),)  # a person whose box starts at the frame's left edge
+    for embeddings in ((MATCHING,), (MATCHING,), (NOT_MATCHING,)):
+        new = six.step([PAST_THE_EDGE], embeddings=embeddings, people=edge)
+        old = five.step([PAST_THE_EDGE], embeddings=embeddings, people=edge)
+        person = new["persons"][0]
+        assert person["ownership"] == "assigned"
+        assert {k: v for k, v in person.items() if k not in ("prototype", "geometry", "shadow")} == old["persons"][0]
+        assert new["schema"] == 6 and new["detection"].keys() == old["detection"].keys()
+        assert person["prototype"] == (1 if embeddings == (MATCHING,) else 0)  # MATCHING is closest to ENROLLED
+        assert person["geometry"]["overhang_px"] == [3.7, 0.4, 0.0, 0.0] and person["shadow"] is None
+        assert set(old["persons"][0]) == {"track_id", "ownership", "vote", "identity_id", "label", "box",
+                                          "confidence", "face", "similarity"}  # schema 5 exactly as before
+    assert six.transitions == five.transitions
+    record = six.step([yunet(60.0, 60.0, 58.0, 62.0, 0.8)])  # no face: no geometry and no position
+    assert (record["persons"][0]["geometry"], record["persons"][0]["prototype"]) == (None, None)
+    assert "embedding" not in json.dumps(six.records)
+
+
+def test_each_person_gets_the_geometry_of_their_own_face(tmp_path) -> None:
+    world = World(tmp_path, Runtime(), schema=IDENTITY_GEOMETRY_SCHEMA)
+    record = world.step([LEFT_FACE, RIGHT_FACE], embeddings=(MATCHING, NOT_MATCHING), people=(LEFT, RIGHT))
+    left, right = record["persons"]
+    assert (left["track_id"], right["track_id"]) == (1, 2)
+    assert left["geometry"]["raw_box"][0] == round(LEFT_FACE[0] / 640, 3)
+    assert right["geometry"]["raw_box"][0] == round(RIGHT_FACE[0] / 640, 3)
+    assert left["geometry"]["eyes"]["spacing_px"] == round(math.hypot(LEFT_FACE[6] - LEFT_FACE[4],
+                                                                      LEFT_FACE[7] - LEFT_FACE[5]), 1)
+    assert right["geometry"]["eyes"]["spacing_px"] == round(math.hypot(RIGHT_FACE[6] - RIGHT_FACE[4],
+                                                                       RIGHT_FACE[7] - RIGHT_FACE[5]), 1)
+    # a face reported wholly outside the frame is dropped with its geometry: the others keep theirs
+    outside = backend(tmp_path, Runtime([yunet(700.0, 60.0, 50.0, 60.0, 0.95), LEFT_FACE],
+                                        embeddings=(MATCHING, MATCHING))).faces(FRAME, 640, 480, "frame")
+    assert len(outside.faces) == len(outside.geometry) == 1
+    assert outside.geometry[0].raw_box[0] == LEFT_FACE[0]

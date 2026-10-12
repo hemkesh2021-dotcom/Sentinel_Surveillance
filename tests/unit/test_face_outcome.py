@@ -259,8 +259,9 @@ def test_a_failed_result_has_no_diagnostics_and_an_unknown_schema_is_refused() -
     assert "full_scale" in failed.record(4)  # D87: schema 4 is schema 3's result record, unchanged
     candidate = failed.record(5)  # D88: schema 2's result record with the candidate's own numbers, no full-scale pass
     assert candidate["detection"] is None and "full_scale" not in candidate and candidate["persons"] == []
+    assert failed.record(6) == {**candidate, "schema": 6}  # D90 adds numbers per person only: none on a failed result
     with pytest.raises(ValueError):
-        failed.record(6)
+        failed.record(7)
 
 
 @pytest.mark.parametrize(("make", "outcome"), [

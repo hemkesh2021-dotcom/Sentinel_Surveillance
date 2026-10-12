@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import math
 import os
 import threading
 import time
@@ -607,26 +608,37 @@ def test_the_candidate_flag_needs_validation_and_excludes_the_comparison(tmp_pat
     assert "use one" in capsys.readouterr().err
 
 
-def test_a_candidate_run_writes_schema_5_with_its_numbers_and_the_same_identity_rules(tmp_path) -> None:
+def test_a_candidate_run_writes_schema_6_with_its_numbers_and_the_same_identity_rules(tmp_path) -> None:
     """D88: the worker carries the candidate's numbers from its FaceRun to the result record; the faces go through the
-    unchanged association and votes (a match, then a face that does not match)."""
-    from sentinel.identity.legacy_deepface import CandidateDetection
+    unchanged association and votes (a match, then a face that does not match). D90: from the same FaceRun, each
+    person's prototype position and the assigned face's geometry (schema 6; no working gallery, so no shadow)."""
+    from sentinel.identity.legacy_deepface import CandidateDetection, FaceGeometry
 
     embeddings = [vec(0.97, 0.1, 0.0, 0.05), vec(0.97, 0.1, 0.0, 0.05), vec(0.0, 0.1, 0.99)]
+    geometry = FaceGeometry((121.0, 104.0, 58.5, 63.0), (138.0, 128.0), (161.5, 126.5))
 
     def analyze(frame, image):
         embedding = embeddings.pop(0)
         face = FaceObservation(frame=frame.key, box=FACE_BOX, quality=0.93, embedding=embedding)
         below = (0.71, NormalizedBox(x1=0.5, y1=0.5, x2=0.55, y2=0.56))
-        return FaceRun((face,), 1, 0, detection=CandidateDetection(below, 48.5, 870.25))
+        return FaceRun((face,), 1, 0, detection=CandidateDetection(below, 48.5, 870.25), geometry=(geometry,))
 
     loop = Loop(tmp_path, analyze=analyze, detection="full_scale")
     for _ in range(40):  # three face ticks
         loop.frame()
     records = loop.runtime.drain_identity_records()
-    assert {r["schema"] for r in records} == {5}
+    assert {r["schema"] for r in records} == {6}
     results = [r for r in records if r["identity"] == "result"]
     assert [r["persons"][0]["label"] for r in results] == ["match", "match", "unknown"]
+    for result in results:
+        person = result["persons"][0]
+        assert person["prototype"] == 0 and person["shadow"] is None  # one prototype enrolled; no working gallery
+        assert person["geometry"] == {"box": [0.19, 0.22, 0.28, 0.35],
+                                      "raw_box": [round(121.0 / 640, 3), round(104.0 / 480, 3),
+                                                  round(179.5 / 640, 3), round(167.0 / 480, 3)],
+                                      "overhang_px": [0.0, 0.0, 0.0, 0.0],
+                                      "eyes": {"roll_deg": round(math.degrees(math.atan2(-1.5, 23.5)), 1),
+                                               "spacing_px": round(math.hypot(23.5, -1.5), 1)}}
     assert all(r["detection"] == {"best_below_score": 0.71, "best_below_w_px": 32, "detect_ms": 48.5,
                                   "embed_ms": 870.2} for r in results)  # rounded to 0.1 ms
     assert all("full_scale" not in r for r in results)

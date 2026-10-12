@@ -15,6 +15,7 @@ Not thread-safe: call it from one loop thread.
 from __future__ import annotations
 
 import dataclasses
+import math
 from collections import Counter, OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -57,7 +58,15 @@ IDENTITY_COMPARISON_SCHEMA = 4
 # Schema 5 (D88), what face validation runs with the full-scale detection candidate write: schema 2, plus each
 # result's own detection numbers (detection_numbers); no full-scale pass or comparison exists in those runs.
 IDENTITY_CANDIDATE_SCHEMA = 5
+# Schema 6 (D90), what face validation runs with the candidate write from D90 on: schema 5, plus on each result person
+# the position of the prototype that gave the vote's similarity, the assigned face's geometry (face_geometry_numbers)
+# and "shadow", the similarity to an experiment's separate working gallery (D91; null without one).
+IDENTITY_GEOMETRY_SCHEMA = 6
 DIAGNOSTIC_DECIMALS = 3
+# D90: what a recorded raw detection may span, in frame widths and heights from the frame's top left corner; a value
+# outside is recorded as unavailable (null), never clipped into range.
+RAW_BOUNDS = (-1.0, 2.0)
+GEOMETRY_PX_DECIMALS = 1
 PRODUCTION_OUTCOMES_KEPT = 16  # recent face results' outcomes, by frame, for the comparison records (D87)
 # DeepFace 0.0.99's YuNet threshold for production detections (legacy_deepface.YUNET_THRESHOLD; test-tied): the
 # full-scale pass's faces are counted at the same score, so its counts compare like for like.
@@ -66,7 +75,7 @@ FULL_SCALE_COUNTED = 0.9
 
 def _schema(schema: int) -> int:
     if schema not in (IDENTITY_RECORD_SCHEMA, IDENTITY_DIAGNOSTIC_SCHEMA, IDENTITY_FULL_SCALE_SCHEMA,
-                      IDENTITY_COMPARISON_SCHEMA, IDENTITY_CANDIDATE_SCHEMA):
+                      IDENTITY_COMPARISON_SCHEMA, IDENTITY_CANDIDATE_SCHEMA, IDENTITY_GEOMETRY_SCHEMA):
         raise ValueError(f"unknown identity record schema {schema!r}")
     return schema
 
@@ -90,15 +99,21 @@ class FaceDiagnostics:
     face_px: tuple[int, int] | None  # the assigned face's width and height in the frame's pixels; None: no face
     face_score: float | None  # the face detector's confidence for it
     similarity: float | None  # the best cosine similarity to an enrolled identity, when one was computed
+    prototype: int | None = None  # D90: that similarity's prototype position in the enrollment (an opaque index)
+    geometry: dict[str, Any] | None = None  # D90: face_geometry_numbers for the assigned face (candidate runs)
+    shadow: dict[str, Any] | None = None  # D91: similarity to an experiment's working gallery and its prototype
 
-    def fields(self) -> dict[str, object]:
+    def fields(self, schema: int = IDENTITY_DIAGNOSTIC_SCHEMA) -> dict[str, object]:
         def r(value: float | None) -> float | None:
             return None if value is None else round(value, DIAGNOSTIC_DECIMALS)
 
-        return {"box": [r(v) for v in self.box], "confidence": r(self.confidence),
-                "face": None if self.face_px is None else {"w_px": self.face_px[0], "h_px": self.face_px[1],
-                                                           "score": r(self.face_score)},
-                "similarity": r(self.similarity)}
+        out = {"box": [r(v) for v in self.box], "confidence": r(self.confidence),
+               "face": None if self.face_px is None else {"w_px": self.face_px[0], "h_px": self.face_px[1],
+                                                          "score": r(self.face_score)},
+               "similarity": r(self.similarity)}
+        if schema >= IDENTITY_GEOMETRY_SCHEMA:
+            out.update(prototype=self.prototype, geometry=self.geometry, shadow=self.shadow)
+        return out
 
 
 @dataclass(frozen=True)
@@ -116,7 +131,7 @@ class FaceResultRecord:
     error: str | None = None
     diagnostics: tuple[FaceDiagnostics, ...] = ()  # one per entry of ``persons``; written with schema 2 and later
     full_scale: dict[str, Any] | None = None  # full_scale_numbers; written with schemas 3 and 4
-    detection: dict[str, Any] | None = None  # detection_numbers; written with schema 5
+    detection: dict[str, Any] | None = None  # detection_numbers; written with schemas 5 and 6
 
     def record(self, schema: int = IDENTITY_RECORD_SCHEMA) -> dict[str, object]:
         persons = [{"track_id": track, "ownership": ownership, "vote": vote, "identity_id": identity, "label": label}
@@ -124,7 +139,7 @@ class FaceResultRecord:
         if _schema(schema) >= IDENTITY_DIAGNOSTIC_SCHEMA:
             if len(self.diagnostics) != len(persons):
                 raise ValueError("every person on a schema 2 or later result needs its diagnostics")
-            persons = [person | numbers.fields() for person, numbers in zip(persons, self.diagnostics)]
+            persons = [person | numbers.fields(schema) for person, numbers in zip(persons, self.diagnostics)]
         record = {"identity": "result", "schema": schema, "stream_epoch": self.stream_epoch,
                   "frame_seq": self.frame_seq, "frame_mono_ns": self.frame_mono_ns,
                   "applied_mono_ns": self.applied_mono_ns, "outcome": self.outcome, "faces": self.faces,
@@ -132,7 +147,7 @@ class FaceResultRecord:
                   "error": self.error, "persons": persons}
         if schema in (IDENTITY_FULL_SCALE_SCHEMA, IDENTITY_COMPARISON_SCHEMA):
             record["full_scale"] = self.full_scale
-        elif schema == IDENTITY_CANDIDATE_SCHEMA:
+        elif schema in (IDENTITY_CANDIDATE_SCHEMA, IDENTITY_GEOMETRY_SCHEMA):
             record["detection"] = self.detection
         return record
 
@@ -314,6 +329,7 @@ class EdgeCore:
         error: str | None = None,
         full_scale: Any = None,
         detection: Any = None,
+        geometry: Sequence[Any] = (),
     ) -> CoreOutput:
         """A face result for an earlier sampled frame, with the tracker's people on that same frame.
 
@@ -343,7 +359,7 @@ class EdgeCore:
             for ownership in association.face_ownership:
                 self.face_counters[f"faces_{ownership.value}"] += 1
             votes = self._identities.observe(persons, faces, association)
-            diagnostics = _diagnostics(frame, persons, faces, association.face_of, votes)
+            diagnostics = _diagnostics(frame, persons, faces, association.face_of, votes, geometry)
         self.face_counters[f"results_{outcome}"] += 1
         self._production_outcomes[(frame.stream_epoch, frame.frame_seq)] = outcome
         while len(self._production_outcomes) > PRODUCTION_OUTCOMES_KEPT:
@@ -572,9 +588,11 @@ def _diagnostics(
     faces: Sequence[FaceObservation],
     face_of: dict[TrackKey, int],
     votes: Sequence[VoteRecord],
+    geometry: Sequence[Any] = (),
 ) -> tuple[FaceDiagnostics, ...]:
     """Each vote's person, in the votes' order: its box and confidence, its assigned face's size and score, and the
-    vote's similarity. Only numbers are taken from a face; its embedding stays where it is."""
+    vote's similarity. Only numbers are taken from a face; its embedding stays where it is. D90: the similarity's
+    prototype position, and the assigned face's geometry when the face stage gave one per face (``geometry``)."""
     by_key = {person.key: person for person in persons}
     out = []
     for vote in votes:
@@ -585,8 +603,52 @@ def _diagnostics(
             (person.box.x1, person.box.y1, person.box.x2, person.box.y2), person.detector_confidence,
             None if face is None else (round((face.box.x2 - face.box.x1) * frame.native_width),
                                        round((face.box.y2 - face.box.y1) * frame.native_height)),
-            None if face is None else face.quality, vote.similarity))
+            None if face is None else face.quality, vote.similarity, vote.prototype,
+            None if face is None else face_geometry_numbers(
+                face, geometry[index] if len(geometry) == len(faces) else None, frame.native_width,
+                frame.native_height)))
     return tuple(out)
+
+
+def face_geometry_numbers(face: FaceObservation, geometry: Any, width: int, height: int) -> dict[str, Any]:
+    """D90: one assigned face's geometry as numbers (validation records; never an image, embedding or name).
+
+    - ``box``: the corrected box the face was reported and associated with (normalized; clipped to the frame);
+    - ``raw_box``: the detector's own box, normalized and not clipped, so a value below 0 or above 1 reaches past
+      that edge; null when the face stage gave none, or when a value is not finite or lies outside RAW_BOUNDS (it is
+      then unavailable, never clipped into range);
+    - ``overhang_px``: how far the raw box reaches past the left, top, right and bottom edges, in frame pixels (0 when
+      it does not); null exactly when ``raw_box`` is. A raw box inside the frame does not establish that the face was:
+      a detector may fit its box to the visible part of a face;
+    - ``eyes``: the angle DeepFace's alignment computes from these landmarks, before its integer conversion
+      (degrees(atan2(left.y - right.y, left.x - right.x)), DeepFace's left eye being YuNet's columns 6-7), and the
+      distance between the eyes in frame pixels; null when either landmark is missing, not finite or out of bounds.
+    """
+    box = [round(v, DIAGNOSTIC_DECIMALS) for v in (face.box.x1, face.box.y1, face.box.x2, face.box.y2)]
+    raw = getattr(geometry, "raw_box", None)
+    raw_box = overhang = None
+    if raw is not None and _within_bounds(raw[0], raw[1], width, height) \
+            and _within_bounds(raw[0] + raw[2], raw[1] + raw[3], width, height) and raw[2] > 0 and raw[3] > 0:
+        x, y, w, h = raw
+        raw_box = [round(v, DIAGNOSTIC_DECIMALS) for v in (x / width, y / height, (x + w) / width, (y + h) / height)]
+        overhang = [round(max(0.0, v), GEOMETRY_PX_DECIMALS) for v in (-x, -y, x + w - width, y + h - height)]
+    right, left = getattr(geometry, "right_eye", None), getattr(geometry, "left_eye", None)
+    eyes = None
+    if right is not None and left is not None and _within_bounds(*right, width, height) \
+            and _within_bounds(*left, width, height):
+        eyes = {"roll_deg": round(math.degrees(math.atan2(left[1] - right[1], left[0] - right[0])),
+                                  GEOMETRY_PX_DECIMALS),
+                "spacing_px": round(math.hypot(left[0] - right[0], left[1] - right[1]), GEOMETRY_PX_DECIMALS)}
+    return {"box": box, "raw_box": raw_box, "overhang_px": overhang, "eyes": eyes}
+
+
+def _within_bounds(x: Any, y: Any, width: int, height: int) -> bool:
+    low, high = RAW_BOUNDS
+    try:
+        fx, fy = float(x), float(y)
+    except (TypeError, ValueError):
+        return False
+    return (math.isfinite(fx) and math.isfinite(fy) and low <= fx / width <= high and low <= fy / height <= high)
 
 
 def full_scale_numbers(full_scale: Any, frame: FrameRef, persons: Sequence[TrackObservation],

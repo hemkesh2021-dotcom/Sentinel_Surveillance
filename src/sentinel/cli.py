@@ -373,7 +373,8 @@ def main(
         "--face-full-scale-detection", action="store_true",
         help="with --face-validation (D88, a candidate, not enabled otherwise): replace DeepFace's half-scale face "
         "detection with the same pinned YuNet at native scale, then DeepFace's own alignment and the same Facenet512, "
-        "taken from the loaded models; thresholds and identity rules unchanged; identity records become schema 5. "
+        "taken from the loaded models; thresholds and identity rules unchanged; identity records become schema 6 "
+        "(D90: with each face's geometry and prototype position). "
         "Not with --face-comparison",
     )
     run.add_argument("--identity-dir", type=Path, default=DEFAULT_IDENTITY_DIR,

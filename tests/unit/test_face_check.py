@@ -21,6 +21,7 @@ import hashlib
 import importlib
 import io
 import json
+import math
 import os
 import shutil
 import string
@@ -38,7 +39,7 @@ from sentinel import demo_runtime
 from sentinel.adapters import FACE_ADAPTER_ID, FaceAdmission, FaceAdmissionStatus
 from sentinel.cli import main, status_line
 from sentinel.config import IdentityConfig, parse_config
-from sentinel.contracts import NormalizedBox, PixelFormat, StreamIdentity
+from sentinel.contracts import FrameKey, NormalizedBox, PixelFormat, StreamIdentity
 from sentinel.demo_runtime import (
     DemoRuntime,
     Devices,
@@ -623,7 +624,7 @@ def test_the_checker_matches_the_runtimes_schema_and_values(mods) -> None:
     numbers = FaceDiagnostics((0.1, 0.2, 0.3, 0.9), 0.8, (40, 50), 0.95, 0.75)
     diagnostic = FaceResultRecord(0, 1, 5, 6, "applied", 1, ((1, "assigned", "match", ENROLLED, "match"),),
                                   diagnostics=(numbers,)).record(IDENTITY_DIAGNOSTIC_SCHEMA)
-    assert (check.DIAGNOSTIC_SCHEMA, check.SCHEMAS) == (IDENTITY_DIAGNOSTIC_SCHEMA, (1, 2, 3, 4, 5))
+    assert (check.DIAGNOSTIC_SCHEMA, check.SCHEMAS) == (IDENTITY_DIAGNOSTIC_SCHEMA, (1, 2, 3, 4, 5, 6))
     # D88: schema 5, the candidate's records, and its constants
     from sentinel.identity.legacy_deepface import DETECTION_FULL_SCALE, FULL_SCALE_FLOOR, CandidateDetection
     from sentinel.runtime import IDENTITY_CANDIDATE_SCHEMA, detection_numbers
@@ -635,6 +636,22 @@ def test_the_checker_matches_the_runtimes_schema_and_values(mods) -> None:
     candidate = FaceResultRecord(0, 1, 5, 6, "applied", 1, ((1, "assigned", "match", ENROLLED, "match"),),
                                  diagnostics=(numbers,), detection=detection).record(IDENTITY_CANDIDATE_SCHEMA)
     assert check._record_problem("result", candidate) is None and "full_scale" not in candidate
+    # D90: schema 6, its keys, bounds and the prototype positions
+    from sentinel.identity.legacy_deepface import FaceGeometry
+    from sentinel.identity.matching import MAX_PROTOTYPES
+    from sentinel.runtime import IDENTITY_GEOMETRY_SCHEMA, RAW_BOUNDS, face_geometry_numbers
+    geometry = face_geometry_numbers(FaceObservation(frame=FrameKey(camera_id="c", boot_id="b", run_id="r",
+                                                                    stream_epoch=0, frame_seq=1), box=FACE_BOX,
+                                                     quality=0.9), FaceGeometry((-2.0, 104.0, 58.0, 62.0),
+                                                                                (15.0, 128.0), (38.0, 129.0)), 640, 480)
+    assert set(geometry) == check.GEOMETRY_KEYS and set(geometry["eyes"]) == check.EYES_KEYS
+    six = FaceResultRecord(0, 1, 5, 6, "applied", 1, ((1, "assigned", "match", ENROLLED, "match"),),
+                           diagnostics=(dataclasses.replace(numbers, prototype=3, geometry=geometry),),
+                           detection=detection).record(IDENTITY_GEOMETRY_SCHEMA)
+    assert set(six["persons"][0]) == check.GEOMETRY_PERSON_KEYS and check._record_problem("result", six) is None
+    assert (check.GEOMETRY_SCHEMA, check.RAW_BOUNDS, check.MAX_PROTOTYPES) == (
+        IDENTITY_GEOMETRY_SCHEMA, RAW_BOUNDS, MAX_PROTOTYPES)
+    assert check.CANDIDATE_SCHEMAS == (IDENTITY_CANDIDATE_SCHEMA, IDENTITY_GEOMETRY_SCHEMA)
     from sentinel.identity.legacy_deepface import YUNET_THRESHOLD
     from sentinel.runtime import FULL_SCALE_COUNTED, IDENTITY_FULL_SCALE_SCHEMA, full_scale_numbers
     assert check.FULL_SCALE_SCHEMA == IDENTITY_FULL_SCALE_SCHEMA and FULL_SCALE_COUNTED == YUNET_THRESHOLD
@@ -2128,11 +2145,28 @@ def test_format_6_accepts_unknown_answers_and_is_schema_text(mods, tmp_path) -> 
 # ---------------------------------------------------------------- D88: the full-scale detection candidate's reading
 
 
-def candidate_run(mods, tmp_path, accepted_scene, name: str = "cand") -> Path:
+def as_schema_5(out: Path) -> None:
+    """Rewrite a schema-6 run's identity records as the candidate wrote them before D90 (9460548): schema 5, without
+    each person's prototype, geometry and shadow, every other field as it was."""
+    lines = []
+    for line in (out / "run.jsonl").read_text().splitlines():
+        item = json.loads(line)
+        if item.get("identity") in ("tick", "result", "transition"):
+            assert item["schema"] == 6
+            item["schema"] = 5
+            for person in item.get("persons", ()):
+                for key in ("prototype", "geometry", "shadow"):
+                    del person[key]
+        lines.append(json.dumps(item))
+    (out / "run.jsonl").write_text("\n".join(lines) + "\n")
+
+
+def candidate_run(mods, tmp_path, accepted_scene, name: str = "cand", schema: int = 6) -> Path:
     """The real runtime with the candidate selected for 300 s, seated throughout: the candidate finds the face except
     in every fourth 10 s block (then the best detection under 0.9 is at 0.84, or there is none in alternate such
-    blocks); the face found matches, except on frames whose sequence number is a multiple of 5."""
-    from sentinel.identity.legacy_deepface import CandidateDetection
+    blocks); the face found matches, except on frames whose sequence number is a multiple of 5. Its records are
+    schema 6 (D90), or, with ``schema=5``, as the candidate wrote them before D90."""
+    from sentinel.identity.legacy_deepface import CandidateDetection, FaceGeometry
 
     root = tmp_path / name
     root.mkdir()
@@ -2148,21 +2182,26 @@ def candidate_run(mods, tmp_path, accepted_scene, name: str = "cand") -> Path:
                 return FaceRun((), 0, 0, detection=CandidateDetection(below, 47.5, None))
             embedding = NOBODY if frame.frame_seq % 5 == 0 else FACE
             face = FaceObservation(frame=frame.key, box=FACE_BOX, quality=0.92, embedding=embedding)
-            return FaceRun((face,), 1, 0, detection=CandidateDetection(None, 48.0, 861.0))
+            edge = -2.5 if frame.frame_seq % 3 == 0 else 121.6  # a third of the faces reach past the left edge
+            geometry = FaceGeometry((edge, 105.6, 57.6, 62.4), (edge + 17.0, 128.0), (edge + 40.0, 129.0))
+            return FaceRun((face,), 1, 0, detection=CandidateDetection(None, 48.0, 861.0), geometry=(geometry,))
         return analyze
 
-    return simulate(root, startup, script=((0, 301, "facing", 1),), duration=300.0, analyze=analyze_from,
-                    captures=COMPARISON_CAPTURES, detection="full_scale")
+    out = simulate(root, startup, script=((0, 301, "facing", 1),), duration=300.0, analyze=analyze_from,
+                   captures=COMPARISON_CAPTURES, detection="full_scale")
+    if schema == 5:
+        as_schema_5(out)
+    return out
 
 
-@pytest.fixture
-def candidate_out(mods, tmp_path, accepted_scene):
-    out = candidate_run(mods, tmp_path, accepted_scene)
+@pytest.fixture(params=[5, 6], ids=["schema5", "schema6"])
+def candidate_out(mods, tmp_path, accepted_scene, request):
+    out = candidate_run(mods, tmp_path, accepted_scene, schema=request.param)
     pristine = tmp_path / "pristine"
     shutil.copytree(out, pristine)
     finish(mods, out, account=account_v6(mods), cues=COMPARISON_CUES, cued_format=6, duration_s=300.0,
            captures=COMPARISON_CAPTURES)
-    return SimpleNamespace(out=out, pristine=pristine)
+    return SimpleNamespace(out=out, pristine=pristine, schema=request.param)
 
 
 def _candidate_text(mods, out, f1) -> tuple[Any, str]:
@@ -2174,12 +2213,24 @@ def test_the_candidate_reading_checks_execution_then_describes_production_number
                                                                                  f1_list) -> None:
     reading, text = _candidate_text(mods, candidate_out.out, f1_list)
     assert reading.ok, text
-    assert line_for(text, "identity records: schema 5").startswith("PASS")
+    assert line_for(text, f"identity records: schema {candidate_out.schema}").startswith("PASS")
     assert line_for(text, "face admitted for this validation run with the full-scale detection candidate").startswith(
         "PASS")
     assert line_for(text, "account in format 6").startswith("PASS") and "never printed" not in text
     records = [json.loads(x) for x in (candidate_out.out / "run.jsonl").read_text().splitlines()]
-    assert {x["schema"] for x in records if "identity" in x} == {5}
+    assert {x["schema"] for x in records if "identity" in x} == {candidate_out.schema}
+    geometry = [x for x in text.splitlines() if "the assigned faces' geometry" in x]
+    if candidate_out.schema == 5:  # read exactly as before D90: no geometry line
+        assert geometry == []
+    else:
+        label, (window,) = _described(text, "diagnostics: the assigned faces' geometry")[0], \
+            _described(text, "diagnostics: the assigned faces' geometry")[1].values()
+        assert label.startswith("SUPPORTED")
+        match = window["match"]
+        assert match["faces"] == match["raw_box"] > 0 and match["past_edge"]["left"]["n"] > 0
+        assert match["past_edge"]["left"]["px"] == [2.5, 2.5, 2.5] and match["past_edge"]["right"]["n"] == 0
+        assert match["roll_deg"][1] == round(math.degrees(math.atan2(1.0, 23.0)), 1) and match["prototype"] == {
+            "0": match["faces"]}
     starting = next(x for x in records if x.get("run") == "starting")
     assert starting["startup"]["face"] == {"validation_run": True, "identities_enrolled": 1, "detection": "full_scale"}
     results = [x for x in records if x.get("identity") == "result" and x["outcome"] == "applied"]
@@ -2248,8 +2299,60 @@ def test_schema_5_results_must_carry_fitting_candidate_numbers(mods, candidate_o
     finish(mods, candidate_out.pristine, account=account_v6(mods), cues=COMPARISON_CUES, cued_format=6,
            duration_s=300.0, captures=COMPARISON_CAPTURES, counts={})
     reading, text = _candidate_text(mods, candidate_out.pristine, f1_list)
-    assert not reading.ok and line_for(text, "identity records: schema 5").startswith("FAIL")
+    assert not reading.ok and line_for(text, "identity records: schema").startswith("FAIL")
     assert not any(line.startswith("DESCRIPTIVE") for line in reading.lines)
+
+
+def _first_assigned(change):
+    def edit(lines):
+        for item in lines:
+            if item.get("identity") == "result" and item["outcome"] == "applied" and item["persons"] \
+                    and item["persons"][0]["face"] is not None:
+                change(item["persons"][0])
+                break
+        return lines
+    return edit
+
+
+@pytest.mark.parametrize("change", [
+    lambda p: p.update(prototype=8),  # beyond MAX_PROTOTYPES
+    lambda p: p.update(prototype=-1),
+    lambda p: p.update(prototype=None),  # a similarity was computed: its position must be there
+    lambda p: p.update(prototype=0.5),
+    lambda p: p.update(geometry=None),  # an assigned face always has its geometry
+    lambda p: p["geometry"].update(raw_box=[-1.5, 0.2, 0.3, 0.4]),  # outside RAW_BOUNDS
+    lambda p: p["geometry"].update(raw_box=[0.3, 0.2, 0.1, 0.4]),  # x1 after x2
+    lambda p: p["geometry"].update(raw_box=None),  # the overhang without the raw box
+    lambda p: p["geometry"].update(overhang_px=[-1.0, 0.0, 0.0, 0.0]),
+    lambda p: p["geometry"].update(overhang_px=[0.0, 0.0, 0.0]),
+    lambda p: p["geometry"].update(box=[0.1, 0.2, 1.2, 0.4]),  # the corrected box is inside the frame
+    lambda p: p["geometry"].update(eyes={"roll_deg": 181.0, "spacing_px": 20.0}),
+    lambda p: p["geometry"].update(eyes={"roll_deg": 1.0, "spacing_px": -2.0}),
+    lambda p: p["geometry"].update(eyes={"roll_deg": 1.0, "spacing_px": 2.0, "nose": [1, 2]}),
+    lambda p: p["geometry"].update(image="..."),
+    lambda p: p.update(shadow={"similarity": 1.5, "prototype": 0}),
+    lambda p: p.update(shadow={"similarity": 0.7, "prototype": 8}),
+    lambda p: p.update(shadow={"similarity": 0.7}),
+    lambda p: p.update(similarity=None, label="low_quality", vote="none", identity_id=None, prototype=None,
+                       shadow={"similarity": 0.7, "prototype": 0}),  # a shadow where nothing was compared
+])
+def test_schema_6_numbers_must_fit_their_bounds_and_labels(mods, tmp_path, accepted_scene, f1_list, change) -> None:
+    out = candidate_run(mods, tmp_path, accepted_scene)
+    _mutate(out, _first_assigned(change))
+    finish(mods, out, account=account_v6(mods), cues=COMPARISON_CUES, cued_format=6, duration_s=300.0,
+           captures=COMPARISON_CAPTURES, counts={})
+    reading, text = _candidate_text(mods, out, f1_list)
+    assert not reading.ok and line_for(text, "identity records: schema").startswith("FAIL")
+    assert "geometry, prototype or shadow numbers do not fit" in line_for(text, "identity records: schema") or \
+        "do not fit its labels" in line_for(text, "identity records: schema")
+    assert not any(line.startswith("DESCRIPTIVE") for line in reading.lines)
+
+
+def test_schema_6_evidence_is_numbers_only_to_the_privacy_profile(mods, tmp_path, accepted_scene) -> None:
+    out = candidate_run(mods, tmp_path, accepted_scene)
+    assert mods.evidence.read(out / "run.jsonl", "f2").nonconforming == []
+    _mutate(out, _first_assigned(lambda p: p["geometry"].update(label="Jane")))
+    assert len(mods.evidence.read(out / "run.jsonl", "f2").nonconforming) == 1
 
 
 def test_nothing_is_described_before_the_candidates_locked_account(mods, candidate_out, f1_list) -> None:
@@ -2345,14 +2448,17 @@ def judged(text: str) -> list[tuple[str, str]]:
     return out
 
 
+@pytest.mark.parametrize("schema", [5, 6])
 def test_a_candidate_f2_run_is_judged_item_for_item_as_a_production_run(mods, tmp_path, startup, f1_list,
-                                                                        accepted_scene) -> None:
+                                                                        accepted_scene, schema) -> None:
     """D89: the same script and account, read once with production's faces (schema 3) and once with the candidate's
-    (schema 5): every judged item, its verdict and its criterion are the same; only the three items that say which
-    detection produced the faces name the candidate."""
+    (schema 5, as before D90, or 6): every judged item, its verdict and its criterion are the same; only the three
+    items that say which detection produced the faces name the candidate."""
     production = simulate(tmp_path, startup)
     finish(mods, production, account=account_v3(mods), cues=FORMAT3_CUES)
     candidate = candidate_f2_run(mods, tmp_path, accepted_scene)
+    if schema == 5:
+        as_schema_5(candidate)
     finish(mods, candidate, account=account_v3(mods), cues=FORMAT3_CUES)
     p_result, p_text = reading(mods, production, f1_list)
     c_result, c_text = reading(mods, candidate, f1_list)
@@ -2365,11 +2471,13 @@ def test_a_candidate_f2_run_is_judged_item_for_item_as_a_production_run(mods, tm
         "each status capture: face available (validation run, 1 enrolled), scene available, video fresh, no channel, "
         "no delivery row; the candidate's detection": "each status capture: face available (validation run, 1 "
         "enrolled), scene available, video fresh, no channel, no delivery row",
-        "identity records: schema 5, complete, none dropped": "identity records: schema 3, complete, none dropped"}
+        f"identity records: schema {schema}, complete, none dropped": "identity records: schema 3, complete, none "
+        "dropped"}
     assert [(label, renamed.get(name, name)) for label, name in judged(c_text)] == judged(p_text)
     assert line_for(c_text, "A: a known identity is retained").startswith("PASS")
     records = [json.loads(x) for x in (candidate / "run.jsonl").read_text().splitlines()]
-    assert {x["schema"] for x in records if "identity" in x} == {5}
+    assert {x["schema"] for x in records if "identity" in x} == {schema}
+    assert ("the assigned faces' geometry" in c_text) == (schema == 6)  # descriptive, never judged
     assert json.loads(line_for(c_text, "each status capture").split(": ", 1)[1].split("; the candidate's detection: ",
                                                                                          1)[1])[0]["detection"] \
         == "full_scale"

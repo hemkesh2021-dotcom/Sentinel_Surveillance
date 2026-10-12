@@ -71,7 +71,17 @@ similarity to the closest enrolled identity. A run's records share one schema. E
 both; schema 2's numbers must agree with their labels (a face only where one was assigned, a similarity only where
 one was computed, a match at or above MATCH_THRESHOLD and an unknown vote at or below it), and they add DESCRIPTIVE
 diagnostics per judged window, which are never judged. Schema 3 (D86) adds each result's full-scale pass. Schema 4 (D87,
-``--face-comparison`` runs) is schema 3 plus "comparison" records, each checked against its own disposition.
+``--face-comparison`` runs) is schema 3 plus "comparison" records, each checked against its own disposition. Schema 5
+(D88, the full-scale detection candidate) is schema 2 plus each result's own detection numbers. Schema 6 (D90, what
+the candidate writes from D90 on) is schema 5 plus, on each person, the position of the prototype behind a computed
+similarity, the assigned face's geometry (the corrected box, the detector's own unclipped box or null, the overhang
+past each edge or null, the eyes' angle and spacing or null; runtime.face_geometry_numbers) and "shadow" (D91: the
+similarity to an experiment's working gallery, or null); its numbers must fit their bounds and labels, and the
+readings add one DESCRIPTIVE geometry line, never judged.
+
+**F2 for the candidate (D89).** The F2 reading reads a run of the candidate by the same criteria: its startup's face
+entry is production's plus ``detection: full_scale``, which must agree with the records' schema (5 or 6 with it, never
+without it) and appear in every status capture; three item names say so, and nothing else differs.
 
 **The comparison reading** (``face_check.py comparison``, D87; descriptive, validates nothing): execution items first
 (the run, the records in schema 4, the cues, a locked format-6 account in which every answer is yes, no or unknown, the
@@ -116,8 +126,9 @@ DIAGNOSTIC_SCHEMA = 2  # runtime.IDENTITY_DIAGNOSTIC_SCHEMA: schema 1 plus each 
 FULL_SCALE_SCHEMA = 3  # runtime.IDENTITY_FULL_SCALE_SCHEMA: schema 2 plus each result's full-scale pass (D86)
 COMPARISON_SCHEMA = 4  # runtime.IDENTITY_COMPARISON_SCHEMA: schema 3 plus comparison records (D87)
 CANDIDATE_SCHEMA = 5  # runtime.IDENTITY_CANDIDATE_SCHEMA: schema 2 plus the detection candidate's numbers (D88)
-SCHEMAS = (SCHEMA, DIAGNOSTIC_SCHEMA, FULL_SCALE_SCHEMA, COMPARISON_SCHEMA, CANDIDATE_SCHEMA)
-CANDIDATE_SCHEMAS = (CANDIDATE_SCHEMA,)  # what a run of the full-scale detection candidate writes (D88)
+GEOMETRY_SCHEMA = 6  # runtime.IDENTITY_GEOMETRY_SCHEMA: schema 5 plus each person's prototype, geometry, shadow (D90)
+SCHEMAS = (SCHEMA, DIAGNOSTIC_SCHEMA, FULL_SCALE_SCHEMA, COMPARISON_SCHEMA, CANDIDATE_SCHEMA, GEOMETRY_SCHEMA)
+CANDIDATE_SCHEMAS = (CANDIDATE_SCHEMA, GEOMETRY_SCHEMA)  # what runs of the candidate write (D88; D90 from 6)
 F2_FACE = {"validation_run": True, "identities_enrolled": 1}  # the startup's face entry of a production F2 run
 FULL_SCALE_KEYS = {"faces", "assigned", "best_score", "best_w_px", "ms"}
 DETECTION_KEYS = {"best_below_score", "best_below_w_px", "detect_ms", "embed_ms"}  # runtime.detection_numbers (D88)
@@ -160,6 +171,13 @@ RESULT_KEYS = {"identity", "schema", "stream_epoch", "frame_seq", "frame_mono_ns
                "faces", "processing_ms", "error", "persons"}
 PERSON_KEYS = {"track_id", "ownership", "vote", "identity_id", "label"}
 DIAGNOSTIC_PERSON_KEYS = PERSON_KEYS | {"box", "confidence", "face", "similarity"}  # schema 2
+GEOMETRY_PERSON_KEYS = DIAGNOSTIC_PERSON_KEYS | {"prototype", "geometry", "shadow"}  # schema 6 (D90)
+GEOMETRY_KEYS = {"box", "raw_box", "overhang_px", "eyes"}  # runtime.face_geometry_numbers
+EYES_KEYS = {"roll_deg", "spacing_px"}
+SHADOW_KEYS = {"similarity", "prototype"}  # D91: the similarity to an experiment's working gallery
+RAW_BOUNDS = (-1.0, 2.0)  # runtime.RAW_BOUNDS: what a recorded raw box may span, in frame widths and heights
+MAX_PROTOTYPES = 8  # matching.MAX_PROTOTYPES: a prototype position is 0 to 7
+MAX_PX = 4096.0  # a generous bound on any recorded pixel distance (frames are at most 640 px wide on these paths)
 FACE_KEYS = {"w_px", "h_px", "score"}
 SIMILARITY_LABELS = {"match", "unknown", "margin"}  # the labels for which the runtime computed a similarity
 TRANSITION_KEYS = {"identity", "schema", "stream_epoch", "track_id", "from", "to", "identity_id", "basis",
@@ -234,7 +252,7 @@ def _record_problem(kind: Any, item: dict) -> str | None:
         return _comparison_problem(item)
     if kind == "result" and schema in (FULL_SCALE_SCHEMA, COMPARISON_SCHEMA):
         keys = keys | {"full_scale"}
-    elif kind == "result" and schema == CANDIDATE_SCHEMA:
+    elif kind == "result" and schema in CANDIDATE_SCHEMAS:
         keys = keys | {"detection"}
     if set(item) != keys:
         return f"{kind}: fields {sorted(set(item) ^ keys)} differ from schema {schema}"
@@ -248,9 +266,10 @@ def _record_problem(kind: Any, item: dict) -> str | None:
             return "result: a field has the wrong type or value"
         if schema in (FULL_SCALE_SCHEMA, COMPARISON_SCHEMA) and not _full_scale_fits(item["full_scale"]):
             return "result: its full-scale numbers are malformed"
-        if schema == CANDIDATE_SCHEMA and not _detection_fits(item["detection"], item["faces"], item["outcome"]):
+        if schema in CANDIDATE_SCHEMAS and not _detection_fits(item["detection"], item["faces"], item["outcome"]):
             return "result: its detection numbers are malformed"
-        person_keys = PERSON_KEYS if schema == SCHEMA else DIAGNOSTIC_PERSON_KEYS
+        person_keys = (PERSON_KEYS if schema == SCHEMA else GEOMETRY_PERSON_KEYS if schema == GEOMETRY_SCHEMA
+                       else DIAGNOSTIC_PERSON_KEYS)
         for person in item["persons"]:
             if not isinstance(person, dict) or set(person) != person_keys or not _int(person["track_id"]) \
                     or person["vote"] not in ("match", "unknown", "none") \
@@ -259,6 +278,8 @@ def _record_problem(kind: Any, item: dict) -> str | None:
                 return f"result: a person entry differs from schema {schema}"
             if schema >= DIAGNOSTIC_SCHEMA and not _diagnostics_fit(person):
                 return "result: a person entry's diagnostic numbers do not fit its labels"
+            if schema == GEOMETRY_SCHEMA and not _geometry_fits(person):
+                return "result: a person entry's geometry, prototype or shadow numbers do not fit"
     else:
         if not (_int(item["mono_ns"]) and _int(item["track_id"]) and item["from"] in STATES and item["to"] in STATES
                 and (item["identity_id"] is None or ID.match(str(item["identity_id"])))
@@ -323,6 +344,42 @@ def _detection_fits(numbers: Any, faces: Any, outcome: Any) -> bool:
     if best is None:
         return width is None
     return _number(best, RECORDING_FLOOR, 0.9) and _int(width) and width >= 0
+
+
+def _geometry_fits(person: dict) -> bool:
+    """Schema 6 (D90): a prototype position exactly when a similarity was computed; the geometry exactly when a face
+    was assigned: the corrected box inside the frame, the detector's raw box within RAW_BOUNDS or null, the overhang
+    (four pixel distances, 0 or more) exactly when the raw box is there, the eyes' angle and spacing or null; the
+    shadow (D91) null, or a similarity and a prototype position only where a similarity was computed."""
+    prototype, geometry, shadow = person["prototype"], person["geometry"], person["shadow"]
+    computed = person["similarity"] is not None
+    if (prototype is not None) != computed or (computed and not (_int(prototype) and 0 <= prototype < MAX_PROTOTYPES)):
+        return False
+    if (geometry is None) != (person["face"] is None):
+        return False
+    if geometry is not None:
+        if not (isinstance(geometry, dict) and set(geometry) == GEOMETRY_KEYS and _box_fits(geometry["box"], 0.0, 1.0)):
+            return False
+        raw, overhang, eyes = geometry["raw_box"], geometry["overhang_px"], geometry["eyes"]
+        if (raw is None) != (overhang is None):
+            return False
+        if raw is not None and not (_box_fits(raw, *RAW_BOUNDS) and isinstance(overhang, list) and len(overhang) == 4
+                                    and all(_number(v, 0.0, MAX_PX) for v in overhang)):
+            return False
+        if eyes is not None and not (isinstance(eyes, dict) and set(eyes) == EYES_KEYS
+                                     and _number(eyes["roll_deg"], -180.0, 180.0)
+                                     and _number(eyes["spacing_px"], 0.0, MAX_PX)):
+            return False
+    if shadow is not None and not (computed and isinstance(shadow, dict) and set(shadow) == SHADOW_KEYS
+                                   and _number(shadow["similarity"], -1.0, 1.0) and _int(shadow["prototype"])
+                                   and 0 <= shadow["prototype"] < MAX_PROTOTYPES):
+        return False
+    return True
+
+
+def _box_fits(box: Any, low: float, high: float) -> bool:
+    return (isinstance(box, list) and len(box) == 4 and all(_number(v, low, high) for v in box)
+            and box[0] < box[2] and box[1] < box[3])
 
 
 def _diagnostics_fit(person: dict) -> bool:
@@ -671,7 +728,7 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
     _counts_items(r, directory)
     _describe(r, result, line, windows, last, bounds, fmt)
     if schema >= DIAGNOSTIC_SCHEMA:
-        _diagnose(r, line, windows, full_scale=schema == FULL_SCALE_SCHEMA)
+        _diagnose(r, line, windows, full_scale=schema == FULL_SCALE_SCHEMA, geometry=schema == GEOMETRY_SCHEMA)
     return r
 
 
@@ -925,10 +982,11 @@ def read_candidate(directory: Path, f1: Path, gate: tuple[Path, Path, Path | Non
     total = sum(len(v) for v in records.values())
     schemas = sorted({item["schema"] for kind in records.values() for item in kind})
     dropped = s5._get(last, "components", "face", "records", "dropped")
-    r.item(f"identity records: schema {CANDIDATE_SCHEMA}, complete, none dropped, no comparison record",
+    schema = schemas[0] if len(schemas) == 1 and schemas[0] in CANDIDATE_SCHEMAS else CANDIDATE_SCHEMA
+    r.item(f"identity records: schema {schema}, complete, none dropped, no comparison record",
            {"records": {k: len(v) for k, v in records.items()}, "schemas": schemas, "problems": problems[:5],
             "dropped": dropped} if total else MISSING,
-           total > 0 and not problems and schemas == [CANDIDATE_SCHEMA] and dropped == 0
+           total > 0 and not problems and schemas == [schema] and dropped == 0
            and not records.get("comparison") and total < MAX_IDENTITY_RECORDS)
     ready = s5._get(result, "child", "ready_mono_s")
     cues = _cue_offsets(result)
@@ -947,7 +1005,7 @@ def read_candidate(directory: Path, f1: Path, gate: tuple[Path, Path, Path | Non
                fmt == 6 and review[-1].endswith(": yes"))
     _counts_items(r, directory)
     if account is None or fmt != 6 or problems or not isinstance(ready, float) or "t0" not in cues \
-            or "stop" not in cues or schemas != [CANDIDATE_SCHEMA] or s5._get(start, "face") != CANDIDATE_FACE:
+            or "stop" not in cues or schemas != [schema] or s5._get(start, "face") != CANDIDATE_FACE:
         return r  # described only from the candidate's usable records, a time base and a locked account
     window = _comparison_window(cues)
     line = Timeline(records, round((cues["t0"] + ready) * NS), float(duration))
@@ -962,9 +1020,9 @@ def read_candidate(directory: Path, f1: Path, gate: tuple[Path, Path, Path | Non
     _say(r, both, PER_PERSON + ", and where no face was assigned the best detection under 0.9, in W",
          _per_person(line, window, "candidate"))
     diagnostics = Reading()
-    _diagnose(diagnostics, line, {"W": window}, names=("W",))
+    _diagnose(diagnostics, line, {"W": window}, names=("W",), geometry=schema == GEOMETRY_SCHEMA)
     for text in diagnostics.lines:
-        depends = both if "similarity to the closest" in text else context
+        depends = both if "similarity to the closest" in text or "geometry" in text else context
         r.lines.append(text.replace("DESCRIPTIVE ", f"DESCRIPTIVE [{depends}] ", 1))
     _say(r, both, IDENTITY_TIME + ", in W", _identity_time(line, window))
     stop = s5._get(result, "stop")
@@ -1311,7 +1369,7 @@ def _spread(values: list[float]) -> list[float] | None:
 
 
 def _diagnose(r: Reading, line: Timeline, windows: dict, names: tuple[str, ...] = WINDOWS,
-              full_scale: bool = False) -> None:
+              full_scale: bool = False, geometry: bool = False) -> None:
     """Schema 2 (D84): DESCRIPTIVE diagnostics per judged window, never judged. Whether a person was detected on each
     tick and on which track; where the people on applied results were and how sure the person detector was; how many
     of them had a face from the face detector, its size and score; and how close each vote came to the enrolled
@@ -1374,6 +1432,39 @@ def _diagnose(r: Reading, line: Timeline, windows: dict, names: tuple[str, ...] 
                    "vote; results with a pass, results with a face assigned by production and by the full-scale pass "
                    "at 0.9, those found only at full scale, the best score where production found none, the face "
                    "width in frame pixels and the pass's ms, each [min, median, max])", full)
+    if geometry:
+        r.describe(GEOMETRY_LINE, {name: _geometry_by_vote(line, windows[name]) for name in names})
+
+
+GEOMETRY_LINE = ("diagnostics: the assigned faces' geometry per window, by vote (D90; geometry, never a cause): faces "
+                 "with the detector's own box, those reaching past the left, top, right and bottom edges and how far "
+                 "(px [min, median, max]), the eye line's angle (degrees) and the eyes' spacing (px), each [min, "
+                 "median, max], and the votes per prototype position")
+
+
+def _geometry_by_vote(line: Timeline, window: tuple[float, float]) -> dict | None:
+    persons = [p for x in line.in_window(line.results, window) if x["outcome"] == "applied" for p in x["persons"]
+               if p.get("geometry") is not None]
+    if not persons:
+        return None
+    out = {}
+    for vote in ("match", "unknown"):
+        group = [p for p in persons if p["label"] == vote]
+        raw = [p["geometry"] for p in group if p["geometry"]["raw_box"] is not None]
+        eyes = [p["geometry"]["eyes"] for p in group if p["geometry"]["eyes"] is not None]
+        edges = {}
+        for index, edge in enumerate(("left", "top", "right", "bottom")):
+            past = [g["overhang_px"][index] for g in raw if g["overhang_px"][index] > 0]
+            edges[edge] = {"n": len(past), "px": _spread(past)}
+        positions: dict[str, int] = {}
+        for p in group:
+            if p["prototype"] is not None:
+                positions[str(p["prototype"])] = positions.get(str(p["prototype"]), 0) + 1
+        out[vote] = {"faces": len(group), "raw_box": len(raw), "past_edge": edges,
+                     "roll_deg": _spread([e["roll_deg"] for e in eyes]),
+                     "spacing_px": _spread([e["spacing_px"] for e in eyes]),
+                     "prototype": dict(sorted(positions.items()))}
+    return out
 
 
 def _per_person(line: Timeline, window: tuple[float, float], kind: str) -> dict:
