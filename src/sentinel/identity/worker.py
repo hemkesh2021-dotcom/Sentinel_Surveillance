@@ -65,6 +65,7 @@ class FaceResult:
     faces: tuple[Any, ...] | None  # FaceObservations; None after an error
     error: str | None
     processing_ms: float
+    full_scale: Any = None  # D86: the adapter's diagnostic full-scale pass (legacy_deepface.FullScale), when enabled
 
 
 class FaceWorker:
@@ -197,7 +198,8 @@ class FaceWorker:
             self.counters["fallback_dropped"] += run.fallback_dropped
             self.counters["faces_returned"] += len(run.faces)
             self._latencies.append(elapsed)
-        return FaceResult(job.frame, job.persons, tuple(run.faces), None, elapsed)
+        return FaceResult(job.frame, job.persons, tuple(run.faces), None, elapsed,
+                          getattr(run, "full_scale", None))
 
 
 def _percentiles(values: Sequence[float]) -> dict[str, float | int | None]:

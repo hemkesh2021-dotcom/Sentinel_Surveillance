@@ -176,7 +176,33 @@ INTRO_V4 = (
     "sure. Then the three questions about your face and the room. Nothing here shows an identity result."
 )
 CUED_FORMATS = (3, 4)  # face_check reads both alike: each movement's interval from the guard's cue times
-FORMATS = {HEADER_V1: (1, FIELDS_V1), HEADER: (2, FIELDS), HEADER_V3: (3, FIELDS_V3), HEADER_V4: (4, FIELDS_V4)}
+
+# Format 5 (D86): the natural seated check's account, not an F2 account. The operator sits and moves as usual; the
+# guard cues four phases; the reading is descriptive (face_check natural) and validates nothing.
+HEADER_V5 = ("# natural seated check account, format 5 (cued), entered with benchmarks/runner/face_account.py; "
+             "values as typed")
+NATURAL_CUE_AT_S = {"t0": 0, "look": 120, "turn": 210, "n2": 300}  # the guard's cues; the run stops at 390 s
+NATURAL_ALLOWANCE_S = 10  # each cued movement is done within this long after its cue
+NATURAL_MOVES = {"looked_at_camera_within_10_s": "look", "swivelled_away_within_10_s": "turn",
+                 "back_as_usual_within_10_s": "n2"}
+FIELDS_V5 = (
+    Field("seated_as_usual_from_t0", "choice", "yes / no: from the T0 cue until the 2:00 cue you sat and worked at the "
+          "Mac as you normally do, looking at the Mac", YES_NO),
+    Field("looked_at_camera_within_10_s", "choice", "yes / no: within 10 s after the 2:00 cue, and not before it, you "
+          "looked toward the camera, and kept looking toward it until the 3:30 cue", YES_NO),
+    Field("swivelled_away_within_10_s", "choice", "yes / no: within 10 s after the 3:30 cue, and not before it, you "
+          "swivelled the chair away as you normally would, and stayed turned away until the 5:00 cue", YES_NO),
+    Field("back_as_usual_within_10_s", "choice", "yes / no: within 10 s after the 5:00 cue, and not before it, you "
+          "swivelled back and worked at the Mac as you normally do until the stop", YES_NO),
+    *FIELDS_V1[9:],  # other_faces_in_view, notes
+)
+INTRO_V5 = (
+    "Your natural seated check account (format 5). For each phase: did you do as its cue said, within 10 s after the\n"
+    "cue and not before it? Answer yes or no, or unknown if you are not sure. Then whether anyone else was in view.\n"
+    "Nothing here shows an identity result."
+)
+FORMATS = {HEADER_V1: (1, FIELDS_V1), HEADER: (2, FIELDS), HEADER_V3: (3, FIELDS_V3), HEADER_V4: (4, FIELDS_V4),
+           HEADER_V5: (5, FIELDS_V5)}
 INTRO = (
     "Your F2 account (format 2). Answer from what you noted; type unknown for anything you did not note or are not\n"
     "sure of. First: how many whole seconds after the T0 cue you started the stopwatch (0 if at the cue, as far as\n"
@@ -313,8 +339,8 @@ def _answer(index: int, values: dict[str, str], ask: Callable[[str], str], say: 
 def enter(run_dir: Path, ask: Callable[[str], str] = input, say: Callable[[str], None] = print,
           account_format_number: int = 2) -> int:
     """Format 2 (D66), or format 3 (D79, cued) or 4 (D85, cued, the 4:00 head turn stated) when asked for."""
-    fields, header, intro = {3: (FIELDS_V3, HEADER_V3, INTRO_V3), 4: (FIELDS_V4, HEADER_V4, INTRO_V4)}.get(
-        account_format_number, (FIELDS, HEADER, INTRO))
+    fields, header, intro = {3: (FIELDS_V3, HEADER_V3, INTRO_V3), 4: (FIELDS_V4, HEADER_V4, INTRO_V4),
+                             5: (FIELDS_V5, HEADER_V5, INTRO_V5)}.get(account_format_number, (FIELDS, HEADER, INTRO))
     problem = not_ready(run_dir)
     if problem is not None:
         say(f"STOP: {problem}. Nothing written.")
@@ -393,9 +419,9 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     enter_parser = commands.add_parser("enter", help="answer each item; saving locks the account")
     enter_parser.add_argument("run_dir", type=Path)
-    enter_parser.add_argument("--format", type=int, choices=(2, 3, 4), default=2,
-                              help="2 (D66, the default), 3 (D79, cued) or 4 (D85, cued, the 4:00 head turn stated); "
-                                   "3 and 4 only with the maintainer's approval")
+    enter_parser.add_argument("--format", type=int, choices=(2, 3, 4, 5), default=2,
+                              help="2 (D66, the default), 3 (D79, cued), 4 (D85, cued, the 4:00 head turn stated) or 5 "
+                                   "(D86, the natural seated check); 3 to 5 only with the maintainer's approval")
     commands.add_parser("check", help="show a saved account and its lock state").add_argument("run_dir", type=Path)
     args = parser.parse_args(argv)
     if args.command == "enter":

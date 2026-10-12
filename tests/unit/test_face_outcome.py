@@ -15,7 +15,7 @@ from sentinel.identity.state import Basis, IdentityState
 from sentinel.live_state import Capability
 from sentinel.media.clock import FakeClock
 from sentinel.media.frames import FrameStamper
-from sentinel.runtime import IDENTITY_DIAGNOSTIC_SCHEMA, EdgeCore
+from sentinel.runtime import IDENTITY_DIAGNOSTIC_SCHEMA, IDENTITY_FULL_SCALE_SCHEMA, EdgeCore
 
 CONFIG = parse_config({"config_version": 1, "camera": {"id": "cam-1"}})
 A, B = (1.0, 0.0, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0)
@@ -257,7 +257,7 @@ def test_a_failed_result_has_no_diagnostics_and_an_unknown_schema_is_refused() -
     failed = world.faces(frame, persons, None).face_result
     assert failed.record(IDENTITY_DIAGNOSTIC_SCHEMA)["persons"] == []
     with pytest.raises(ValueError):
-        failed.record(3)
+        failed.record(4)
 
 
 @pytest.mark.parametrize(("make", "outcome"), [
@@ -273,3 +273,21 @@ def test_a_rejected_or_failed_result_is_recorded_without_votes(make, outcome) ->
     frame, persons = stale.frame((1, LEFT), dt=1.0)
     stale.frame((1, LEFT), dt=3.5)
     assert stale.faces(frame, persons, (head(LEFT), A_FACE)).face_result.record()["outcome"] == "rejected_age"
+
+
+def test_the_full_scale_pass_is_recorded_as_counts_against_the_frames_own_people() -> None:
+    """D86 (schema 3): faces at or above 0.9 are counted, and those the one-to-one association would give to a person
+    on this frame; the best candidate's score and width; never a vote, a box or an image."""
+    from types import SimpleNamespace
+
+    world = World()
+    frame, persons = world.frame((1, LEFT), (2, RIGHT), dt=1.0)
+    in_head, elsewhere = NormalizedBox(x1=0.13, y1=0.12, x2=0.27, y2=0.25), NormalizedBox(x1=0.4, y1=0.5, x2=0.5, y2=0.6)
+    full = SimpleNamespace(candidates=((0.95, in_head), (0.91, elsewhere), (0.5, in_head)), ms=12.34)
+    output = world.core.on_face_outcome(frame, persons, (), world.stream, full_scale=full)
+    record = output.face_result.record(IDENTITY_FULL_SCALE_SCHEMA)
+    assert record["full_scale"] == {"faces": 2, "assigned": 1, "best_score": 0.95, "best_w_px": 90, "ms": 12.3}
+    assert record["persons"][0]["vote"] == "none"  # the production pass found no face: no vote from the diagnostic
+    assert "full_scale" not in output.face_result.record(IDENTITY_DIAGNOSTIC_SCHEMA)
+    plain = world.faces(frame, persons, (head(LEFT), A_FACE)).face_result.record(IDENTITY_FULL_SCALE_SCHEMA)
+    assert plain["full_scale"] is None  # not enabled: recorded as absent, never as zero

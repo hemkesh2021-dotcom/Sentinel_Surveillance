@@ -20,7 +20,10 @@ from sentinel.identity.legacy_deepface import (
     MODEL_WEIGHTS,
     FaceBackendError,
     LegacyDeepFaceBackend,
+    FULL_SCALE_FLOOR,
+    YUNET_THRESHOLD,
     enrollment_face,
+    full_scale_pass,
     static_compatibility_fields,
     static_difference,
     to_face_run,
@@ -171,3 +174,65 @@ def test_a_gallery_from_another_pipeline_is_seen_before_loading() -> None:
     assert static_difference(base) is None
     assert static_difference(base.model_copy(update={"detector_backend": "retinaface"})) == "detector_backend"
     assert static_difference(base.model_copy(update={"align": False})) == "align"
+
+
+# ---------------------------------------------------------------- D86: the diagnostic full-scale pass
+
+
+class FakeYuNet:
+    """cv2.FaceDetectorYN's interface: rows of x, y, w, h, ten landmark values, score."""
+
+    def __init__(self, rows=None, error=None) -> None:
+        self.rows, self.error, self.calls = rows, error, []
+
+    def setInputSize(self, size) -> None:  # noqa: N802 - OpenCV's name
+        self.calls.append(("size", size))
+
+    def setScoreThreshold(self, value) -> None:  # noqa: N802
+        self.calls.append(("threshold", value))
+
+    def detect(self, image):
+        if self.error is not None:
+            raise self.error
+        return 1, self.rows
+
+
+def row(x, y, w, h, score):
+    return [x, y, w, h, *([0.0] * 10), score]
+
+
+def test_the_full_scale_pass_detects_at_native_scale_and_keeps_numbers_only() -> None:
+    detector = FakeYuNet([row(64, 48, 32, 40, 0.62), row(320, 120, 64, 80, 0.97), row(700, 10, 20, 20, 0.95)])
+    result = full_scale_pass(detector, 640, 480, "frame")
+    assert detector.calls == [("size", (640, 480)), ("threshold", FULL_SCALE_FLOOR)]  # no border, no resize
+    assert [round(score, 2) for score, _ in result.candidates] == [0.97, 0.62]  # best first; off-frame one dropped
+    best = result.candidates[0][1]
+    assert (best.x1, best.y1, best.x2, best.y2) == (0.5, 0.25, 0.6, 5 / 12)
+    assert result.ms >= 0 and FULL_SCALE_FLOOR < YUNET_THRESHOLD == 0.9
+    assert full_scale_pass(FakeYuNet([row(1, 1, 5, 5, 0.9)] * 12), 640, 480, "f").candidates.__len__() == 8
+    assert full_scale_pass(FakeYuNet(None), 640, 480, "f").candidates == ()
+
+
+def test_the_full_scale_pass_never_changes_or_breaks_the_production_result() -> None:
+    assert full_scale_pass(FakeYuNet([row(1, 1, 5, 5, 0.9)]), 1280, 720, "f") is None  # YuNet would rescale it
+    assert full_scale_pass(FakeYuNet(error=RuntimeError("boom")), 640, 480, "f") is None
+    assert full_scale_pass(FakeYuNet([["x"]]), 640, 480, "f") is None
+
+
+def test_only_an_enabled_backend_builds_the_pass_from_the_pinned_weights(weights) -> None:
+    runtime = FakeRuntime()
+    created = []
+    runtime.ns.cv2.FaceDetectorYN_create = lambda *args: created.append(args) or FakeYuNet([row(320, 120, 64, 80, 0.97)])
+    plain = backend(weights, runtime)
+    plain.load()
+    runtime.next_result = [fallback()]
+    assert plain.faces(FRAME, 640, 480, "frame").full_scale is None and created == []
+    enabled = backend(weights, runtime)
+    enabled.enable_full_scale()
+    enabled.load()
+    assert created == [(str(weights / DETECTOR_WEIGHTS[0]), "", (0, 0), FULL_SCALE_FLOOR)]
+    run = enabled.faces(FRAME, 640, 480, "frame")
+    assert run.faces == () and run.fallback_dropped == 1  # the production result is unchanged
+    assert [round(s, 2) for s, _ in run.full_scale.candidates] == [0.97]
+    with pytest.raises(FaceBackendError):
+        enabled.enable_full_scale()  # only before the load

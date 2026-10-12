@@ -95,7 +95,9 @@ from operator_account import seconds as stopwatch_seconds
 
 SCHEMA = 1
 DIAGNOSTIC_SCHEMA = 2  # runtime.IDENTITY_DIAGNOSTIC_SCHEMA: schema 1 plus each result person's diagnostic numbers
-SCHEMAS = (SCHEMA, DIAGNOSTIC_SCHEMA)
+FULL_SCALE_SCHEMA = 3  # runtime.IDENTITY_FULL_SCALE_SCHEMA: schema 2 plus each result's full-scale pass (D86)
+SCHEMAS = (SCHEMA, DIAGNOSTIC_SCHEMA, FULL_SCALE_SCHEMA)
+FULL_SCALE_KEYS = {"faces", "assigned", "best_score", "best_w_px", "ms"}
 ID = re.compile(r"^idn-[0-9a-f]{12}$")
 NS = 1_000_000_000
 # The runtime's identity values (config.IdentityConfig defaults; test-tied).
@@ -195,6 +197,8 @@ def _record_problem(kind: Any, item: dict) -> str | None:
     schema = item.get("schema")
     if schema not in SCHEMAS or type(schema) is not int:
         return f"{kind}: schema {schema!r}, not one of {list(SCHEMAS)}"
+    if kind == "result" and schema == FULL_SCALE_SCHEMA:
+        keys = keys | {"full_scale"}
     if set(item) != keys:
         return f"{kind}: fields {sorted(set(item) ^ keys)} differ from schema {schema}"
     if kind == "tick":
@@ -205,6 +209,8 @@ def _record_problem(kind: Any, item: dict) -> str | None:
         if not (_int(item["frame_mono_ns"]) and _int(item["applied_mono_ns"]) and item["outcome"] in OUTCOMES
                 and isinstance(item["persons"], list)):
             return "result: a field has the wrong type or value"
+        if schema == FULL_SCALE_SCHEMA and not _full_scale_fits(item["full_scale"]):
+            return "result: its full-scale numbers are malformed"
         person_keys = PERSON_KEYS if schema == SCHEMA else DIAGNOSTIC_PERSON_KEYS
         for person in item["persons"]:
             if not isinstance(person, dict) or set(person) != person_keys or not _int(person["track_id"]) \
@@ -212,7 +218,7 @@ def _record_problem(kind: Any, item: dict) -> str | None:
                     or (person["vote"] == "match") != (person["identity_id"] is not None) \
                     or (person["identity_id"] is not None and not ID.match(str(person["identity_id"]))):
                 return f"result: a person entry differs from schema {schema}"
-            if schema == DIAGNOSTIC_SCHEMA and not _diagnostics_fit(person):
+            if schema >= DIAGNOSTIC_SCHEMA and not _diagnostics_fit(person):
                 return "result: a person entry's diagnostic numbers do not fit its labels"
     else:
         if not (_int(item["mono_ns"]) and _int(item["track_id"]) and item["from"] in STATES and item["to"] in STATES
@@ -224,6 +230,20 @@ def _record_problem(kind: Any, item: dict) -> str | None:
 
 def _number(value: Any, low: float, high: float) -> bool:
     return type(value) in (int, float) and math.isfinite(value) and low <= value <= high
+
+
+def _full_scale_fits(numbers: Any) -> bool:
+    """Schema 3's full-scale pass of one result (absent: null), or counts that fit together."""
+    if numbers is None:
+        return True
+    if not (isinstance(numbers, dict) and set(numbers) == FULL_SCALE_KEYS and _int(numbers["faces"])
+            and _int(numbers["assigned"]) and 0 <= numbers["assigned"] <= numbers["faces"]
+            and _number(numbers["ms"], 0.0, math.inf)):
+        return False
+    best, width = numbers["best_score"], numbers["best_w_px"]
+    if best is None:
+        return width is None and numbers["faces"] == 0
+    return _number(best, 0.0, 1.0) and _int(width) and width >= 0 and (numbers["faces"] == 0 or best >= 0.9)
 
 
 def _diagnostics_fit(person: dict) -> bool:
@@ -518,7 +538,10 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
         r.item("account complete and in order", "the account's header names none of formats 1 to 4", False)
         return r
     fields = {1: face_account.FIELDS_V1, 2: face_account.FIELDS, 3: face_account.FIELDS_V3,
-              4: face_account.FIELDS_V4}[fmt]
+              4: face_account.FIELDS_V4}.get(fmt)
+    if fields is None:
+        r.item("account complete and in order", f"format {fmt} is not an F2 account", False)
+        return r
     review = face_account.review(account, fields)
     r.item("account complete and in order", review, review[-1] == "Complete and in order: yes")
     cues = _cue_offsets(result) if fmt in face_account.CUED_FORMATS else None
@@ -558,10 +581,88 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
     _identity(r, line, windows, enrolled, account, bounds, fmt)
     _counts_items(r, directory)
     _describe(r, result, line, windows, last, bounds, fmt)
-    if schema == DIAGNOSTIC_SCHEMA:
-        _diagnose(r, line, windows)
+    if schema >= DIAGNOSTIC_SCHEMA:
+        _diagnose(r, line, windows, full_scale=schema == FULL_SCALE_SCHEMA)
     return r
 
+
+
+NATURAL_WINDOWS = ("N1", "LOOK", "TURN", "N2")  # between the natural check's cues t0, look, turn, n2 and the stop
+
+
+def _natural_windows(cues: dict[str, float], duration: float) -> dict[str, tuple[float, float]]:
+    """Each phase from its cue's printed time + the movement's allowance + WASHOUT_S, to WASHOUT_S before the next
+    cue (the stop: the run's duration). At T0 the operator is already seated, so N1 has no allowance."""
+    order = list(face_account.NATURAL_CUE_AT_S)
+    out = {}
+    for index, (name, cue) in enumerate(zip(NATURAL_WINDOWS, order)):
+        start = cues[cue] + (0 if cue == "t0" else face_account.NATURAL_ALLOWANCE_S) + WASHOUT_S
+        end = (cues[order[index + 1]] if index + 1 < len(order) else duration) - WASHOUT_S
+        out[name] = (start, end)
+    return out
+
+
+def read_natural(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | None = None) -> Reading:
+    """D86, the natural seated check: execution items (PASS, FAIL or MISSING) establish that the run and the account
+    are usable, then DESCRIPTIVE diagnostics per phase. It validates nothing and judges no recognition."""
+    r = Reading()
+    if gate is not None:
+        ok, lines = f1_gate(*gate)
+        r.item("F1 basis for this run: the run's own F1 validated, or the maintainer's accepted corrected F1 reading "
+               "of it", dict(line.split("=", 1) for line in lines), ok and f1.resolve() == (gate[0] / "f1").resolve())
+    result = s5._load(directory / "result.json")
+    s5._supervision(r, result, "duration_stop", 0)
+    start = s5._get(result, "run_output", "starting")
+    r.item("face admitted for this validation run: one enrolled identity, no problem",
+           {"face": s5._get(start, "face"), "face_problem": s5._get(start, "face_problem")},
+           s5._get(start, "face") == {"validation_run": True, "identities_enrolled": 1}
+           and s5._get(start, "face_problem") is None)
+    stopped = s5._get(result, "run_output", "stopped")
+    r.item("clean shutdown: all stopped (the face worker included), database closed", stopped,
+           isinstance(stopped, dict) and stopped.get("all_stopped") is True and stopped.get("database_closed") is True
+           and (stopped.get("stopped") or {}).get("face_worker") is True)
+    saved = [s5._load(directory / f"status-{c.get('name')}.json") for c in s5._list(s5._get(result, "captures"))
+             if isinstance(c, dict) and (directory / f"status-{c.get('name')}.json").is_file()]
+    records, problems, _, _ = read_records(directory / "run.jsonl")
+    total = sum(len(v) for v in records.values())
+    schemas = sorted({item["schema"] for kind in records.values() for item in kind})
+    dropped = s5._get(saved[-1], "components", "face", "records", "dropped") if saved else MISSING
+    r.item(f"identity records: schema {FULL_SCALE_SCHEMA}, complete, none dropped",
+           {"records": {k: len(v) for k, v in records.items()}, "schemas": schemas, "problems": problems[:5],
+            "dropped": dropped} if total else MISSING,
+           total > 0 and not problems and schemas == [FULL_SCALE_SCHEMA] and dropped == 0
+           and total < MAX_IDENTITY_RECORDS)
+    ready = s5._get(result, "child", "ready_mono_s")
+    cues = _cue_offsets(result)
+    printed = (cues.get("t0") + ready) if isinstance(ready, float) and "t0" in cues else None
+    on_time = all(name in cues and 0 <= cues[name] - at <= CUE_TOLERANCE_S
+                  for name, at in face_account.NATURAL_CUE_AT_S.items())
+    account, problem, fmt = _account(directory)
+    r.item("account saved and locked before any result was shown", problem or "locked", account is not None)
+    if account is None:
+        return r
+    if fmt != 5:
+        r.item("account complete and in order", f"format {fmt} is not the natural check's account", False)
+        return r
+    review = face_account.review(account, face_account.FIELDS_V5)
+    r.item("account complete and in order", review, review[-1] == "Complete and in order: yes")
+    declared = {k: account.get(k) for k in (*(f.key for f in face_account.FIELDS_V5[:4]), "other_faces_in_view")}
+    as_cued = (on_time and all(declared[f.key] == "yes" for f in face_account.FIELDS_V5[:4])
+               and declared["other_faces_in_view"] == "no")
+    r.item(f"every cue printed within {CUE_TOLERANCE_S:g} s of its time; each phase done as cued; no other face "
+           "in view", {"cues_s_after_t0": {k: round(v, 2) for k, v in cues.items()}, **declared}, as_cued)
+    _counts_items(r, directory)
+    duration = s5._get(result, "parameters", "duration_s")
+    if not (as_cued and isinstance(duration, (int, float)) and printed is not None) or problems:
+        return r  # phases are described only when the account says each was done as cued
+    windows = _natural_windows(cues, float(duration))
+    r.describe("phases from the guard's cues (s after T0: allowance and washout applied)",
+               {k: [round(a, 1), round(b, 1)] for k, (a, b) in windows.items()})
+    line = Timeline(records, round(printed * NS), float(duration))
+    _diagnose(r, line, windows, names=NATURAL_WINDOWS, full_scale=True)
+    r.describe("guard peak pressure, min MemFree, min MemAvailable (B)",
+               [s5._get(result, "guard", k) for k in s5.GUARD_FIGURES])
+    return r
 
 def _declared(r: Reading, account: dict[str, str]) -> None:
     """Item 15 for a format-2 account (D66): the start delay known, with its upper end at most DELAY_MAX_S."""
@@ -798,13 +899,15 @@ def _spread(values: list[float]) -> list[float] | None:
     return [round(min(values), 3), round(statistics.median(values), 3), round(max(values), 3)]
 
 
-def _diagnose(r: Reading, line: Timeline, windows: dict) -> None:
+def _diagnose(r: Reading, line: Timeline, windows: dict, names: tuple[str, ...] = WINDOWS,
+              full_scale: bool = False) -> None:
     """Schema 2 (D84): DESCRIPTIVE diagnostics per judged window, never judged. Whether a person was detected on each
     tick and on which track; where the people on applied results were and how sure the person detector was; how many
     of them had a face from the face detector, its size and score; and how close each vote came to the enrolled
     identity, by vote."""
-    continuity, people, faces, similarity = {}, {}, {}, {}
-    for name in WINDOWS:
+    continuity, people, faces, similarity, full = {}, {}, {}, {}, {}
+    cleared = [(t["t"], t["track_id"]) for t in line.transitions if t["to"] == "cleared"]
+    for name in names:
         ticks = line.in_window(line.ticks, windows[name])
         run = longest = 0
         for tick in ticks:
@@ -813,7 +916,14 @@ def _diagnose(r: Reading, line: Timeline, windows: dict) -> None:
         continuity[name] = {"offered": sum(1 for t in ticks if t["tick"] == "offered"),
                             "skipped_no_person": sum(1 for t in ticks if t["tick"] == "skipped_no_person"),
                             "longest_skipped_run": longest,
-                            "track_ids": sorted({k for t in ticks if t["tick"] == "offered" for k in t["tracks"]})}
+                            "track_ids": sorted({k for t in ticks if t["tick"] == "offered" for k in t["tracks"]}),
+                            # an identity cleared when its track stopped being current, the same track ID offered
+                            # again later (the tracker kept it longer than the runtime's track expiry)
+                            "cleared_then_offered": sorted({k for at, k in cleared for t in ticks
+                                                            if t["tick"] == "offered" and t["t"] > at
+                                                            and k in t["tracks"]}),
+                            "known_entries": sum(1 for t in line.in_window(line.transitions, windows[name])
+                                                 if t["to"] == "known" and t["from"] != "known")}
         persons = [p for x in line.in_window(line.results, windows[name]) if x["outcome"] == "applied"
                    for p in x["persons"]]
         assigned = [p["face"] for p in persons if p["face"] is not None]
@@ -824,6 +934,18 @@ def _diagnose(r: Reading, line: Timeline, windows: dict) -> None:
         faces[name] = None if not persons else {
             "faces": len(assigned), "people": len(persons), "w_px": _spread([f["w_px"] for f in assigned]),
             "h_px": _spread([f["h_px"] for f in assigned]), "score": _spread([f["score"] for f in assigned])}
+        applied = [x for x in line.in_window(line.results, windows[name]) if x["outcome"] == "applied"]
+        passes = [x["full_scale"] for x in applied if x.get("full_scale") is not None]
+        none_found = [x["full_scale"] for x in applied if x.get("full_scale") is not None and not x["faces"]]
+        full[name] = None if not applied else {
+            "results": len(applied), "with_pass": len(passes),
+            "production_face": sum(1 for x in applied if any(p["ownership"] == "assigned" for p in x["persons"])),
+            "full_scale_face": sum(1 for f in passes if f["assigned"]),
+            "full_scale_only": sum(1 for f in none_found if f["assigned"]),
+            "best_score_where_production_found_none": _spread([f["best_score"] for f in none_found
+                                                               if f["best_score"] is not None]),
+            "full_scale_w_px": _spread([f["best_w_px"] for f in passes if f["faces"]]),
+            "ms": _spread([f["ms"] for f in passes])}
         votes = {vote: [p["similarity"] for p in persons if p["label"] == vote] for vote in ("match", "unknown")}
         similarity[name] = None if not persons else {
             "match_votes": len(votes["match"]), "match": _spread(votes["match"]),
@@ -836,6 +958,11 @@ def _diagnose(r: Reading, line: Timeline, windows: dict) -> None:
                "in frame pixels and the face detector's score, each [min, median, max])", faces)
     r.describe("diagnostics: similarity to the closest enrolled identity per window, by vote ([min, median, max]; "
                f"the runtime's match threshold is {MATCH_THRESHOLD:g})", similarity)
+    if full_scale:
+        r.describe("diagnostics: the full-scale face pass per window (D86: the same YuNet at native scale, never a "
+                   "vote; results with a pass, results with a face assigned by production and by the full-scale pass "
+                   "at 0.9, those found only at full scale, the best score where production found none, the face "
+                   "width in frame pixels and the pass's ms, each [min, median, max])", full)
 
 
 # ---------------------------------------------------------------- F1 reading
@@ -1078,6 +1205,12 @@ def main(argv: list[str] | None = None) -> int:
     f2.add_argument("--run", type=Path, help="with --identity-dir: also require this run's F1 basis (see gate)")
     f2.add_argument("--identity-dir", type=Path)
     f2.add_argument("--recheck-root", type=Path, help="where accepted corrected F1 readings are (see gate)")
+    natural = commands.add_parser("natural", help="read the natural seated check's evidence (descriptive, D86)")
+    natural.add_argument("directory", type=Path)
+    natural.add_argument("--f1", type=Path, required=True, help="F1's evidence directory")
+    natural.add_argument("--run", type=Path, help="with --identity-dir: also require this run's F1 basis (see gate)")
+    natural.add_argument("--identity-dir", type=Path)
+    natural.add_argument("--recheck-root", type=Path, help="where accepted corrected F1 readings are (see gate)")
     recheck = commands.add_parser("f1-recheck", help="a corrected F1 reading of a run, made afterwards")
     recheck.add_argument("directory", type=Path, help="the recheck directory (face_recheck.py run)")
     recheck.add_argument("--run", type=Path, required=True)
@@ -1097,8 +1230,15 @@ def main(argv: list[str] | None = None) -> int:
         reading, verdict = read_f1_recheck(args.directory, args.run, args.identity_dir), "face-f1-recheck"
     else:
         if (args.run is None) != (args.identity_dir is None):
-            parser.error("f2: --run and --identity-dir go together")
+            parser.error(f"{args.part}: --run and --identity-dir go together")
         gate_args = None if args.run is None else (args.run, args.identity_dir, args.recheck_root)
+        if args.part == "natural":
+            reading = read_natural(args.directory, args.f1, gate_args)
+            for line in reading.lines:
+                print(line)
+            print("face-natural: " + ("execution complete (descriptive only; it validates nothing)" if reading.ok
+                                      else "execution incomplete"))
+            return 0 if reading.ok else 1
         reading, verdict = read_f2(args.directory, args.f1, gate_args), "face-f2"
     for line in reading.lines:
         print(line)

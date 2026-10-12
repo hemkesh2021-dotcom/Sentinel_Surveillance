@@ -17,13 +17,24 @@ starting gate, not a calibrated quality measure); embeddings are scaled to unit 
 
 The compatibility record of the loaded pipeline (``compatibility()``) must equal the gallery's in every field before
 any matching (gallery.FaceCompatibility).
+
+**Full-scale pass (D86, validation runs only, diagnostic).** With ``align=True`` DeepFace 0.0.99 pads the frame with a
+black border of half its height and width before detection (``detection.detect_faces``), and its YuNet wrapper then
+scales anything wider or taller than 640 pixels down to 640 (``YuNetClient.detect_faces``): a 640x480 frame becomes
+1280x960 and is detected at half scale, keeping only scores of at least 0.9. The embedding itself is cut from the
+padded native-resolution picture, so only detection is affected. ``enable_full_scale()`` runs the same pinned YuNet
+weights once more on the frame itself, at native scale, and reports every candidate scoring at least
+FULL_SCALE_FLOOR (a recording floor, never a decision). Its result never becomes a vote; it says whether faces the
+production pass missed are there at full scale, and at what score and size.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import math
 import os
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,6 +58,10 @@ FACE_ARGS: Mapping[str, Any] = {  # demo_workload.py's FACE_ARGS with DeepFace's
     "align": True, "normalization": "base", "expand_percentage": 0,
 }
 WARMUP_SHAPE = (480, 640, 3)
+YUNET_THRESHOLD = 0.9  # DeepFace 0.0.99's default yunet_score_threshold: what production detection keeps
+YUNET_MAX_SIDE = 640  # DeepFace's YuNet wrapper scales anything larger down to this
+FULL_SCALE_FLOOR = 0.3  # D86: what the diagnostic full-scale pass records; never a decision threshold
+FULL_SCALE_KEPT = 8  # candidates kept per frame, highest score first
 
 
 class FaceBackendError(Exception):
@@ -59,12 +74,22 @@ class FaceBackendError(Exception):
 
 
 @dataclass(frozen=True)
+class FullScale:
+    """D86: the pinned YuNet on the frame itself, at native scale: (score, box) candidates at or above
+    FULL_SCALE_FLOOR, highest first, and how long the pass took. Diagnostic only."""
+
+    candidates: tuple[tuple[float, NormalizedBox], ...]
+    ms: float
+
+
+@dataclass(frozen=True)
 class FaceRun:
     """One frame's faces and what was dropped."""
 
     faces: tuple[FaceObservation, ...]
     detected: int  # results with a confidence above 0
     fallback_dropped: int  # DeepFace's whole-image "face" with confidence 0
+    full_scale: FullScale | None = None  # D86, validation runs only
 
 
 @dataclass(frozen=True)
@@ -204,6 +229,8 @@ class LegacyDeepFaceBackend:
         self._sha256 = sha256
         self._runtime: SimpleNamespace | None = None
         self._compatibility: FaceCompatibility | None = None
+        self._full_scale_wanted = False
+        self._full_scale: Any = None  # cv2.FaceDetectorYN on the pinned detector weights, when enabled
 
     def __repr__(self) -> str:
         return f"LegacyDeepFaceBackend(loaded={self._runtime is not None})"
@@ -212,6 +239,12 @@ class LegacyDeepFaceBackend:
     def weight_files(self) -> dict[str, Path]:
         """The files sentinel.memory_policy releases after the load (its ``face`` roles)."""
         return {name: self._weights_dir / name for name, _ in self._pins}
+
+    def enable_full_scale(self) -> None:
+        """D86: also run the full-scale diagnostic pass (call before load(); validation runs only)."""
+        if self._runtime is not None:
+            raise FaceBackendError("already_loaded")
+        self._full_scale_wanted = True
 
     def load(self) -> None:
         for name, expected in self._pins:
@@ -239,6 +272,9 @@ class LegacyDeepFaceBackend:
                 opencv_version=str(runtime.cv2.__version__), tensorflow_version=str(runtime.tf.__version__),
                 tf_keras_version=str(runtime.tf_keras.__version__), numpy_version=str(runtime.numpy.__version__),
             )
+            if self._full_scale_wanted:  # the same weights file, its SHA-256 checked above
+                self._full_scale = runtime.cv2.FaceDetectorYN_create(
+                    str(self._weights_dir / DETECTOR_WEIGHTS[0]), "", (0, 0), FULL_SCALE_FLOOR)
         except Exception as exc:
             raise FaceBackendError("load_failed", type(exc).__name__) from None
         self._runtime = runtime
@@ -253,7 +289,10 @@ class LegacyDeepFaceBackend:
         """One represent() call on the whole frame (BGR, as decoded)."""
         if self._runtime is None:
             raise FaceBackendError("not_loaded")
-        return to_face_run(frame, width, height, self._runtime.DeepFace.represent(img_path=image, **FACE_ARGS))
+        run = to_face_run(frame, width, height, self._runtime.DeepFace.represent(img_path=image, **FACE_ARGS))
+        if self._full_scale is None:
+            return run
+        return dataclasses.replace(run, full_scale=full_scale_pass(self._full_scale, width, height, image))
 
     def enrollment_photo(self, path: Path) -> tuple[EnrollmentFace | None, str]:
         """Decode a photo with the same OpenCV (EXIF orientation applied) and find its single face."""
@@ -263,3 +302,29 @@ class LegacyDeepFaceBackend:
         if image is None:
             return None, "unreadable_photo"
         return enrollment_face(self._runtime.DeepFace.represent(img_path=image, **FACE_ARGS))
+
+
+def full_scale_pass(detector: Any, width: int, height: int, image: Any) -> FullScale | None:
+    """D86: one YuNet detection on the frame at native scale; None when the frame is larger than YuNet's 640-pixel
+    limit (it would be scaled again) or the pass fails: a diagnostic never changes the production result."""
+    if width > YUNET_MAX_SIDE or height > YUNET_MAX_SIDE:
+        return None
+    started = time.perf_counter()
+    try:
+        detector.setInputSize((width, height))
+        detector.setScoreThreshold(FULL_SCALE_FLOOR)
+        _, found = detector.detect(image)
+    except Exception:  # noqa: BLE001 - the diagnostic is dropped, never the face result
+        return None
+    candidates = []
+    for row in () if found is None else found:
+        try:
+            x, y, w, h, score = (float(row[i]) for i in (0, 1, 2, 3, -1))
+        except (TypeError, ValueError, IndexError):
+            return None
+        x1, y1 = max(0.0, x / width), max(0.0, y / height)
+        x2, y2 = min(1.0, (x + w) / width), min(1.0, (y + h) / height)
+        if math.isfinite(score) and x1 < x2 and y1 < y2:
+            candidates.append((min(1.0, max(0.0, score)), NormalizedBox(x1=x1, y1=y1, x2=x2, y2=y2)))
+    candidates.sort(key=lambda c: -c[0])
+    return FullScale(tuple(candidates[:FULL_SCALE_KEPT]), (time.perf_counter() - started) * 1000)

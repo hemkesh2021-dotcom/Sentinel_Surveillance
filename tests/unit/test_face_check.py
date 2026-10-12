@@ -333,13 +333,14 @@ F2_PROVENANCE = ("f2_launch_utc=2026-10-08T09:00:00Z\nboot_id=0f1e2d3c-4b5a-6978
 
 
 def finish(mods, out: Path, *, cue_delay_s: float = 0.1, account: dict[str, str] | None = ACCOUNT,
-           counts: dict[str, int] | None = None, cues: dict[str, float] | None = None, cued_format: int = 3) -> None:
+           counts: dict[str, int] | None = None, cues: dict[str, float] | None = None, cued_format: int = 3,
+           duration_s: float = 600.0) -> None:
     """result.json as the guard writes it, then the account and the counts, in the package's order (the counts by
     face_counts.sh unless ``counts`` fakes them)."""
     ready = 1.0  # FakeClock's default start (seconds), the runtime's T0
     result = {
         "schema_version": 1, "mode": "step5_guard", "status": "duration_stop",
-        "parameters": {"duration_s": 600.0, "cues": [{"at_s": 0.0, "name": "t0"}]},
+        "parameters": {"duration_s": duration_s, "cues": [{"at_s": 0.0, "name": "t0"}]},
         "child": {"returncode": 0, "ready_after_s": 70.0, "ready_mono_s": ready},
         "guard": {"trigger": None, "peak_pressure_bytes": 1, "min_mem_free_bytes": 2, "min_mem_available_bytes": 3},
         "stop": {"forced": False}, "cleanup_clear": True,
@@ -373,6 +374,11 @@ def save_account(mods, out: Path, account: dict[str, str], cued_format: int = 3)
     """A format-1 account (the face-0f7855e package's) as that helper saved and locked it; a format-2 account through
     the current helper's prompts (an unknown reading's uncertainty is not asked); a cued account (format 3, or 4 when
     asked: the same keys) through the helper's prompts."""
+    if cued_format == 5:  # the natural seated check's account (D86), through the prompts
+        answers = iter([account[f.key] for f in mods.account.FIELDS_V5] + ["SAVE"])
+        assert mods.account.enter(out, ask=lambda prompt: next(answers), say=lambda text: None,
+                                  account_format_number=5) == 0
+        return
     if any(key.endswith("_within_20_s") for key in account):  # format 3 (D79) or 4 (D85), through the prompts
         fields = {3: mods.account.FIELDS_V3, 4: mods.account.FIELDS_V4}[cued_format]
         answers = iter([account[f.key] for f in fields] + ["SAVE"])
@@ -527,12 +533,12 @@ def _mutate(out: Path, edit) -> None:
 
 
 @pytest.mark.parametrize(("edit", "item", "label"), [
-    # a field missing from one result: the schema changed (a validation run writes schema 2, D84)
+    # a field missing from one result: the schema changed (a validation run writes schema 3, D84 and D86)
     (lambda ls: _nth_result(ls, 0, lambda l: {k: v for k, v in l.items() if k != "frame_mono_ns"}),
-     "identity records: schema 2", "FAIL"),
+     "identity records: schema 3", "FAIL"),
     # an unknown schema version
-    (lambda ls: [dict(l, schema=3) if l.get("identity") == "tick" else l for l in ls], "identity records", "FAIL"),
-    # one record kind in schema 1 among schema 2 records: a run's records share one schema
+    (lambda ls: [dict(l, schema=4) if l.get("identity") == "tick" else l for l in ls], "identity records", "FAIL"),
+    # one record kind in schema 1 among schema 3 records: a run's records share one schema
     (lambda ls: [dict(l, schema=1) if l.get("identity") == "tick" else l for l in ls], "identity records", "FAIL"),
     # most results lost: completion below 0.95
     (lambda ls: [l for n, l in enumerate(ls) if not (l.get("identity") == "result" and n % 3)], "completion", "FAIL"),
@@ -601,7 +607,13 @@ def test_the_checker_matches_the_runtimes_schema_and_values(mods) -> None:
     numbers = FaceDiagnostics((0.1, 0.2, 0.3, 0.9), 0.8, (40, 50), 0.95, 0.75)
     diagnostic = FaceResultRecord(0, 1, 5, 6, "applied", 1, ((1, "assigned", "match", ENROLLED, "match"),),
                                   diagnostics=(numbers,)).record(IDENTITY_DIAGNOSTIC_SCHEMA)
-    assert (check.DIAGNOSTIC_SCHEMA, check.SCHEMAS) == (IDENTITY_DIAGNOSTIC_SCHEMA, (1, 2))
+    assert (check.DIAGNOSTIC_SCHEMA, check.SCHEMAS) == (IDENTITY_DIAGNOSTIC_SCHEMA, (1, 2, 3))
+    from sentinel.identity.legacy_deepface import YUNET_THRESHOLD
+    from sentinel.runtime import FULL_SCALE_COUNTED, IDENTITY_FULL_SCALE_SCHEMA, full_scale_numbers
+    assert check.FULL_SCALE_SCHEMA == IDENTITY_FULL_SCALE_SCHEMA and FULL_SCALE_COUNTED == YUNET_THRESHOLD
+    numbers = full_scale_numbers(SimpleNamespace(candidates=((0.95, FACE_BOX),), ms=3.0),
+                                 SimpleNamespace(key=None, native_width=640), (), None)
+    assert set(numbers) == check.FULL_SCALE_KEYS and check._full_scale_fits(numbers)
     assert set(diagnostic["persons"][0]) == check.DIAGNOSTIC_PERSON_KEYS
     assert set(diagnostic["persons"][0]["face"]) == check.FACE_KEYS
     assert check.MATCH_THRESHOLD == defaults.match_threshold
@@ -625,11 +637,17 @@ def test_a_validation_runs_diagnostics_are_described_per_window_and_never_judged
     finish(mods, out)
     result, text = reading(mods, out, f1_list)
     assert result.ok, text
-    assert line_for(text, "identity records: schema 2").startswith("PASS")
+    assert line_for(text, "identity records: schema 3").startswith("PASS")
     continuity = _value(text, "diagnostics: person continuity")
     assert continuity["E1"]["offered"] == 0 and continuity["E1"]["track_ids"] == []
     assert continuity["E1"]["longest_skipped_run"] == continuity["E1"]["skipped_no_person"] > 0
-    assert continuity["A"] == {"offered": 90, "skipped_no_person": 0, "longest_skipped_run": 0, "track_ids": [1]}
+    assert continuity["A"] == {"offered": 90, "skipped_no_person": 0, "longest_skipped_run": 0, "track_ids": [1],
+                               "cleared_then_offered": [], "known_entries": 0}
+    assert continuity["K2"]["known_entries"] == 0  # known at 481.1 s, before the window opens at 495 s
+    full = _value(text, "diagnostics: the full-scale face pass")
+    assert full["K1"] == {"results": 90, "with_pass": 0, "production_face": 90, "full_scale_face": 0,
+                          "full_scale_only": 0, "best_score_where_production_found_none": None,
+                          "full_scale_w_px": None, "ms": None}  # the scripted adapter has no full-scale pass
     people = _value(text, "diagnostics: people on applied results")
     assert people["E1"] is None and people["E2"] is None
     assert people["K1"] == {"n": 90, "box_median": [0.156, 0.208, 0.312, 0.833], "confidence": [0.9, 0.9, 0.9]}
@@ -654,7 +672,7 @@ def test_the_same_run_in_schema_1_reads_exactly_as_before(mods, tmp_path, startu
         plain = []
         for line in lines:
             if "identity" in line:
-                line = dict(line, schema=1)
+                line = {k: v for k, v in line.items() if k != "full_scale"} | {"schema": 1}
                 if line["identity"] == "result":
                     line["persons"] = [{k: v for k, v in p.items() if k in mods.check.PERSON_KEYS}
                                        for p in line["persons"]]
@@ -664,7 +682,7 @@ def test_the_same_run_in_schema_1_reads_exactly_as_before(mods, tmp_path, startu
     _mutate(out, schema_1)
     result, without = reading(mods, out, f1_list)
     assert result.ok, without
-    assert without.splitlines() == [line.replace("identity records: schema 2", "identity records: schema 1")
+    assert without.splitlines() == [line.replace("identity records: schema 3", "identity records: schema 1")
                                     for line in with_numbers.splitlines()
                                     if not line.startswith("DESCRIPTIVE diagnostics: ")]
 
@@ -703,7 +721,7 @@ def test_diagnostic_numbers_must_fit_their_entrys_labels(mods, tmp_path, startup
     _mutate(out, lambda ls: _first_match(ls, change))
     finish(mods, out, counts={})
     _, text = reading(mods, out, f1_list)
-    problems = _value(text, "identity records: schema 2")["problems"]
+    problems = _value(text, "identity records: schema 3")["problems"]
     if fits:
         assert problems == [], problems
     else:
@@ -1077,7 +1095,7 @@ def test_a_format_4_account_is_schema_text_and_the_helper_offers_it(mods, tmp_pa
     assert read.nonconforming == [] and read.content == [(f"line {len(mods.account.FIELDS_V4) + 1}: notes",
                                                           "a note that is never printed")]
     with pytest.raises(SystemExit):
-        mods.account.main(["enter", str(run), "--format", "5"])
+        mods.account.main(["enter", str(run), "--format", "6"])
 
 
 # ---------------------------------------------------------------- the turn and the departure as intervals
@@ -1846,3 +1864,42 @@ def test_the_f2_reading_requires_the_f1_basis_when_given(mods, face_run, tmp_pat
     bad = subprocess.run([sys.executable, str(RUNNERS / "face_check.py"), "f2", str(out), "--f1", str(f1_list),
                           "--run", str(face_run.run)], capture_output=True, text=True)
     assert bad.returncode == 2 and "--run and --identity-dir go together" in bad.stderr
+
+
+# ---------------------------------------------------------------- D86: the natural seated check (descriptive)
+
+NATURAL_SCRIPT = ((0, 210, "facing", 1), (210, 300, "away", 1), (300, 391, "facing", 1))
+NATURAL_CUES = {"t0": 0.0, "look": 120.0, "turn": 210.0, "n2": 300.0, "stop": 385.0}
+
+
+def account_v5(mods, **changes: str) -> dict[str, str]:
+    values = {f.key: "yes" for f in mods.account.FIELDS_V5[:4]}
+    return {**values, "other_faces_in_view": "no", "notes": "a note that is never printed", **changes}
+
+
+def test_the_natural_check_reads_execution_then_describes_each_phase(mods, tmp_path, startup, f1_list) -> None:
+    """D86: the run, the account and the counts are checked; each phase between the cues is then described with the
+    same diagnostic lines as F2's windows (the seated person stays on one track through the turn here). Nothing is
+    validated, and the F2 reading refuses this account."""
+    out = simulate(tmp_path, startup, script=NATURAL_SCRIPT, duration=390.0)
+    twin = tmp_path / "twin"
+    shutil.copytree(out, twin)
+    finish(mods, out, account=account_v5(mods), cues=NATURAL_CUES, cued_format=5, duration_s=390.0)
+    reading = mods.check.read_natural(out, f1_list)
+    text = "\n".join(reading.lines)
+    assert reading.ok, text
+    assert line_for(text, "identity records: schema 3").startswith("PASS")
+    phases = _value(text, "phases from the guard's cues")
+    assert phases == {"N1": [15.1, 105.1], "LOOK": [145.1, 195.1], "TURN": [235.1, 285.1], "N2": [325.1, 375.0]}
+    continuity, faces = _value(text, "diagnostics: person continuity"), _value(text, "diagnostics: assigned faces")
+    assert continuity["TURN"]["track_ids"] == [1] and continuity["TURN"]["cleared_then_offered"] == []
+    assert faces["TURN"]["faces"] == 0 and faces["LOOK"]["faces"] == faces["LOOK"]["people"]
+    assert "DESCRIPTIVE diagnostics: the full-scale face pass" in text and "never printed" not in text
+    assert mods.evidence.read(out / "account.txt", "f2").nonconforming == []
+    _, f2_text = reading_f2 = mods.check.read_f2(out, f1_list), "\n".join(mods.check.read_f2(out, f1_list).lines)
+    assert not reading_f2[0].ok and line_for(f2_text, "account complete and in order").startswith("FAIL")
+    finish(mods, twin, account=account_v5(mods, swivelled_away_within_10_s="unknown"), cues=NATURAL_CUES,
+           cued_format=5, duration_s=390.0)
+    declared = mods.check.read_natural(twin, f1_list)
+    assert not declared.ok and line_for("\n".join(declared.lines), "every cue printed").startswith("FAIL")
+    assert not any(line.startswith("DESCRIPTIVE diagnostics") for line in declared.lines)  # no phases without it

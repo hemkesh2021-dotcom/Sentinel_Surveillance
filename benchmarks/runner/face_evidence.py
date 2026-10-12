@@ -31,8 +31,8 @@ import face_account
 
 # Files written after the counts, or the counts themselves; never counted (face_check uses the same set).
 NOT_COUNTED = frozenset({"SHA256SUMS", "check.txt", "secret-counts-camera.txt", "secret-counts-identity.txt"})
-STATUS_NAMES = ("e1", "k1", "a", "e2", "k2", "end")  # F2c's --status-at names
-CUE_NAMES = ("t0", "k1", "a", "e2", "k2", "stop")  # F2c's --cue-at names
+STATUS_NAMES = ("e1", "k1", "a", "e2", "k2", "end", "n1", "look", "turn", "n2")  # F2's and the natural check's
+CUE_NAMES = ("t0", "k1", "a", "e2", "k2", "stop", "look", "turn", "n2")  # F2's and the natural check's
 RECHECK_NAME = r"face-\d{8}T\d{6}Z-f1-[0-9a-f]{7}-\d{8}T\d{6}Z"  # ~/sentinel-runs/recheck/<run>-f1-<pin>-<UTC>
 
 
@@ -431,6 +431,9 @@ IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransitio
     "persons[].box[]": NUM, "persons[].confidence": maybe(NUM), "persons[].face": NULL,
     "persons[].face.w_px": INT, "persons[].face.h_px": INT, "persons[].face.score": NUM,
     "persons[].similarity": maybe(NUM),
+    # schema 3 (D86, runtime.full_scale_numbers): counts and numbers only
+    "full_scale": NULL, "full_scale.faces": INT, "full_scale.assigned": INT, "full_scale.best_score": maybe(NUM),
+    "full_scale.best_w_px": COUNT, "full_scale.ms": NUM,
     "track_id": INT, "from": vocab(*IDENTITY_STATES), "to": vocab(*IDENTITY_STATES, "cleared"),
     "identity_id": maybe(IDN), "basis": maybe(BASIS), "last_vote_age_ms": COUNT, "reason": TRANSITION_REASON,
     "mono_ns": INT,

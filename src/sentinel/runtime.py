@@ -18,10 +18,11 @@ import dataclasses
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from .config import SentinelConfig
 from .contracts import Evidence, FrameRef, StreamIdentity, TrackKey, TrackObservation, TrackStatus
-from .identity.association import AssociationGeometry, FaceObservation, associate
+from .identity.association import AssociationGeometry, FaceObservation, Ownership, associate
 from .identity.matching import Enrollment
 from .identity.state import UNKNOWN_VOTE, IdentityPolicy, IdentityResolver, IdentityState, TrackIdentity, VoteRecord
 from .jobs import WorkerOutcome
@@ -45,13 +46,18 @@ class RoutedEvidence:
 
 
 IDENTITY_RECORD_SCHEMA = 1  # the "identity" stdout records: tick, result and transition
-# A face validation run's records: schema 1, plus each result person's diagnostic numbers (FaceDiagnostics).
+# Schema 2 (D84): schema 1, plus each result person's diagnostic numbers (FaceDiagnostics).
 IDENTITY_DIAGNOSTIC_SCHEMA = 2
+# Schema 3 (D86), what face validation runs write: schema 2, plus each result's full-scale pass (full_scale_numbers).
+IDENTITY_FULL_SCALE_SCHEMA = 3
 DIAGNOSTIC_DECIMALS = 3
+# DeepFace 0.0.99's YuNet threshold for production detections (legacy_deepface.YUNET_THRESHOLD; test-tied): the
+# full-scale pass's faces are counted at the same score, so its counts compare like for like.
+FULL_SCALE_COUNTED = 0.9
 
 
 def _schema(schema: int) -> int:
-    if schema not in (IDENTITY_RECORD_SCHEMA, IDENTITY_DIAGNOSTIC_SCHEMA):
+    if schema not in (IDENTITY_RECORD_SCHEMA, IDENTITY_DIAGNOSTIC_SCHEMA, IDENTITY_FULL_SCALE_SCHEMA):
         raise ValueError(f"unknown identity record schema {schema!r}")
     return schema
 
@@ -99,20 +105,24 @@ class FaceResultRecord:
     persons: tuple[tuple[int, str, str, str | None, str], ...]  # track ID, ownership, vote kind, identity ID, label
     processing_ms: float | None = None
     error: str | None = None
-    diagnostics: tuple[FaceDiagnostics, ...] = ()  # one per entry of ``persons``; written only with schema 2
+    diagnostics: tuple[FaceDiagnostics, ...] = ()  # one per entry of ``persons``; written with schema 2 and 3
+    full_scale: dict[str, Any] | None = None  # full_scale_numbers; written with schema 3
 
     def record(self, schema: int = IDENTITY_RECORD_SCHEMA) -> dict[str, object]:
         persons = [{"track_id": track, "ownership": ownership, "vote": vote, "identity_id": identity, "label": label}
                    for track, ownership, vote, identity, label in self.persons]
-        if _schema(schema) == IDENTITY_DIAGNOSTIC_SCHEMA:
+        if _schema(schema) >= IDENTITY_DIAGNOSTIC_SCHEMA:
             if len(self.diagnostics) != len(persons):
-                raise ValueError("every person on a schema 2 result needs its diagnostics")
+                raise ValueError("every person on a schema 2 or 3 result needs its diagnostics")
             persons = [person | numbers.fields() for person, numbers in zip(persons, self.diagnostics)]
-        return {"identity": "result", "schema": schema, "stream_epoch": self.stream_epoch,
-                "frame_seq": self.frame_seq, "frame_mono_ns": self.frame_mono_ns,
-                "applied_mono_ns": self.applied_mono_ns, "outcome": self.outcome, "faces": self.faces,
-                "processing_ms": None if self.processing_ms is None else round(self.processing_ms, 1),
-                "error": self.error, "persons": persons}
+        record = {"identity": "result", "schema": schema, "stream_epoch": self.stream_epoch,
+                  "frame_seq": self.frame_seq, "frame_mono_ns": self.frame_mono_ns,
+                  "applied_mono_ns": self.applied_mono_ns, "outcome": self.outcome, "faces": self.faces,
+                  "processing_ms": None if self.processing_ms is None else round(self.processing_ms, 1),
+                  "error": self.error, "persons": persons}
+        if schema == IDENTITY_FULL_SCALE_SCHEMA:
+            record["full_scale"] = self.full_scale
+        return record
 
 
 @dataclass(frozen=True)
@@ -256,6 +266,7 @@ class EdgeCore:
         *,
         processing_ms: float | None = None,
         error: str | None = None,
+        full_scale: Any = None,
     ) -> CoreOutput:
         """A face result for an earlier sampled frame, with the tracker's people on that same frame.
 
@@ -293,7 +304,7 @@ class EdgeCore:
             tuple((v.key.track_id, v.ownership.value,
                    "none" if v.vote is None else "unknown" if v.vote == UNKNOWN_VOTE else "match",
                    v.vote if v.vote else None, v.label) for v in votes),
-            processing_ms, error, diagnostics)
+            processing_ms, error, diagnostics, full_scale_numbers(full_scale, frame, persons, self._geometry))
         return dataclasses.replace(self._finish(freshness, []), face_result=record)
 
     def on_scene_outcome(
@@ -505,3 +516,22 @@ def _diagnostics(
                                        round((face.box.y2 - face.box.y1) * frame.native_height)),
             None if face is None else face.quality, vote.similarity))
     return tuple(out)
+
+
+def full_scale_numbers(full_scale: Any, frame: FrameRef, persons: Sequence[TrackObservation],
+                       geometry: AssociationGeometry) -> dict[str, Any] | None:
+    """D86: the diagnostic full-scale pass of one result, as numbers: how many faces scored at least
+    FULL_SCALE_COUNTED, how many of those the one-to-one association would give to a person on this frame, the best
+    candidate's score and width in frame pixels, and the pass's time. Never a vote, a box or an image."""
+    if full_scale is None:
+        return None
+    strong = [box for score, box in full_scale.candidates if score >= FULL_SCALE_COUNTED]
+    assigned = 0
+    if strong and persons:
+        faces = [FaceObservation(frame=frame.key, box=box, quality=1.0) for box in strong]
+        assigned = sum(o is Ownership.ASSIGNED for o in associate(persons, faces, geometry).face_ownership)
+    best = full_scale.candidates[0] if full_scale.candidates else None
+    return {"faces": len(strong), "assigned": assigned,
+            "best_score": None if best is None else round(best[0], DIAGNOSTIC_DECIMALS),
+            "best_w_px": None if best is None else round((best[1].x2 - best[1].x1) * frame.native_width),
+            "ms": round(full_scale.ms, 1)}

@@ -188,7 +188,7 @@ def test_the_loop_samples_live_frames_and_reports_opaque_identity_transitions(tm
     assert loop.close()["stopped"]["face_worker"] is True
 
 
-@pytest.mark.parametrize(("validation", "schema"), [(True, 2), (False, 1)])
+@pytest.mark.parametrize(("validation", "schema"), [(True, 3), (False, 1)])
 def test_only_a_validation_runs_records_carry_diagnostic_numbers(tmp_path, validation, schema) -> None:
     """D84: a --face-validation run's identity records are schema 2, each result person with its numbers (the person's
     box and confidence, its face's size and score, its similarity); any other face run keeps schema 1 unchanged."""
@@ -198,7 +198,9 @@ def test_only_a_validation_runs_records_carry_diagnostic_numbers(tmp_path, valid
     records = loop.runtime.drain_identity_records()
     assert {r["identity"] for r in records} == {"tick", "result", "transition"}
     assert {r["schema"] for r in records} == {schema}
-    person = next(r for r in records if r["identity"] == "result")["persons"][0]
+    result = next(r for r in records if r["identity"] == "result")
+    person = result["persons"][0]
+    assert result.get("full_scale", "absent") == (None if validation else "absent")  # D86: none from this fake
     plain = {"track_id": 1, "ownership": "assigned", "vote": "match", "identity_id": "idn-00000000000a",
              "label": "match"}
     if validation:  # PERSON is 100-200 x 100-400 px of 640x480; FACE_BOX is 0.09 x 0.13 of it
@@ -457,3 +459,20 @@ def test_a_failing_face_worker_stop_is_reported(tmp_path) -> None:
         release.set()
         loop.db.close()
     assert result["stopped"]["face_worker"] is False and result["all_stopped"] is False
+
+
+def test_the_adapters_full_scale_pass_reaches_the_validation_record(tmp_path) -> None:
+    """D86: the worker carries the adapter's full-scale pass from its FaceRun to the result record (schema 3)."""
+    from sentinel.identity.legacy_deepface import FullScale
+
+    def analyze(frame, image):
+        full = FullScale(((0.97, FACE_BOX), (0.42, NormalizedBox(x1=0.5, y1=0.5, x2=0.6, y2=0.6))), 21.0)
+        return FaceRun((), 0, 1, full)  # the production pass found nothing; the full-scale pass found a face
+
+    loop = Loop(tmp_path, analyze=analyze)
+    for _ in range(3):
+        loop.frame()
+    result = next(r for r in loop.runtime.drain_identity_records() if r["identity"] == "result")
+    assert result["schema"] == 3 and result["faces"] == 0
+    assert result["full_scale"] == {"faces": 1, "assigned": 1, "best_score": 0.97, "best_w_px": 58, "ms": 21.0}
+    loop.close()

@@ -46,9 +46,10 @@ Face recognition (V2-25 demo form, ``--face``; off by default): the 1 Hz FaceWor
 processed live frame that has people, and EdgeCore applies each result to that frame's own people
 (``on_face_outcome``); each tick, each result (with every person's vote and its frame time) and each identity
 transition is kept as an opaque record (``drain_identity_records``). In a ``--face-validation`` run the records are
-schema 2: each result's person also carries numbers for diagnosing a failed validation (its box and detector
-confidence, its face's size and score, the vote's similarity; runtime.FaceDiagnostics), never an image, embedding or
-name. The gallery is sealed (sentinel.identity.vault) and opened at startup with a passphrase the
+schema 3: each result's person also carries numbers for diagnosing a failed validation (its box and detector
+confidence, its face's size and score, the vote's similarity; runtime.FaceDiagnostics), and each result the
+diagnostic full-scale face pass's counts (D86; runtime.full_scale_numbers), never an image, embedding or name.
+The gallery is sealed (sentinel.identity.vault) and opened at startup with a passphrase the
 operator types; startup refuses on a sealing error, and a missing or empty gallery leaves face recognition
 unavailable without loading the model. The face adapter needs its own admission record, which starts
 PENDING_VALIDATION: only ``--face-validation`` runs may use it. Nothing here shows names, photos or embeddings.
@@ -143,7 +144,7 @@ from .memory_policy import (
     release_file_cache,
 )
 from .rules.zones import ZonePhase
-from .runtime import IDENTITY_DIAGNOSTIC_SCHEMA, IDENTITY_RECORD_SCHEMA, CoreOutput, EdgeCore, tick_record
+from .runtime import IDENTITY_FULL_SCALE_SCHEMA, IDENTITY_RECORD_SCHEMA, CoreOutput, EdgeCore, tick_record
 from .scene.analyzer import IMAGES_KEPT, RecentImages, ThreadedSceneAnalyzer
 from .scene.chat import CHAT_ADMISSION, ChatAdmission, ChatService
 from .scene.chat_gate import SAMPLE_INTERVAL_S as CHAT_GATE_SAMPLE_S, ChatGate, read_pressure
@@ -326,8 +327,8 @@ class DemoRuntime:
             scene_problem=self._scene_problem,
         )
         self._identity_records: deque[dict[str, Any]] = deque()
-        # A face validation run's records carry each person's diagnostic numbers (schema 2); other runs, schema 1.
-        self._identity_schema = (IDENTITY_DIAGNOSTIC_SCHEMA if face is not None and face.validation_run
+        # A face validation run's records carry the diagnostic numbers (schema 3, D84 and D86); other runs, schema 1.
+        self._identity_schema = (IDENTITY_FULL_SCALE_SCHEMA if face is not None and face.validation_run
                                  else IDENTITY_RECORD_SCHEMA)
         self._snapshots = snapshots
         # D74: chat reads frames only when it can be used (admitted, with the scene model); otherwise it keeps none.
@@ -469,7 +470,7 @@ class DemoRuntime:
             if result is not None:
                 self._handle(self._core.on_face_outcome(result.frame, result.persons, result.faces,
                                                         self._capture.connected, processing_ms=result.processing_ms,
-                                                        error=result.error))
+                                                        error=result.error, full_scale=result.full_scale))
         if self._pending:
             self._handle(None)
         self._observe_chat_gate()
@@ -1305,6 +1306,8 @@ def assemble(
                 face_problem, memory = memfree_problem(devices.meminfo, options.face.min_free_bytes)
                 startup["face_memory_before"] = memory
             if face_problem is None and gallery is not None:
+                if options.face.validation_run and hasattr(face_backend, "enable_full_scale"):
+                    face_backend.enable_full_scale()  # D86: the diagnostic full-scale pass, validation runs only
                 try:
                     face_backend.load()  # the weights' SHA-256, the CPU pin and the DeepFace version first
                 except FaceBackendError as exc:
