@@ -54,8 +54,10 @@ def csp_hash(text: str) -> str:
 
 # 24×24, stroked with currentColor; ``solid`` parts are filled.
 ICONS = {
-    "logo": '<rect x="2.5" y="2.5" width="19" height="19" rx="6"/><circle cx="12" cy="12" r="4.2"/>'
-            '<circle class="solid" cx="12" cy="12" r="1.6"/><circle class="solid" cx="17.3" cy="6.7" r="1.1"/>',
+    # Session 68 (D98): the Sentinel mark, an S drawn from two tangent elliptical arcs inside a faint lens ring (an
+    # aperture motif); restrained, and legible from 16 px on light and dark tiles (rendered and inspected at 16-96 px).
+    "logo": '<path d="M16.2 7.3A4.4 3.7 0 1 0 12 12a4.4 3.7 0 1 1-4.2 4.7"/>'
+            '<circle cx="12" cy="12" r="10.1" stroke-width="1.15" opacity=".5"/>',
     "video": '<rect x="2.5" y="6" width="13" height="12" rx="2.5"/><path d="M15.5 10.2 21.5 7v10l-6-3.2z"/>',
     "bell": '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 21a2.2 2.2 0 0 0 4 0"/>',
     "check": '<circle cx="12" cy="12" r="9"/><path d="m7.8 12.4 2.8 2.8 5.6-5.8"/>',
@@ -112,8 +114,9 @@ def icon(name: str, cls: str = "ic") -> str:
     return f'<svg class="{cls}" aria-hidden="true" focusable="false"><use href="#i-{name}"/></svg>'
 
 
-TAB_ICON = (
+TAB_ICON = (  # the same mark on the Carbon tile, drawn heavier for a 16 px browser tab (D98)
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#2e302f"/>'
-    '<circle cx="16" cy="16" r="6.5" fill="none" stroke="#eddcc9" stroke-width="2.6"/>'
-    '<circle cx="16" cy="16" r="2.3" fill="#eddcc9"/><circle cx="23.5" cy="8.5" r="1.7" fill="#eddcc9"/></svg>'
+    '<g transform="translate(4 4)" fill="none" stroke="#eddcc9" stroke-linecap="round">'
+    '<path d="M16.2 7.3A4.4 3.7 0 1 0 12 12a4.4 3.7 0 1 1-4.2 4.7" stroke-width="2.5"/>'
+    '<circle cx="12" cy="12" r="10.1" stroke-width="1.4" opacity=".55"/></g></svg>'
 ).encode("ascii")
