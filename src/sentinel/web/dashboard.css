@@ -258,6 +258,12 @@ html[data-focus=live] .live .frame img, html[data-focus=live] .live .frame canva
 .person .who .muted { font-size: .84rem; }
 .person .what { font-size: .9rem; }
 .person .when { color: var(--muted); font-size: .84rem; }
+/* Tentative tracks (session 68): apart from people, quieter, never in the same form as a confirmed person. */
+.unconfirmed { margin-top: 14px; padding: 10px 12px 12px; border-radius: var(--radius-m); border: 1px dashed var(--border); }
+.unconfirmed h3 { font-size: .86rem; font-weight: 720; color: var(--muted); letter-spacing: .02em; }
+.unconfirmed .note { margin-top: 4px; }
+.unconfirmed .person { background: transparent; box-shadow: none; }
+
 .faces .empty { margin-top: 12px; }
 
 /* ---------------------------------------------------------------- incidents */

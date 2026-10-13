@@ -25,6 +25,7 @@ from .config import SentinelConfig
 from .contracts import Evidence, FrameRef, StreamIdentity, TrackKey, TrackObservation, TrackStatus
 from .identity.association import AssociationGeometry, FaceObservation, Ownership, associate
 from .identity.comparison import ComparisonOutcome, Disposition
+from .identity.continuity import Break, ContinuityMonitor, ContinuityPolicy
 from .identity.matching import Enrollment
 from .identity.state import UNKNOWN_VOTE, IdentityPolicy, IdentityResolver, IdentityState, TrackIdentity, VoteRecord
 from .jobs import WorkerOutcome
@@ -203,6 +204,13 @@ class IdentityTransition:
                 "last_vote_age_ms": self.last_vote_age_ms, "reason": self.reason, "mono_ns": self.mono_ns}
 
 
+def break_record(item: Break, schema: int = IDENTITY_RECORD_SCHEMA) -> dict[str, object]:
+    """D97: one break in a track's continuity (identity.continuity): the track, the cause and its frame's time; numbers
+    and fixed labels only. Written only by runs with a continuity monitor."""
+    return {"identity": "break", "schema": _schema(schema), "stream_epoch": item.key.stream_epoch,
+            "track_id": item.key.track_id, "cause": item.cause.value, "mono_ns": item.at_ns}
+
+
 @dataclass(frozen=True)
 class CoreOutput:
     state: LiveState
@@ -211,6 +219,7 @@ class CoreOutput:
     zones: tuple[ZoneObservation, ...] = ()  # zone rule observations from this step
     identity_transitions: tuple[IdentityTransition, ...] = ()
     face_result: FaceResultRecord | None = None  # set by on_face_outcome
+    identity_breaks: tuple[Break, ...] = ()  # D97: breaks in track continuity found by this step
 
 
 class EdgeCore:
@@ -227,6 +236,7 @@ class EdgeCore:
         scene_problem: str | None = None,
         shadow: Any = None,
         capture: Any = None,
+        continuity: ContinuityPolicy | None = None,
     ) -> None:
         self._config = config
         # D91, the enrollment experiment (validation runs with the candidate only; assemble() decides): a working
@@ -265,8 +275,12 @@ class EdgeCore:
                 confirmations=identity.confirmations,
                 vote_ttl_ns=identity.vote_ttl_ns,
                 fresh_window_ns=identity.face_result_max_age_ns,
+                continuity_retention_ns=None if continuity is None else continuity.retention_ns,
             ),
         )
+        # D97 (opt-in): each track's continuity, watched on every processed frame; None: the rules as they were
+        self._continuity = None if continuity is None else ContinuityMonitor(continuity)
+        self._new_breaks: list[Break] = []
         self._face_result_max_age_ns = identity.face_result_max_age_ns
         self.face_counters: Counter[str] = Counter()  # face results: applied or rejected, and why
         self._reported: dict[TrackKey, tuple[str, str | None, str | None]] = {}
@@ -295,6 +309,11 @@ class EdgeCore:
     def identity_counters(self) -> dict[str, int]:
         return dict(sorted((self.face_counters + self._identities.counters).items()))
 
+    @property
+    def continuity(self) -> ContinuityPolicy | None:
+        """D97: the continuity rule this core applies, or None (the plain rules)."""
+        return None if self._continuity is None else self._continuity.policy
+
     def set_detector(self, capability: Capability) -> None:
         self._detector = capability
 
@@ -315,6 +334,12 @@ class EdgeCore:
         new: list[Evidence] = []
         novelty = self._tracks.update(frame, persons, freshness.live)
         if novelty in (FrameNovelty.NEW, FrameNovelty.NEW_EPOCH):
+            if self._continuity is not None:  # D97: before this frame's faces, so they count after its breaks
+                if novelty is FrameNovelty.NEW_EPOCH:
+                    self._continuity.retain_only(())
+                for item in self._continuity.observe(frame, persons):
+                    self._identities.break_track(item.key, item.at_ns, item.cause)
+                    self._new_breaks.append(item)
             if self._detector is Capability.AVAILABLE:
                 self._last_detected = frame
             if faces is not None and self._face_recognition is Capability.AVAILABLE:
@@ -438,6 +463,9 @@ class EdgeCore:
         view = self._scene.view(live, now)
         tracks = self._tracks.current(live, now)
         self._identities.retain_only(t.key for t in tracks)
+        if self._continuity is not None:
+            self._continuity.retain_only(t.key for t in tracks)
+        breaks, self._new_breaks = tuple(self._new_breaks), []
         identities = {t.key: self._identity(t, now) for t in tracks}
         transitions = self._transitions(tracks, identities, now)
         occupancy, reason = self._occupancy(freshness, tracks, now)
@@ -452,6 +480,7 @@ class EdgeCore:
             candidates=(candidate,) if candidate is not None else (),
             zones=tuple(zones),
             identity_transitions=transitions,
+            identity_breaks=breaks,
         )
 
     def _transitions(
@@ -557,6 +586,7 @@ class EdgeCore:
                     predicted=t.predicted,
                     last_measured_age_ms=(now.ns - t.last_measured_mono_ns) // NS_PER_MS,
                     **self._identity_fields(identities[t.key]),
+                    identity_followed_ms=self._followed_ms(t, now),
                 )
                 for t in tracks
             ),
@@ -565,6 +595,11 @@ class EdgeCore:
             scene_report=view.report,
             scene_evidence_id=view.evidence.evidence_id if view.evidence is not None else None,
         )
+
+    def _followed_ms(self, track: TrackObservation, now: MonoInstant) -> int | None:
+        """D97: how long the track has been followed without a break (None without a continuity monitor)."""
+        since = None if self._continuity is None else self._continuity.followed_since(track.key)
+        return None if since is None else max(0, now.ns - since) // NS_PER_MS
 
     def _scene_capability(self) -> Capability:
         if self._lane is not None:

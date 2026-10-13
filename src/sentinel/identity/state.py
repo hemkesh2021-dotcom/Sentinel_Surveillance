@@ -23,6 +23,13 @@ votes is ``vote_ttl_ns`` old; a contradicting vote makes it UNCERTAIN at
 once; a track that is no longer current loses its votes (``retain_only``),
 even if the tracker later reuses its ID. ``basis`` tells a fresh decision
 (its newest vote at most ``fresh_window_ns`` old) from a retained one.
+
+Continuity (D97; opt-in, ``continuity_retention_ns``; identity.continuity):
+a break in a track's continuity (a detection gap, a jump, an overlapping
+detection) drops its votes at once, and a face result for a frame from before
+the break is not counted for it; between breaks, votes live
+``continuity_retention_ns`` instead of ``vote_ttl_ns``. Without it (the
+default) every rule above is exactly as it was.
 """
 
 from __future__ import annotations
@@ -35,10 +42,12 @@ from enum import Enum
 from ..contracts import TrackKey, TrackObservation
 from ..media.clock import MonoInstant
 from .association import Association, FaceObservation, Ownership
+from .continuity import NOT_CARRIED, Cause
 from .matching import Enrollment, best_match
 
 VOTES_KEPT = 5
 UNKNOWN_VOTE = ""  # a good face that matched nobody enrolled
+BEFORE_BREAK = "before_break"  # D97: a face on a frame from before its track's latest break; it is not counted
 
 
 class IdentityState(str, Enum):
@@ -58,6 +67,9 @@ class IdentityPolicy:
     confirmations: int = 2
     vote_ttl_ns: int = 30_000_000_000
     fresh_window_ns: int = 3_000_000_000  # a decision whose newest vote is at most this old is "fresh"
+    # D97: with a continuity monitor, votes live this long while their track stays unbroken (breaks drop them); None
+    # (the default): votes expire after vote_ttl_ns, exactly as before
+    continuity_retention_ns: int | None = None
 
 
 class Basis(str, Enum):
@@ -100,6 +112,7 @@ class IdentityResolver:
         self._policy = policy
         self._votes: dict[TrackKey, deque[_Vote]] = {}
         self._last_note: dict[TrackKey, str] = {}
+        self._broken: dict[TrackKey, tuple[int, Cause]] = {}  # D97: each track's latest break (frame time, cause)
         self.counters: Counter[str] = Counter()  # ownership and vote outcomes, numbers only
 
     def observe(
@@ -114,6 +127,11 @@ class IdentityResolver:
             key = person.key
             ownership = association.person_ownership.get(key, Ownership.NO_FACE)
             self.counters[f"persons_{ownership.value}"] += 1
+            broken = self._broken.get(key)
+            if broken is not None and person.observed_mono_ns < broken[0]:  # D97: from before the track's break
+                self.counters["persons_before_break"] += 1
+                records.append(VoteRecord(key, ownership, None, BEFORE_BREAK))
+                continue
             if ownership is not Ownership.ASSIGNED:
                 self._last_note[key] = {
                     Ownership.NO_FACE: "no face visible",
@@ -135,6 +153,9 @@ class IdentityResolver:
         if self._enrollment is None or self._enrollment.is_empty:
             return TrackIdentity(IdentityState.UNRESOLVED, None, "no identities enrolled")
         votes = self._current_votes(key, now)
+        broken = self._broken.get(key)
+        if broken is not None and not votes:  # D97: dropped at a break and not earned again since
+            note = NOT_CARRIED[broken[1]]
         needed = self._policy.confirmations
         age = now.ns - votes[-1].at_ns if votes else None
         if len(votes) >= needed:
@@ -157,9 +178,18 @@ class IdentityResolver:
     def retain_only(self, keys: Iterable[TrackKey]) -> None:
         """Forget tracks that are no longer current."""
         keep = set(keys)
-        for table in (self._votes, self._last_note):
+        for table in (self._votes, self._last_note, self._broken):
             for key in [k for k in table if k not in keep]:
                 del table[key]
+
+    def break_track(self, key: TrackKey, at_ns: int, cause: Cause) -> None:
+        """D97: the track's continuity broke on the frame at ``at_ns``: its votes are dropped, and a face result for an
+        earlier frame is not counted for it. Its identity must be earned again from new matches."""
+        self._votes.pop(key, None)
+        self._last_note.pop(key, None)
+        previous = self._broken.get(key)
+        self._broken[key] = (at_ns if previous is None else max(previous[0], at_ns), cause)
+        self.counters[f"breaks_{cause.value}"] += 1
 
     def diagnostic_similarity(self, embedding: Sequence[float]) -> float | None:
         """D87: the best cosine similarity of an embedding to the enrollment, exactly as a vote computes it
@@ -191,7 +221,8 @@ class IdentityResolver:
         if key.boot_id != now.boot_id:
             return []
         votes = self._votes.get(key, ())
-        return [v for v in votes if 0 <= now.ns - v.at_ns < self._policy.vote_ttl_ns]
+        ttl = self._policy.continuity_retention_ns or self._policy.vote_ttl_ns
+        return [v for v in votes if 0 <= now.ns - v.at_ns < ttl]
 
 
 _NOTE_COUNTERS = {

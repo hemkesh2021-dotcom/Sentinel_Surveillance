@@ -104,7 +104,8 @@ def test_not_yet_reported_nobody_tracked_stale_video_and_more_people_are_stated(
     stale = text(panel(status([face_row(3, "known", basis="retained", vote_age_ms=4000)], video="stale")))
     assert "Video is stale: what is listed is as the runtime last derived it, not the scene now." in stale
     more = text(panel(status([face_row(n, "unresolved") for n in range(8)], more=3)))
-    assert "3 more tracked people are not listed (the first 8 by track are)." in more
+    # session 68: the overflow counts tracks, unconfirmed ones included, so it never says "people"
+    assert "3 more tracks are not listed (the first 8 by track number are)." in more
 
 
 def test_the_panel_says_not_current_itself_and_carries_no_id_similarity_or_name() -> None:

@@ -28,6 +28,7 @@ from pydantic import (
 
 from .adapters import AdapterManifest, check_unique_ids
 from .contracts import Identifier
+from .identity.continuity import ContinuityPolicy
 from .media.clock import NS_PER_SECOND
 from .redaction import redact_line
 from .rules.geometry import Anchor, polygon_problem
@@ -169,12 +170,29 @@ class IdentityConfig(_Section):
     face_interval_s: Seconds = 1.0  # between face ticks, in frame time
     face_pending_max_age_s: Seconds = 2.0  # a waiting frame older than this is not analysed
     face_result_max_age_s: Seconds = 3.0  # a result for an older frame is rejected; also the "fresh" window
+    # D97, the continuity rule (used only by ``sentinel run --face-continuity``, a validation run): PROPOSED starting
+    # values, unvalidated on the device (identity.continuity)
+    continuity_max_gap_s: Seconds = 0.5  # a track missing from a processed frame for longer than this breaks
+    continuity_overlap_iou: Annotated[float, Field(gt=0, lt=1, allow_inf_nan=False)] = 0.3  # two boxes meeting break
+    continuity_min_step_iou: Annotated[float, Field(gt=0, le=1, allow_inf_nan=False)] = 0.4  # a jump breaks
+    continuity_retention_s: Annotated[float, Field(gt=0, le=600, allow_inf_nan=False)] = 120.0  # votes' bound
 
     @model_validator(mode="after")
     def _face_bounds(self) -> IdentityConfig:
         if not self.face_pending_max_age_s <= self.face_result_max_age_s:
             raise ValueError("face_pending_max_age_s must not exceed face_result_max_age_s")
+        if not self.continuity_overlap_iou < self.continuity_min_step_iou:
+            raise ValueError("continuity_overlap_iou must be below continuity_min_step_iou (they cover each other)")
+        if not self.face_result_max_age_s < self.continuity_retention_s:
+            raise ValueError("continuity_retention_s must exceed face_result_max_age_s")
         return self
+
+    def continuity_policy(self) -> ContinuityPolicy:
+        """D97: the continuity rule from these values."""
+        return ContinuityPolicy(max_gap_ns=round(self.continuity_max_gap_s * NS_PER_SECOND),
+                                overlap_iou=self.continuity_overlap_iou,
+                                min_step_iou=self.continuity_min_step_iou,
+                                retention_ns=round(self.continuity_retention_s * NS_PER_SECOND))
 
     @property
     def vote_ttl_ns(self) -> int:

@@ -391,6 +391,12 @@ def main(
         help="with --face-validation --face-full-scale-detection (D91): open the working gallery in DIR read only and "
         "record each compared face's similarity to it (schema 6 \"shadow\"); only the original votes",
     )
+    run.add_argument(
+        "--face-continuity", action="store_true",
+        help="with --face-validation (D97, PROPOSED, production detection only): keep an identity only while its track "
+        "is followed without a break (no detection gap over identity.continuity_max_gap_s, no jump, no overlapping "
+        "detection), for at most identity.continuity_retention_s after its matches; a break drops it at once",
+    )
     run.add_argument("--identity-dir", type=Path, default=DEFAULT_IDENTITY_DIR,
                      help=f"the private (0700) identity directory (default {DEFAULT_IDENTITY_DIR})")
     run.add_argument(
@@ -730,6 +736,13 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
         print("run: --face-full-scale-detection replaces the detection --face-comparison compares with; use one",
               file=sys.stderr)
         return 1
+    if args.face_continuity and not args.face_validation:
+        print("run: --face-continuity needs --face-validation", file=sys.stderr)
+        return 1
+    if args.face_continuity and (args.face_full_scale_detection or args.face_comparison or experiment):
+        print("run: --face-continuity runs with production detection and no comparison or experiment",
+              file=sys.stderr)
+        return 1
     if args.live_preview and not args.status_port:
         print("run: --live-preview needs the status page (--status-port other than 0)", file=sys.stderr)
         return 1
@@ -750,7 +763,7 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
                            shadow_dir=None if args.face_shadow_gallery is None else args.face_shadow_gallery.expanduser(),
                            capture_dir=(None if args.face_capture_gallery is None
                                         else args.face_capture_gallery.expanduser()),
-                           capture_consent_date=args.face_capture_consent_date)
+                           capture_consent_date=args.face_capture_consent_date, continuity=args.face_continuity)
     del secret
     scene = None
     if args.scene:

@@ -162,6 +162,7 @@ from .memory_policy import (
     release_file_cache,
 )
 from .rules.zones import ZonePhase
+from .identity.continuity import ContinuityPolicy
 from .runtime import (
     IDENTITY_COMPARISON_SCHEMA,
     IDENTITY_FULL_SCALE_SCHEMA,
@@ -169,6 +170,7 @@ from .runtime import (
     IDENTITY_RECORD_SCHEMA,
     CoreOutput,
     EdgeCore,
+    break_record,
     tick_record,
 )
 from .scene.analyzer import IMAGES_KEPT, RecentImages, ThreadedSceneAnalyzer
@@ -240,6 +242,7 @@ class FaceRuntime:
     detection: str = DETECTION_DEEPFACE  # D88: DETECTION_FULL_SCALE when the candidate is selected
     shadow: Any = None  # D91: a working gallery compared read only (identity.experiment.Shadow)
     capture: Any = None  # D91: the capture of a working gallery, written at shutdown (identity.experiment.Capture)
+    continuity: ContinuityPolicy | None = None  # D97: the continuity rule (--face-continuity, validation runs only)
 
     @property
     def experiment(self) -> str | None:
@@ -362,6 +365,7 @@ class DemoRuntime:
             scene_problem=self._scene_problem,
             shadow=face.shadow if face is not None else None,
             capture=face.capture if face is not None else None,
+            continuity=face.continuity if face is not None else None,
         )
         self._identity_records: deque[dict[str, Any]] = deque()
         # A face validation run's records carry the diagnostic numbers (schema 3, D84 and D86), with the full-scale
@@ -587,6 +591,8 @@ class DemoRuntime:
                 self._live = current.state
                 if current.face_result is not None:
                     self._keep_record(current.face_result.record(self._identity_schema))
+                for item in current.identity_breaks:  # D97: before the transitions they cause
+                    self._keep_record(break_record(item, self._identity_schema))
                 for transition in current.identity_transitions:
                     self._keep_record(transition.record(self._identity_schema))
                 self._annotate(current)
@@ -803,7 +809,9 @@ class DemoRuntime:
             # D95: the rule the page explains, as configured (numbers only; nothing here changes it)
             "policy": {"confirmations": self._config.identity.confirmations,
                        "vote_ttl_s": self._config.identity.vote_ttl_s,
-                       "fresh_window_s": self._config.identity.face_result_max_age_s},
+                       "fresh_window_s": self._config.identity.face_result_max_age_s,
+                       **({"continuity": self._face.continuity.numbers()} if self._face.continuity is not None
+                          else {})},
             "worker": self._face.worker.status(),
             "results": self._core.identity_counters,
             **({"comparison_results": dict(sorted(self._core.comparison_counters.items()))}
@@ -857,7 +865,7 @@ class DemoRuntime:
                    for basis in ("fresh", "retained")},
             },
             "published_utc": live.published_utc.isoformat(),
-            **(self._face_rows(live) if self._face is not None else {}),
+            **(self._face_rows(live, self._face.continuity is not None) if self._face is not None else {}),
             "scene": live.scene.value,
             "scene_reason": live.scene_reason,
             "scene_report": None if report is None else {
@@ -870,7 +878,7 @@ class DemoRuntime:
         }
 
     @staticmethod
-    def _face_rows(live: LiveState) -> dict[str, Any]:
+    def _face_rows(live: LiveState, continuity: bool = False) -> dict[str, Any]:
         """D95: each current person's recognition state as the core derived it for this publication (identity.state):
         the track it lives on, KNOWN/UNKNOWN/UNCERTAIN/UNRESOLVED with its basis (fresh or retained) and the newest
         current vote's age. Numbers and fixed labels only: no identity ID (the status stays free of IDs, D61; with one
@@ -882,7 +890,8 @@ class DemoRuntime:
                 {"track_id": p.track_id, "stream_epoch": p.stream_epoch, "track_status": p.status.value,
                  "predicted": p.predicted, "last_measured_age_ms": p.last_measured_age_ms, "state": p.identity.value,
                  "basis": None if p.identity_basis is None else p.identity_basis.value,
-                 "vote_age_ms": p.identity_vote_age_ms, "reason": p.identity_reason}
+                 "vote_age_ms": p.identity_vote_age_ms, "reason": p.identity_reason,
+                 **({"followed_ms": p.identity_followed_ms} if continuity else {})}  # D97
                 for p in people[:MAX_FACE_ROWS]
             ],
             "faces_not_shown": max(0, len(people) - MAX_FACE_ROWS),
@@ -966,6 +975,7 @@ class FaceOptions:
     shadow_dir: Path | None = None  # --face-shadow-gallery: a working gallery compared read only, never voting
     capture_dir: Path | None = None  # --face-capture-gallery: where the capture's working gallery is written
     capture_consent_date: str | None = None  # --face-capture-consent-date, the enrolled person's, for that gallery
+    continuity: bool = False  # --face-continuity (D97): the continuity rule; validation runs, production detection only
     weights_dir: Path | None = None  # DeepFace's weights; None: ~/.deepface/weights
     min_free_bytes: int = 1_500_000_000  # the detector's provisional precheck, reused (U18 open)
 
@@ -1337,6 +1347,12 @@ def assemble(
         if candidate and options.face.comparison:
             raise StartupRefused("face_detection_excludes_comparison: the full-scale detection candidate replaces the "
                                  "detection the comparison compares with")
+        if options.face.continuity and not options.face.validation_run:  # D97: PROPOSED; never in another run
+            raise StartupRefused("face_continuity_needs_validation: the continuity rule is for --face-validation runs")
+        if options.face.continuity and (candidate or options.face.comparison or options.face.shadow_dir is not None
+                                        or options.face.capture_dir is not None):
+            raise StartupRefused("face_continuity_production_only: the continuity rule runs with production detection "
+                                 "and no comparison or experiment")
         _experiment_options(options.face)  # D91: before anything loads
         face_backend = devices.face_backend(options.face.weights_dir)
         if options.face.comparison and not hasattr(face_backend, "enable_comparison"):
@@ -1444,7 +1460,9 @@ def assemble(
                                **({"detection": DETECTION_FULL_SCALE}
                                   if options.face.detection == DETECTION_FULL_SCALE else {}),
                                **({"shadow": True} if options.face.shadow_dir is not None else {}),
-                               **({"capture": True} if options.face.capture_dir is not None else {})}
+                               **({"capture": True} if options.face.capture_dir is not None else {}),
+                               **({"continuity": config.identity.continuity_policy().numbers()}
+                                  if options.face.continuity else {})}
             if face_problem is None and gallery is not None:
                 face_problem, memory = memfree_problem(devices.meminfo, options.face.min_free_bytes)
                 startup["face_memory_before"] = memory
@@ -1480,7 +1498,8 @@ def assemble(
                     clock, interval_ns=config.identity.face_interval_ns,
                     pending_max_age_ns=config.identity.face_pending_max_age_ns, comparator=comparator)
                 face = FaceRuntime(worker, len(gallery.identities), options.face.validation_run,
-                                   comparator is not None, options.face.detection, shadow, experiment_capture)
+                                   comparator is not None, options.face.detection, shadow, experiment_capture,
+                                   config.identity.continuity_policy() if options.face.continuity else None)
             startup["face_problem"] = face_problem
 
         slot = LatestFrame()

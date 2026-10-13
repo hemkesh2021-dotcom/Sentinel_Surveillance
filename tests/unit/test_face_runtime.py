@@ -128,7 +128,7 @@ class Capture:
 class Loop:
     def __init__(self, tmp_path: Path, *, analyze=analyze_with(vec(0.97, 0.1, 0.0, 0.05)), face_problem=None,
                  with_face: bool = True, validation: bool = True, comparator=None,
-                 detection: str = "deepface", shadow=None, capture=None) -> None:
+                 detection: str = "deepface", shadow=None, capture=None, continuity=None) -> None:
         self.clock = FakeClock(utc=NOW)
         self.config = parse_config({"config_version": 1, "camera": {"id": "cam-1"}})
         self.slot = LatestFrame()
@@ -136,7 +136,7 @@ class Loop:
         self.tracker = Tracker()
         self.db = Database.open(tmp_path / "sentinel.db")
         self.worker = FaceWorker(analyze, self.clock, comparator=comparator)
-        face = (FaceRuntime(self.worker, 1, validation, comparator is not None, detection, shadow, capture)
+        face = (FaceRuntime(self.worker, 1, validation, comparator is not None, detection, shadow, capture, continuity)
                 if with_face else None)
         self.runtime = DemoRuntime(
             self.config, self.clock, capture=self.capture, slot=self.slot,
@@ -845,4 +845,73 @@ def test_without_face_recognition_the_status_has_no_rows(tmp_path) -> None:
     loop.frame()
     live = loop.runtime.snapshot()["live"]
     assert "faces" not in live and "faces_not_shown" not in live and "published_utc" in live
+    loop.close()
+
+
+# ---------------------------------------------------------------- D97: the continuity rule (validation runs only)
+
+
+def test_the_continuity_rule_is_refused_outside_plain_validation_runs(face_setup) -> None:
+    with pytest.raises(StartupRefused, match="face_continuity_needs_validation"):
+        start(face_setup, validation=False, face_extra={"continuity": True})
+    with pytest.raises(StartupRefused, match="face_continuity_production_only"):
+        start(face_setup, detection="full_scale", backend_class=CandidateBackend, face_extra={"continuity": True})
+    with pytest.raises(StartupRefused, match="face_continuity_production_only"):
+        start(face_setup, comparison=True, backend_class=ComparingBackend, face_extra={"continuity": True})
+
+
+def test_the_continuity_flag_needs_validation_and_production_detection(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
+    assert main(_cli(tmp_path, "--face", "--face-continuity"), devices=_refusing_devices()) == 1
+    assert "--face-continuity needs --face-validation" in capsys.readouterr().err
+    monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
+    assert main(_cli(tmp_path, "--face", "--face-validation", "--face-continuity", "--face-full-scale-detection"),
+                devices=_refusing_devices()) == 1
+    assert "production detection" in capsys.readouterr().err
+
+
+def test_a_continuity_run_is_marked_at_startup_with_its_rule(face_setup) -> None:
+    assembly, _ = start(face_setup, face_extra={"continuity": True})
+    assert assembly.startup["face"] == {"validation_run": True, "identities_enrolled": 1, "continuity": {
+        "max_gap_s": 0.5, "overlap_iou": 0.3, "min_step_iou": 0.4, "retention_s": 120.0}}
+    policy = assembly.runtime.snapshot()["components"]["face"]["policy"]
+    assert policy["continuity"] == assembly.startup["face"]["continuity"] and policy["vote_ttl_s"] == 30.0
+    assembly.database.close()
+    plain, _ = start(face_setup)  # without the flag: the startup and the status exactly as before
+    assert plain.startup["face"] == {"validation_run": True, "identities_enrolled": 1}
+    assert "continuity" not in plain.runtime.snapshot()["components"]["face"]["policy"]
+    plain.database.close()
+
+
+def test_a_continuity_runs_breaks_come_before_the_transitions_they_cause_and_fit_the_evidence_profile(
+        tmp_path, monkeypatch) -> None:
+    from sentinel.config import parse_config as _parse
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "benchmarks/runner"))
+    import face_evidence
+
+    policy = _parse({"config_version": 1, "camera": {"id": "cam-1"}}).identity.continuity_policy()
+    loop = Loop(tmp_path, continuity=policy)
+    for _ in range(40):  # three matching face ticks: known on track 1
+        loop.frame()
+    (row,) = loop.runtime.snapshot()["live"]["faces"]
+    assert row["state"] == "known" and row["followed_ms"] >= 2000
+    loop.frame(persons=[RawTrack(1, 420.0, 100.0, 520.0, 400.0, 0.9)])  # the same number on a box far away: a jump
+    records = loop.runtime.drain_identity_records()
+    kinds = [(r["identity"], r.get("cause") or r.get("to")) for r in records if r["identity"] in ("break", "transition")]
+    assert kinds[-2:] == [("break", "jump"), ("transition", "unresolved")]
+    transition = records[-1] if records[-1]["identity"] == "transition" else next(
+        r for r in reversed(records) if r["identity"] == "transition")
+    assert transition["reason"] == "not carried over a break in tracking (the box jumped)"
+    status = loop.runtime.snapshot()
+    (row,) = status["live"]["faces"]
+    assert row["state"] == "unresolved" and row["reason"] == transition["reason"] and row["followed_ms"] < 1000
+    out = tmp_path / "evidence"
+    out.mkdir()
+    (out / "run.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+    from sentinel.status_page import build_status, read_store
+
+    (out / "status-n1.json").write_text(json.dumps(build_status(status, read_store(tmp_path / "sentinel.db"), NOW)))
+    assert face_evidence.read(out / "run.jsonl", "f2").nonconforming == []
+    assert face_evidence.read(out / "status-n1.json", "f2").nonconforming == []
     loop.close()

@@ -875,6 +875,13 @@ UNRESOLVED_TEXT = {  # the core's reasons (identity.state), in plain words
     "face matched nobody": "One face matched nobody so far; this needs consistent results.",
     "face recognition disabled": "Face recognition is off.",
     "face recognition unavailable": "Face recognition is unavailable.",
+    # D97: an identity never crosses a break in a track's continuity (identity.continuity.NOT_CARRIED)
+    "not carried over a break in tracking (a detection gap)":
+        "The track was lost for a moment, so any earlier identity was dropped; new matches are needed.",
+    "not carried over a break in tracking (the box jumped)":
+        "The track's box jumped, so any earlier identity was dropped; new matches are needed.",
+    "not carried over a break in tracking (another detection overlapped)":
+        "Another detection overlapped this track, so any earlier identity was dropped; new matches are needed.",
 }
 
 
@@ -903,6 +910,7 @@ def _person(entry: Mapping[str, Any], published: object, policy: Mapping[str, An
     track, epoch = entry.get("track_id"), entry.get("stream_epoch")
     state, basis = entry.get("state"), entry.get("basis")
     ttl = _number(policy.get("vote_ttl_s"))
+    continuity = policy.get("continuity") if isinstance(policy.get("continuity"), Mapping) else None
     fresh_s = _number(policy.get("fresh_window_s"))
     needed = _number(policy.get("confirmations"))
     who = "an enrolled identity"  # the status carries no identity ID (D61, D95)
@@ -910,6 +918,12 @@ def _person(entry: Mapping[str, Any], published: object, policy: Mapping[str, An
         verdict = _claim(_badge("ok", "Known · current match", glyph="check"),
                          _badge("off", "Was a current match", glyph="clock"))
         what = f"Matches {who} ({_e(entry.get('reason'))}; the newest within {_e(fresh_s or '–')} s)."
+    elif state == "known" and continuity:  # D97: kept only while the track is followed without a break
+        verdict = _badge("done", "Known · retained", glyph="clock")
+        followed = _seconds_text(entry.get("followed_ms"))
+        what = (f"Retained from an earlier match with {who}; no usable face on this track since. This track has been "
+                f"followed without a break for {_e(followed or '–')}. Kept until a break in tracking, a different "
+                f"result, or {_e(_number(continuity.get('retention_s')) or '–')} s after its confirming matches.")
     elif state == "known":
         verdict = _badge("done", "Known · retained", glyph="clock")
         what = (f"Retained from an earlier match with {who}; no usable face on this track since. Kept on this track "
@@ -970,23 +984,40 @@ def _faces(status: Mapping[str, Any]) -> str:
         context += (f"<div class='context k-warn'>{icon('warn')}<p>Video is {_e(video or 'not reported')}: what is "
                     "listed is as the runtime last derived it, not the scene now.</p></div>")
     policy = face.get("policy") or {}
-    rows = [_person(entry, published, policy) for entry in live.get("faces") or []]
+    entries = live.get("faces") or []
+    # Tentative tracks are listed apart (session 68): the tracker has not confirmed them as people, and occupancy does
+    # not count them, so they never appear in the same form as a person.
+    rows = [_person(entry, published, policy) for entry in entries if entry.get("track_status") == "confirmed"]
+    unconfirmed = [_person(entry, published, policy) for entry in entries if entry.get("track_status") != "confirmed"]
     if rows:
         people = f"<ul class=people>{''.join(rows)}</ul>"
+    elif unconfirmed:
+        people = f"<p class=empty>{icon('user')}<span>No confirmed person is tracked right now.</span></p>"
     else:
         reason = live.get("occupancy_reason")
         people = (f"<p class=empty>{icon('user')}<span>Nobody is tracked right now"
                   + (f" ({_e(reason)})" if reason and live.get("occupancy") == "unknown" else "") + ".</span></p>")
+    if unconfirmed:
+        people += (f"<div class=unconfirmed><h3>Unconfirmed detections</h3><p class=note>The tracker has not confirmed "
+                   "these as people, and occupancy does not count them; what they cover is not known.</p>"
+                   f"<ul class=people>{''.join(unconfirmed)}</ul></div>")
     more = live.get("faces_not_shown")
-    extra = (f"<p class=note>{_e(more)} more tracked people are not listed (the first {len(rows)} by track are).</p>"
+    extra = (f"<p class=note>{_e(more)} more tracks are not listed (the first {len(entries)} by track number are).</p>"
              if isinstance(more, int) and more > 0 else "")
     report = f"<p class=note>Enrolled identities: {_e(face.get('identities_enrolled'))}.</p>"
+    continuity = policy.get("continuity") if isinstance(policy.get("continuity"), Mapping) else None
+    kept = (f"retained only while its track is followed without a break (no detection gap over "
+            f"{_e(_number(continuity.get('max_gap_s')) or '–')} s, no jump of its box, no overlapping detection), and "
+            f"never longer than {_e(_number(continuity.get('retention_s')) or '–')} s after its confirming results; a "
+            "break drops it at once, and a result from before the break no longer counts (continuity rule, validation "
+            "runs only)" if continuity else
+            f"retained, on that track only, until its confirming results are "
+            f"{_e(_number(policy.get('vote_ttl_s')) or '–')} s old")
     rules = _details("How recognition is decided", (
         f"<p>A track becomes known after {_e(_number(policy.get('confirmations')) or '–')} consistent face results "
         "for the same enrolled identity, and unknown after as many that match nobody. \"Current match\" means the "
         f"newest of them is at most {_e(_number(policy.get('fresh_window_s')) or '–')} s old at the report; otherwise "
-        "the result is retained, on that track only, until its confirming results are "
-        f"{_e(_number(policy.get('vote_ttl_s')) or '–')} s old. A track that ends takes its result with it; a new "
+        f"the result is {kept}. A track that ends takes its result with it; a new "
         "track starts unresolved. Contradicting results make it uncertain at once.</p>"
         "<p class=muted>Thresholds, tracking and expiry are the runtime's own and are not changed by this page. Face "
         "data, similarities, names and identity IDs are never shown here.</p>"),

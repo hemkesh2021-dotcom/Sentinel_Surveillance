@@ -168,7 +168,12 @@ WORKER = vocab("not_started", "running", "stopped", "not_configured")  # worker/
 IDENTITY_STATES = ("unresolved", "unknown", "known", "uncertain")  # identity.state.IdentityState
 BASIS = vocab("fresh", "retained")  # identity.state.Basis
 OWNERSHIP = ("assigned", "no_face", "no_person", "ambiguous")  # identity.association.Ownership
-VOTE_LABELS = ("match", "unknown", "margin", "low_quality", "incompatible", "no_enrollment")  # state._NOTE_LABELS
+VOTE_LABELS = ("match", "unknown", "margin", "low_quality", "incompatible", "no_enrollment",  # state._NOTE_LABELS
+               "before_break")  # D97: state.BEFORE_BREAK (continuity runs only)
+CONTINUITY_CAUSES = ("gap", "jump", "overlap")  # identity.continuity.Cause (D97)
+NOT_CARRIED = tuple(f"not carried over a break in tracking ({why})" for why in (  # identity.continuity.NOT_CARRIED
+    "a detection gap", "the box jumped", "another detection overlapped"))
+CONTINUITY_POLICY = ("max_gap_s", "overlap_iou", "min_step_iou", "retention_s")  # ContinuityPolicy.numbers (D97)
 VOTE_NOTES = ("face matched", "face matched nobody", "face matches more than one identity", "face quality too low",
               "embedding from an incompatible model", "no identities enrolled")  # state._NOTE_LABELS' keys
 TICKS = vocab("offered", "skipped_no_person", "stopping")  # identity.worker TICK_*
@@ -215,14 +220,14 @@ DEGRADED = template(r"capture (\S+)(?: \((.+)\))?", r"video (\S+)", r"detector u
                     r"queued", r"delivery worker problem \((.*)\)", fixed("delivery worker stopped"))
 TRANSITION_REASON = template(*(fixed(t) for t in (
     *VOTE_NOTES, "no face visible", "face ownership ambiguous", *OWNERSHIP, "no face observed yet",
-    "consistent faces matched nobody", "contradictory face evidence", "track no longer current")),
+    "consistent faces matched nobody", "contradictory face evidence", "track no longer current", *NOT_CARRIED)),
     r"(\d+) consistent matches")
 TRACK_STATUS = vocab("tentative", "confirmed")  # contracts.TrackStatus
 # A person's identity reason (D95): the core's own (identity.state, runtime.EdgeCore._identity), never free text.
 IDENTITY_REASON = template(*(fixed(t) for t in (
     *VOTE_NOTES, "no face visible", "face ownership ambiguous", *OWNERSHIP, "no face observed yet",
     "consistent faces matched nobody", "contradictory face evidence", "no identities enrolled",
-    "face recognition disabled", "face recognition unavailable")),
+    "face recognition disabled", "face recognition unavailable", *NOT_CARRIED)),
     r"(\d+) consistent matches")
 INCIDENT_TITLE = template(r"Person in restricted zone '(.*)'", r"Person dwelling in zone '(.*)'",
                           fixed("Possible fire or smoke (scene model only, unconfirmed)"))
@@ -428,6 +433,7 @@ STARTUP = {  # the runtime's ``starting`` line (demo_runtime.assemble and cli)
     "face.comparison": BOOL,  # D87, only in --face-comparison runs
     "face.detection": vocab("full_scale"),  # D88, only in --face-full-scale-detection runs
     "face.shadow": BOOL, "face.capture": BOOL,  # D91, only in the enrollment experiment's runs
+    **{f"face.continuity.{k}": NUM for k in CONTINUITY_POLICY},  # D97, only in --face-continuity runs
     "status_page": maybe(LOOPBACK_URL),
     **OPTIONAL_STARTUP,
 }
@@ -443,7 +449,8 @@ STATUS_LINE = {  # cli.status_line
     "degraded[]": DEGRADED,
 }
 IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransition, ComparisonRecord
-    "identity": vocab("tick", "result", "transition", "comparison", "capture"), "schema": INT, "stream_epoch": INT,
+    "identity": vocab("tick", "result", "transition", "comparison", "capture", "break"), "schema": INT,
+    "stream_epoch": INT, "cause": vocab(*CONTINUITY_CAUSES),  # D97: runtime.break_record (continuity runs only)
     "frame_seq": INT,
     "frame_mono_ns": INT, "tick": TICKS, "tracks[]": INT, "applied_mono_ns": INT, "outcome": OUTCOMES,
     "faces": COUNT, "processing_ms": SECONDS, "error": maybe(TEXT), "persons[].track_id": INT,
@@ -541,7 +548,8 @@ RESULT = JsonProfile({  # step5_guard.supervise
 
 FACE_COUNTERS = vocab(*(f"persons_{o}" for o in OWNERSHIP), *(f"faces_{o}" for o in OWNERSHIP),
                       *(f"results_{o}" for o in sorted(OUTCOMES.values)), "votes_match", "votes_unknown",
-                      "no_vote_margin", "no_vote_low_quality", "no_vote_incompatible", "no_vote_no_enrollment")
+                      "no_vote_margin", "no_vote_low_quality", "no_vote_incompatible", "no_vote_no_enrollment",
+                      "persons_before_break", *(f"breaks_{c}" for c in CONTINUITY_CAUSES))  # D97
 STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.build_status
     "generated_utc": ISO,
     "runtime.camera_id": TEXT, "runtime.state": RUNTIME, "runtime.updated_utc": ISO, "runtime.status_age_s": SECONDS,
@@ -557,6 +565,7 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
     "live.faces[].predicted": BOOL, "live.faces[].last_measured_age_ms": INT,
     "live.faces[].state": vocab(*IDENTITY_STATES), "live.faces[].basis": maybe(BASIS),
     "live.faces[].vote_age_ms": COUNT, "live.faces[].reason": IDENTITY_REASON,  # no identity ID (D61, D95)
+    "live.faces[].followed_ms": COUNT,  # D97: time followed without a break (continuity runs only)
     "live.faces_not_shown": INT,
     "live.scene": SCENE_STATUS, "live.scene_reason": SCENE_REASON, "live.scene_report": NULL,
     "live.scene_report.persons_visible": INT, "live.scene_report.fire_or_smoke": BOOL,
@@ -577,6 +586,7 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
     "components.face.identities_enrolled": INT, "components.face.validation_run": BOOL,
     "components.face.policy.confirmations": INT, "components.face.policy.vote_ttl_s": NUM,  # D95
     "components.face.policy.fresh_window_s": NUM,
+    **{f"components.face.policy.continuity.{k}": NUM for k in CONTINUITY_POLICY},  # D97
     "components.face.detection": vocab("full_scale"),  # D88
     "components.face.experiment": vocab("shadow", "capture"),  # D91
     **{f"components.face.records.{k}": INT for k in ("kept", "dropped", "limit")},

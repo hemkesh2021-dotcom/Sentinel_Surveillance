@@ -56,6 +56,7 @@ class PersonState(Contract):
     identity_reason: str
     identity_basis: Basis | None = None  # KNOWN/UNKNOWN: a fresh decision or one retained on the same track
     identity_vote_age_ms: NonNegativeInt | None = None  # the newest current vote's age
+    identity_followed_ms: NonNegativeInt | None = None  # D97: time followed without a break (continuity runs only)
 
 
 class LiveState(Contract):

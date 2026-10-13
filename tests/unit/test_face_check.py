@@ -457,6 +457,31 @@ def line_for(text: str, start: str) -> str:
 # ---------------------------------------------------------------- F2
 
 
+@pytest.mark.parametrize("change", ["startup", "records"])
+def test_f2_never_reads_a_continuity_run_by_its_plain_rule(mods, tmp_path, startup, f1_list, change) -> None:
+    """D97: F2's retention item encodes the plain rule (cleared when the older confirming vote is 30 s old), so a run
+    with the continuity rule is never judged by it: its startup's face entry differs from F2's, and its break records
+    are unknown identity records to every existing reading."""
+    out = simulate(tmp_path, startup)
+
+    def edit(lines):
+        if change == "startup":
+            for line in lines:
+                if line.get("run") == "starting":
+                    line["startup"]["face"]["continuity"] = {"max_gap_s": 0.5, "overlap_iou": 0.3,
+                                                             "min_step_iou": 0.4, "retention_s": 120.0}
+            return lines
+        return lines + [{"identity": "break", "schema": 3, "stream_epoch": 1, "track_id": 1, "cause": "jump",
+                         "mono_ns": 2_000_000_000}]
+
+    _mutate(out, edit)
+    finish(mods, out)
+    result, text = reading(mods, out, f1_list)
+    assert not result.ok
+    item = "face admitted for this validation run" if change == "startup" else "identity records"
+    assert line_for(text, item).startswith("FAIL"), text
+
+
 def test_the_scripted_live_run_is_validated_from_the_runtimes_own_output(mods, tmp_path, startup, f1_list) -> None:
     out = simulate(tmp_path, startup)
     finish(mods, out)
@@ -1739,7 +1764,11 @@ def test_the_vocabularies_are_the_codes(mods) -> None:
         assert vocab.values == {e.value for e in enum}, enum
     assert set(fe.IDENTITY_STATES) == {e.value for e in state.IdentityState}
     assert set(fe.OWNERSHIP) == {e.value for e in Ownership}
-    assert set(fe.VOTE_NOTES) == set(state._NOTE_LABELS) and set(fe.VOTE_LABELS) == set(state._NOTE_LABELS.values())
+    assert set(fe.VOTE_NOTES) == set(state._NOTE_LABELS)
+    assert set(fe.VOTE_LABELS) == set(state._NOTE_LABELS.values()) | {state.BEFORE_BREAK}  # D97
+    from sentinel.identity.continuity import NOT_CARRIED, Cause, ContinuityPolicy
+    assert set(fe.CONTINUITY_CAUSES) == {c.value for c in Cause} and set(fe.NOT_CARRIED) == set(NOT_CARRIED.values())
+    assert set(fe.CONTINUITY_POLICY) == set(ContinuityPolicy().numbers())
     assert fe.TICKS.values == {TICK_OFFERED, TICK_SKIPPED_NO_PERSON, TICK_STOPPING}
     assert fe.RELEASE_RESULTS.values == set(RELEASE_RESULTS)
     assert fe.RELEASE_COMPONENTS.values == set(RELEASE_FILE_ROLES)
