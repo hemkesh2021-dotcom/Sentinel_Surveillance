@@ -285,3 +285,23 @@ def test_without_the_rule_the_core_reports_no_breaks_and_no_followed_time() -> N
     room.frames(0.1, (1, (450.0, 100.0, 550.0, 400.0)))  # a jump the plain rule ignores, as before
     assert room.breaks == [] and room.person(1).identity is IdentityState.KNOWN
     assert room.core.continuity is None and Room().core.continuity == POLICY
+
+
+def test_a_continuity_runs_guard_result_fits_the_evidence_profile(tmp_path, monkeypatch) -> None:
+    """The guard's result.json keeps the startup's face entry (step5_guard._starting_summary), so the rule's numbers
+    there are declared too; anything else in that entry stays nonconforming."""
+    import json
+    from pathlib import Path
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "benchmarks/runner"))
+    import face_evidence
+    import step5_guard
+
+    face = {"validation_run": True, "identities_enrolled": 1, "continuity": POLICY.numbers()}
+    (tmp_path / "run.jsonl").write_text(json.dumps({"run": "starting", "startup": {"face": face}}) + "\n")
+    (tmp_path / "result.json").write_text(json.dumps({"run_output": step5_guard.read_run_output(tmp_path / "run.jsonl")}))
+    assert face_evidence.read(tmp_path / "result.json", "f2").nonconforming == []
+    face["continuity"]["note"] = 1.0  # an undeclared number is still nonconforming
+    (tmp_path / "run.jsonl").write_text(json.dumps({"run": "starting", "startup": {"face": face}}) + "\n")
+    (tmp_path / "result.json").write_text(json.dumps({"run_output": step5_guard.read_run_output(tmp_path / "run.jsonl")}))
+    assert face_evidence.read(tmp_path / "result.json", "f2").nonconforming != []

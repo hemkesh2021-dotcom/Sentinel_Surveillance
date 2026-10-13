@@ -508,6 +508,7 @@ STARTING_SUMMARY = {  # step5_guard._starting_summary
     "face": NULL, "face.validation_run": BOOL, "face.identities_enrolled": INT, "face.comparison": BOOL,
     "face.detection": vocab("full_scale"),  # D88
     "face.shadow": BOOL, "face.capture": BOOL,  # D91
+    **{f"face.continuity.{k}": NUM for k in CONTINUITY_POLICY},  # D97: the guard keeps the startup's face entry
 }
 STARTING_SUMMARY_KEYS = {"releases": RELEASE_COMPONENTS, "releases.*": RELEASE_ROLES, "notifier_problems": CHANNELS,
                          "scene_memory_before": MEMFREE_KEYS, "detector_memory_before": MEMFREE_KEYS,
