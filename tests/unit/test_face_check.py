@@ -355,9 +355,9 @@ F2_PROVENANCE = ("f2_launch_utc=2026-10-08T09:00:00Z\nboot_id=0f1e2d3c-4b5a-6978
 
 def finish(mods, out: Path, *, cue_delay_s: float = 0.1, account: dict[str, str] | None = ACCOUNT,
            counts: dict[str, int] | None = None, cues: dict[str, float] | None = None, cued_format: int = 3,
-           duration_s: float = 600.0, captures=CAPTURES) -> None:
+           duration_s: float = 600.0, captures=CAPTURES, provenance: str = F2_PROVENANCE) -> None:
     """result.json as the guard writes it, then the account and the counts, in the package's order (the counts by
-    face_counts.sh unless ``counts`` fakes them)."""
+    face_counts.sh unless ``counts`` fakes them); ``provenance`` is what the launch block wrote before the account."""
     ready = 1.0  # FakeClock's default start (seconds), the runtime's T0
     result = {
         "schema_version": 1, "mode": "step5_guard", "status": "duration_stop",
@@ -374,7 +374,7 @@ def finish(mods, out: Path, *, cue_delay_s: float = 0.1, account: dict[str, str]
         "run_output": mods.guard.read_run_output(out / "run.jsonl"),
     }
     (out / "result.json").write_text(json.dumps(result))
-    (out / "provenance.txt").write_text(F2_PROVENANCE)
+    (out / "provenance.txt").write_text(provenance)
     if account is not None:
         save_account(mods, out, account, cued_format)
     if counts is None:  # F2e's counts, by the real workflow
@@ -2674,6 +2674,104 @@ def test_a_refused_capture_is_read_as_not_usable(mods, tmp_path, accepted_scene,
     text = "\n".join(reading.lines)
     assert not reading.ok and store.document is None
     assert '"refused": "inconsistent_capture"' in line_for(text, "the working gallery: written")
+
+
+# What the enrollment experiment's -r2 launch blocks write into the run's provenance before the account: the launch
+# lines, the framing line (x-C's fixed line; x-G's or x-N's answer, which the block accepts only as none, changed or
+# unsure) and the F1 gate's lines for an accepted recheck.
+GATE_LINES = ("f1_gate=passed\nrun=face-20261008T090000Z\nf1_basis=accepted_recheck\n"
+              "f1_recheck=face-20261008T090000Z-f1-0123456-20261008T100000Z\nf1_accepted_utc=2026-10-08T10:05:00Z\n"
+              f"f1_identity_id={ENROLLED}\n")
+FRAMING_LINES = ("framing_baseline=this_capture", "framing_since_capture=none", "framing_since_capture=changed",
+                 "framing_since_capture=unsure")
+
+
+def block_provenance(framing: str) -> str:
+    return F2_PROVENANCE + framing + "\n" + GATE_LINES
+
+
+@pytest.mark.parametrize("framing", FRAMING_LINES)
+def test_the_experiment_blocks_framing_lines_fit_the_run_provenance_profile(mods, tmp_path, framing) -> None:
+    provenance = tmp_path / "provenance.txt"
+    provenance.write_text(block_provenance(framing) + "account_sha256=" + "0" * 64 + "\n")
+    reading = mods.evidence.read(provenance, "f2")
+    assert reading.nonconforming == [] and reading.content == []  # schema text, nothing searched as content
+
+
+@pytest.mark.parametrize(("framing", "where"), [
+    ("framing_baseline=changed", "line 5: framing_baseline"),  # x-C writes only this_capture
+    ("framing_baseline=This_capture", "line 5: framing_baseline"),
+    ("framing_baseline=this_capture ", "line 5: framing_baseline"),
+    ("framing_baseline=", "line 5: framing_baseline"),
+    ("framing_since_capture=this_capture", "line 5: framing_since_capture"),
+    ("framing_since_capture=maybe", "line 5: framing_since_capture"),  # x-G and x-N stop before writing these
+    ("framing_since_capture=NONE", "line 5: framing_since_capture"),
+    ("framing_since_capture=", "line 5: framing_since_capture"),
+    ("framing=fixed_from_capture_changed_sessions_apart", "line 5"),  # the decisions file's line, not a run's
+    ("framing_note=none", "line 5"),
+])
+def test_any_other_framing_line_is_nonconforming_and_its_text_is_content(mods, tmp_path, framing, where) -> None:
+    provenance = tmp_path / "provenance.txt"
+    provenance.write_text(block_provenance(framing))
+    reading = mods.evidence.read(provenance, "f2")
+    assert reading.nonconforming == [where] and (where, framing) in reading.content
+
+
+def test_framing_lines_fit_only_the_runs_provenance_not_f1s(mods, tmp_path) -> None:
+    provenance = tmp_path / "provenance.txt"
+    provenance.write_text("consent_date=2026-10-08\nframing_baseline=this_capture\n")
+    assert mods.evidence.read(provenance, "f1").nonconforming == ["line 2"]
+
+
+@pytest.mark.parametrize(("framing", "name", "nonconforming"), [
+    ("framing_since_capture=none", 0, 0), ("framing_baseline=this_capture", 0, 0),
+    ("framing_since_capture=D", 1, 1),  # the family initial typed as the answer: counted, as content
+    ("framing_baseline=Jane", 1, 1),
+])
+def test_the_privacy_counts_still_find_a_name_written_as_a_framing_answer(tmp_path, framing, name,
+                                                                         nonconforming) -> None:
+    run = tmp_path / "xg"
+    run.mkdir()
+    (run / "provenance.txt").write_text(block_provenance(framing))
+    done = bash_counts("face_counts_f2", str(run))
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.splitlines() == ["provenance.txt passphrase=0", f"provenance.txt name={name}",
+                                        f"provenance.txt nonconforming={nonconforming}"]
+
+
+@pytest.mark.parametrize(("framing", "usable"), [("framing_baseline=this_capture", True),
+                                                 ("framing_baseline=changed", False)])
+def test_a_capture_is_read_with_the_provenance_its_block_writes(mods, tmp_path, accepted_scene, f1_list, framing,
+                                                                usable) -> None:
+    """exp-20261013T103725Z: the -r2 capture block wrote framing_baseline=this_capture, which c3a37f0's profile did not
+    declare, so its reading failed the privacy counts on "provenance.txt nonconforming" alone. The line fits now;
+    another value of it fails exactly as that run's reading did."""
+    out, _ = experiment_run(mods, tmp_path, accepted_scene, kind="capture",
+                            faces=lambda t: FACE if int(t) % 3 else DRIFT)
+    finish(mods, out, account=account_v7(), cues=COMPARISON_CUES, cued_format=7, duration_s=300.0,
+           captures=COMPARISON_CAPTURES, provenance=block_provenance(framing))
+    reading = mods.check.read_capture(out, f1_list)
+    text = "\n".join(reading.lines)
+    counts = line_for(text, "passphrase, name and nonconforming counts")
+    assert line_for(text, "the working gallery: written").startswith("PASS")
+    if usable:
+        assert reading.ok and counts.startswith("PASS"), text
+    else:
+        assert not reading.ok and counts.startswith("FAIL") and '"nonzero": ["provenance.txt nonconforming"]' in counts
+        assert [x for x in reading.lines if not x.startswith(("PASS ", "DESCRIPTIVE "))] == [counts]
+
+
+@pytest.mark.parametrize(("framing", "complete"), [("framing_since_capture=none", True),
+                                                   ("framing_since_capture=unsure", True),
+                                                   ("framing_since_capture=maybe", False)])
+def test_an_evaluation_session_is_read_with_the_provenance_its_block_writes(mods, tmp_path, accepted_scene, f1_list,
+                                                                            framing, complete) -> None:
+    out, _ = experiment_run(mods, tmp_path, accepted_scene, kind="shadow", faces=lambda t: FACE)
+    finish(mods, out, account=account_v6(mods), cues=COMPARISON_CUES, cued_format=6, duration_s=300.0,
+           captures=COMPARISON_CAPTURES, provenance=block_provenance(framing))
+    reading = mods.check.read_experiment(out, f1_list)
+    counts = line_for("\n".join(reading.lines), "passphrase, name and nonconforming counts")
+    assert reading.ok == complete and counts.startswith("PASS" if complete else "FAIL")
 
 
 def test_a_genuine_session_is_compared_face_by_face_and_replayed_under_each_gallery(mods, tmp_path, accepted_scene,

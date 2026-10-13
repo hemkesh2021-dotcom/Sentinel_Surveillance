@@ -627,6 +627,8 @@ F2_PROVENANCE = KeyValueProfile({
     "f2_launch_utc": ISO, "boot_id": UUID, "commit": HEX40, "pin_commit": HEX40, "run": RUN_NAME,
     "f1_gate": vocab("passed"), "f1_basis": vocab("original", "accepted_recheck"), "f1_recheck": form(RECHECK_NAME),
     "f1_accepted_utc": ISO, "f1_identity_id": IDN, "account_sha256": HEX64,
+    # D91's framing record: the capture block's fixed line, and the answer an evaluation block accepts before writing
+    "framing_baseline": vocab("this_capture"), "framing_since_capture": vocab("none", "changed", "unsure"),
 })
 RUN_ERR = LogProfile((
     re.compile(r"\[\d{2}/\d{2}/\d{4}-\d{2}:\d{2}:\d{2}\] \[TRT\] \[[VIWEF]\] (.*)"),  # TensorRT's logger
