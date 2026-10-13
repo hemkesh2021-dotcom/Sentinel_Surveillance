@@ -5,6 +5,8 @@
     face_check.py f2 F2_DIR --f1 F1_DIR [--run RUN_DIR --identity-dir DIR --recheck-root ROOT]
     face_check.py f1-recheck RECHECK_DIR --run RUN_DIR --identity-dir DIR
     face_check.py gate RUN_DIR --identity-dir DIR [--recheck-root ROOT]
+    face_check.py capture-gate SESSION_DIR --working-gallery XDIR --f1 F1_DIR --run RUN_DIR --identity-dir DIR \\
+        [--recheck-root ROOT]
 
 ``f1-recheck`` is a corrected F1 reading made afterwards (face_recheck.py writes its directory); the run's own
 result stays as recorded. ``gate`` says whether F2 may build on a run's F1: its own F1 validated, or exactly one
@@ -1553,6 +1555,7 @@ NON_ENROLLED_CONTEXT = {"participant_not_enrolled": "yes", "participant_consente
                         "participant_stayed_seated": "yes", "only_participant_in_view": "yes"}
 LOOK_WINDOW_S = 30.0  # the look cue's interval described apart: from the cue, its 10 s allowance and a margin
 EXPERIMENT_CUES = {6: face_account.COMPARISON_CUE_AT_S, 8: face_account.NON_ENROLLED_CUE_AT_S}
+EXPERIMENT_CONDITIONS = ("framing_since_capture", "lighting", "capture_session", "capture_basis", "capture_recheck")
 
 
 def _experiment_execution(r: Reading, directory: Path, f1: Path, gate: Any, face: dict, name: str,
@@ -1681,6 +1684,10 @@ def read_experiment(directory: Path, f1: Path, gate: tuple[Path, Path, Path | No
         kind, context = "non-enrolled", _support(account, NON_ENROLLED_CONTEXT)
     r.describe("session kind and account answers (each line below names those it depends on)",
                {"kind": kind, **{k: v for k, v in account.items() if k != "notes"}})
+    recorded = _key_values(directory / "provenance.txt")
+    r.describe("the run's conditions as its launch recorded them, the framing since the capture (anything but none "
+               "makes it a changed-camera session, reported apart), the room light and the working gallery's capture "
+               "basis", {k: recorded.get(k, MISSING) for k in EXPERIMENT_CONDITIONS})
     _say(r, context, PER_PERSON + ", and where no face was assigned the best detection under 0.9, in W",
          _per_person(line, window, "candidate"))
     _say(r, context, "paired comparison on the same faces (one-person results in W with a computed similarity; "
@@ -2086,6 +2093,62 @@ def read_capture_recheck(recheck: Path, session: Path, f1: Path, gate: tuple[Pat
     return r
 
 
+def capture_gate(session: Path, working_gallery: Path, f1: Path, gate: tuple[Path, Path, Path | None]
+                 ) -> tuple[bool, list[str]]:
+    """Whether the experiment's evaluation sessions may compare faces with the working gallery (D91), as ``key=value``
+    lines: the gallery is the file this capture wrote (absent before it, the same after it, at its session's end and
+    now), and either the capture's own reading said it may be used, or exactly one corrected reading of the capture
+    that the maintainer explicitly accepted (face_recheck.py accept-capture) still matches the session, the recheck
+    and the gallery, and still validates. ``gate`` is the F1 basis's (run, identity directory, recheck root); the
+    capture's rechecks are looked for in the same recheck root."""
+
+    def refused(reason: str) -> tuple[bool, list[str]]:
+        return False, ["capture_gate=refused", f"capture_gate_reason={reason}"]
+
+    if not re.fullmatch(face_evidence.SESSION_NAME, session.name):
+        return refused("not_an_experiment_session")
+    listed, problems = _manifest(session)
+    if listed is None or problems or not all(e in listed for e in CAPTURE_EVIDENCE):
+        return refused("capture_evidence_changed")
+    now = _sha256(working_gallery / "gallery.sealed")
+    provenance = session / "provenance.txt"
+    if now is MISSING or _values(provenance, "working_gallery_before") != ["absent"] \
+            or _values(provenance, "working_gallery_after") != [now] \
+            or _values(provenance, "working_gallery_at_end") != [now]:
+        return refused("working_gallery_not_the_captures")
+    head = ["capture_gate=passed", f"capture_session={session.name}"]
+    exits = _values(provenance, "XC_check_exit")
+    if exits and exits[-1] == "0":
+        if _last(session / "xc/check.txt") != CAPTURE_USABLE:
+            return refused("capture_check_not_usable")
+        return True, [*head, "capture_basis=original"]
+    root = gate[2]
+    candidates = sorted(p for p in root.glob(f"{session.name}-xc-*") if (p / ACCEPTANCE).is_file()) \
+        if root is not None and root.is_dir() else []
+    if len(candidates) != 1:
+        return refused("no_accepted_recheck" if not candidates else "several_accepted_rechecks")
+    recheck = candidates[0]
+    if not re.fullmatch(face_evidence.CAPTURE_RECHECK_NAME, recheck.name):
+        return refused("recheck_name")
+    rlisted, rproblems = _manifest(recheck, ignore=frozenset({ACCEPTANCE}))
+    if rlisted is None or rproblems:
+        return refused("recheck_changed")
+    if _last(recheck / "check.txt") != CAPTURE_RECHECK_VERDICT:
+        return refused("recheck_not_validated")
+    if not read_capture_recheck(recheck, session, f1, gate, working_gallery).ok:
+        return refused("recheck_no_longer_validates")
+    accepted = _key_values(recheck / ACCEPTANCE)
+    want = {"accepted_reading": "capture-recheck", "session": session.name,
+            "session_manifest_sha256": _sha256(session / "SHA256SUMS"),
+            "recheck_manifest_sha256": _sha256(recheck / "SHA256SUMS"),
+            "recheck_check_sha256": _sha256(recheck / "check.txt"), "working_gallery_sha256": now,
+            "confirmation": f"ACCEPT {session.name} capture"}
+    if any(accepted.get(k) != v for k, v in want.items()) or not face_evidence.ISO.fit(accepted.get("accepted_utc"))[0]:
+        return refused("acceptance_does_not_match")
+    return True, [*head, "capture_basis=accepted_recheck", f"capture_recheck={recheck.name}",
+                  f"capture_accepted_utc={accepted['accepted_utc']}"]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="part", required=True)
@@ -2131,13 +2194,22 @@ def main(argv: list[str] | None = None) -> int:
     recheck.add_argument("directory", type=Path, help="the recheck directory (face_recheck.py run)")
     recheck.add_argument("--run", type=Path, required=True)
     recheck.add_argument("--identity-dir", type=Path, required=True)
+    capture = commands.add_parser("capture-gate", help="whether the experiment may compare with its working gallery "
+                                  "(D91; key=value lines; exit 0 if so)")
+    capture.add_argument("session", type=Path, help="the capture's experiment session")
+    capture.add_argument("--working-gallery", type=Path, required=True)
+    capture.add_argument("--f1", type=Path, required=True, help="F1's evidence directory (the run's f1/)")
+    capture.add_argument("--run", type=Path, required=True, help="the run whose F1 the experiment builds on")
+    capture.add_argument("--identity-dir", type=Path, required=True)
+    capture.add_argument("--recheck-root", type=Path, help="where accepted corrected readings are")
     gate = commands.add_parser("gate", help="whether F2 may build on a run's F1 (key=value lines; exit 0 if so)")
     gate.add_argument("run", type=Path)
     gate.add_argument("--identity-dir", type=Path, required=True)
     gate.add_argument("--recheck-root", type=Path)
     args = parser.parse_args(argv)
-    if args.part == "gate":
-        ok, lines = f1_gate(args.run, args.identity_dir, args.recheck_root)
+    if args.part in ("gate", "capture-gate"):
+        ok, lines = f1_gate(args.run, args.identity_dir, args.recheck_root) if args.part == "gate" else \
+            capture_gate(args.session, args.working_gallery, args.f1, (args.run, args.identity_dir, args.recheck_root))
         print("\n".join(lines))
         return 0 if ok else 1
     if args.part == "f1":

@@ -35,6 +35,8 @@ STATUS_NAMES = ("e1", "k1", "a", "e2", "k2", "end", "n1", "look", "turn", "n2",
                 "c1", "c2", "c3")  # F2's, the natural check's and the comparison check's (D87)
 CUE_NAMES = ("t0", "k1", "a", "e2", "k2", "stop", "look", "turn", "n2")  # F2's, the natural check's, D91's
 RECHECK_NAME = r"face-\d{8}T\d{6}Z-f1-[0-9a-f]{7}-\d{8}T\d{6}Z"  # ~/sentinel-runs/recheck/<run>-f1-<pin>-<UTC>
+SESSION_NAME = r"exp-\d{8}T\d{6}Z"  # an enrollment-experiment session (D91)
+CAPTURE_RECHECK_NAME = SESSION_NAME + r"-xc-[0-9a-f]{7}-\d{8}T\d{6}Z"  # ~/sentinel-runs/recheck/<session>-xc-<pin>-<UTC>
 
 
 # ---------------------------------------------------------------- field specs
@@ -629,6 +631,10 @@ F2_PROVENANCE = KeyValueProfile({
     "f1_accepted_utc": ISO, "f1_identity_id": IDN, "account_sha256": HEX64,
     # D91's framing record: the capture block's fixed line, and the answer an evaluation block accepts before writing
     "framing_baseline": vocab("this_capture"), "framing_since_capture": vocab("none", "changed", "unsure"),
+    # D91's evaluation sessions (experiment_launch.sh): the room light answered before the launch, and the capture gate
+    "lighting": vocab("daylight", "lamps", "both", "unsure"), "capture_gate": vocab("passed"),
+    "capture_session": form(SESSION_NAME), "capture_basis": vocab("original", "accepted_recheck"),
+    "capture_recheck": form(CAPTURE_RECHECK_NAME), "capture_accepted_utc": ISO,
 })
 RUN_ERR = LogProfile((
     re.compile(r"\[\d{2}/\d{2}/\d{4}-\d{2}:\d{2}:\d{2}\] \[TRT\] \[[VIWEF]\] (.*)"),  # TensorRT's logger

@@ -2709,6 +2709,13 @@ def test_the_experiment_blocks_framing_lines_fit_the_run_provenance_profile(mods
     ("framing_since_capture=", "line 5: framing_since_capture"),
     ("framing=fixed_from_capture_changed_sessions_apart", "line 5"),  # the decisions file's line, not a run's
     ("framing_note=none", "line 5"),
+    ("lighting=dusk", "line 5: lighting"),  # the evaluation blocks accept only daylight, lamps, both or unsure
+    ("lighting=Daylight", "line 5: lighting"),
+    ("capture_gate=refused", "line 5: capture_gate"),  # a refused gate never launches
+    ("capture_basis=accepted", "line 5: capture_basis"),
+    ("capture_session=exp-20261013", "line 5: capture_session"),
+    ("capture_recheck=exp-20261013T103725Z-f1-0a7c2ce-20261013T121352Z", "line 5: capture_recheck"),
+    ("capture_accepted_utc=yesterday", "line 5: capture_accepted_utc"),
 ])
 def test_any_other_framing_line_is_nonconforming_and_its_text_is_content(mods, tmp_path, framing, where) -> None:
     provenance = tmp_path / "provenance.txt"
@@ -2951,6 +2958,150 @@ def test_the_capture_recheck_refuses_a_wrong_name_an_unsealed_session_or_a_secon
     other = SimpleNamespace(**{**vars(cs), "out": basis.root / f"{SESSION}-xc-{PIN[:7]}-20261014T100000Z"})
     done = capture_recheck(other, basis)
     assert done.returncode == 2 and "no SHA256SUMS" in done.stderr and not other.out.exists()
+
+
+# ---------------------------------------------------------------- D91: the capture gate and the evaluation launch
+
+def launch_provenance(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    """experiment_launch.sh's function, run by bash as the evaluation blocks run it."""
+    return bash_counts("experiment_launch_provenance", *args, env=env,
+                       prelude="source benchmarks/runner/experiment_launch.sh;")
+
+
+BOOT = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+
+
+@pytest.mark.parametrize(("framing", "lighting", "f1", "capture", "message"), [
+    ("maybe", "daylight", "f1_gate=passed", "capture_gate=passed", "framing answer"),
+    ("none", "dusk", "f1_gate=passed", "capture_gate=passed", "room light"),
+    ("none", "", "f1_gate=passed", "capture_gate=passed", "room light"),
+    ("none", "lamps", "f1_gate=refused", "capture_gate=passed", "F1 gate"),
+    ("none", "lamps", "f1_gate=passed", "capture_gate=refused\ncapture_gate_reason=no_accepted_recheck", "capture gate"),
+])
+def test_the_launch_provenance_is_refused_with_nothing_written_for_what_the_profile_refuses(framing, lighting, f1,
+                                                                                         capture, message) -> None:
+    done = launch_provenance(PIN, BOOT, framing, lighting, f1, capture)
+    assert done.returncode == 2 and done.stdout == "" and message in done.stderr
+
+
+def accepted_capture(mods, tmp_path, accepted_scene, basis) -> SimpleNamespace:
+    cs = capture_session(mods, tmp_path, accepted_scene, basis)
+    assert capture_recheck(cs, basis).returncode == 0 and accept_capture(mods, cs, basis)[0] == 0
+    return cs
+
+
+def test_the_capture_gate_passes_only_on_an_accepted_recheck_that_still_matches(mods, tmp_path, accepted_scene,
+                                                                                basis) -> None:
+    cs = capture_session(mods, tmp_path, accepted_scene, basis)
+
+    def gate() -> tuple[bool, list[str]]:
+        return mods.check.capture_gate(cs.session, cs.working, basis.f1, basis.gate)
+
+    def refused(reason: str) -> None:
+        assert gate() == (False, ["capture_gate=refused", f"capture_gate_reason={reason}"])
+
+    refused("no_accepted_recheck")
+    assert capture_recheck(cs, basis).returncode == 0
+    refused("no_accepted_recheck")  # a recheck alone is not the maintainer's decision
+    assert accept_capture(mods, cs, basis)[0] == 0
+    ok, lines = gate()
+    assert ok and lines == ["capture_gate=passed", f"capture_session={SESSION}", "capture_basis=accepted_recheck",
+                            f"capture_recheck={cs.out.name}",
+                            "capture_accepted_utc=" + mods.check._key_values(cs.out / "acceptance.txt")["accepted_utc"]]
+    cli = subprocess.run([sys.executable, str(RUNNERS / "face_check.py"), "capture-gate", str(cs.session),
+                          "--working-gallery", str(cs.working), "--f1", str(basis.f1), "--run", str(basis.gate[0]),
+                          "--identity-dir", str(basis.identity), "--recheck-root", str(basis.root)],
+                         capture_output=True, text=True, env={**os.environ, "PYTHONPATH": str(REPO / "src")})
+    assert cli.returncode == 0 and cli.stdout.splitlines() == lines
+    acceptance = cs.out / "acceptance.txt"
+    text = acceptance.read_text()
+    acceptance.write_text(text.replace("confirmation=ACCEPT", "confirmation=accept"))
+    refused("acceptance_does_not_match")
+    acceptance.write_text(text)
+    check = cs.out / "check.txt"
+    kept = check.read_bytes()
+    check.write_bytes(kept + b"\n")
+    refused("recheck_changed")
+    check.write_bytes(kept)
+    other = basis.root / f"{SESSION}-xc-{PIN[:7]}-20261014T100000Z"
+    shutil.copytree(cs.out, other)
+    refused("several_accepted_rechecks")
+    shutil.rmtree(other)
+    gallery = (cs.working / "gallery.sealed").read_bytes()
+    _gallery_replaced(cs)
+    refused("working_gallery_not_the_captures")
+    (cs.working / "gallery.sealed").write_bytes(gallery)
+    names = cs.out / "secret-counts-names.txt"  # resealed: the recheck no longer validates, the acceptance no longer matches
+    kept_names, kept_sums = names.read_bytes(), (cs.out / "SHA256SUMS").read_bytes()
+    names.write_bytes(kept_names.replace(b"account.txt name=0", b"account.txt name=1"))
+    (cs.out / "SHA256SUMS").unlink()
+    seal(cs.out)
+    (cs.out / "SHA256SUMS").write_bytes(b"".join(x + b"\n" for x in (cs.out / "SHA256SUMS").read_bytes().splitlines()
+                                                 if b"acceptance.txt" not in x))
+    refused("recheck_no_longer_validates")
+    names.write_bytes(kept_names)
+    (cs.out / "SHA256SUMS").write_bytes(kept_sums)
+    assert gate()[0]
+    _session_file_changed(cs)
+    refused("capture_evidence_changed")
+
+
+@pytest.mark.parametrize(("verdict", "passed"), [("face-capture: the working gallery may be used in the experiment "
+                                                   "(it validates nothing)", True),
+                                                  ("face-capture: the working gallery is not usable", False)])
+def test_the_capture_gate_takes_a_capture_whose_own_reading_said_usable(mods, tmp_path, accepted_scene, basis, verdict,
+                                                                         passed) -> None:
+    cs = capture_session(mods, tmp_path, accepted_scene, basis)
+    provenance = cs.session / "provenance.txt"
+    provenance.write_text(provenance.read_text().replace("XC_check_exit=1", "XC_check_exit=0"))
+    check = cs.session / "xc" / "check.txt"
+    check.write_text("".join(f"{x}\n" for x in [*check.read_text().splitlines()[:-1], verdict]))
+    (cs.session / "SHA256SUMS").unlink()
+    seal(cs.session)
+    ok, lines = mods.check.capture_gate(cs.session, cs.working, basis.f1, basis.gate)
+    assert (ok, lines[-1]) == ((True, "capture_basis=original") if passed else
+                               (False, "capture_gate_reason=capture_check_not_usable"))
+
+
+@pytest.mark.parametrize(("kind", "framing", "lighting"), [("genuine", "none", "lamps"),
+                                                           ("genuine", "changed", "daylight"),
+                                                           ("non-enrolled", "none", "both")])
+def test_an_evaluation_sessions_launch_provenance_passes_the_privacy_and_reading_path(mods, tmp_path, accepted_scene,
+                                                                                      basis, kind, framing,
+                                                                                      lighting) -> None:
+    """x-G's and x-N's run provenance as the package writes it (experiment_launch.sh, with the real F1 and capture
+    gates' lines on an accepted capture recheck), then the account and face_counts.sh's counts, read by face_check
+    experiment with the F1 basis: execution complete, every file conforming, the recorded conditions shown."""
+    cs = accepted_capture(mods, tmp_path, accepted_scene, basis)
+    f1_ok, f1_lines = mods.check.f1_gate(*basis.gate)
+    capture_ok, capture_lines = mods.check.capture_gate(cs.session, cs.working, basis.f1, basis.gate)
+    assert f1_ok and capture_ok
+    done = launch_provenance(PIN, BOOT, framing, lighting, "\n".join(f1_lines), "\n".join(capture_lines))
+    assert done.returncode == 0, done.stderr
+    assert [x.split("=", 1)[0] for x in done.stdout.splitlines()] == [
+        "f2_launch_utc", "boot_id", "commit", "pin_commit", "framing_since_capture", "lighting",
+        *[x.split("=", 1)[0] for x in f1_lines + capture_lines]]
+    out, _ = experiment_run(mods, tmp_path, accepted_scene, kind="shadow", name="eval", faces=lambda t: FACE)
+    genuine = kind == "genuine"
+    finish(mods, out, account=account_v6(mods) if genuine else account_v8(),
+           cues=COMPARISON_CUES if genuine else NON_ENROLLED_CUES, cued_format=6 if genuine else 8, duration_s=300.0,
+           captures=COMPARISON_CAPTURES, provenance=done.stdout)
+    if not genuine:  # x-NE counts the participant's name too
+        counted = bash_counts("face_counts_f2", str(out), env={**TERMS, "N3": "Ola"})
+        assert counted.returncode == 0, counted.stderr
+        (out / "secret-counts-identity.txt").write_text(counted.stdout)
+    for path in sorted(out.iterdir()):
+        if path.is_file() and path.name not in mods.check.NOT_COUNTED:
+            assert mods.evidence.read(path, "f2").nonconforming == [], path.name
+    reading = mods.check.read_experiment(out, basis.f1, basis.gate)
+    text = "\n".join(reading.lines)
+    assert reading.ok, text
+    assert line_for(text, "passphrase, name and nonconforming counts").startswith("PASS")
+    assert line_for(text, "F1 basis for this run").startswith("PASS")
+    shown = line_for(text, "the run's conditions as its launch recorded them")
+    conditions = json.loads(shown[shown.index(": {") + 2:])
+    assert conditions == {"framing_since_capture": framing, "lighting": lighting, "capture_session": SESSION,
+                          "capture_basis": "accepted_recheck", "capture_recheck": cs.out.name}
 
 
 def test_a_genuine_session_is_compared_face_by_face_and_replayed_under_each_gallery(mods, tmp_path, accepted_scene,
