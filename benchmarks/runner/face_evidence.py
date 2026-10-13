@@ -32,9 +32,14 @@ import face_account
 # Files written after the counts, or the counts themselves; never counted (face_check uses the same set).
 NOT_COUNTED = frozenset({"SHA256SUMS", "check.txt", "secret-counts-camera.txt", "secret-counts-identity.txt"})
 STATUS_NAMES = ("e1", "k1", "a", "e2", "k2", "end", "n1", "look", "turn", "n2",
-                "c1", "c2", "c3")  # F2's, the natural check's and the comparison check's (D87)
+                "c1", "c2", "c3",  # F2's, the natural check's and the comparison check's (D87)
+                "seated", "turned", "out", "returned", "faceoff1", "faceoff2", "faceon", "liveoff1", "liveoff2",
+                "liveon", "asked", "sceneoff1", "sceneoff2", "sceneon", "chatoff1", "chatoff2", "chaton",
+                "snapoff")  # the feature-controls check's (D99, features_check)
 CUE_NAMES = ("t0", "k1", "a", "e2", "k2", "stop", "look", "turn", "n2",  # F2's, the natural check's, D91's
-             "leave", "back", "pause", "resume")  # D95's live dashboard check
+             "leave", "back", "pause", "resume",  # D95's live dashboard check
+             "away", "faceoff", "faceon", "liveoff", "liveon", "ask", "sceneoff", "askoff", "sceneon", "chatoff",
+             "chaton", "snapoff", "snapon")  # the feature-controls check's (D99, features_check)
 RECHECK_NAME = r"face-\d{8}T\d{6}Z-f1-[0-9a-f]{7}-\d{8}T\d{6}Z"  # ~/sentinel-runs/recheck/<run>-f1-<pin>-<UTC>
 SESSION_NAME = r"exp-\d{8}T\d{6}Z"  # an enrollment-experiment session (D91)
 CAPTURE_RECHECK_NAME = SESSION_NAME + r"-xc-[0-9a-f]{7}-\d{8}T\d{6}Z"  # ~/sentinel-runs/recheck/<session>-xc-<pin>-<UTC>
