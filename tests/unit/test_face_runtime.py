@@ -796,3 +796,53 @@ def test_the_experiment_flags_need_the_candidate_and_go_one_at_a_time(tmp_path, 
     assert main(_cli(tmp_path, "--face", "--face-validation", "--face-full-scale-detection", "--face-capture-gallery",
                      str(tmp_path / "x")), devices=_refusing_devices()) == 1
     assert "go together" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------- D95: each person's state for the dashboard
+
+
+def test_the_status_lists_each_tracked_persons_state_on_its_track_with_no_identity_id(tmp_path) -> None:
+    """D95: the dashboard's rows are the core's own per-track identity (state, basis, newest vote's age), keyed by the
+    track, with the configured rule's numbers; no identity ID, embedding or similarity (D61); bounded, the rest
+    counted; a track that ends takes its row with it."""
+    loop = Loop(tmp_path)
+    for _ in range(40):  # three matching face ticks: known on track 1
+        loop.frame()
+    live = loop.runtime.snapshot()["live"]
+    (row,) = live["faces"]
+    assert {k: row[k] for k in ("track_id", "stream_epoch", "track_status", "predicted", "state", "basis")} == {
+        "track_id": 1, "stream_epoch": 1, "track_status": "confirmed", "predicted": False, "state": "known",
+        "basis": "fresh"}
+    assert row["reason"] == "2 consistent matches" and 0 <= row["vote_age_ms"] <= 3000
+    assert set(row) == {"track_id", "stream_epoch", "track_status", "predicted", "last_measured_age_ms", "state",
+                        "basis", "vote_age_ms", "reason"} and live["faces_not_shown"] == 0
+    assert datetime.fromisoformat(live["published_utc"]) <= datetime.fromisoformat(
+        loop.runtime.snapshot()["runtime"]["updated_utc"])
+    assert loop.runtime.snapshot()["components"]["face"]["policy"] == {"confirmations": 2, "vote_ttl_s": 30.0,
+                                                                       "fresh_window_s": 3.0}
+    text = json.dumps(loop.runtime.snapshot())
+    assert "idn-" not in text and "embedding" not in text and "similarity" not in text
+    for _ in range(40):  # nobody: the track expires and its row goes; nothing moves to another track
+        loop.frame(persons=[])
+    assert loop.runtime.snapshot()["live"]["faces"] == []
+    loop.close()
+
+
+def test_the_rows_are_bounded_and_ordered_by_track(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(demo_runtime, "MAX_FACE_ROWS", 2)
+    loop = Loop(tmp_path, analyze=analyze_with(None))
+    people = [RawTrack(n, 40.0 + 60 * n, 100.0, 90.0 + 60 * n, 400.0, 0.9) for n in (5, 2, 3)]
+    for _ in range(5):
+        loop.frame(persons=people)
+    live = loop.runtime.snapshot()["live"]
+    assert [row["track_id"] for row in live["faces"]] == [2, 3] and live["faces_not_shown"] == 1
+    assert all(row["state"] == "unresolved" and row["basis"] is None for row in live["faces"])
+    loop.close()
+
+
+def test_without_face_recognition_the_status_has_no_rows(tmp_path) -> None:
+    loop = Loop(tmp_path, with_face=False)
+    loop.frame()
+    live = loop.runtime.snapshot()["live"]
+    assert "faces" not in live and "faces_not_shown" not in live and "published_utc" in live
+    loop.close()

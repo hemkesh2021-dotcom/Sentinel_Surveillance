@@ -19,7 +19,7 @@ from status_fixtures import Camera, incident_store
 
 from sentinel.status_page import SCRIPT, StatusServer
 from sentinel.storage.database import Database
-from sentinel.web import script
+from sentinel.web import head_script, script
 
 SNAPSHOT = {"runtime": {"state": "running", "camera_id": "cam-1", "updated_utc": "2026-10-09T12:00:00+00:00"},
             "degraded": [], "components": {}}
@@ -83,7 +83,7 @@ def test_the_page_document_carries_the_same_regions_the_page_embeds_and_is_order
     assert marker and first["page"]["instance"] == second["page"]["instance"] == marker[1]
     assert int(marker[1] and marker[2]) < first["page"]["sequence"] < second["page"]["sequence"]
     assert set(first["page"]["regions"]) == {"pills", "fresh", "live-head", "live-facts", "caps", "incidents",
-                                             "chat-state", "health", "delivery", "foot"}
+                                             "incidents-meta", "faces", "chat-state", "health", "delivery", "foot"}
     embedded = regions_in(page)
     assert set(embedded) == set(first["page"]["regions"])
     for name in ("live-head", "caps", "incidents", "delivery"):  # the parts that do not carry a time or a sequence
@@ -146,15 +146,36 @@ def test_the_script_is_served_from_this_origin_only_and_read_only(served) -> Non
     assert get(server, "/assets/dashboard.js", method="POST")[0] == 405
     assert get(server, "/assets/dashboard.js", host="evil.example")[0] == 421
     text = body.decode()
-    # It talks to this origin only, keeps nothing, and runs no code it is sent.
+    # It talks to this origin only, keeps nothing but the viewer's appearance choices (D96: one key, read and written
+    # in two places), and runs no code it is sent: never the conversation, the draft, a frame or a token in storage.
     for forbidden in ("eval(", "new Function", "localStorage", "sessionStorage", "indexedDB", "document.cookie",
                       "http://", "https://", "XMLHttpRequest", "postMessage", "innerHTML ="):
         if forbidden == "innerHTML =":
             assert text.count(forbidden) == 1 and "template.innerHTML = html" in text  # inert template parsing only
         elif forbidden in ("http://",):
             assert text.count(forbidden) == text.count("http://www.w3.org/2000/svg")  # the SVG namespace only
+        elif forbidden == "localStorage":
+            assert text.count(forbidden) == 2 and 'const STORE = "sentinel.appearance";' in text
+            assert "window.localStorage.getItem(STORE)" in text and "window.localStorage.setItem(STORE, " in text
         else:
             assert forbidden not in text, forbidden
+
+
+def test_the_head_script_only_reads_the_saved_appearance(served) -> None:
+    """D96: the small head script applies the viewer's saved appearance before the first paint; it reads one key,
+    writes nothing, takes only exact values and leaves a page whose address chose its appearance alone."""
+    server, _, _ = served
+    status, headers, body = get(server, "/assets/appearance.js")
+    assert (status, headers["Content-Type"]) == (200, "text/javascript; charset=utf-8") and body == head_script()
+    assert get(server, "/assets/appearance.js", method="POST")[0] == 405
+    text = body.decode()
+    assert text.count("localStorage") == 1 and 'getItem("sentinel.appearance")' in text and "setItem" not in text
+    for forbidden in ("eval(", "new Function", "sessionStorage", "indexedDB", "document.cookie", "http", "fetch(",
+                      "innerHTML", "document.write"):
+        assert forbidden not in text, forbidden
+    assert 'root.hasAttribute("data-pref")' in text and 'palettes.indexOf(saved.palette) > 0' in text
+    page = get(server, "/")[2].decode()
+    assert page.index('<script src="/assets/appearance.js"></script>') < page.index("<body>")
 
 
 def test_pages_no_longer_reload_themselves_and_say_so_without_script(served) -> None:

@@ -1,4 +1,4 @@
-"""Colour palettes for the status pages (D76): shared design tokens, derived per preset and mode.
+"""Colour palettes for the status pages (D76, offered in D96): shared design tokens, derived per preset and mode.
 
 Each preset names two or three base colours. Every token the stylesheet uses (surfaces, text, borders, focus, the
 accent and its text) is derived from them for a light and a dark mode, in OKLab, and then moved in lightness only as
@@ -174,29 +174,28 @@ class Preset:
     brand_ink: str | None = None  # the monogram's letter, used when it reaches 3:1 on the brand
 
 
-PRESETS: tuple[Preset, ...] = (
+PRESETS: tuple[Preset, ...] = (  # in the maintainer's order; Carbon & Cream first (the default, emitted first)
     Preset("carbon-cream", "Carbon & Cream", ("#2E302F", "#EDDCC9"), "#2E302F", brand_ink="#EDDCC9",
            light=Seeds(tint="#EDDCC9", ink="#2E302F", accent="#2E302F", marker="#2E302F", accent_ink="#EDDCC9"),
            dark=Seeds(tint="#2E302F", ink="#EDDCC9", accent="#EDDCC9", marker="#EDDCC9",
                       surfaces={"canvas": "#1C1D1C", "sidebar": "#181918", "panel": "#232423", "raised": "#2E302F",
                                 "sunken": "#191A19"})),
-    Preset("teal-coconut", "Teal & Coconut", ("#174F4A", "#FDFAF5"), "#174F4A", brand_ink="#FDFAF5",
-           light=Seeds(tint="#FDFAF5", ink="#174F4A", accent="#174F4A", marker="#174F4A", accent_ink="#FDFAF5"),
-           dark=Seeds(tint="#174F4A", ink="#FDFAF5", accent="#174F4A", marker="#174F4A", lift=0.74)),
     Preset("sesame-mango", "Sesame & Mango", ("#1F1D1A", "#F4B54A"), "#F4B54A",
            light=Seeds(tint="#F4B54A", ink="#1F1D1A", accent="#F4B54A", marker="#1F1D1A", link="#F4B54A"),
            dark=Seeds(tint="#1F1D1A", ink="#F7EEDF", accent="#F4B54A", marker="#F4B54A")),
-    Preset("matcha-white-chocolate", "Matcha & White Chocolate", ("#4E5529", "#F0E2C6"), "#4E5529",
-           brand_ink="#F0E2C6",
+    Preset("matcha-cream", "Matcha & Cream", ("#4E5529", "#F0E2C6"), "#4E5529", brand_ink="#F0E2C6",
            light=Seeds(tint="#F0E2C6", ink="#4E5529", accent="#4E5529", marker="#4E5529", accent_ink="#F0E2C6"),
            dark=Seeds(tint="#4E5529", ink="#F0E2C6", accent="#4E5529", marker="#4E5529", lift=0.76)),
+    Preset("teal-coconut", "Teal & Coconut", ("#174F4A", "#FDFAF5"), "#174F4A", brand_ink="#FDFAF5",
+           light=Seeds(tint="#FDFAF5", ink="#174F4A", accent="#174F4A", marker="#174F4A", accent_ink="#FDFAF5"),
+           dark=Seeds(tint="#174F4A", ink="#FDFAF5", accent="#174F4A", marker="#174F4A", lift=0.74)),
     Preset("burgundy-rose", "Burgundy & Rose", ("#501627", "#AF144B", "#FACCD7"), "#AF144B", brand_ink="#FDEFF2",
            light=Seeds(tint="#FACCD7", ink="#501627", accent="#AF144B", marker="#AF144B", accent_ink="#FDEFF2"),
            dark=Seeds(tint="#501627", ink="#FBE8EC", accent="#AF144B", marker="#FACCD7", accent_ink="#FDEFF2")),
-    Preset("port-fern", "Port & Fern", ("#5C2C35", "#9AA067", "#E7DCD9"), "#9AA067",
+    Preset("port-fern-mauve", "Port, Fern & Mauve", ("#5C2C35", "#9AA067", "#E7DCD9"), "#9AA067",
            light=Seeds(tint="#E7DCD9", ink="#5C2C35", accent="#5C2C35", marker="#5C2C35", accent_ink="#F3ECEA"),
            dark=Seeds(tint="#5C2C35", ink="#F1E9E7", accent="#5C2C35", marker="#5C2C35", lift=0.74)),
-    Preset("graphite-citron", "Graphite & Citron", ("#2B2C30", "#D9CE52", "#F0EDE5"), "#D9CE52",
+    Preset("charcoal-sheen", "Charcoal & Sheen", ("#2B2C30", "#D9CE52", "#F0EDE5"), "#D9CE52",
            light=Seeds(tint="#F0EDE5", ink="#2B2C30", accent="#D9CE52", marker="#2B2C30", link="#D9CE52"),
            dark=Seeds(tint="#2B2C30", ink="#F0EDE5", accent="#D9CE52", marker="#D9CE52")),
 )
@@ -284,3 +283,10 @@ def palette_css() -> str:
         lines.append(_block(", ".join(f"{part.strip()}[data-theme=dark]" for part in selector.split(",")),
                             {"scheme": "dark", **dark}).replace("--scheme: dark;", "color-scheme: dark;"))
     return "\n".join(lines) + "\n"
+
+
+def swatch_css() -> str:
+    """Each preset's named colours as the appearance panel's swatch dots (D96); classes, so no inline style is needed.
+    The dots show the palette's own colours; they are never a state."""
+    return "".join(f".sw-{preset.key} .d{i} {{ background: {colour.lower()}; }}\n"
+                   for preset in PRESETS for i, colour in enumerate(preset.colours, 1))

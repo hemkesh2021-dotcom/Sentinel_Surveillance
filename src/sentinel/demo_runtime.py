@@ -190,6 +190,7 @@ RATE_WINDOW_NS = 10 * NS_PER_SECOND
 FACE_STOP_TIMEOUT_S = 2.0  # a DeepFace call cannot be interrupted; p99 989 ms in the replay profile
 MAX_IDENTITY_RECORDS = 10_000  # identity records (ticks, results, transitions) per run; more are counted, not kept
 MAX_PINNED_SNAPSHOT_FRAMES = 4  # distinct frames whose images wait with unrecorded observations (D70)
+MAX_FACE_ROWS = 8  # D95: people listed with their recognition state on the status page; more are counted, not listed
 
 
 class Capture(Protocol):
@@ -799,6 +800,10 @@ class DemoRuntime:
             **({"detection": self._face.detection} if self._face.detection != DETECTION_DEEPFACE else {}),
             **({"experiment": self._face.experiment} if self._face.experiment is not None else {}),
             "identities_enrolled": self._face.identities,
+            # D95: the rule the page explains, as configured (numbers only; nothing here changes it)
+            "policy": {"confirmations": self._config.identity.confirmations,
+                       "vote_ttl_s": self._config.identity.vote_ttl_s,
+                       "fresh_window_s": self._config.identity.face_result_max_age_s},
             "worker": self._face.worker.status(),
             "results": self._core.identity_counters,
             **({"comparison_results": dict(sorted(self._core.comparison_counters.items()))}
@@ -851,6 +856,8 @@ class DemoRuntime:
                 **{basis: sum(1 for p in live.people if p.identity_basis is not None and p.identity_basis.value == basis)
                    for basis in ("fresh", "retained")},
             },
+            "published_utc": live.published_utc.isoformat(),
+            **(self._face_rows(live) if self._face is not None else {}),
             "scene": live.scene.value,
             "scene_reason": live.scene_reason,
             "scene_report": None if report is None else {
@@ -860,6 +867,25 @@ class DemoRuntime:
                 "uncertainty": report.uncertainty.value,
                 "summary": report.summary,
             },
+        }
+
+    @staticmethod
+    def _face_rows(live: LiveState) -> dict[str, Any]:
+        """D95: each current person's recognition state as the core derived it for this publication (identity.state):
+        the track it lives on, KNOWN/UNKNOWN/UNCERTAIN/UNRESOLVED with its basis (fresh or retained) and the newest
+        current vote's age. Numbers and fixed labels only: no identity ID (the status stays free of IDs, D61; with one
+        enrolled identity KNOWN names it unambiguously). Bounded to MAX_FACE_ROWS (the rest counted). The page shows
+        it; nothing here votes, retains, expires or changes a state."""
+        people = sorted(live.people, key=lambda p: (p.stream_epoch, p.track_id))
+        return {
+            "faces": [
+                {"track_id": p.track_id, "stream_epoch": p.stream_epoch, "track_status": p.status.value,
+                 "predicted": p.predicted, "last_measured_age_ms": p.last_measured_age_ms, "state": p.identity.value,
+                 "basis": None if p.identity_basis is None else p.identity_basis.value,
+                 "vote_age_ms": p.identity_vote_age_ms, "reason": p.identity_reason}
+                for p in people[:MAX_FACE_ROWS]
+            ],
+            "faces_not_shown": max(0, len(people) - MAX_FACE_ROWS),
         }
 
 

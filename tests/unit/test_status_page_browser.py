@@ -47,7 +47,7 @@ PROBE = """(() => {
   const pic = figure && figure.querySelector('.pic');
   let opacity = null;
   if (pic) { opacity = 1; for (let node = pic; node; node = node.parentElement) opacity *= parseFloat(getComputedStyle(node).opacity); }
-  const report = document.querySelector('#health.report');  // a report region that is always shown
+  const report = document.querySelector('#health .report');  // a report region that is always shown
   const player = document.getElementById('player-state');
   return {document: performance.timeOrigin, ready: document.readyState, text: document.body ? document.body.innerText : '',
           player: player ? player.innerText.trim() : '', sequence: document.documentElement.dataset.sequence || null,
@@ -299,7 +299,7 @@ def test_fast_failures_back_off_instead_of_flooding_the_runtime(browser: Browser
         assert 2 <= len(asked) <= 4, asked  # 2, 4, 8 s apart: not one request per period, and never a flood
         gaps = [b - a for a, b in zip(asked, asked[1:])]
         assert all(later >= earlier * 1.6 for earlier, later in zip(gaps, gaps[1:])), gaps
-        assert "No current update (HTTP 503); trying again in" in read(page)["sync"]
+        assert "Reconnecting: no current update" in read(page)["sync"] and "(HTTP 503)" in read(page)["sync"]
         page.call("Fetch.disable")
         assert_current(wait_for(page, current_with_picture, 20.0))
     finally:
@@ -402,8 +402,10 @@ def test_updates_keep_scroll_focus_expanded_sections_the_selected_incident_and_t
         page.evaluate("document.getElementById('d-picture').open = true; document.getElementById('d-technical').open = true")
         page.evaluate(f"document.querySelector('.peek[data-select=\"{ids[3]}\"]').click()")
         wait_until(lambda: page.evaluate("!document.getElementById('inc-preview').hidden"), 5.0)
-        page.evaluate("window.scrollTo(0, 420)")
-        page.evaluate(f"document.querySelector('li[data-key=\"i-{ids[5]}\"] a.inc').focus()")
+        # The reader's own actions first (focus without scrolling, then an instant scroll), so that only updates
+        # could move anything afterwards.
+        page.evaluate(f"document.querySelector('li[data-key=\"i-{ids[5]}\"] a.inc').focus({{preventScroll: true}})")
+        page.evaluate("window.scrollTo({top: 420, behavior: 'instant'})")
         assert page.evaluate(MARK) == "inc"
         before = page.evaluate(STATE)
         assert before["selected"] == [f"i-{ids[3]}"] and before["preview"] and before["y"] == 420

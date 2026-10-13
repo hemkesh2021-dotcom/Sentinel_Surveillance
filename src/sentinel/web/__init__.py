@@ -1,10 +1,12 @@
-"""Static assets of the D-2 status pages (D72): the stylesheet, the icon sprite and the tab icon.
+"""Static assets of the D-2 status pages (D72, D96): the stylesheet, the scripts, the icon sprite and the tab icon.
 
 Self-hosted (guide ch. 15: the interface must work on a disconnected LAN), with no font, image or script from
-elsewhere. The stylesheet is inlined in every page so that the D71 watchdog rules always arrive with the markup they
-govern; pages allow it through the CSP by its SHA-256 (``STYLE_SHA256``) and allow no other inline style. Icons are
-simple stroked SVG symbols drawn for this page, referenced with ``<use>``, decorative only (every state also has a
-text label). Portable: stdlib only.
+elsewhere. The stylesheet (every palette's tokens from ``palettes``, then ``dashboard.css``) is inlined in every page so
+that the D71 watchdog rules always arrive with the markup they govern; pages allow it through the CSP by its SHA-256
+and allow no other inline style. Two same-origin scripts: ``appearance.js`` in the head applies the viewer's saved
+appearance before the first paint, and ``dashboard.js`` (deferred) does everything else. Icons are simple stroked SVG
+symbols drawn for these pages on one 24-unit grid, referenced with ``<use>``, decorative only (every state and every
+control also has a text label). Portable: stdlib only.
 """
 
 from __future__ import annotations
@@ -20,16 +22,29 @@ def _text(name: str) -> str:
     return resources.files(__name__).joinpath(name).read_text(encoding="utf-8")
 
 
+PALETTE_TOKEN = "/* PALETTES */"  # replaced by every palette's tokens (D96)
+
+
 def stylesheet(current_s: int) -> str:
-    """The page stylesheet with the D71 window filled in."""
+    """The page stylesheet: every palette's tokens and swatches, then the rules, with the D71 window filled in."""
     if not isinstance(current_s, int) or isinstance(current_s, bool) or not 1 <= current_s <= 60:
         raise ValueError("the watchdog window must be a whole number of seconds from 1 to 60")
-    return _text("dashboard.css").replace(PAGE_CURRENT_TOKEN + "s", f"{current_s}s")
+    from .palettes import palette_css, swatch_css
+
+    rules = _text("dashboard.css").replace(PAGE_CURRENT_TOKEN + "s", f"{current_s}s")
+    if rules.count(PALETTE_TOKEN) != 1:
+        raise ValueError("the stylesheet must hold one palette marker")
+    return rules.replace(PALETTE_TOKEN, palette_css() + swatch_css())
 
 
 def script() -> bytes:
-    """The pages' only script: in-place updates (D73), served from this origin."""
+    """The pages' main script: in-place updates (D73), the live player (D75), navigation and appearance (D96)."""
     return _text("dashboard.js").encode("utf-8")
+
+
+def head_script() -> bytes:
+    """The pages' small head script (D96): the viewer's saved appearance, applied before the first paint."""
+    return _text("appearance.js").encode("utf-8")
 
 
 def csp_hash(text: str) -> str:
@@ -64,6 +79,23 @@ ICONS = {
     "chat": '<path d="M4 5.5h16v10.5H9.5L5 20v-4H4z"/>',
     "list": '<path d="M8.5 6.5h12M8.5 12h12M8.5 17.5h12"/><circle class="solid" cx="4.4" cy="6.5" r="1.2"/>'
             '<circle class="solid" cx="4.4" cy="12" r="1.2"/><circle class="solid" cx="4.4" cy="17.5" r="1.2"/>',
+    # D96: navigation, recognition and appearance
+    "scan": '<path d="M3.5 8V6.2a2.7 2.7 0 0 1 2.7-2.7H8M16 3.5h1.8a2.7 2.7 0 0 1 2.7 2.7V8M20.5 16v1.8a2.7 2.7 0 0 1'
+            '-2.7 2.7H16M8 20.5H6.2a2.7 2.7 0 0 1-2.7-2.7V16"/><circle cx="12" cy="10" r="2.8"/>'
+            '<path d="M7.4 17.4a5 5 0 0 1 9.2 0"/>',
+    "user": '<circle cx="12" cy="8.4" r="3.8"/><path d="M4.8 20.2a7.2 7.2 0 0 1 14.4 0"/>',
+    "help": '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.4a2.6 2.6 0 0 1 5 .9c0 1.8-2.5 2.2-2.5 3.9"/>'
+            '<circle class="solid" cx="12" cy="17.3" r="1.1"/>',
+    "flask": '<path d="M9.2 3.5h5.6M10.2 3.5v5.6L4.9 18.2a1.6 1.6 0 0 0 1.4 2.3h11.4a1.6 1.6 0 0 0 1.4-2.3L13.8 9.1V3.5"/>'
+             '<path d="M7.6 14.5h8.8"/>',
+    "sliders": '<path d="M4 7h9.5M17.5 7H20M4 17h3.5M11.5 17H20"/><circle cx="15.5" cy="7" r="2"/>'
+               '<circle cx="9.5" cy="17" r="2"/>',
+    "menu": '<path d="M4 6.5h16M4 12h16M4 17.5h16"/>',
+    "close": '<path d="m6 6 12 12M18 6 6 18"/>',
+    "sidebar": '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9.5 4v16"/>',
+    "expand": '<path d="M14.5 3.5h6v6M9.5 20.5h-6v-6M20.5 3.5l-7 7M3.5 20.5l7-7"/>',
+    "shrink": '<path d="M20.5 9.5h-6v-6M3.5 14.5h6v6M14.5 9.5l6-6M9.5 14.5l-6 6"/>',
+    "filter": '<path d="M4 5h16l-6.2 7.3v5.9l-3.6 1.8v-7.7z"/>',
 }
 
 SPRITE = (

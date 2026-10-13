@@ -463,10 +463,11 @@ def test_every_current_claim_is_shown_only_while_the_page_is_fresh() -> None:
     assert ('<figure class=frame data-frame="1-0" data-ingest="2026-10-09T12:00:00.066667Z" data-age-ms="0">'
             '<img class=pic src="/preview/1-0.jpg"') in page
     # The runtime's report is dimmed once the page is not current; the picture is not part of it (its own timer, D75).
-    for marker in ('<div class="report live-report" data-region=live-head>', 'class="panel incidents report"',
-                   'class="panel health report"', 'class="panel delivery report"'):
+    for marker in ('<div class="report live-report" data-region=live-head>', '<div class=report data-region=incidents>',
+                   '<div class=report data-region=health>', '<div class=report data-region=delivery>',
+                   '<div class=report data-region=faces>'):  # D96: on the panels' inner wrappers
         assert marker in page, marker
-    assert "<main class=board>" in page
+    assert "<main class=board id=board>" in page
     current = f"{PAGE_CURRENT_S}s linear"
     for rule in (f".cur {{ visibility: hidden; animation: cur {current} var(--fresh-delay, 0s); }}",
                  "@keyframes cur { from, to { visibility: visible; } }",

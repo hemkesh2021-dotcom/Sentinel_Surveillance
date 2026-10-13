@@ -42,7 +42,7 @@ PROBE = """(() => {
           drawn: !!(pic && pic.tagName === 'CANVAS' && pic.dataset.drawn === '1'), opacity,
           fps: Number(slot.dataset.fps || 0), ageSent: Number(slot.dataset.ageSentMs || -1),
           ageBound: Number(slot.dataset.ageBoundMs || -1), ageBoundMax: Number(slot.dataset.ageBoundMaxMs || -1),
-          facts: facts && !facts.hidden ? facts.innerText : ''};
+          facts: facts && !facts.hidden ? facts.textContent : ''};  // behind 'Picture delivery' (D96), closed
 })()"""
 
 

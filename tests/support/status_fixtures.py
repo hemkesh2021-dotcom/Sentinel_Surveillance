@@ -35,14 +35,28 @@ PICTURE = base64.b64decode(
 )
 
 
-class Runtime:
-    """The runtime stand-in: how old its last update is, whether the page's requests are answered, and its state."""
+def face_row(track: int, state: str, *, basis: str | None = None, vote_age_ms: int | None = None,
+             reason: str | None = None, epoch: int = 1, status: str = "confirmed", predicted: bool = False,
+             measured_ms: int = 40) -> dict[str, Any]:
+    """One person's recognition state as DemoRuntime._face_rows reports it (D95); synthetic values only."""
+    return {"track_id": track, "stream_epoch": epoch, "track_status": status, "predicted": predicted,
+            "last_measured_age_ms": measured_ms, "state": state, "basis": basis, "vote_age_ms": vote_age_ms,
+            "reason": reason or {"known": "2 consistent matches", "unknown": "consistent faces matched nobody",
+                                 "uncertain": "contradictory face evidence"}.get(state, "no face visible")}
 
-    def __init__(self, *, degraded: list[str] | None = None) -> None:
+
+class Runtime:
+    """The runtime stand-in: how old its last update is, whether the page's requests are answered, and its state.
+    ``faces`` (a list of face_row()s) turns face recognition on, as a validation run (D92, D95)."""
+
+    def __init__(self, *, degraded: list[str] | None = None, faces: list[dict[str, Any]] | None = None,
+                 video: str = "fresh") -> None:
         self.answering = threading.Event()
         self.answering.set()
         self.lag_s = 0.0
         self.degraded = list(degraded or [])
+        self.faces = faces
+        self.video = video
         self.unanswered = 0  # page requests that arrived while the runtime was not answering
         self.served = 0
         self.arrivals: list[float] = []  # time.monotonic() of every request for the runtime's status
@@ -54,12 +68,22 @@ class Runtime:
             self.answering.wait(60.0)
         self.served += 1
         updated = datetime.now(timezone.utc) - timedelta(seconds=self.lag_s)
-        return {"runtime": {"state": "running", "camera_id": "cam-1", "updated_utc": updated.isoformat()},
-                "degraded": list(self.degraded),
-                "components": {"capture": {"state": "streaming", "stream_epoch": 1},
-                               "detector": {"state": "available", "problem": None}},
-                "live": {"video": "fresh", "detector": "available", "face_recognition": "disabled",
-                         "scene_analysis": "disabled", "occupancy": "occupied", "people": 1, "confirmed_people": 1}}
+        snapshot = {"runtime": {"state": "running", "camera_id": "cam-1", "updated_utc": updated.isoformat()},
+                    "degraded": list(self.degraded),
+                    "components": {"capture": {"state": "streaming", "stream_epoch": 1},
+                                   "detector": {"state": "available", "problem": None}},
+                    "live": {"video": self.video, "detector": "available", "face_recognition": "disabled",
+                             "scene_analysis": "disabled", "occupancy": "occupied", "people": 1, "confirmed_people": 1}}
+        if self.faces is not None:
+            faces = list(self.faces)
+            snapshot["components"]["face"] = {"state": "available", "problem": None, "validation_run": True,
+                                              "identities_enrolled": 1,
+                                              "policy": {"confirmations": 2, "vote_ttl_s": 30.0, "fresh_window_s": 3.0}}
+            snapshot["live"].update({"face_recognition": "available", "people": len(faces),
+                                     "confirmed_people": sum(f["track_status"] == "confirmed" for f in faces),
+                                     "published_utc": updated.isoformat(), "faces": faces[:8],
+                                     "faces_not_shown": max(0, len(faces) - 8)})
+        return snapshot
 
 
 class Camera:

@@ -388,7 +388,7 @@ def test_an_incident_page_shows_rule_evidence_lifecycle_scene_evidence_and_alert
                    "<td>10–40</td>", "<td>expired</td>", "One person stands by the door.", "threat low",
                    "not acknowledged; this page is read only (D45)", "none: event clips are not implemented yet",
                    "Only &#x27;current&#x27; could have changed the live scene", "<td>delivered</td>",
-                   'href="/"'):
+                   'href="/dashboard"'):
         assert phrase in text, phrase
     assert FAKE_TOKEN not in text
 

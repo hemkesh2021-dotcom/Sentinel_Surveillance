@@ -255,12 +255,13 @@ def segment(script, t: float) -> tuple[str, int | None]:
 
 def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: float = 4.0,
              duration: float = 600.0, combined: bool = False, analyze=None, comparator=None,
-             captures=CAPTURES, detection: str = "deepface", shadow=None, experiment_capture=None) -> Path:
+             captures=CAPTURES, detection: str = "deepface", shadow=None, experiment_capture=None,
+             preview: bool = False) -> Path:
     """Run the real runtime through ``script`` and write the F2 directory as the package's blocks would.
 
     ``combined`` (D78): with the live view, incident snapshots and chat in a validation run as well, each used during
     the run (pictures made, a question asked now and then), and the status captures as the plain /status.json serves
-    them (the live view's state included)."""
+    them (the live view's state included). ``preview`` (D95's dashboard check): the live view alone, likewise."""
     out = root / "f2"
     out.mkdir()
     clock = FakeClock(utc=NOW)
@@ -298,6 +299,10 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
                      snapshots=SnapshotWriter(store, clock), chat=True, chat_admission=CHAT_ADMISSION,
                      chat_validation=True, chat_run=lambda question, image, abort=None: ("A chair.", False),
                      pressure=lambda: 2_500_000_000)
+    elif preview:
+        from sentinel.media.jpeg import EncodedJpeg
+
+        extra = dict(live_preview=True, encode=lambda *a, **k: EncodedJpeg(b"\xff\xd8p\xff\xd9", 8, 8))
     runtime = DemoRuntime(config, clock, capture=capture, slot=slot,
                           incidents=IncidentService(db, clock, incidents=config.incidents,
                                                     notifications=config.notifications),
@@ -310,6 +315,8 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
         startup = {**startup, "startup": {**startup["startup"], "live_preview": runtime.preview.bounds(),
                                           "snapshots": {**opened, "policy": store.policy.describe()},
                                           "chat": runtime.chat.availability()}}
+    elif preview:
+        startup = {**startup, "startup": {**startup["startup"], "live_preview": runtime.preview.bounds()}}
     lines = [json.dumps(startup)]
     pending, captures = list(captures), []
     next_status = 0.0
@@ -330,6 +337,8 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
         if t >= next_status:
             lines.append(json.dumps(status_line(runtime.snapshot())))
             next_status += 30.0
+        if preview and n % int(fps * 15) == 0:  # a viewer: a picture made every 15 s
+            runtime.preview.view(with_picture=True)
         if combined and n % int(fps * 15) == 0:  # a picture made and a question asked every 15 s
             runtime.preview.view(with_picture=True)
             from sentinel.scene.chat import ChatQuestion
@@ -337,7 +346,7 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
         while pending and t >= pending[0][0]:
             at, name = pending.pop(0)
             status = build_status(runtime.snapshot(), read_store(root / "sentinel.db"), clock.utc_now(),
-                                  runtime.preview.view() if combined else None)
+                                  runtime.preview.view() if combined or preview else None)
             (out / f"status-{name}.json").write_text(json.dumps(status))
             captures.append({"name": name, "at_s": at, "status": "saved", "listeners": LOOPBACK})
     shutdown = runtime.shutdown()
@@ -494,6 +503,22 @@ def test_an_undeclared_combined_field_is_nonconforming(mods, tmp_path, startup) 
     (out / "status-e1.json").write_text(json.dumps(status))
     read = mods.evidence.read(out / "status-e1.json", "f2")
     assert len(read.nonconforming) == 3, read.nonconforming
+
+
+def test_the_dashboards_recognition_rows_are_declared_exactly(mods, tmp_path, startup) -> None:
+    """D95: the status's per-person rows (and the rule's numbers) fit the profile as written by the real runtime;
+    an identity ID, a similarity, an undeclared state or basis, or free text in a reason is still counted."""
+    out = simulate(tmp_path, startup)
+    status = json.loads((out / "status-k1.json").read_text())  # the known segment: one person, recognized
+    assert status["live"]["faces"] and status["components"]["face"]["policy"]["confirmations"] == 2
+    assert mods.evidence.read(out / "status-k1.json", "f2").nonconforming == []
+    row = status["live"]["faces"][0]
+    status["live"]["faces"] = [{**row, "identity_id": "idn-00000000000a"}, {**row, "similarity": 0.81},
+                               {**row, "state": "stranger"}, {**row, "basis": "remembered"},
+                               {**row, "reason": "Jane looked away"}]
+    (out / "status-k1.json").write_text(json.dumps(status))
+    read = mods.evidence.read(out / "status-k1.json", "f2")
+    assert len(read.nonconforming) == 5, read.nonconforming
 
 
 def test_a_face_still_visible_while_turned_away_does_not_exercise_retention(mods, tmp_path, startup, f1_list) -> None:
@@ -3224,3 +3249,83 @@ def test_the_replay_is_the_runtimes_rule_on_runs_with_contradictions_and_lost_tr
                                               else None)
             assert replay["known_s"] == runtime["known_s"], (out, window, replay, runtime)
             assert replay["entries_into_known"] == runtime["entries_into_known"], (out, window)
+
+
+# ---------------------------------------------------------------- D95: the live dashboard check (descriptive)
+
+DASHBOARD_CUE_TIMES = {"t0": 0.0, "look": 90.0, "turn": 150.0, "leave": 210.0, "back": 270.0, "pause": 360.0,
+                       "resume": 400.0, "stop": 465.0}
+DASHBOARD_SCRIPT = ((0, 210, "facing", 1), (210, 270, "absent", None), (270, 481, "facing", 2))
+
+
+def _plain(text: str, start: str) -> Any:
+    """The JSON value of the unlabelled DESCRIPTIVE line whose name starts with ``start``."""
+    line = next(line for line in text.splitlines() if line.startswith(f"DESCRIPTIVE {start}"))
+    return json.loads(line[line.index(": {") + 2:])
+
+
+def dashboard_run(mods, tmp_path, accepted_scene, *, name: str = "dash") -> Path:
+    """The real runtime as d-L runs it: face recognition (production detection, a validation run) with the live view
+    and no scene server, 480 s, the package's captures; the person leaves at 3:30 and comes back as a new track."""
+    root = tmp_path / name
+    root.mkdir()
+    (root / "startup").mkdir()
+    startup = startup_line(real_face_startup(root / "startup", accepted_scene))
+    del startup["startup"]["scene_server"]
+    return simulate(root, startup, script=DASHBOARD_SCRIPT, duration=480.0, preview=True,
+                    captures=tuple(mods.check.DASHBOARD_CAPTURES))
+
+
+def test_the_dashboard_reading_judges_execution_and_privacy_and_describes_recognition(mods, tmp_path, accepted_scene,
+                                                                                     f1_list) -> None:
+    out = dashboard_run(mods, tmp_path, accepted_scene)
+    finish(mods, out, account=None, cues=DASHBOARD_CUE_TIMES, duration_s=480.0,
+           captures=tuple(mods.check.DASHBOARD_CAPTURES), provenance=F2_PROVENANCE + GATE_LINES)
+    for path in sorted(out.iterdir()):  # every evidence file fits its profile: the counts read it strictly
+        if path.is_file() and path.name not in mods.check.NOT_COUNTED:
+            assert mods.evidence.read(path, "f2").nonconforming == [], path.name
+    reading = mods.check.read_dashboard(out, f1_list)
+    text = "\n".join(reading.lines)
+    assert reading.ok, text
+    assert not [line for line in reading.lines if line.startswith(("FAIL", "MISSING"))]
+    captures = _plain(text, "each capture as the page showed it")
+    assert set(captures) == {"n1", "look", "turn", "e2", "n2", "end"}
+    assert captures["n1"]["rows"][0][:3] == [1, "known", "fresh"] and captures["e2"]["rows"] == []
+    assert captures["n2"]["rows"][0][:2] == [2, "known"]  # the returning person is a new track, recognized anew
+    assert captures["n1"]["live_view"] == "live"
+    segments = _plain(text, "per cue interval")
+    assert segments["away"]["known_s"] == 0.0 or segments["away"]["ended_to"]  # nothing KNOWN carried into the absence
+    assert segments["back at the seat"]["entries_into_known"] == 1
+    assert mods.check.main(["dashboard", str(out), "--f1", str(f1_list)]) == 0
+    assert "similarity" not in text and ENROLLED not in "\n".join(line for line in reading.lines
+                                                                   if line.startswith("DESCRIPTIVE each capture"))
+
+
+def test_the_dashboard_reading_needs_the_live_view_its_captures_and_its_cues(mods, tmp_path, accepted_scene,
+                                                                            f1_list) -> None:
+    out = dashboard_run(mods, tmp_path, accepted_scene)
+    (out / "status-turn.json").unlink()
+    finish(mods, out, account=None, cues={k: v for k, v in DASHBOARD_CUE_TIMES.items() if k != "pause"},
+           duration_s=480.0, captures=tuple(mods.check.DASHBOARD_CAPTURES), counts={})
+    reading = mods.check.read_dashboard(out, f1_list)
+    text = "\n".join(reading.lines)
+    assert not reading.ok
+    assert line_for(text, "the run's 480 s and every cue").startswith("FAIL")
+    assert line_for(text, "the page's status at each capture").startswith("FAIL")
+    assert mods.check.main(["dashboard", str(out), "--f1", str(f1_list)]) == 1
+
+
+def test_a_run_with_the_scene_server_or_without_the_live_view_is_not_this_check(mods, tmp_path, accepted_scene,
+                                                                                f1_list) -> None:
+    root = tmp_path / "scene"
+    root.mkdir()
+    (root / "startup").mkdir()
+    startup = startup_line(real_face_startup(root / "startup", accepted_scene))  # with the scene server, no live view
+    out = simulate(root, startup, script=DASHBOARD_SCRIPT, duration=480.0,
+                   captures=tuple(mods.check.DASHBOARD_CAPTURES))
+    finish(mods, out, account=None, cues=DASHBOARD_CUE_TIMES, duration_s=480.0,
+           captures=tuple(mods.check.DASHBOARD_CAPTURES), counts={})
+    reading = mods.check.read_dashboard(out, f1_list)
+    text = "\n".join(reading.lines)
+    assert not reading.ok and line_for(text, "face admitted for this validation run with production detection") \
+        .startswith("FAIL")

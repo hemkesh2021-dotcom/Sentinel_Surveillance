@@ -1714,6 +1714,93 @@ def read_experiment(directory: Path, f1: Path, gate: tuple[Path, Path, Path | No
     return r
 
 
+# ---------------------------------------------------------------- D95: the live dashboard check (descriptive)
+
+DASHBOARD_DURATION_S = 480.0
+DASHBOARD_CUES = {"t0": 0.0, "look": 90.0, "turn": 150.0, "leave": 210.0, "back": 270.0, "pause": 360.0,
+                  "resume": 400.0, "stop": 465.0}  # the package's cues, s after T0; the operator moves when comfortable
+DASHBOARD_CAPTURES = ((75.0, "n1"), (105.0, "look"), (170.0, "turn"), (255.0, "e2"), (330.0, "n2"), (455.0, "end"))
+DASHBOARD_SEGMENTS = (("seated work", "t0", "look"), ("looking toward the camera", "look", "turn"),
+                      ("turning away", "turn", "leave"), ("away", "leave", "back"), ("back at the seat", "back", "pause"),
+                      ("tunnel paused and resumed", "pause", "stop"))
+
+
+def read_dashboard(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | None = None) -> Reading:
+    """D95, the live dashboard check: face recognition (production detection, a validation run) with the live view and
+    monitoring, no scene, chat, snapshots or alerts. Execution and privacy items are judged as in the other readings;
+    the recognition is only described: each status capture's rows (the state, basis and newest vote's age per track,
+    as the page showed them) and, per cue interval, KNOWN time and entries. When the operator moved within an interval
+    is the operator's observation sheet, not a record. It validates nothing."""
+    r = Reading()
+    if gate is not None:
+        ok, lines = f1_gate(*gate)
+        r.item("F1 basis for this run: the run's own F1 validated, or the maintainer's accepted corrected F1 reading "
+               "of it", dict(line.split("=", 1) for line in lines), ok and f1.resolve() == (gate[0] / "f1").resolve())
+    result = s5._load(directory / "result.json")
+    s5._supervision(r, result, "duration_stop", 0)
+    start = s5._get(result, "run_output", "starting")
+    r.item("face admitted for this validation run with production detection: one enrolled identity, no problem; no "
+           "scene server", {"face": s5._get(start, "face"), "face_problem": s5._get(start, "face_problem"),
+                            "scene_server": s5._get(start, "scene_server")},
+           s5._get(start, "face") == F2_FACE and s5._get(start, "face_problem") is None
+           and s5._get(start, "scene_server") in (None, MISSING))  # the live view: the captures and the shutdown
+    stopped = s5._get(result, "run_output", "stopped")
+    parts = (stopped.get("stopped") or {}) if isinstance(stopped, dict) else {}
+    r.item("clean shutdown: all stopped (the face worker and the live view included), database closed", stopped,
+           isinstance(stopped, dict) and stopped.get("all_stopped") is True and stopped.get("database_closed") is True
+           and parts.get("face_worker") is True and parts.get("live_view") is True)
+    records, problems, _, _ = read_records(directory / "run.jsonl")
+    total = sum(len(v) for v in records.values())
+    schemas = sorted({item["schema"] for kind in records.values() for item in kind})
+    saved = {name: s5._load(directory / f"status-{name}.json") for _, name in DASHBOARD_CAPTURES
+             if (directory / f"status-{name}.json").is_file()}
+    last = saved.get("end", MISSING)
+    dropped = s5._get(last, "components", "face", "records", "dropped")
+    r.item(f"identity records: schema {FULL_SCALE_SCHEMA}, complete, none dropped, no comparison or capture record",
+           {"records": {k: len(v) for k, v in records.items()}, "schemas": schemas, "problems": problems[:5],
+            "dropped": dropped} if total else MISSING,
+           total > 0 and not problems and schemas == [FULL_SCALE_SCHEMA] and dropped == 0
+           and not records.get("comparison") and not records.get("capture") and total < MAX_IDENTITY_RECORDS)
+    cues = _cue_offsets(result)
+    duration = s5._get(result, "parameters", "duration_s")
+    r.item(f"the run's {DASHBOARD_DURATION_S:g} s and every cue printed within {CUE_TOLERANCE_S:g} s of its time",
+           {"duration_s": duration, "cues_s_after_t0": {k: round(v, 2) for k, v in cues.items()}},
+           duration == DASHBOARD_DURATION_S
+           and all(name in cues and 0 <= cues[name] - at <= CUE_TOLERANCE_S for name, at in DASHBOARD_CUES.items()))
+    rows = {name: s5._get(doc, "live", "faces") for name, doc in saved.items()}
+    r.item("the page's status at each capture: saved, face recognition in a validation run, the recognition rows and "
+           "the live view present", {name: isinstance(value, list) for name, value in rows.items()} or MISSING,
+           len(saved) == len(DASHBOARD_CAPTURES) and all(isinstance(value, list) for value in rows.values())
+           and all(s5._get(doc, "components", "face", "validation_run") is True
+                   and isinstance(s5._get(doc, "preview"), dict) for doc in saved.values()))
+    _counts_items(r, directory)
+    r.describe("guard peak pressure, min MemFree, min MemAvailable (B)",
+               [s5._get(result, "guard", k) for k in s5.GUARD_FIGURES])
+    r.describe("each capture as the page showed it: video, live view, people, and per listed track its state, basis "
+               "and newest vote's age (ms)", {
+                   name: {"video": s5._get(doc, "live", "video"), "live_view": s5._get(doc, "preview", "state"),
+                          "people": s5._get(doc, "live", "people"),
+                          "rows": [[x.get("track_id"), x.get("state"), x.get("basis"), x.get("vote_age_ms")]
+                                   for x in rows.get(name) or [] if isinstance(x, dict)]}
+                   for name, doc in saved.items()})
+    ready = s5._get(result, "child", "ready_mono_s")
+    if problems or not total or not isinstance(ready, float) or not all(name in cues for name in DASHBOARD_CUES) \
+            or not isinstance(duration, float):
+        return r
+    line = Timeline(records, round((cues["t0"] + ready) * NS), float(duration))
+    r.describe("per cue interval (s after T0; when the operator moved within it is the sheet's, not recorded): KNOWN "
+               "person-seconds, KNOWN intervals, entries into KNOWN and how intervals ended", {
+                   label: {"window": [round(cues[a], 1), round(cues[b], 1)],
+                           **_identity_time(line, (cues[a], cues[b]))} for label, a, b in DASHBOARD_SEGMENTS})
+    reached: dict[str, int] = {}
+    for transition in line.transitions:
+        label = f"{transition['to']}/{transition['basis'] or 'none'}"
+        reached[label] = reached.get(label, 0) + 1
+    r.describe("identity transitions over the run, by state reached and basis", dict(sorted(reached.items())))
+    r.describe("the live view's counters at the last capture", s5._get(last, "components", "preview", "counters"))
+    return r
+
+
 def _paired(line: Timeline, window: tuple[float, float]) -> dict:
     applied = [x for x in line.in_window(line.results, window) if x["outcome"] == "applied" and len(x["persons"]) == 1]
     people = [x["persons"][0] for x in applied if x["persons"][0].get("similarity") is not None]
@@ -2183,7 +2270,9 @@ def main(argv: list[str] | None = None) -> int:
     for part, text in (("capture", "read the enrollment experiment's capture (D91): whether its working gallery may "
                                     "be used"),
                        ("experiment", "read an enrollment experiment session (D91, descriptive): genuine (format 6) "
-                                      "or a non-enrolled participant's (format 8)")):
+                                      "or a non-enrolled participant's (format 8)"),
+                       ("dashboard", "read the live dashboard check (D95, descriptive): execution and privacy judged, "
+                                     "recognition described")):
         sub = commands.add_parser(part, help=text)
         sub.add_argument("directory", type=Path)
         sub.add_argument("--f1", type=Path, required=True, help="F1's evidence directory")
@@ -2220,9 +2309,9 @@ def main(argv: list[str] | None = None) -> int:
         if (args.run is None) != (args.identity_dir is None):
             parser.error(f"{args.part}: --run and --identity-dir go together")
         gate_args = None if args.run is None else (args.run, args.identity_dir, args.recheck_root)
-        if args.part in ("natural", "comparison", "candidate", "experiment"):
+        if args.part in ("natural", "comparison", "candidate", "experiment", "dashboard"):
             read = {"natural": read_natural, "comparison": read_comparison, "candidate": read_candidate,
-                    "experiment": read_experiment}[args.part]
+                    "experiment": read_experiment, "dashboard": read_dashboard}[args.part]
             reading = read(args.directory, args.f1, gate_args)
             for line in reading.lines:
                 print(line)

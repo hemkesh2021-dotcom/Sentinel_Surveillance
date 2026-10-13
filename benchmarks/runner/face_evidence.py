@@ -33,7 +33,8 @@ import face_account
 NOT_COUNTED = frozenset({"SHA256SUMS", "check.txt", "secret-counts-camera.txt", "secret-counts-identity.txt"})
 STATUS_NAMES = ("e1", "k1", "a", "e2", "k2", "end", "n1", "look", "turn", "n2",
                 "c1", "c2", "c3")  # F2's, the natural check's and the comparison check's (D87)
-CUE_NAMES = ("t0", "k1", "a", "e2", "k2", "stop", "look", "turn", "n2")  # F2's, the natural check's, D91's
+CUE_NAMES = ("t0", "k1", "a", "e2", "k2", "stop", "look", "turn", "n2",  # F2's, the natural check's, D91's
+             "leave", "back", "pause", "resume")  # D95's live dashboard check
 RECHECK_NAME = r"face-\d{8}T\d{6}Z-f1-[0-9a-f]{7}-\d{8}T\d{6}Z"  # ~/sentinel-runs/recheck/<run>-f1-<pin>-<UTC>
 SESSION_NAME = r"exp-\d{8}T\d{6}Z"  # an enrollment-experiment session (D91)
 CAPTURE_RECHECK_NAME = SESSION_NAME + r"-xc-[0-9a-f]{7}-\d{8}T\d{6}Z"  # ~/sentinel-runs/recheck/<session>-xc-<pin>-<UTC>
@@ -215,6 +216,13 @@ DEGRADED = template(r"capture (\S+)(?: \((.+)\))?", r"video (\S+)", r"detector u
 TRANSITION_REASON = template(*(fixed(t) for t in (
     *VOTE_NOTES, "no face visible", "face ownership ambiguous", *OWNERSHIP, "no face observed yet",
     "consistent faces matched nobody", "contradictory face evidence", "track no longer current")),
+    r"(\d+) consistent matches")
+TRACK_STATUS = vocab("tentative", "confirmed")  # contracts.TrackStatus
+# A person's identity reason (D95): the core's own (identity.state, runtime.EdgeCore._identity), never free text.
+IDENTITY_REASON = template(*(fixed(t) for t in (
+    *VOTE_NOTES, "no face visible", "face ownership ambiguous", *OWNERSHIP, "no face observed yet",
+    "consistent faces matched nobody", "contradictory face evidence", "no identities enrolled",
+    "face recognition disabled", "face recognition unavailable")),
     r"(\d+) consistent matches")
 INCIDENT_TITLE = template(r"Person in restricted zone '(.*)'", r"Person dwelling in zone '(.*)'",
                           fixed("Possible fire or smoke (scene model only, unconfirmed)"))
@@ -543,6 +551,13 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
     "live.detector": CAPABILITY, "live.face_recognition": CAPABILITY, "live.scene_analysis": CAPABILITY,
     "live.occupancy": OCCUPANCY, "live.occupancy_reason": OCCUPANCY_REASON, "live.people": INT,
     "live.confirmed_people": INT, **{f"live.identity.{k}": INT for k in (*IDENTITY_STATES, "fresh", "retained")},
+    "live.published_utc": ISO,  # D95: when the core published this live state
+    # D95: each listed person's recognition state, only while face recognition runs (demo_runtime._face_rows)
+    "live.faces[].track_id": INT, "live.faces[].stream_epoch": INT, "live.faces[].track_status": TRACK_STATUS,
+    "live.faces[].predicted": BOOL, "live.faces[].last_measured_age_ms": INT,
+    "live.faces[].state": vocab(*IDENTITY_STATES), "live.faces[].basis": maybe(BASIS),
+    "live.faces[].vote_age_ms": COUNT, "live.faces[].reason": IDENTITY_REASON,  # no identity ID (D61, D95)
+    "live.faces_not_shown": INT,
     "live.scene": SCENE_STATUS, "live.scene_reason": SCENE_REASON, "live.scene_report": NULL,
     "live.scene_report.persons_visible": INT, "live.scene_report.fire_or_smoke": BOOL,
     "live.scene_report.threat": THREAT, "live.scene_report.uncertainty": UNCERTAINTY,
@@ -560,6 +575,8 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
     **nest("components.scene.server", SCENE_SERVER), "components.scene.lane.*": INT, "components.scene.worker.*": INT,
     "components.face.state": CAPABILITY, "components.face.problem": maybe(TEXT),
     "components.face.identities_enrolled": INT, "components.face.validation_run": BOOL,
+    "components.face.policy.confirmations": INT, "components.face.policy.vote_ttl_s": NUM,  # D95
+    "components.face.policy.fresh_window_s": NUM,
     "components.face.detection": vocab("full_scale"),  # D88
     "components.face.experiment": vocab("shadow", "capture"),  # D91
     **{f"components.face.records.{k}": INT for k in ("kept", "dropped", "limit")},

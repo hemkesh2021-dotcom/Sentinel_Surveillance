@@ -24,7 +24,13 @@
      The player stops asking while the tab is hidden or the picture is out of sight, and backs off on failures.
    - Chat (D74, only where the runtime offers it): one question at a time, about one identified frame; answers are
      shown as text, labelled with that frame's time and age, and never touch the timers above. The conversation and
-     the draft stay in this tab; the token in the form belongs to the server that sent this page. */
+     the draft stay in this tab; the token in the form belongs to the server that sent this page.
+   - Navigation and appearance (D96): the section in view is marked in the sidebar; the sidebar collapses to a rail
+     (wide screens) or opens as a drawer (narrow ones: Escape or the scrim closes it, focus stays inside while open and
+     returns to the menu button); the camera's focus view shows the picture and recognition only; the loaded
+     incidents can be filtered by status and severity (only what this page loaded, and it says so); theme, palette and
+     density apply in place and are saved in this browser. None of these restarts a timer, reloads the page or touches
+     the conversation, the draft, the selected incident or an expanded section. */
 (() => {
   "use strict";
   const root = document.documentElement;
@@ -33,6 +39,7 @@
   const WINDOW = Number(root.dataset.currentMs);
   const KIND = root.dataset.page;
   if (!SOURCE || !SOURCE.startsWith("/") || SOURCE.startsWith("//") || !(EVERY > 0) || !(WINDOW > 0)) return;
+  let source = SOURCE;  // the appearance chosen in place is dropped from it (D96), nothing else changes it
   const MAX_TEXT = 600000;
   const MAX_WAIT = 15000;
   const INSTANCE = /^[0-9a-f]{16}$/;
@@ -42,6 +49,10 @@
     instance: root.dataset.instance || null, sequence: Number(root.dataset.sequence || "-1"),
     last: Object.create(null), timer: 0, inflight: null, failures: 0, token: null,
     selected: null, detail: null, detailTimer: 0,
+    // D96: the appearance the address chose (kept in links until a choice is made in place), and whether one was
+    appearanceQuery: root.hasAttribute("data-pref") ? (SOURCE.split("?")[1] || "").split("&")
+      .filter((part) => /^(theme|palette|density)=[a-z-]{1,40}$/.test(part)).join("&") : "",
+    chosenInPlace: false,
   };
   root.classList.add("js");
   let refreshAsk = () => {};  // the chat's Ask button follows chat's availability, which updates with the page
@@ -49,16 +60,25 @@
 
   // ------------------------------------------------------------------ the watchdog timers
 
+  // The delay is given to each timed element itself (animation-delay, not inherited), never as a custom property on
+  // the root: a root property restyles the whole document on every update, which on a slow device delays the live
+  // picture (D96, measured). The stylesheet's var(--fresh-delay, 0s) stays the delay without script.
+  function delayTimers(ms) {
+    const value = `${-Math.round(ms)}ms`;
+    for (const node of document.querySelectorAll(".cur, .old, .report")) {
+      if (node.style.animationDelay !== value) node.style.animationDelay = value;
+    }
+  }
+
   function restart(name, sentAt) {
     // A new animation name restarts every timer of this kind; the negative delay ends the window WINDOW ms after
     // the request was sent (a bound on the age of what it brought, on this browser's monotonic clock).
-    const elapsed = Math.max(0, performance.now() - sentAt);
-    root.style.setProperty(`--${name}-delay`, `${-Math.round(elapsed)}ms`);
+    delayTimers(Math.max(0, performance.now() - sentAt));
     root.dataset[name] = root.dataset[name] === "1" ? "0" : "1";
   }
 
   function expireNow() {  // after a freeze or a back-forward restore: nothing is current until an update arrives
-    root.style.setProperty("--fresh-delay", `${-10 * WINDOW}ms`);
+    delayTimers(10 * WINDOW);
     root.dataset.fresh = root.dataset.fresh === "1" ? "0" : "1";
     if (player) player.expire();
   }
@@ -157,9 +177,13 @@
   // ------------------------------------------------------------------ updating
 
   const sync = document.getElementById("sync");
-  function say(text) {
-    if (sync && sync.textContent !== text) sync.textContent = text;
+  function say(text, mode) {
+    if (!sync) return;
+    if (sync.textContent !== text) sync.textContent = text;
+    if (mode) sync.dataset.state = mode;
+    else delete sync.dataset.state;
   }
+  let lastApplied = null;  // when the last valid update arrived (this browser's clock), for the reconnect line
 
   function schedule(ms) {
     clearTimeout(state.timer);
@@ -184,7 +208,7 @@
     state.inflight = controller;
     const timeout = setTimeout(() => controller.abort(), WINDOW);
     try {
-      const response = await fetch(SOURCE, {
+      const response = await fetch(source, {
         cache: "no-store", credentials: "same-origin", redirect: "error", signal: controller.signal,
         headers: {Accept: "application/json"},
       });
@@ -210,7 +234,10 @@
     } catch (error) {
       state.failures += 1;
       const wait = Math.min(EVERY * 2 ** state.failures, MAX_WAIT);
-      say(`No current update (${why(error)}); trying again in ${Math.round(wait / 1000)} s.`);
+      // One steady line while reconnecting (no countdown, so assistive technology is not interrupted every retry).
+      const since = lastApplied ? ` since ${lastApplied.toISOString().slice(11, 19)} UTC` : "";
+      say(`Reconnecting: no current update${since} (${why(error)}). Retrying automatically; what is shown is the last `
+        + "report, marked NOT CURRENT.", "reconnecting");
       schedule(wait);
     } finally {
       clearTimeout(timeout);
@@ -220,13 +247,15 @@
 
   function apply(doc, sent) {
     if (doc.page.instance !== state.instance) state.last = Object.create(null);
-    // New elements pick up the bounded delay as they appear; the restart below then aligns every timer.
-    root.style.setProperty("--fresh-delay", `${-Math.round(performance.now() - sent)}ms`);
+    // Placed elements get their bounded delay from the restart below, in this same task (before any rendering).
     for (const [name, html] of Object.entries(doc.page.regions)) place(name, html);
     if (KIND === "status") {
       if (doc.page.token) state.token = doc.page.token;
       if (player) player.status(doc);
     }
+    lastApplied = new Date();
+    if (state.chosenInPlace) stripLinks();  // a region asked for before an in-place choice keeps no old appearance
+    filterIncidents();
     markSelected();
     state.instance = doc.page.instance;
     state.sequence = doc.page.sequence;
@@ -669,7 +698,7 @@
     const ack = detail.acknowledgment || {};
     const rows = ((detail.deliveries || {}).shown || []).map((d) => `${d.channel}: ${d.state}`);
     const snapshot = detail.snapshot || {};
-    const theme = root.dataset.theme ? `?theme=${root.dataset.theme}` : "";
+    const theme = state.appearanceQuery ? `?${state.appearanceQuery}` : "";
     const children = [
       el("div", {class: "phead"}, [el("h3", {}, [incident.title || ""]),
         el("button", {type: "button", class: "plain", "data-close": "1"}, ["Close"])]),
@@ -679,8 +708,10 @@
     ];
     const view = `/incidents/${incident.incident_id}/snapshot.jpg`;
     if (snapshot.state === "saved" && snapshot.file === "verified" && snapshot.view_url === view) {
-      children.push(el("div", {class: "frame thumb"}, [el("img", {src: view, alt: "Incident snapshot",
-        width: String(snapshot.width || 640), height: String(snapshot.height || 480)})]));
+      // The same picture is kept, not fetched again, so a refresh never flashes it (D96).
+      const kept = pane.querySelector(`.frame.thumb img[src="${view}"]`);
+      children.push(kept ? kept.parentNode : el("div", {class: "frame thumb"}, [el("img", {src: view,
+        alt: "Incident snapshot", width: String(snapshot.width || 640), height: String(snapshot.height || 480)})]));
     } else {
       children.push(el("p", {class: "note"}, [snapshot.state === "saved" ? "Snapshot not verified." : "No snapshot."]));
     }
@@ -723,6 +754,7 @@
   }
 
   function select(id) {
+    const before = state.selected;
     state.selected = id && INCIDENT.test(id) ? id : null;
     const pane = document.getElementById("inc-preview");
     if (!state.selected && pane) {
@@ -730,6 +762,9 @@
       pane.replaceChildren();
       if (state.detail) state.detail.abort();
       clearTimeout(state.detailTimer);
+    } else if (pane && state.selected !== before) {  // a steady placeholder while the first answer is on its way
+      pane.replaceChildren(el("p", {class: "note"}, ["Loading the incident…"]));
+      pane.hidden = false;
     }
     const here = location.pathname + location.search;
     history.replaceState(null, "", state.selected ? `${here}#incident-${state.selected}` : here);
@@ -916,6 +951,276 @@
     refreshAsk();
   }
 
+  // ------------------------------------------------------------------ appearance (D96): applied in place, saved here
+
+  const STORE = "sentinel.appearance";
+  const PALETTES = (root.dataset.palettes || "").split(" ").filter(Boolean);
+
+  function readSaved() {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(STORE) || "null");
+      return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+    } catch (error) {
+      return {};  // storage blocked: choices still apply to this view
+    }
+  }
+
+  function save(changes) {
+    try {
+      window.localStorage.setItem(STORE, JSON.stringify({...readSaved(), ...changes}));
+    } catch (error) {
+      // not saved (private mode, blocked storage); the choice still applies to this page
+    }
+  }
+
+  function current() {
+    return {theme: root.dataset.theme || "auto", palette: root.dataset.palette || PALETTES[0] || "",
+            density: root.dataset.density || "comfortable"};
+  }
+
+  function stripped(href) {  // a same-origin link without the address's appearance (the saved one applies instead)
+    const url = new URL(href, location.href);
+    if (url.origin !== location.origin) return null;
+    for (const name of ["theme", "palette", "density"]) url.searchParams.delete(name);
+    return url.pathname + url.search + url.hash;
+  }
+
+  function stripLinks() {
+    for (const link of document.querySelectorAll("a[href^='/']")) {
+      if (link.dataset.set) continue;
+      const next = stripped(link.getAttribute("href"));
+      if (next !== null && next !== link.getAttribute("href")) link.setAttribute("href", next);
+    }
+  }
+
+  function markChoices() {
+    const now = current();
+    for (const control of document.querySelectorAll("[data-set]")) {
+      if (control.dataset.value === now[control.dataset.set]) control.setAttribute("aria-current", "true");
+      else control.removeAttribute("aria-current");
+    }
+  }
+
+  function choose(kind, value) {
+    if (kind === "theme" && ["auto", "light", "dark"].includes(value)) {
+      if (value === "auto") delete root.dataset.theme;
+      else root.dataset.theme = value;
+    } else if (kind === "palette" && PALETTES.includes(value)) {
+      if (value === PALETTES[0]) delete root.dataset.palette;
+      else root.dataset.palette = value;
+    } else if (kind === "density" && ["comfortable", "compact"].includes(value)) {
+      if (value === "comfortable") delete root.dataset.density;
+      else root.dataset.density = value;
+    } else {
+      return;
+    }
+    const now = current();
+    save({theme: now.theme, palette: now.palette, density: now.density});
+    // From now on the saved choice applies on every page of this server (appearance.js), so the address, the polled
+    // source and the links stop carrying the address's appearance; nothing is reloaded.
+    state.chosenInPlace = true;
+    state.appearanceQuery = "";
+    root.removeAttribute("data-pref");
+    source = stripped(source) || source;
+    const here = stripped(location.href);
+    if (here !== null) history.replaceState(history.state, "", here);
+    stripLinks();
+    markChoices();
+  }
+
+  document.addEventListener("click", (event) => {
+    const control = event.target.closest("[data-set]");
+    if (!control || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    choose(control.dataset.set, control.dataset.value);
+  });
+  markChoices();
+
+  // ------------------------------------------------------------------ the sidebar: rail, drawer, the section in view
+
+  const sidebar = document.getElementById("sidebar");
+  const menu = document.getElementById("menu");
+  const scrim = document.getElementById("scrim");
+  const railToggle = document.getElementById("rail-toggle");
+  const narrow = window.matchMedia ? window.matchMedia("(max-width: 899px)") : {matches: false};
+
+  function setRail(compact) {
+    if (compact) root.dataset.rail = "compact";
+    else delete root.dataset.rail;
+    if (railToggle) {
+      railToggle.setAttribute("aria-expanded", compact ? "false" : "true");
+      railToggle.querySelector(".vh").textContent = compact ? "Expand the sidebar" : "Collapse the sidebar";
+    }
+  }
+  if (railToggle) {
+    setRail(root.dataset.rail === "compact");
+    railToggle.addEventListener("click", () => {
+      const compact = root.dataset.rail !== "compact";
+      setRail(compact);
+      save({rail: compact ? "compact" : "full"});
+    });
+  }
+
+  function focusable() {
+    return [...sidebar.querySelectorAll("a[href], button:not([disabled])")].filter((node) => node.offsetParent !== null);
+  }
+
+  function openDrawer() {
+    if (!sidebar || !menu) return;
+    root.classList.add("drawer-open");
+    menu.setAttribute("aria-expanded", "true");
+    if (scrim) scrim.hidden = false;
+    const first = sidebar.querySelector(".nav a[aria-current]") || sidebar.querySelector(".nav a");
+    if (first) first.focus();
+  }
+
+  function closeDrawer(returnFocus) {
+    if (!root.classList.contains("drawer-open")) return;
+    root.classList.remove("drawer-open");
+    if (menu) menu.setAttribute("aria-expanded", "false");
+    if (scrim) scrim.hidden = true;
+    if (returnFocus && menu) menu.focus();
+  }
+
+  if (menu) menu.addEventListener("click", () => openDrawer());
+  const drawerClose = document.getElementById("drawer-close");
+  if (drawerClose) drawerClose.addEventListener("click", () => closeDrawer(true));
+  if (scrim) scrim.addEventListener("click", () => closeDrawer(true));
+  if (narrow.addEventListener) narrow.addEventListener("change", () => { if (!narrow.matches) closeDrawer(false); });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && root.classList.contains("drawer-open")) {
+      event.preventDefault();
+      event.stopImmediatePropagation();  // Escape closes the drawer only, not the focus view behind it
+      closeDrawer(true);
+      return;
+    }
+    if (event.key === "Tab" && root.classList.contains("drawer-open") && sidebar) {  // focus stays in the open drawer
+      const nodes = focusable();
+      if (!nodes.length) return;
+      const first = nodes[0];
+      const last = nodes[nodes.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !sidebar.contains(document.activeElement))) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+  });
+
+  const sectionLinks = sidebar ? [...sidebar.querySelectorAll(".nav a[data-nav]")] : [];
+  let heldUntil = 0;  // after a click, the chosen section stays marked while the page scrolls to it
+  if (KIND === "status" && sectionLinks.length) {
+    sidebar.addEventListener("click", (event) => {
+      const link = event.target.closest(".nav a[data-nav]");
+      if (!link) return;
+      if (root.dataset.focus) leaveFocus(false);  // a section outside the focus view is shown again first
+      markSection(link.dataset.nav);
+      heldUntil = performance.now() + 1200;
+      if (narrow.matches) closeDrawer(false);
+    });
+    const sections = sectionLinks.map((link) => document.getElementById(link.dataset.nav)).filter(Boolean);
+    let pending = false;
+    const spy = () => {
+      pending = false;
+      if (performance.now() < heldUntil) return;
+      const line = window.innerHeight * 0.3;
+      let shown = sections[0];
+      let best = -Infinity;
+      for (const section of sections) {  // the lowest top above the line; side by side, the first of them
+        const top = section.getBoundingClientRect().top;
+        if (section.offsetParent !== null && top <= line && top > best + 1) {
+          shown = section;
+          best = top;
+        }
+      }
+      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) {
+        shown = sections.filter((section) => section.offsetParent !== null).pop() || shown;
+      }
+      if (shown) markSection(shown.id);
+    };
+    window.addEventListener("scroll", () => {
+      if (!pending) {
+        pending = true;
+        requestAnimationFrame(spy);
+      }
+    }, {passive: true});
+    spy();
+  }
+
+  function markSection(id) {
+    for (const link of sectionLinks) {
+      if (link.dataset.nav === id) link.setAttribute("aria-current", "true");
+      else link.removeAttribute("aria-current");
+    }
+  }
+
+  // ------------------------------------------------------------------ the camera's focus view (D96)
+
+  const focusToggle = document.getElementById("focus-toggle");
+  let focusReturn = 0;
+
+  function enterFocus() {
+    focusReturn = window.scrollY;
+    root.dataset.focus = "live";
+    focusToggle.setAttribute("aria-pressed", "true");
+    focusToggle.querySelector("span").textContent = "Exit focus";
+    focusToggle.querySelector("use").setAttribute("href", "#i-shrink");
+    window.scrollTo(0, 0);  // the freshness bar stays in view above the picture
+    if (player) player.resume();
+  }
+
+  function leaveFocus(restore) {
+    delete root.dataset.focus;
+    focusToggle.setAttribute("aria-pressed", "false");
+    focusToggle.querySelector("span").textContent = "Focus";
+    focusToggle.querySelector("use").setAttribute("href", "#i-expand");
+    if (restore) window.scrollTo(0, focusReturn);
+  }
+
+  if (focusToggle) {
+    focusToggle.addEventListener("click", () => (root.dataset.focus ? leaveFocus(true) : enterFocus()));
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && root.dataset.focus) {
+        leaveFocus(true);
+        focusToggle.focus();
+      }
+    });
+  }
+
+  // ------------------------------------------------------------------ filtering the loaded incidents (D96)
+
+  const filterStatus = document.getElementById("f-status");
+  const filterSeverity = document.getElementById("f-severity");
+  const filterCount = document.getElementById("f-count");
+  const filterEmpty = document.getElementById("f-empty");
+
+  function filterIncidents() {
+    if (!filterStatus || !filterSeverity) return;
+    const wantStatus = filterStatus.value;
+    const wantSeverity = filterSeverity.value;
+    const items = [...document.querySelectorAll(".inc-list > li")];
+    let shown = 0;
+    for (const item of items) {
+      const match = (!wantStatus || item.dataset.status === wantStatus)
+        && (!wantSeverity || item.dataset.severity === wantSeverity);
+      item.hidden = !match;
+      if (match) shown += 1;
+    }
+    const filtering = Boolean(wantStatus || wantSeverity);
+    const text = !items.length ? ""
+      : filtering ? `Showing ${shown} of the ${items.length} loaded incidents (the latest only; older ones are not searched).`
+        : `${items.length} loaded incidents (the latest only).`;
+    if (filterCount && filterCount.textContent !== text) filterCount.textContent = text;
+    if (filterEmpty) filterEmpty.hidden = !(filtering && items.length && !shown);
+  }
+
+  for (const control of [filterStatus, filterSeverity]) {
+    if (control) control.addEventListener("change", filterIncidents);
+  }
+  filterIncidents();
+
   // ------------------------------------------------------------------ lifecycle
 
   document.addEventListener("visibilitychange", () => {
@@ -944,6 +1249,7 @@
     if (player) player.resume();
   });
 
+  setTimeout(() => root.classList.remove("enter"), 700);  // the entrance plays once, never on an update (D96)
   if (KIND === "status") {
     player = makePlayer();
     if (player) player.run();

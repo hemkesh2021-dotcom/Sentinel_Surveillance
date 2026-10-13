@@ -118,7 +118,8 @@ import sqlite3
 import stat
 import threading
 from collections.abc import Callable, Mapping
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -136,7 +137,8 @@ from .scene.chat import ADVISORY, CHAT_MAX_BODY, CHAT_MAX_QUESTION, ChatRequestE
 from .scene.report import SceneReport
 from .scene.state import SCENE_STATE_KIND
 from .storage.database import connect_reader
-from .web import SPRITE, TAB_ICON, csp_hash, icon, script, stylesheet
+from .web import SPRITE, TAB_ICON, csp_hash, head_script, icon, script, stylesheet
+from .web.palettes import DEFAULT_PALETTE, PRESETS
 
 LOOPBACK_HOST = "127.0.0.1"
 MAX_INCIDENTS = 20
@@ -215,6 +217,9 @@ CHAT_OFF = {"state": "off", "reason": "chat is off; start sentinel run with --ch
 CHAT_STARTING = {"state": "unavailable", "reason": "the runtime is starting"}
 SCRIPT_PATH = "/assets/dashboard.js"
 SCRIPT = script()
+HEAD_SCRIPT_PATH = "/assets/appearance.js"  # D96: the saved appearance, before the first paint
+HEAD_SCRIPT = head_script()
+PAGE_PATHS = ("/", "/dashboard")  # D96: the dashboard at its own name too; "/" and every existing link unchanged
 DELIVERY_STATES = ("queued", "attempted", "delivered", "failed")
 # Shown even before the runtime publishes its own wording (D43 limitation).
 PENDING_DURABILITY_FALLBACK = (
@@ -613,6 +618,39 @@ def _e(value: object) -> str:
 
 
 THEMES = ("light", "dark")
+PALETTE_KEYS = tuple(preset.key for preset in PRESETS)  # the default first
+DENSITIES = ("compact",)  # comfortable is the default
+
+
+@dataclass(frozen=True)
+class Look:
+    """The appearance a page's address chose (D96): exact allowlisted values only, so nothing is ever echoed.
+
+    None means the default: the browser's light or dark preference, Carbon & Cream, comfortable spacing. With script,
+    the viewer's saved choice (``appearance.js``) applies wherever the address chose nothing."""
+
+    theme: str | None = None
+    palette: str | None = None
+    density: str | None = None
+
+    @property
+    def query(self) -> str:
+        return "&".join(f"{key}={value}" for key, value in (("theme", self.theme), ("palette", self.palette),
+                                                           ("density", self.density)) if value)
+
+
+def look_from_query(query: str) -> Look:
+    """The appearance a request asks for: ``theme`` light|dark, ``palette`` one of PALETTE_KEYS, ``density`` compact."""
+    theme = palette = density = None
+    for part in query.split("&")[:8]:
+        key, _, value = part.partition("=")
+        if key == "theme" and value in THEMES:
+            theme = theme or value
+        elif key == "palette" and value in PALETTE_KEYS and value != DEFAULT_PALETTE:
+            palette = palette or value
+        elif key == "density" and value in DENSITIES:
+            density = density or value
+    return Look(theme, palette, density)
 
 
 def theme_from_query(query: str) -> str | None:
@@ -620,18 +658,22 @@ def theme_from_query(query: str) -> str | None:
 
     Only these two exact values are used, so nothing from the query is ever echoed.
     """
-    for part in query.split("&")[:8]:
-        key, _, value = part.partition("=")
-        if key == "theme" and value in THEMES:
-            return value
-    return None
+    return look_from_query(query).theme
 
 
-def _href(path: str, theme: str | None) -> str:
-    return path if theme is None else f"{path}?theme={theme}"
+def _look(theme: Look | str | None) -> Look:
+    """A Look from a Look, a bare theme (``light``/``dark``, as before D96) or None."""
+    if isinstance(theme, Look):
+        return theme
+    return Look(theme if theme in THEMES else None)
 
 
-def _incident_link(incident_id: object, theme: str | None = None) -> object:
+def _href(path: str, theme: Look | str | None) -> str:
+    query = _look(theme).query
+    return f"{path}?{query}" if query else path
+
+
+def _incident_link(incident_id: object, theme: Look | str | None = None) -> object:
     """A link to the incident's detail page; an ID with no page is plain text."""
     if isinstance(incident_id, str) and INCIDENT_ID.fullmatch(incident_id):
         return _Markup(f'<a class=mono href="{_e(_href(f"/incidents/{incident_id}", theme))}">{_e(incident_id)}</a>')
@@ -646,19 +688,24 @@ CONTENT_SECURITY_POLICY = (  # the only script is SCRIPT_PATH; it talks to this 
 )
 
 
-def _document(title: str, body: str, *, theme: str | None, page: str, source: str, refresh_s: int,
+def _document(title: str, body: str, *, theme: Look | str | None, page: str, source: str, refresh_s: int,
               marker: Mapping[str, Any] | None) -> str:
     """A page: no automatic reload (D73). With script, ``source`` is polled every ``refresh_s`` and the page's regions
-    are updated in place; without it, the page is read-only and its D71 watchdog marks it NOT CURRENT."""
-    themed = f" data-theme={theme}" if theme in THEMES else ""
+    are updated in place; without it, the page is read-only and its D71 watchdog marks it NOT CURRENT. The head script
+    applies the viewer's saved appearance before the first paint unless the address chose one (data-pref, D96)."""
+    look = _look(theme)
+    chosen = "".join(f" data-{key}={value}" for key, value in (("theme", look.theme), ("palette", look.palette),
+                                                               ("density", look.density)) if value)
+    chosen += " data-pref" if look.query else ""
     numbered = (f" data-instance={_e(marker['instance'])} data-sequence={_e(marker['sequence'])}"
                 if marker else "")
     return f"""<!doctype html>
-<html lang=en data-page={page}{themed} data-source="{_e(source)}" data-refresh-ms={refresh_s * 1000} data-current-ms={PAGE_CURRENT_S * 1000}{numbered}><head><meta charset=utf-8>
+<html lang=en data-page={page}{chosen} data-palettes="{' '.join(PALETTE_KEYS)}" data-source="{_e(source)}" data-refresh-ms={refresh_s * 1000} data-current-ms={PAGE_CURRENT_S * 1000}{numbered}><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width, initial-scale=1"><meta name=color-scheme content="light dark">
 <title>{_e(title)}</title>
 <link rel=icon href="{TAB_ICON_PATH}" type="image/svg+xml">
-<style>{STYLE}</style></head><body>
+<style>{STYLE}</style>
+<script src="{HEAD_SCRIPT_PATH}"></script></head><body>
 {SPRITE}
 {body}
 <script src="{SCRIPT_PATH}" defer></script>
@@ -666,21 +713,50 @@ def _document(title: str, body: str, *, theme: str | None, page: str, source: st
 """
 
 
-def _source(path: str, theme: str | None) -> str:
-    """The JSON a page polls for its regions (same origin)."""
-    return f"{path}?page=1" + (f"&theme={theme}" if theme in THEMES else "")
+def _source(path: str, theme: Look | str | None) -> str:
+    """The JSON a page polls for its regions (same origin), with the appearance its address chose."""
+    query = _look(theme).query
+    return f"{path}?page=1" + (f"&{query}" if query else "")
 
 
 NOSCRIPT = ("<noscript><p class='note noscript'>Automatic updates need JavaScript, which is off in this browser: this "
             "page shows the state when it was generated. Reload to update it.</p></noscript>")
 
 
-def _themes(path: str, theme: str | None) -> str:
-    links = []
-    for value, label, glyph in ((None, "Auto", "auto"), ("light", "Light", "sun"), ("dark", "Dark", "moon")):
-        selected = ' aria-current="true"' if value == theme else ""
-        links.append(f'<a href="{_e(_href(path, value))}"{selected}>{icon(glyph)}{label}</a>')
-    return f'<nav class=themes aria-label="Colour theme">{"".join(links)}</nav>'
+def _appearance(path: str, theme: Look | str | None) -> str:
+    """Theme, palette and density in one compact panel (D96). Each choice is a link to this page with that choice, so
+    it works without script; with script the choice applies in place (nothing reloads: the conversation, the draft,
+    the selected incident and the reader's place stay) and is saved in this browser. States keep their colours,
+    labels and icons in every palette, and pictures are never recoloured."""
+    look = _look(theme)
+
+    def choice(cls: str, kind: str, value: str, selected: bool, href_look: Look, inner: str) -> str:
+        current = ' aria-current="true"' if selected else ""
+        return (f'<a class={cls} href="{_e(_href(path, href_look))}" data-set={kind} data-value={value}{current}>'
+                f"{inner}</a>")
+
+    themes = "".join(choice("seg", "theme", value or "auto", value == look.theme,
+                            Look(value, look.palette, look.density), f"{icon(glyph)}{label}")
+                     for value, label, glyph in ((None, "Auto", "auto"), ("light", "Light", "sun"),
+                                                 ("dark", "Dark", "moon")))
+    swatches = "".join(choice("swatch", "palette", preset.key, preset.key == (look.palette or DEFAULT_PALETTE),
+                              Look(look.theme, None if preset.key == DEFAULT_PALETTE else preset.key, look.density),
+                              f"<span class='dots sw-{preset.key}' aria-hidden=true>"
+                              + "".join(f"<i class=d{i}></i>" for i in range(1, len(preset.colours) + 1))
+                              + f"</span><span>{_e(preset.name)}</span>{icon('check', 'ic tick')}")
+                       for preset in PRESETS)
+    densities = "".join(choice("seg", "density", value or "comfortable", value == look.density,
+                               Look(look.theme, look.palette, value), label)
+                        for value, label in ((None, "Comfortable"), ("compact", "Compact")))
+    return (f"<div class=prefs><div class=pref><span class=pref-label id=pref-theme>Theme</span>"
+            f"<div class=segs role=group aria-labelledby=pref-theme>{themes}</div></div>"
+            f"<div class=pref><span class=pref-label id=pref-palette>Palette</span>"
+            f"<div class=swatches role=group aria-labelledby=pref-palette>{swatches}</div></div>"
+            f"<div class=pref><span class=pref-label id=pref-density>Density</span>"
+            f"<div class=segs role=group aria-labelledby=pref-density>{densities}</div></div></div>"
+            "<p class=note>Saved in this browser (with JavaScript); without it, the choice is kept in this page's "
+            "address. States keep the same meaning, label and icon in every palette; camera pictures and snapshots are "
+            "never recoloured.</p>")
 
 
 def _clock(stamp: object, *, date: bool = False) -> str:
@@ -777,6 +853,145 @@ def _identity_counts(live: dict[str, Any]) -> str | None:
         return None
     return (f"known {counts.get('known')} (fresh {counts.get('fresh')}, retained {counts.get('retained')}) · "
             f"unknown {counts.get('unknown')} · uncertain {counts.get('uncertain')} · unresolved {counts.get('unresolved')}")
+
+
+# ---------------------------------------------------------------- recognition (D95)
+
+FACE_FLAG = "Experimental · pending validation"
+FACE_CONTEXT = ("Context only, never an access decision. Unknown means recent faces matched nobody enrolled, not that "
+                "the person is a stranger.")
+UNRESOLVED_TEXT = {  # the core's reasons (identity.state), in plain words
+    "no face visible": "No face is visible on this track.",
+    "no_face": "No face is visible on this track.",
+    "face ownership ambiguous": "A face could belong to more than one person, so it is given to none.",
+    "ambiguous": "A face could belong to more than one person, so it is given to none.",
+    "no face observed yet": "No face has been seen on this track yet.",
+    "face quality too low": "The face was too small or unclear to compare.",
+    "low_quality": "The face was too small or unclear to compare.",
+    "face matches more than one identity": "The face is too close to more than one enrolled identity to choose.",
+    "embedding from an incompatible model": "The face could not be compared (a different model made the enrollment).",
+    "no identities enrolled": "Nobody is enrolled, so no face can be recognized.",
+    "face matched": "One face matched so far; recognition needs consistent matches.",
+    "face matched nobody": "One face matched nobody so far; this needs consistent results.",
+    "face recognition disabled": "Face recognition is off.",
+    "face recognition unavailable": "Face recognition is unavailable.",
+}
+
+
+def _seconds_text(ms: object) -> str | None:
+    return f"{ms / 1000:.1f} s" if isinstance(ms, int) and not isinstance(ms, bool) and ms >= 0 else None
+
+
+def _vote_time(published: object, vote_age_ms: object) -> str:
+    """When the newest face result on a track was observed: its age at the report, and the clock time that implies."""
+    age = _seconds_text(vote_age_ms)
+    if age is None:
+        return "No face result on this track yet."
+    when = ""
+    if isinstance(published, str):  # the report's clock time less a monotonic age: approximate, hence "about"
+        try:
+            observed = datetime.fromisoformat(published.replace("Z", "+00:00")) - timedelta(milliseconds=vote_age_ms)
+            when = f" (about {_clock(observed.isoformat())})"
+        except (ValueError, TypeError, OverflowError):
+            when = ""
+    return f"Newest face result {age} before this report{when}."
+
+
+def _person(entry: Mapping[str, Any], published: object, policy: Mapping[str, Any]) -> str:
+    """One tracked person's recognition state: the track it lives on, the state with its basis, and when its newest
+    face result was observed. A current match is a current claim (D71); a retained identity says it is retained."""
+    track, epoch = entry.get("track_id"), entry.get("stream_epoch")
+    state, basis = entry.get("state"), entry.get("basis")
+    ttl = _number(policy.get("vote_ttl_s"))
+    fresh_s = _number(policy.get("fresh_window_s"))
+    needed = _number(policy.get("confirmations"))
+    who = "an enrolled identity"  # the status carries no identity ID (D61, D95)
+    if state == "known" and basis == "fresh":
+        verdict = _claim(_badge("ok", "Known · current match", glyph="check"),
+                         _badge("off", "Was a current match", glyph="clock"))
+        what = f"Matches {who} ({_e(entry.get('reason'))}; the newest within {_e(fresh_s or '–')} s)."
+    elif state == "known":
+        verdict = _badge("done", "Known · retained", glyph="clock")
+        what = (f"Retained from an earlier match with {who}; no usable face on this track since. Kept on this track "
+                f"only, until its confirming matches are {_e(ttl or '–')} s old or a different result arrives.")
+    elif state == "unknown":
+        verdict = _badge("off", "Unknown" + (" · retained" if basis == "retained" else ""), glyph="help")
+        what = "Recent faces on this track matched nobody enrolled. Not a stranger verdict."
+    elif state == "uncertain":
+        verdict = _badge("warn", "Uncertain", glyph="warn")
+        what = "Recent faces on this track disagree; no identity is shown."
+    else:
+        verdict = _badge("off", "Not recognized", glyph="off")
+        reason = entry.get("reason")
+        what = UNRESOLVED_TEXT.get(str(reason), f"Not recognized: {_e(reason)}.")
+    status = entry.get("track_status")
+    track_text = "confirmed" if status == "confirmed" else "not yet confirmed"
+    if entry.get("predicted"):
+        measured = _seconds_text(entry.get("last_measured_age_ms"))
+        track_text += f"; position predicted, last detected {measured or '–'} before"
+    rule = f" Recognition needs {_e(needed)} consistent face results." if needed and state == "unresolved" else ""
+    return (f'<li class=person data-key="p-{_e(epoch)}-{_e(track)}" data-state="{_e(state)}" '
+            f'data-basis="{_e(basis or "none")}"><div class=who><strong>{icon("user")}Track {_e(track)}</strong>'
+            f"<span class=muted>stream epoch {_e(epoch)} · {_e(track_text)}</span></div>"
+            f"<div class=verdict>{verdict}</div><p class=what>{what}{rule}</p>"
+            f"<p class=when>{_vote_time(published, entry.get('vote_age_ms'))}</p></li>")
+
+
+def _faces(status: Mapping[str, Any]) -> str:
+    """The recognition panel's region (D95): what the runtime derived for each current person, with its basis and
+    observation time, apart from connection health; experimental and pending validation wherever it is shown."""
+    components = status.get("components") or {}
+    live = status.get("live") or {}
+    face = components.get("face") or {}
+    state = face.get("state")
+    # D92: shown wherever face recognition runs before its validation (a --face-validation run, the only way it can run
+    # while its admission is PENDING_VALIDATION); an admitted run would carry no flag.
+    flag = f"<span class=flag>{icon('flask')}{FACE_FLAG}</span>" if _face_experimental(components) else ""
+    if state is None:
+        return (f"<p class=empty>{icon('clock')}<span><strong>Not reported yet.</strong> The runtime has not reported "
+                "face recognition yet.</span></p>")
+    if state != "available" or "faces" not in live:
+        if state == "disabled":
+            title, text, glyph = "Face recognition is off.", "This run does not use face recognition.", "off"
+        else:
+            title, glyph = "Face recognition is unavailable:", "crit"
+            text = f"{face.get('problem') or 'not working'}."
+        return (f"{flag}<p class=empty>{icon(glyph)}<span><strong>{_e(title)}</strong> {_e(text)}</span></p>")
+    validation = (" Validation run: recognition is not validated." if face.get("validation_run") else "")
+    lede = f"<div class=lede>{flag}<p class=muted>{_e(FACE_CONTEXT)}{_e(validation)}</p></div>"
+    video = live.get("video")
+    published = live.get("published_utc")
+    # D71: the panel says so itself once the page is not current (the report below is then dimmed as well); both layers
+    # are one line, so switching between them moves nothing.
+    context = _claim(f"<div class=context>{icon('clock')}<p>Derived by the runtime at {_clock(published)}.</p></div>",
+                     f"<div class='context k-stale'>{icon('clock')}<p>NOT CURRENT: last derived at {_clock(published)}."
+                     "</p></div>", block=True)
+    if video != "fresh":
+        context += (f"<div class='context k-warn'>{icon('warn')}<p>Video is {_e(video or 'not reported')}: what is "
+                    "listed is as the runtime last derived it, not the scene now.</p></div>")
+    policy = face.get("policy") or {}
+    rows = [_person(entry, published, policy) for entry in live.get("faces") or []]
+    if rows:
+        people = f"<ul class=people>{''.join(rows)}</ul>"
+    else:
+        reason = live.get("occupancy_reason")
+        people = (f"<p class=empty>{icon('user')}<span>Nobody is tracked right now"
+                  + (f" ({_e(reason)})" if reason and live.get("occupancy") == "unknown" else "") + ".</span></p>")
+    more = live.get("faces_not_shown")
+    extra = (f"<p class=note>{_e(more)} more tracked people are not listed (the first {len(rows)} by track are).</p>"
+             if isinstance(more, int) and more > 0 else "")
+    report = f"<p class=note>Enrolled identities: {_e(face.get('identities_enrolled'))}.</p>"
+    rules = _details("How recognition is decided", (
+        f"<p>A track becomes known after {_e(_number(policy.get('confirmations')) or '–')} consistent face results "
+        "for the same enrolled identity, and unknown after as many that match nobody. \"Current match\" means the "
+        f"newest of them is at most {_e(_number(policy.get('fresh_window_s')) or '–')} s old at the report; otherwise "
+        "the result is retained, on that track only, until its confirming results are "
+        f"{_e(_number(policy.get('vote_ttl_s')) or '–')} s old. A track that ends takes its result with it; a new "
+        "track starts unresolved. Contradicting results make it uncertain at once.</p>"
+        "<p class=muted>Thresholds, tracking and expiry are the runtime's own and are not changed by this page. Face "
+        "data, similarities, names and identity IDs are never shown here.</p>"),
+        key="faces")
+    return f"{lede}{context}{people}{extra}{report}{rules}"
 
 
 PREVIEW_LABELS = {"live": "LIVE", "stale": "STALE: not current", "offline": "OFFLINE", "starting": "STARTING"}
@@ -929,7 +1144,7 @@ def _chat_state(view: Mapping[str, Any] | None) -> str:
     return f'<div class=row data-chat-state="{_e(state)}">{badge}<span class=muted>{_e(view.get("reason"))}.</span></div>'
 
 
-def status_regions(status: Mapping[str, Any], *, theme: str | None = None) -> dict[str, str]:
+def status_regions(status: Mapping[str, Any], *, theme: Look | str | None = None) -> dict[str, str]:
     """The main page's updatable regions, by name: the full page embeds them, and ``/status.json?page=1`` carries them
     for in-place updates (D73). One renderer for both, so the two can never disagree."""
     runtime = status["runtime"]
@@ -998,13 +1213,14 @@ def status_regions(status: Mapping[str, Any], *, theme: str | None = None) -> di
             body = (f"<span class=inc-meta>{_severity(i['severity'])}{_status(i['status'])}</span>"
                     f"<span class=inc-title>{_e(i['title'])}</span>"
                     f"<span class=inc-meta><span class=mono>{_e(incident_id)}</span></span>{meta}")
+            fields = f'data-status="{_e(i["status"])}" data-severity="{_e(i["severity"])}"'  # D96: the filters' fields
             if isinstance(incident_id, str) and INCIDENT_ID.fullmatch(incident_id):
                 href = _href(f"/incidents/{incident_id}", theme)
-                items.append(f'<li data-key="i-{_e(incident_id)}"><a class=inc href="{_e(href)}">{body}</a>'
+                items.append(f'<li data-key="i-{_e(incident_id)}" {fields}><a class=inc href="{_e(href)}">{body}</a>'
                              f'<button type=button class=peek data-select="{_e(incident_id)}" aria-pressed=false>'
                              f'{icon("info")}<span>Preview</span></button></li>')
             else:  # an ID with no page is plain text
-                items.append(f"<li><div class=inc>{body}</div></li>")
+                items.append(f"<li {fields}><div class=inc>{body}</div></li>")
         incident_list = f"<ol class=inc-list>{''.join(items)}</ol>"
     else:
         incident_list = f"<p class=empty>{icon('check')}No incidents recorded.</p>"
@@ -1047,10 +1263,12 @@ def status_regions(status: Mapping[str, Any], *, theme: str | None = None) -> di
         "live-head": _live_head(view),
         "live-facts": _live_facts(view),
         "caps": _capabilities(live, components, running),
-        "incidents": (f"<div class=phead><h2>{icon('bell')}Incidents</h2><span class=muted>"
-                      f"{_e(incidents.get('unresolved'))} unresolved; latest {MAX_INCIDENTS} shown</span></div>"
-                      f"{incident_list}<p class=note>Waiting to be recorded: {_e(recording.get('pending_signals'))}. "
+        "incidents-meta": (f"<span class=muted data-loaded={len(recent)}>{_e(incidents.get('unresolved'))} unresolved "
+                           f"in the database; the latest {len(recent)} of at most {MAX_INCIDENTS} are loaded here"
+                           "</span>"),
+        "incidents": (f"{incident_list}<p class=note>Waiting to be recorded: {_e(recording.get('pending_signals'))}. "
                       f"Limitation: {_e(durability)}.</p>"),
+        "faces": _faces(status),
         "health": (f"<div class=phead><h2>{icon('shield')}System health</h2>{summary}</div>{problems}"
                    f"<ul class=comp>{component_rows}</ul><p class=note>Last report from the runtime: "
                    f"{_e(runtime.get('state'))}, updated {_clock(runtime.get('updated_utc'))} "
@@ -1067,50 +1285,107 @@ def status_regions(status: Mapping[str, Any], *, theme: str | None = None) -> di
     }
 
 
-def page_document(status: Mapping[str, Any], marker: Mapping[str, Any], *, theme: str | None = None) -> dict[str, Any]:
+def page_document(status: Mapping[str, Any], marker: Mapping[str, Any], *,
+                  theme: Look | str | None = None) -> dict[str, Any]:
     """``/status.json?page=1``: the status, plus what the page needs to update itself in place (D73)."""
     return {**status, "page": {**marker, "regions": status_regions(status, theme=theme),
                                "frame_empty": _frame_empty(status.get("preview"))}}
 
 
-# Basic navigation for the alpha (D82): the status page's sections, in page order; plain links, no script.
-SECTIONS = (("live", "Live view"), ("incidents", "Incidents"), ("chat", "Ask"), ("health", "Health"),
-            ("delivery", "Alerts"))
-SECTIONS_NAV = ('<nav class=jump aria-label="Sections">'
-                + "".join(f'<a href="#{target}">{label}</a>' for target, label in SECTIONS) + "</nav>")
+# Navigation (D96, after D82's section links): the dashboard's sections in page order, as plain links that work without
+# script. With script the section in view is marked as current, the sidebar collapses to a rail on wide screens and
+# becomes a drawer on narrow ones. Every destination is a real section of the page.
+NAV_GROUPS = (
+    ("Monitor", (("live", "Live view", "video"), ("faces", "Recognition", "scan"), ("incidents", "Incidents", "bell"),
+                 ("chat", "Ask", "chat"))),
+    ("System", (("health", "Health", "shield"), ("delivery", "Alerts", "send"))),
+    ("Preferences", (("settings", "Appearance", "sliders"),)),
+)
+SECTIONS = tuple((target, label) for _, items in NAV_GROUPS for target, label, _ in items)
+STATUS_FILTERS = (("open", "Open"), ("acknowledged", "Acknowledged"), ("resolved", "Resolved"),
+                  ("candidate", "Candidate"), ("dismissed", "Dismissed"))
+SEVERITY_FILTERS = (("critical", "Critical"), ("warning", "Warning"), ("info", "Info"))
 
 
-def render_html(status: Mapping[str, Any], *, theme: str | None = None,
-                marker: Mapping[str, Any] | None = None, chat_token: str = "") -> str:
-    regions = status_regions(status, theme=theme)
+def _sidebar(camera: object, look: Look, *, base: str = "", current: str | None = None) -> str:
+    """The sidebar: brand, sections and the camera. ``base`` is "" on the dashboard (links to its own sections) or the
+    dashboard's address from another page; ``current`` marks that page's section."""
+    groups = []
+    for group, items in NAV_GROUPS:
+        links = "".join(
+            f'<li><a href="{_e(base)}#{target}" data-nav={target}'
+            + (' aria-current="page"' if target == current else "")
+            + f">{icon(glyph)}<span class=label>{label}</span><span class=tip aria-hidden=true>{label}</span></a></li>"
+            for target, label, glyph in items)
+        groups.append(f"<p class=group>{group}</p><ul>{links}</ul>")
+    return (f'<aside class=sidebar id=sidebar aria-label="Dashboard navigation"><div class=side-head>'
+            f'<a class=brand href="{_e(_href("/dashboard", look))}"><span class=brand-tile>{icon("logo")}</span>'
+            f"<span class=wordmark>Sentinel</span></a>"
+            f'<button type=button class="icon-btn rail-toggle js-only" id=rail-toggle aria-controls=sidebar '
+            f'aria-expanded=true><span class=vh>Collapse the sidebar</span>{icon("sidebar")}</button>'
+            f'<button type=button class="icon-btn drawer-close js-only" id=drawer-close><span class=vh>Close the menu'
+            f'</span>{icon("close")}</button></div><nav class=nav aria-label="Dashboard sections">{"".join(groups)}</nav>'
+            f'<div class=side-foot><div class=cam-chip>{icon("video")}<span class=cam-text><span>Camera</span>'
+            f"<strong class=mono>{_e(camera)}</strong></span></div></div></aside>"
+            "<div class=scrim id=scrim hidden></div>")
+
+
+def _menu_button() -> str:
+    return (f'<button type=button class="icon-btn menu js-only" id=menu aria-controls=sidebar aria-expanded=false>'
+            f'<span class=vh>Open the menu</span>{icon("menu")}</button>')
+
+
+def _options(choices: tuple[tuple[str, str], ...], everything: str) -> str:
+    return f'<option value="">{everything}</option>' + "".join(f"<option value={v}>{label}</option>" for v, label in choices)
+
+
+def render_html(status: Mapping[str, Any], *, theme: Look | str | None = None,
+                marker: Mapping[str, Any] | None = None, chat_token: str = "", path: str = "/") -> str:
+    """The dashboard (served at "/" and "/dashboard"): the live picture first, recognition beside it, incidents below."""
+    look = _look(theme)
+    regions = status_regions(status, theme=look)
     camera = status["runtime"].get("camera_id")
     view = status.get("preview")
+    path = path if path in PAGE_PATHS else "/"
     return _document(f"Sentinel · {camera}", f"""<a class=skip href="#live">Skip to the live view</a>
-<header class=top>
-<div class=brand>{icon("logo", "ic logo")}<span>Sentinel</span></div>
-<div class=cam><span>Camera</span><strong class=mono>{_e(camera)}</strong></div>
+<div class=app>
+{_sidebar(camera, look)}
+<div class=shell>
+<header class=topbar>
+{_menu_button()}
+<div class=heading><h1>Dashboard</h1><p class=sub>Camera <strong class=mono>{_e(camera)}</strong> · read-only, loopback only</p></div>
 <div class=pills data-region=pills>{regions["pills"]}</div>
-{_themes("/", theme)}
 </header>
-{SECTIONS_NAV}
 <div class=freshbar data-region=fresh>{regions["fresh"]}</div>
 <p class=sync id=sync role=status></p>
 {NOSCRIPT}
-<main class=board>
-<section id=live class="panel live" aria-label="Live view">
-<div class=phead><h2>{icon("video")}Live view</h2><div id=player-state class=player-state role=status></div></div>
+<main class=board id=board>
+<section id=live class="panel live" aria-labelledby=h-live>
+<div class=phead><h2 id=h-live>{icon("video")}Live view</h2><button type=button class="ghost js-only" id=focus-toggle aria-pressed=false>{icon("expand")}<span>Focus</span></button></div>
+<div id=player-state class=player-state role=status></div>
 <div class="report live-report" data-region=live-head>{regions["live-head"]}</div>
 <div id=frame data-live={"on" if (view or {}).get("enabled") else "off"} data-token="{_e(chat_token)}" data-stale-after-ms="{_e(((view or {}).get("bounds") or {}).get("stale_after_ms") or 2000)}">{_live_frame(view)}</div>
-<dl id=player-facts class="facts player-facts" hidden></dl>
+<details class="tech js-only" id=d-delivery><summary>{icon("chevron", "ic chev")}Picture delivery in this browser</summary><div class=body><dl id=player-facts class="facts player-facts" hidden></dl><p class=note>Measured here, from the pictures this page has shown; never sent anywhere.</p></div></details>
 <div class="report live-report" data-region=live-facts>{regions["live-facts"]}</div>
 <div class=report data-region=caps>{regions["caps"]}</div>
 </section>
-<aside id=incidents class="panel incidents report" aria-label=Incidents>
+<section id=faces class="panel faces" aria-labelledby=h-faces>
+<div class=phead><h2 id=h-faces>{icon("scan")}Recognition</h2></div>
+<div class=report data-region=faces>{regions["faces"]}</div>
+</section>
+<section id=incidents class="panel incidents" aria-labelledby=h-incidents>
+<div class=phead><h2 id=h-incidents>{icon("bell")}Incidents</h2><div data-region=incidents-meta>{regions["incidents-meta"]}</div></div>
+<div class="filters js-only" id=inc-filters role=group aria-label="Filter the loaded incidents">
+<label>Status<select id=f-status>{_options(STATUS_FILTERS, "Any status")}</select></label>
+<label>Severity<select id=f-severity>{_options(SEVERITY_FILTERS, "Any severity")}</select></label>
+<p class=count id=f-count aria-live=polite></p>
+</div>
+<p class=empty id=f-empty hidden>{icon("filter")}<span>No loaded incident matches these filters. Only the latest incidents are loaded on this page; older ones are not searched.</span></p>
 <section id=inc-preview class=preview aria-label="Selected incident" aria-live=polite hidden></section>
-<div data-region=incidents>{regions["incidents"]}</div>
-</aside>
-<section id=chat class="panel chat report" aria-label="Ask about the live picture">
-<div class=phead><h2>{icon("chat")}Ask about the live picture</h2></div>
+<div class=report data-region=incidents>{regions["incidents"]}</div>
+</section>
+<section id=chat class="panel chat" aria-labelledby=h-chat><div class=report>
+<div class=phead><h2 id=h-chat>{icon("chat")}Ask about the live picture</h2></div>
 <div data-region=chat-state>{regions["chat-state"]}</div>
 <p class=note>{_e(ADVISORY)}</p>
 <ol id=chat-log class=chat-log aria-live=polite></ol>
@@ -1120,13 +1395,17 @@ def render_html(status: Mapping[str, Any], *, theme: str | None = None,
 <div class=row><button type=submit class=button id=chat-ask disabled>{icon("send")}Ask</button><span id=chat-note class=muted role=status></span></div>
 </form>
 <noscript><p class=note>Chat needs JavaScript.</p></noscript>
+</div></section>
+<section id=health class="panel health" aria-label="System health"><div class=report data-region=health>{regions["health"]}</div></section>
+<section id=delivery class="panel delivery" aria-label="Alert delivery"><div class=report data-region=delivery>{regions["delivery"]}</div></section>
+<section id=settings class="panel settings" aria-labelledby=h-settings>
+<div class=phead><h2 id=h-settings>{icon("sliders")}Appearance</h2></div>
+{_appearance(path, look)}
 </section>
-<section id=health class="panel health report" aria-label="System health"><div data-region=health>{regions["health"]}</div></section>
-<section id=delivery class="panel delivery report" aria-label="Alert delivery"><div data-region=delivery>{regions["delivery"]}</div></section>
 </main>
-<footer class=foot data-region=foot>{regions["foot"]}</footer>""",
-                     theme=theme, page="status", source=_source("/status.json", theme), refresh_s=REFRESH_S,
-                     marker=marker)
+<footer class=foot data-region=foot>{regions["foot"]}</footer>
+</div>
+</div>""", theme=look, page="status", source=_source("/status.json", look), refresh_s=REFRESH_S, marker=marker)
 
 
 APPLICABILITY_NOTE = (
@@ -1206,7 +1485,7 @@ def _ack_tag(status: object, acknowledgment: Mapping[str, Any]) -> str:
     return _badge("off", "Not acknowledged", glyph="bell")
 
 
-def incident_regions(detail: Mapping[str, Any], *, theme: str | None = None) -> dict[str, str]:
+def incident_regions(detail: Mapping[str, Any], *, theme: Look | str | None = None) -> dict[str, str]:
     """One incident page's updatable regions (D73), from ``read_incident``'s document (state available)."""
     incident = detail["incident"]
     linked = detail["linked"]
@@ -1331,27 +1610,31 @@ def incident_regions(detail: Mapping[str, Any], *, theme: str | None = None) -> 
     }
 
 
-def incident_document(detail: Mapping[str, Any], marker: Mapping[str, Any], *, theme: str | None = None) -> dict[str, Any]:
+def incident_document(detail: Mapping[str, Any], marker: Mapping[str, Any], *,
+                      theme: Look | str | None = None) -> dict[str, Any]:
     """``/incidents/<id>.json?page=1``: the incident, plus its page's regions for in-place updates (D73)."""
     return {**detail, "page": {**marker, "regions": incident_regions(detail, theme=theme)}}
 
 
-def render_incident_html(detail: Mapping[str, Any], *, theme: str | None = None,
+def render_incident_html(detail: Mapping[str, Any], *, theme: Look | str | None = None,
                          marker: Mapping[str, Any] | None = None) -> str:
-    """One incident's page, from ``read_incident``'s document (state available)."""
+    """One incident's page, from ``read_incident``'s document (state available), in the dashboard's shell."""
+    look = _look(theme)
     incident = detail["incident"]
-    regions = incident_regions(detail, theme=theme)
+    regions = incident_regions(detail, theme=look)
     path = f"/incidents/{incident['incident_id']}"
+    dashboard = _href("/dashboard", look)
     return _document(f"Sentinel incident {incident['incident_id']}", f"""<a class=skip href="#snapshot">Skip to the snapshot</a>
-<header class=top>
-<div class=brand>{icon("logo", "ic logo")}<span>Sentinel</span></div>
-<a class=back href="{_e(_href("/", theme))}">{icon("back")}Back to status</a>
-<div class=pills><span class=muted>Camera <strong class=mono>{_e(incident["camera_id"])}</strong></span></div>
-{_themes(path, theme)}
+<div class=app>
+{_sidebar(incident["camera_id"], look, base=dashboard, current="incidents")}
+<div class=shell>
+<header class=topbar>
+{_menu_button()}
+<div class=heading><a class=back href="{_e(dashboard)}">{icon("back")}Back to the dashboard</a><h1>Incident</h1><p class=sub>Camera <strong class=mono>{_e(incident["camera_id"])}</strong> · read-only, loopback only</p></div>
 </header>
 <div class=title-block>
 <p class=muted>Incident <span class=mono>{_e(incident["incident_id"])}</span></p>
-<h1>{_e(incident["title"])}</h1>
+<h2>{_e(incident["title"])}</h2>
 <div data-region=title>{regions["title"]}</div>
 </div>
 <p class=sync id=sync role=status></p>
@@ -1365,7 +1648,9 @@ def render_incident_html(detail: Mapping[str, Any], *, theme: str | None = None,
 <section class="panel p-scene" aria-label="Scene evidence"><div class=phead><h2>{icon("chat")}Scene evidence on this incident</h2></div><div data-region=scene>{regions["scene"]}</div></section>
 <section class="panel p-tech" aria-label="Technical provenance"><div data-region=tech>{regions["tech"]}</div></section>
 </main>
-<footer class=foot>Read-only, loopback only (D45).</footer>""", theme=theme, page="incident", source=_source(f"{path}.json", theme),
+<footer class=foot>Read-only, loopback only (D45). Appearance: <a href="{_e(dashboard)}#settings">the dashboard's settings</a>.</footer>
+</div>
+</div>""", theme=look, page="incident", source=_source(f"{path}.json", look),
                      refresh_s=DETAIL_REFRESH_S, marker=marker)
 
 
@@ -1540,13 +1825,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(421, "text/plain; charset=utf-8", b"misdirected request\n")
             return
         parts = urlsplit(self.path)
-        path, theme = parts.path, theme_from_query(parts.query)
+        path, theme = parts.path, look_from_query(parts.query)
         for_page = "page=1" in parts.query.split("&")[:8]  # a page updating itself (D73); exact, never echoed
         if path == TAB_ICON_PATH:
             self._send(200, "image/svg+xml", TAB_ICON)
             return
         if path == SCRIPT_PATH:
             self._send(200, "text/javascript; charset=utf-8", SCRIPT)
+            return
+        if path == HEAD_SCRIPT_PATH:
+            self._send(200, "text/javascript; charset=utf-8", HEAD_SCRIPT)
             return
         if path == LIVE_FRAME_PATH:
             self._send_live_frame(parts.query)
@@ -1564,7 +1852,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_snapshot(snapshot["id"], download=snapshot["kind"] == "/download")
             return
         incident = INCIDENT_PATH.fullmatch(path)
-        if path not in ("/", "/status.json") and incident is None:
+        if path not in (*PAGE_PATHS, "/status.json") and incident is None:
             self._send(404, "text/plain; charset=utf-8", b"not found\n")
             return
         try:
@@ -1592,7 +1880,7 @@ class _Handler(BaseHTTPRequestHandler):
                 body, kind = json.dumps(self.page.status(), indent=2).encode(), "application/json"
             else:
                 body = render_html(self.page.status(with_picture=True, for_page=True), theme=theme,
-                                   marker=self.page.marker(), chat_token=self.page.chat_token).encode()
+                                   marker=self.page.marker(), chat_token=self.page.chat_token, path=path).encode()
                 kind = "text/html; charset=utf-8"
         except Exception:  # noqa: BLE001 - never show exception text
             self._send(500, "text/plain; charset=utf-8", b"status unavailable\n")

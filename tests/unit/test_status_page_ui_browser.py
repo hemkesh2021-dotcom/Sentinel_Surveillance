@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from browser_harness import Browser, Page, headless_browser
+from browser_harness import Browser, Page, headless_browser, wait_until
 from status_fixtures import Camera, Runtime, incident_store
 
 from sentinel import status_page
@@ -28,7 +28,7 @@ from sentinel.storage.database import Database
 
 RECTS = """(() => { const r = id => { const b = document.getElementById(id).getBoundingClientRect();
   return {left: b.left, right: b.right, top: b.top, bottom: b.bottom, width: b.width}; };
-  return {live: r('live'), incidents: r('incidents'), scroll: document.documentElement.scrollWidth,
+  return {live: r('live'), faces: r('faces'), incidents: r('incidents'), scroll: document.documentElement.scrollWidth,
           client: document.documentElement.clientWidth}; })()"""
 
 
@@ -62,28 +62,33 @@ def opened(browser: Browser, url: str, **options: Any) -> Page:
     raise AssertionError("the page did not load")
 
 
-def test_incidents_are_beside_the_camera_on_desktop_and_below_it_on_mobile_with_no_sideways_scroll(
+def test_recognition_is_beside_the_camera_incidents_below_and_nothing_scrolls_sideways(
         browser: Browser, site: dict[str, Any]) -> None:
-    for name, width, height, mobile in (("desktop", 1280, 900, False), ("mobile", 390, 844, True)):
-        for theme in ("light", "dark"):
-            page = opened(browser, f"{site['url']}/?theme={theme}", width=width, height=height, mobile=mobile)
-            try:
+    """D96's hierarchy: the live picture first, recognition beside it (below it on a phone), incidents below; in both
+    themes and both densities, with long content, nothing scrolls sideways (the dashboard and an incident page)."""
+    for name, width, height, mobile in (("desktop", 1440, 900, False), ("mobile", 390, 844, True)):
+        for query in ("?theme=light", "?theme=dark", "?theme=dark&density=compact"):
+            page = opened(browser, f"{site['url']}/dashboard{query}", width=width, height=height, mobile=mobile)
+            try:  # measured after the panels' one entrance (D96), which moves them by a few pixels while it plays
+                assert wait_until(lambda: not page.evaluate("document.documentElement.classList.contains('enter')"), 3.0)
+                time.sleep(0.1)
                 rects = page.evaluate(RECTS)
-                assert rects["scroll"] <= rects["client"], (name, theme, rects)
-                live, incidents = rects["live"], rects["incidents"]
+                assert rects["scroll"] <= rects["client"], (name, query, rects)
+                live, faces, incidents = rects["live"], rects["faces"], rects["incidents"]
                 if mobile:
-                    assert incidents["top"] >= live["bottom"] - 1 and abs(incidents["width"] - live["width"]) < 2, rects
+                    assert faces["top"] >= live["bottom"] - 1 and incidents["top"] >= faces["bottom"] - 1, rects
+                    assert abs(faces["width"] - live["width"]) < 2, rects
                 else:
-                    assert incidents["left"] >= live["right"] - 1 and incidents["top"] < live["bottom"], rects
-                    assert live["width"] > incidents["width"]  # the live view is the larger panel
-                page.save_screenshot(f"status-{name}-{theme}", full=True)
-                detail = opened(browser, f"{site['url']}/incidents/{site['ids'][1]}?theme={theme}",
+                    assert faces["left"] >= live["right"] - 1 and abs(faces["top"] - live["top"]) < 2, rects
+                    assert incidents["top"] >= live["bottom"] - 1 and live["width"] > faces["width"], rects
+                page.save_screenshot(f"status-{name}-{query[1:].replace('&', '-')}", full=True)
+                detail = opened(browser, f"{site['url']}/incidents/{site['ids'][1]}{query}",
                                 width=width, height=height, mobile=mobile)
                 try:
                     sizes = detail.evaluate("({s: document.documentElement.scrollWidth, "
                                             "c: document.documentElement.clientWidth})")
-                    assert sizes["s"] <= sizes["c"], (name, theme, sizes)
-                    detail.save_screenshot(f"incident-{name}-{theme}", full=True)
+                    assert sizes["s"] <= sizes["c"], (name, query, sizes)
+                    detail.save_screenshot(f"incident-{name}-{query[1:].replace('&', '-')}", full=True)
                 finally:
                     detail.close()
             finally:
@@ -99,29 +104,37 @@ def test_light_and_dark_follow_the_browser_unless_the_page_chooses(
     page = opened(browser, f"{site['url']}/{query}", media={"prefers-color-scheme": preference})
     try:
         seen = page.evaluate("""(() => ({bg: getComputedStyle(document.body).backgroundColor,
-            selected: [...document.querySelectorAll('.themes a[aria-current=true]')].map(a => [a.innerText.trim(),
-              getComputedStyle(a).backgroundColor])}))()""")
+            sidebar: getComputedStyle(document.getElementById('sidebar')).backgroundColor,
+            selected: [...document.querySelectorAll('a[data-set=theme][aria-current]')].map(a => a.innerText.trim())}))()""")
         assert seen["bg"] == background
         expected = {"": "Auto", "?theme=dark": "Dark", "?theme=light": "Light"}[query]
-        accent = "rgb(46, 48, 47)" if background == "rgb(247, 239, 229)" else "rgb(237, 220, 201)"
-        assert seen["selected"] == [[expected, accent]]  # the theme's accent (carbon, or cream when dark) marks it
+        assert seen["selected"] == [expected]  # the one marked choice, by its name
+        if background == "rgb(28, 29, 28)":  # dark: the slightly deeper sidebar the maintainer chose (D96)
+            assert seen["sidebar"] == "rgb(24, 25, 24)"
     finally:
         page.close()
 
 
 def test_a_section_link_brings_its_section_into_view_on_a_phone(browser: Browser, site: dict[str, Any]) -> None:
+    """On a phone the sections are in the drawer: the menu opens it, a link closes it and brings its section into view,
+    and the section is marked as current."""
     page = opened(browser, f"{site['url']}/", width=390, height=844, mobile=True)
     try:
-        page.evaluate("document.querySelector('.jump a[href=\"#chat\"]').click()")
+        assert page.evaluate("getComputedStyle(document.getElementById('sidebar')).visibility") == "hidden"
+        page.evaluate("document.getElementById('menu').click()")
+        assert wait_until(lambda: page.evaluate("document.activeElement.dataset.nav || ''") == "live", 3.0)
+        page.evaluate("document.querySelector('.nav a[data-nav=chat]').click()")
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             seen = page.evaluate("""(() => { const r = document.getElementById('chat').getBoundingClientRect();
-              return {hash: location.hash, top: Math.round(r.top), sideways: document.documentElement.scrollWidth
-                      > document.documentElement.clientWidth}; })()""")
-            if seen["hash"] == "#chat" and 0 <= seen["top"] <= 40:
+              return {hash: location.hash, top: Math.round(r.top), open: document.documentElement.classList.contains(
+                'drawer-open'), current: (document.querySelector('.nav a[aria-current]') || {dataset: {}}).dataset.nav,
+                sideways: document.documentElement.scrollWidth > document.documentElement.clientWidth}; })()""")
+            if seen["hash"] == "#chat" and 0 <= seen["top"] <= 150 and not seen["open"]:
                 break
             time.sleep(0.05)
-        assert seen["hash"] == "#chat" and 0 <= seen["top"] <= 40 and not seen["sideways"], seen
+        assert seen["hash"] == "#chat" and 0 <= seen["top"] <= 150 and not seen["open"] and not seen["sideways"], seen
+        assert seen["current"] == "chat"
     finally:
         page.close()
 
@@ -172,7 +185,7 @@ PLAYER = "document.getElementById('player-state').innerText.trim()"
 
 
 def test_reduced_motion_turns_transitions_off_and_keeps_the_freshness_watchdog(browser: Browser, site: dict[str, Any]) -> None:
-    for preference, transition in (("no-preference", "0.18s"), ("reduce", "0s")):
+    for preference, transition in (("no-preference", "0.16s"), ("reduce", "0s")):
         page = opened(browser, f"{site['url']}/", media={"prefers-reduced-motion": preference})
         try:
             started = time.monotonic()
