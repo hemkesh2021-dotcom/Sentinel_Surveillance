@@ -100,6 +100,11 @@ ICONS = {
     "filter": '<path d="M4 5h16l-6.2 7.3v5.9l-3.6 1.8v-7.7z"/>',
     # D99: the feature controls
     "toggle": '<rect x="2.5" y="7" width="19" height="10" rx="5"/><circle class="solid" cx="16.5" cy="12" r="3"/>',
+    # D100: viewing preferences (this browser only)
+    "fit": '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M7.5 9.5v5h9v-5z"/>',
+    "actual": '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M8.5 9.5h1.4v5M14.1 9.5h1.4v5"/>',
+    "eye": '<path d="M2.8 12s3.4-6.2 9.2-6.2 9.2 6.2 9.2 6.2-3.4 6.2-9.2 6.2S2.8 12 2.8 12z"/>'
+           '<circle cx="12" cy="12" r="2.6"/>',
 }
 
 SPRITE = (

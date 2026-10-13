@@ -1180,6 +1180,60 @@
   });
   markChoices();
 
+  // ------------------------------------------------------------------ viewing preferences (D100): this browser only
+
+  // The live picture's size (fit, or its own pixels) and which optional panels show. Saved with the appearance; never
+  // sent anywhere and never a feature change: hiding Ask does not turn chat off, and the picture is the same one.
+  const OPTIONAL = ["chat", "health", "delivery"];
+  const hidden = () => (root.dataset.hide || "").split(" ").filter((name) => OPTIONAL.includes(name));
+
+  function markViewing() {
+    const view = root.dataset.view === "actual" ? "actual" : "fit";
+    for (const button of document.querySelectorAll("[data-view]")) {
+      button.setAttribute("aria-pressed", button.dataset.view === view ? "true" : "false");
+    }
+    const hide = hidden();
+    for (const button of document.querySelectorAll("button[data-panel]")) {
+      const gone = hide.includes(button.dataset.panel);
+      button.setAttribute("aria-pressed", gone ? "false" : "true");
+      const word = button.querySelector(".pstate");
+      if (word) word.textContent = gone ? ": hidden" : ": shown";
+    }
+  }
+
+  function setHidden(list) {
+    const unique = OPTIONAL.filter((name) => list.includes(name));
+    if (unique.length) root.dataset.hide = unique.join(" ");
+    else delete root.dataset.hide;
+    save({hide: unique});
+    markViewing();
+  }
+
+  document.addEventListener("click", (event) => {
+    const view = event.target.closest("button[data-view]");
+    if (view && (view.dataset.view === "fit" || view.dataset.view === "actual")) {
+      if (view.dataset.view === "actual") root.dataset.view = "actual";
+      else delete root.dataset.view;
+      save({view: view.dataset.view});
+      markViewing();
+      return;
+    }
+    const panel = event.target.closest("button[data-panel]");
+    if (panel && OPTIONAL.includes(panel.dataset.panel)) {
+      const hide = hidden();
+      setHidden(hide.includes(panel.dataset.panel) ? hide.filter((n) => n !== panel.dataset.panel)
+        : [...hide, panel.dataset.panel]);
+      return;
+    }
+    const show = event.target.closest("button[data-show]");
+    if (show && OPTIONAL.includes(show.dataset.show)) {
+      setHidden(hidden().filter((n) => n !== show.dataset.show));
+      const target = document.getElementById(show.dataset.show);
+      if (target) target.scrollIntoView({block: "start"});
+    }
+  });
+  markViewing();
+
   // ------------------------------------------------------------------ the sidebar: rail, drawer, the section in view
 
   const sidebar = document.getElementById("sidebar");

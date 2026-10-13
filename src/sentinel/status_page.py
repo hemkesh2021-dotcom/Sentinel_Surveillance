@@ -811,15 +811,51 @@ def _appearance(path: str, theme: Look | str | None) -> str:
     densities = "".join(choice("seg", "density", value or "comfortable", value == look.density,
                                Look(look.theme, look.palette, value), label)
                         for value, label in ((None, "Comfortable"), ("compact", "Compact")))
+    # D100, script only: the picture's size and which optional panels show, in this browser; neither changes what the
+    # runtime does (the picture is the same one, and a hidden panel's feature keeps running)
+    views = "".join(f'<button type=button class=seg data-view={value} aria-pressed={"true" if value == "fit" else "false"}>'
+                    f"{icon(glyph)}{label}</button>" for value, label, glyph in VIEW_CHOICES)
+    panels = "".join(f'<button type=button class=seg data-panel={name} aria-pressed=true>{icon("eye")}{label}'
+                     f"<span class=pstate>: shown</span></button>" for name, label in OPTIONAL_PANELS)
     return (f"<div class=prefs><div class=pref><span class=pref-label id=pref-theme>Theme</span>"
             f"<div class=segs role=group aria-labelledby=pref-theme>{themes}</div></div>"
             f"<div class=pref><span class=pref-label id=pref-palette>Palette</span>"
             f"<div class=swatches role=group aria-labelledby=pref-palette>{swatches}</div></div>"
             f"<div class=pref><span class=pref-label id=pref-density>Density</span>"
-            f"<div class=segs role=group aria-labelledby=pref-density>{densities}</div></div></div>"
+            f"<div class=segs role=group aria-labelledby=pref-density>{densities}</div></div>"
+            f"<div class='pref js-only'><span class=pref-label id=pref-view>Live picture</span>"
+            f"<div class=segs role=group aria-labelledby=pref-view>{views}</div></div>"
+            f"<div class='pref js-only'><span class=pref-label id=pref-panels>Optional panels</span>"
+            f"<div class=segs role=group aria-labelledby=pref-panels>{panels}</div></div></div>"
             "<p class=note>Saved in this browser (with JavaScript); without it, the choice is kept in this page's "
             "address. States keep the same meaning, label and icon in every palette; camera pictures and snapshots are "
-            "never recoloured.</p>")
+            "never recoloured.</p>"
+            "<p class='note js-only'>The live picture's size and the optional panels are this browser's only: they "
+            "change no feature (a hidden panel's feature keeps running; use Features for that), and the freshness bar, "
+            "NOT CURRENT and any warning a hidden panel holds always stay in view.</p>")
+
+
+VIEW_CHOICES = (("fit", "Fit", "fit"), ("actual", "Actual size", "actual"))  # D100
+OPTIONAL_PANELS = (("chat", "Ask"), ("health", "Health"), ("delivery", "Alerts"))  # D100: panels a viewer may hide
+
+
+def _hidden_panels(status: Mapping[str, Any]) -> str:
+    """D100: what a hidden panel would warn about, kept in view: one line per optional panel that holds a warning,
+    shown (by the stylesheet) only while that panel is hidden in this browser, with a button to show it again."""
+    lines = []
+    degraded = status.get("degraded") or []
+    if degraded:
+        first = str(degraded[0])
+        more = f" and {len(degraded) - 1} more" if len(degraded) > 1 else ""
+        lines.append(("health", f"Health is hidden here, and the runtime reports a problem: {first}{more}."))
+    totals = (status.get("delivery") or {}).get("totals") or {}
+    failed, ambiguous = totals.get("failed") or 0, totals.get("ambiguous") or 0
+    if failed or ambiguous:
+        lines.append(("delivery", f"Alerts is hidden here: {failed} failed (needs the operator) and {ambiguous} "
+                                  "ambiguous alert deliveries."))
+    return "".join(f'<div class="hw k-warn" data-key="hw-{name}" data-panel={name}>{icon("warn")}<p>{_e(text)}</p>'
+                   f'<button type=button class=ghost data-show={name}>{icon("eye")}Show</button></div>'
+                   for name, text in lines)
 
 
 def _clock(stamp: object, *, date: bool = False) -> str:
@@ -1222,11 +1258,11 @@ def _features(status: Mapping[str, Any]) -> str:
         asked = (f"<p class=freq>Requested: <strong>{_e(requested or '–')}</strong> · now: "
                  f"<strong>{_e(word.lower())}</strong></p>") if enabled else ""
         rows.append(f'<li class=feature data-key="f-{name}" data-actual="{_e(actual)}">'
-                    f"<div class=fhead><span class=fname>{_e(label)}</span><span class=fstate>{badge}</span>"
-                    f"{control}</div><p class=fwhat>{_e(what)}</p>"
+                    f"<div class=fhead><span class=ftitle><span class=fname>{_e(label)}</span>"
+                    f"<span class=fstate>{badge}</span></span>{control}</div><p class=fwhat>{_e(what)}</p>"
                     f'<p class=fwhy id="fw-{name}">{_e(_feature_why(name, item))}</p>{asked}{flag}{restart}</li>')
     running = {name for name, item in items.items() if isinstance(item, Mapping) and item.get("actual") == "running"}
-    combined = (f"<div class='context k-warn'>{icon('warn')}<p>Face recognition and chat are both on. They have been "
+    combined = (f"<div class='alertbox k-warn'>{icon('warn')}<p>Face recognition and chat are both on. They have been "
                 "checked separately only; together they are not validated.</p></div>"
                 if {"face", "chat"} <= running else "")
     log = (block or {}).get("log") if enabled else None
@@ -1569,6 +1605,7 @@ def status_regions(status: Mapping[str, Any], *, theme: Look | str | None = None
                                 key="alerts")),
         "chat-state": _chat_state(status.get("chat")),
         "features": _features(status),
+        "hidden": _hidden_panels(status),
         "foot": (f"Loopback only (D45); read only, except advisory chat (D74) and, with --feature-controls, the "
                  f"operator's feature controls (D99). Generated at {_clock(generated)}."),
     }
@@ -1646,11 +1683,12 @@ def render_html(status: Mapping[str, Any], *, theme: Look | str | None = None,
 <div class=pills data-region=pills>{regions["pills"]}</div>
 </header>
 <div class=freshbar data-region=fresh>{regions["fresh"]}</div>
+<div class="hidden-panels js-only" data-region=hidden>{regions["hidden"]}</div>
 <p class=sync id=sync role=status></p>
 {NOSCRIPT}
 <main class=board id=board>
 <section id=live class="panel live" aria-labelledby=h-live>
-<div class=phead><h2 id=h-live>{icon("video")}Live view</h2><button type=button class="ghost js-only" id=focus-toggle aria-pressed=false>{icon("expand")}<span>Focus</span></button></div>
+<div class=phead><h2 id=h-live>{icon("video")}Live view</h2><div class=tools><div class="segs view-size js-only" role=group aria-label="Picture size in this browser"><button type=button class=seg data-view=fit aria-pressed=true>{icon("fit")}Fit</button><button type=button class=seg data-view=actual aria-pressed=false>{icon("actual")}Actual size</button></div><button type=button class="ghost js-only" id=focus-toggle aria-pressed=false>{icon("expand")}<span>Focus</span></button></div></div>
 <div id=player-state class=player-state role=status></div>
 <div class="report live-report" data-region=live-head>{regions["live-head"]}</div>
 <div id=frame data-live={"on" if (view or {}).get("enabled") else "off"} data-token="{_e(chat_token)}" data-stale-after-ms="{_e(((view or {}).get("bounds") or {}).get("stale_after_ms") or 2000)}">{_live_frame(view)}</div>

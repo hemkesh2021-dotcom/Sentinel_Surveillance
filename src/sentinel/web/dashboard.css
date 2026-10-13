@@ -275,9 +275,9 @@ ul.features { display: grid; gap: 10px; margin: 12px 0 0; padding: 0; list-style
 @media (min-width: 900px) { ul.features { grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); } }
 .feature { display: grid; gap: 6px; align-content: start; padding: 12px 14px; border-radius: var(--radius-m);
   background: var(--raised); border: 1px solid var(--line); box-shadow: var(--raise-s); }
-.feature .fhead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.feature .fhead { display: flex; align-items: flex-start; gap: 10px; }
+.feature .ftitle { display: flex; flex: 1; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
 .feature .fname { font-weight: 720; }
-.feature .fstate { margin-right: auto; }
 .feature .fwhat { color: var(--muted); font-size: .86rem; }
 .feature .fwhy, .feature .freq { font-size: .9rem; }
 .feature .flag { justify-self: start; }
@@ -299,6 +299,25 @@ ul.features { display: grid; gap: 10px; margin: 12px 0 0; padding: 0; list-style
   border-radius: var(--radius-m); background: var(--sunken); color: var(--ink); font: inherit; letter-spacing: .08em;
   box-shadow: var(--recess); }
 .unlock .row, .unlocked { margin-top: 4px; }
+
+/* ---------------------------------------------------------------- viewing preferences (D100), this browser only.
+   Actual size: the picture at its own pixels (at most 640x480 from the device), scrolled within its frame when wider
+   than the panel; Fit (the default) scales it to the panel. A hidden optional panel goes, with its sidebar link; any
+   warning it holds is shown in the strip under the freshness bar instead, so no warning is ever hidden. */
+.view-size { margin-right: 4px; }
+.seg .pstate { color: var(--muted); font-weight: 600; }
+html[data-view=actual] .live .frame { overflow: auto; max-height: 78vh; }
+html[data-view=actual] .live .frame img, html[data-view=actual] .live .frame canvas {
+  width: auto; max-width: none; max-height: none; margin-inline: auto; }
+html[data-hide~=chat] #chat, html[data-hide~=chat] .nav a[data-nav=chat] { display: none; }
+html[data-hide~=health] #health, html[data-hide~=health] .nav a[data-nav=health] { display: none; }
+html[data-hide~=delivery] #delivery, html[data-hide~=delivery] .nav a[data-nav=delivery] { display: none; }
+.hidden-panels { display: grid; gap: 8px; margin: 8px var(--gutter) 0; }
+.hidden-panels:empty { display: none; }
+.hw { display: none; align-items: center; gap: 10px; padding: 9px 13px; border-radius: var(--radius-m);
+  border: 1px solid var(--line-strong); }
+.hw p { flex: 1; font-size: .9rem; }
+html[data-hide~=health] .hw[data-panel=health], html[data-hide~=delivery] .hw[data-panel=delivery] { display: flex; }
 .faces .empty { margin-top: 12px; }
 
 /* ---------------------------------------------------------------- incidents */
@@ -394,7 +413,9 @@ html.js .peek[aria-pressed=true] { background: var(--sunken); box-shadow: var(--
   border: 1px solid transparent; color: var(--ink); font-weight: 650; font-size: .88rem; text-decoration: none;
   transition: background-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease); }
 .seg:hover { background: var(--panel); }
-.seg[aria-current] { background: var(--raised); border-color: var(--border); box-shadow: var(--raise-s); }
+.seg[aria-current], .seg[aria-pressed=true] { background: var(--raised); border-color: var(--border);
+  box-shadow: var(--raise-s); }
+button.seg { background: transparent; font: inherit; font-weight: 650; font-size: .88rem; cursor: pointer; }  /* D100 */
 .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); gap: 8px; }
 .swatch { display: flex; align-items: center; gap: 12px; min-height: var(--row); padding: 8px 12px;
   border-radius: var(--radius-m); background: var(--raised); border: 1px solid var(--line); color: var(--ink);
