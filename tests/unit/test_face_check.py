@@ -2774,6 +2774,185 @@ def test_an_evaluation_session_is_read_with_the_provenance_its_block_writes(mods
     assert reading.ok == complete and counts.startswith("PASS" if complete else "FAIL")
 
 
+# ---------------------------------------------------------------- D91: the capture's offline recheck and its acceptance
+
+SESSION = "exp-20261014T080000Z"
+
+
+@pytest.fixture
+def basis(mods, face_run):
+    """The F1 basis the experiment builds on: a run whose own F1 did not validate and its accepted corrected reading."""
+    out, done = recheck(face_run)
+    assert done.returncode == 0 and accept(mods, face_run, out)[0] == 0
+    return SimpleNamespace(f1=face_run.run / "f1", gate=(face_run.run, face_run.identity, face_run.root),
+                           identity=face_run.identity, root=face_run.root)
+
+
+def capture_session(mods, tmp_path, accepted_scene, basis, *, account=None, before: str = "absent",
+                    tamper=None) -> SimpleNamespace:
+    """A session as x-B (twice), x-F, x-C, x-CE at c3a37f0 and x-H left exp-20261013T103725Z: the capture block's
+    framing line counted nonconforming by c3a37f0's profile, so its reading said not usable; then sealed. ``tamper``
+    changes the capture's files before its reading and the seal."""
+    session = tmp_path / "runs" / SESSION
+    session.mkdir(parents=True)
+    out, _ = experiment_run(mods, tmp_path, accepted_scene, kind="capture",
+                            faces=lambda t: FACE if int(t) % 3 else DRIFT)
+    finish(mods, out, account=account or account_v7(), cues=COMPARISON_CUES, cued_format=7, duration_s=300.0,
+           captures=COMPARISON_CAPTURES, provenance=block_provenance("framing_baseline=this_capture"))
+    capture = Path(shutil.move(out, session / "xc"))
+    counts = capture / "secret-counts-identity.txt"
+    counts.write_text(counts.read_text().replace("provenance.txt nonconforming=0", "provenance.txt nonconforming=1"))
+    if tamper is not None:
+        tamper(capture)
+    original = mods.check.read_capture(capture, basis.f1, basis.gate)
+    assert not original.ok
+    (capture / "check.txt").write_text("\n".join([*original.lines, "face-capture: the working gallery is not usable"])
+                                       + "\n")
+    working = tmp_path / "identity-experiment"
+    working.mkdir()
+    (working / "gallery.sealed").write_bytes(b"a sealed working gallery")
+    digest = hashlib.sha256(b"a sealed working gallery").hexdigest()
+    (session / "provenance.txt").write_text(
+        f"pin_commit={PIN}\nXB_exit=0\nXB_exit=1\nworking_gallery_before={before}\nXF_exit=0\n"
+        f"working_gallery_after={digest}\nXC_exit=0\nXC_check_exit=1\noriginal_enrollment_unchanged=yes\n"
+        f"working_copy_removed=yes\nworking_gallery_at_end={digest}\n")
+    seal(session)
+    return SimpleNamespace(session=session, working=working, out=basis.root / f"{SESSION}-xc-{PIN[:7]}-20261014T090000Z")
+
+
+def capture_recheck(cs, basis, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    return bash_counts("face_recheck_capture", str(cs.session), str(basis.f1), str(basis.gate[0]),
+                       str(basis.identity), str(basis.root), str(cs.working), str(cs.out), PIN, env=env)
+
+
+def accept_capture(mods, cs, basis, typed: str | None = None) -> tuple[int, str]:
+    said: list[str] = []
+    line = typed if typed is not None else f"ACCEPT {SESSION} capture"
+    code = mods.recheck.accept_capture(cs.out, cs.session, basis.f1, *basis.gate, cs.working,
+                                       ask=io.StringIO(line + "\n"), say=said.append)
+    return code, "\n".join(said)
+
+
+def test_the_capture_recheck_reads_the_sealed_capture_again_and_changes_nothing(mods, tmp_path, accepted_scene,
+                                                                                basis) -> None:
+    cs = capture_session(mods, tmp_path, accepted_scene, basis)
+    before = tree(cs.session, cs.working, basis.identity)
+    done = capture_recheck(cs, basis)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "face-capture-recheck: validated" in done.stdout and "Jane" not in done.stdout
+    assert tree(cs.session, cs.working, basis.identity) == before  # the session, both galleries' files unchanged
+    assert sorted(p.name for p in cs.out.iterdir()) == ["README.txt", "SHA256SUMS", "check.txt", "provenance.txt",
+                                                         "secret-counts-names.txt"]
+    assert oct(cs.out.stat().st_mode & 0o777) == "0o700" and all(oct(p.stat().st_mode & 0o777) == "0o600"
+                                                                   for p in cs.out.iterdir())
+    check = (cs.out / "check.txt").read_text()
+    assert all(x.startswith(("PASS ", "DESCRIPTIVE ")) for x in check.splitlines()[:-1])
+    exits = line_for(check, "the session's own result")
+    assert '"XB_exit": ["0", "1"]' in exits and '"XC_check_exit": ["1"]' in exits and "not usable" in exits
+    assert '"identical": true' in line_for(check, "every original capture item")
+    for carried in ("passphrase counts carried forward", "camera userinfo counts carried forward"):
+        assert '"rescanned": false' in line_for(check, carried)
+    names = (cs.out / "secret-counts-names.txt").read_text()
+    assert "provenance.txt nonconforming=0" in names and "=1" not in names
+    provenance = mods.check._key_values(cs.out / "provenance.txt")
+    assert provenance["session_manifest_check"] == "verified" and provenance["pin_commit"] == PIN
+    assert "XC_check_exit=1" in (cs.out / "README.txt").read_text()
+    assert not any("Jane" in p.read_text() for p in cs.out.iterdir())
+    assert mods.check._manifest(cs.out)[1] == []
+    code, said = accept_capture(mods, cs, basis, typed="ACCEPT")
+    assert code == 1 and "nothing was written" in said and not (cs.out / "acceptance.txt").exists()
+    code, said = accept_capture(mods, cs, basis)
+    assert code == 0, said
+    fields = mods.check._key_values(cs.out / "acceptance.txt")
+    assert fields["accepted_reading"] == "capture-recheck" and fields["session"] == SESSION
+    assert fields["working_gallery_sha256"] == hashlib.sha256(b"a sealed working gallery").hexdigest()
+    assert fields["recheck_check_sha256"] == hashlib.sha256((cs.out / "check.txt").read_bytes()).hexdigest()
+    assert oct((cs.out / "acceptance.txt").stat().st_mode & 0o777) == "0o600"
+    assert accept_capture(mods, cs, basis)[0] == 1  # never overwritten
+    assert tree(cs.session, cs.working, basis.identity) == before
+
+
+def _gallery_replaced(cs) -> None:
+    (cs.working / "gallery.sealed").write_bytes(b"another gallery")
+
+
+def _session_file_changed(cs) -> None:
+    with (cs.session / "xc" / "run.err").open("a") as handle:
+        handle.write("edited after the seal\n")
+
+
+def _original_item_differs(cs) -> None:  # the session's own reading says something this code does not reproduce
+    check = cs.session / "xc" / "check.txt"
+    check.write_text(check.read_text().replace("PASS clean shutdown", "FAIL clean shutdown", 1))
+    (cs.session / "SHA256SUMS").unlink()
+    seal(cs.session)
+
+
+@pytest.mark.parametrize(("case", "item"), [
+    ("other_face", "every original capture item other than the privacy counts"),  # a real failure stays one
+    ("name_in_notes", "names counted again"),  # a name in the capture's evidence is still found
+    ("passphrase", "passphrase counts carried forward"),
+    ("gallery_before", "the working gallery is the one this capture wrote"),
+    ("gallery_replaced", "the working gallery is the one this capture wrote"),
+    ("session_changed", "the session's evidence unchanged"),
+    ("original_differs", "every original capture item other than the privacy counts"),
+])
+def test_the_capture_recheck_fails_closed(mods, tmp_path, accepted_scene, basis, case, item) -> None:
+    def passphrase(capture: Path) -> None:
+        counts = capture / "secret-counts-identity.txt"
+        counts.write_text(counts.read_text().replace("run.jsonl passphrase=0", "run.jsonl passphrase=1"))
+
+    account = {"other_face": account_v7(other_faces_in_view="yes"),
+               "name_in_notes": account_v7(notes="Jane stayed at the desk")}.get(case)
+    cs = capture_session(mods, tmp_path, accepted_scene, basis, account=account,
+                         before="present" if case == "gallery_before" else "absent",
+                         tamper=passphrase if case == "passphrase" else None)
+    {"gallery_replaced": _gallery_replaced, "session_changed": _session_file_changed,
+     "original_differs": _original_item_differs}.get(case, lambda cs: None)(cs)
+    done = capture_recheck(cs, basis)
+    assert done.returncode == 1 and "face-capture-recheck: not validated" in done.stdout
+    assert line_for((cs.out / "check.txt").read_text(), item).startswith("FAIL")
+    assert accept_capture(mods, cs, basis)[0] == 1 and not (cs.out / "acceptance.txt").exists()
+
+
+def test_an_acceptance_refuses_a_changed_recheck_or_gallery(mods, tmp_path, accepted_scene, basis) -> None:
+    cs = capture_session(mods, tmp_path, accepted_scene, basis)
+    assert capture_recheck(cs, basis).returncode == 0
+    check = cs.out / "check.txt"
+    kept = check.read_bytes()
+    check.write_bytes(kept + b"\n")
+    code, said = accept_capture(mods, cs, basis)
+    assert code == 1 and "changed since it was written" in said
+    check.write_bytes(kept)
+    provenance = cs.out / "provenance.txt"  # edited and resealed: the reading no longer validates
+    kept_provenance, kept_sums = provenance.read_bytes(), (cs.out / "SHA256SUMS").read_bytes()
+    provenance.write_bytes(kept_provenance.replace(b"userinfo_counts=carried_forward", b"userinfo_counts=recounted"))
+    (cs.out / "SHA256SUMS").unlink()
+    seal(cs.out)
+    code, said = accept_capture(mods, cs, basis)
+    assert code == 1 and "no longer validates" in said
+    provenance.write_bytes(kept_provenance)
+    (cs.out / "SHA256SUMS").write_bytes(kept_sums)
+    _gallery_replaced(cs)
+    code, said = accept_capture(mods, cs, basis)
+    assert code == 1 and "no longer validates" in said and not (cs.out / "acceptance.txt").exists()
+
+
+def test_the_capture_recheck_refuses_a_wrong_name_an_unsealed_session_or_a_second_directory(
+        mods, tmp_path, accepted_scene, basis) -> None:
+    cs = capture_session(mods, tmp_path, accepted_scene, basis)
+    wrong = SimpleNamespace(**{**vars(cs), "out": basis.root / f"{SESSION}-f1-{PIN[:7]}-20261014T090000Z"})
+    done = capture_recheck(wrong, basis)
+    assert done.returncode == 2 and "<session>-xc-<pin>-<UTC>" in done.stderr and not wrong.out.exists()
+    assert capture_recheck(cs, basis).returncode == 0
+    done = capture_recheck(cs, basis)
+    assert done.returncode == 2 and "exists" in done.stderr
+    (cs.session / "SHA256SUMS").unlink()
+    other = SimpleNamespace(**{**vars(cs), "out": basis.root / f"{SESSION}-xc-{PIN[:7]}-20261014T100000Z"})
+    done = capture_recheck(other, basis)
+    assert done.returncode == 2 and "no SHA256SUMS" in done.stderr and not other.out.exists()
+
+
 def test_a_genuine_session_is_compared_face_by_face_and_replayed_under_each_gallery(mods, tmp_path, accepted_scene,
                                                                                    f1_list) -> None:
     from sentinel.identity.gallery import GalleryDocument, GalleryIdentity

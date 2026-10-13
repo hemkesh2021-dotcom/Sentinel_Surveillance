@@ -2000,6 +2000,92 @@ def f1_gate(run: Path, identity_dir: Path, recheck_root: Path | None) -> tuple[b
                   f"f1_accepted_utc={accepted['accepted_utc']}", f"f1_identity_id={identity}"]
 
 
+# ---------------------------------------------------------------- D91: the capture's offline recheck
+
+CAPTURE_EVIDENCE = ("provenance.txt", "xc/provenance.txt", "xc/account.txt", "xc/result.json", "xc/run.jsonl",
+                    "xc/check.txt", "xc/secret-counts-identity.txt", "xc/secret-counts-camera.txt")
+CAPTURE_USABLE = "face-capture: the working gallery may be used in the experiment (it validates nothing)"
+CAPTURE_RECHECK_VERDICT = "face-capture-recheck: validated"
+COUNT_ITEM_LABELS = ("camera userinfo counts:", "passphrase, name and nonconforming counts:")  # _counts_items' items
+SESSION_EXITS = ("XB_exit", "XF_exit", "XC_exit", "XC_check_exit")
+CARRIED_COUNTS = {"xc/secret-counts-identity.txt": ("passphrase", "passphrase"),
+                  "xc/secret-counts-camera.txt": ("userinfo", "camera userinfo")}
+
+
+def _values(path: Path, key: str) -> list[str]:
+    """Every value of ``key`` in a ``key=value`` file, in order (a block run twice appends its exit twice)."""
+    return [line.split("=", 1)[1] for line in path.read_text().splitlines()
+            if line.startswith(f"{key}=")] if path.is_file() else []
+
+
+def read_capture_recheck(recheck: Path, session: Path, f1: Path, gate: tuple[Path, Path, Path | None],
+                         working_gallery: Path) -> Reading:
+    """A corrected capture reading of an enrollment-experiment session (D91), made afterwards: the session's own
+    result stays as recorded. Every capture item but the two privacy counts is read again from the sealed evidence and
+    must be what the session's own reading said; the names are counted again with every file read against the
+    current profiles; the passphrase and camera userinfo counts, which search every byte whatever the profiles say,
+    are carried forward from the session's own counts files; and the working gallery must still be the file the
+    capture wrote."""
+    r = Reading()
+    capture = session / "xc"
+    listed, problems = _manifest(session)
+    unlisted = [e for e in CAPTURE_EVIDENCE if e not in (listed or {})]
+    r.item("the session's evidence unchanged: its SHA256SUMS verifies every file, lists the capture's evidence, counts "
+           "and reading, and nothing was added", {"problems": problems, "not_listed": unlisted},
+           listed is not None and not problems and not unlisted)
+    r.describe("the session's own result and block exits, kept as recorded (a block run twice appears twice)",
+               {**{k: _values(session / "provenance.txt", k) for k in SESSION_EXITS},
+                "xc/check.txt": _last(capture / "check.txt")})
+    original = (capture / "check.txt").read_text().splitlines() if (capture / "check.txt").is_file() else []
+    fresh = read_capture(capture, f1, gate).lines
+
+    def others(lines: list[str]) -> list[str]:
+        return [x for x in lines if not x.startswith("face-capture:")
+                and not x.split(" ", 1)[-1].startswith(COUNT_ITEM_LABELS)]
+
+    same = bool(others(original)) and others(original) == others(fresh)
+    judged = [x for x in others(fresh) if not x.startswith("DESCRIPTIVE ")]
+    r.item("every original capture item other than the privacy counts is reproduced unchanged by this code, and every "
+           "judged one passes", {"items": len(others(fresh)), "judged": len(judged), "identical": same},
+           same and bool(judged) and all(x.startswith("PASS ") for x in judged))
+    expected = {p.name for p in capture.iterdir() if p.is_file() and p.name not in NOT_COUNTED} \
+        if capture.is_dir() else set()
+    value, passed = _count_check(_counts(recheck, NAME_COUNTS), expected, ("name", "nonconforming"))
+    r.item("names counted again, with every file read against the current profiles: every capture evidence file "
+           "counted with each, all 0", value, passed and bool(expected))
+    carried_sha = {}
+    for source, (key, label) in CARRIED_COUNTS.items():
+        digest = carried_sha[source] = _sha256(session / source)
+        in_manifest = listed is not None and listed.get(source) == digest
+        carried = _counts(capture, Path(source).name)
+        if isinstance(carried, dict):
+            carried = {k: v for k, v in carried.items() if k.rsplit(" ", 1)[1] == key}
+        value, passed = _count_check(carried, expected, (key,))
+        if isinstance(value, dict):
+            value.update(source=source, sha256=digest, verified_by_session_manifest=in_manifest, rescanned=False)
+        r.item(f"{label} counts carried forward from the capture's own counts file, not rescanned (they search every "
+               "byte, whatever the profiles say): the file verified by the session's SHA256SUMS, every capture "
+               "evidence file counted, all 0", value, passed and in_manifest and bool(expected))
+    now = _sha256(working_gallery / "gallery.sealed")
+    before, after, at_end = (_values(session / "provenance.txt", f"working_gallery_{k}") for k in
+                             ("before", "after", "at_end"))
+    r.item("the working gallery is the one this capture wrote: absent before it, and the same file now as after the "
+           "capture and at the session's end", {"before": before, "present_now": now is not MISSING,
+                                                  "same_as_after_capture": [x == now for x in after],
+                                                  "same_as_at_end": [x == now for x in at_end]},
+           now is not MISSING and before == ["absent"] and after == [now] and at_end == [now])
+    want = {"session": session.name, "session_manifest_sha256": _sha256(session / "SHA256SUMS"),
+            "working_gallery_sha256": now, "names": "recounted", "passphrase_counts": "carried_forward",
+            "userinfo_counts": "carried_forward",
+            "carried_identity_counts_sha256": carried_sha["xc/secret-counts-identity.txt"],
+            "carried_camera_counts_sha256": carried_sha["xc/secret-counts-camera.txt"]}
+    recorded = _key_values(recheck / "provenance.txt")
+    got = {key: recorded.get(key, MISSING) for key in want}
+    r.item("the recheck's provenance names this session, its manifest, the working gallery as it is now and what was "
+           "carried forward", got, got == want and now is not MISSING)
+    return r
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="part", required=True)
@@ -2075,8 +2161,7 @@ def main(argv: list[str] | None = None) -> int:
             reading = read_capture(args.directory, args.f1, gate_args)
             for line in reading.lines:
                 print(line)
-            print("face-capture: " + ("the working gallery may be used in the experiment (it validates nothing)"
-                                      if reading.ok else "the working gallery is not usable"))
+            print(CAPTURE_USABLE if reading.ok else "face-capture: the working gallery is not usable")
             return 0 if reading.ok else 1
         reading, verdict = read_f2(args.directory, args.f1, gate_args), "face-f2"
     for line in reading.lines:

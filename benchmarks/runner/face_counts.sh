@@ -32,3 +32,10 @@ face_recheck_f1() {  # RUN_DIR IDENTITY_DIR RECHECK_DIR PIN: the offline F1 rech
   printf 'name=%s\0' "${N1-}" "${N2-}" | "${FACE_PY[@]}" benchmarks/runner/face_recheck.py run "$1" \
     --identity-dir "$2" --out "$3" --pin "$4" --commit "$(git rev-parse HEAD)"
 }
+
+face_recheck_capture() {  # SESSION F1_DIR RUN_DIR IDENTITY_DIR RECHECK_ROOT WORKING_GALLERY RECHECK_DIR PIN: the offline
+  # recheck of an enrollment-experiment capture (D91); only the names are rescanned
+  printf 'name=%s\0' "${N1-}" "${N2-}" | "${FACE_PY[@]}" benchmarks/runner/face_recheck.py capture "$1" --f1 "$2" \
+    --run "$3" --identity-dir "$4" --recheck-root "$5" --working-gallery "$6" --out "$7" --pin "$8" \
+    --commit "$(git rev-parse HEAD)"
+}
