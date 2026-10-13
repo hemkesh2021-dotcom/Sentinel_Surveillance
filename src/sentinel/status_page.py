@@ -1727,7 +1727,7 @@ def render_html(status: Mapping[str, Any], *, theme: Look | str | None = None,
 <div class=phead><h2 id=h-features>{icon("toggle")}Features</h2></div>
 <p class=note>{_e(FEATURES_NOTE)}</p>
 <form id=controls-unlock class="unlock js-only" autocomplete=off data-token="{_e(chat_token)}" hidden>
-<label for=control-key>Control key <span class=muted>(printed for the operator when the run starts; in its data directory's <code>{CONTROL_KEY_NAME}</code> file)</span></label>
+<label for=control-key>Control key <span class=muted>(this run's, in its data directory's <code>{CONTROL_KEY_NAME}</code> file on the device, readable only by its owner; never shown here)</span></label>
 <div class=row><input id=control-key name=key type=password inputmode=text autocomplete=off autocapitalize=characters spellcheck=false maxlength=40 required><button type=submit class=button>{icon("shield")}Unlock</button></div>
 </form>
 <div class="row unlocked js-only" id=controls-unlocked hidden><span class=muted>Unlocked in this tab only; the key is kept in this tab's memory and forgotten on reload.</span><button type=button class=ghost id=controls-lock>Lock</button></div>
