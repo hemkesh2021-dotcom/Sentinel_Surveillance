@@ -118,6 +118,7 @@ from .adapters import (
     resolve,
 )
 from .alerts.outbox import Notifier, OutboxWorker
+from .features import APPLIED, FEATURES, REFUSED, UNCHANGED, Change, FeatureControls
 from .alerts.telegram import NotifierUnavailable, TelegramNotifier
 from .config import CaptureConfig, NotificationsConfig, SentinelConfig
 from .contracts import FrameKey, FrameRef, StreamIdentity, TrackStatus
@@ -336,6 +337,7 @@ class DemoRuntime:
         chat_admission: ChatAdmission = CHAT_ADMISSION,
         chat_validation: bool = False,
         pressure: Callable[[], int | None] = read_pressure,
+        feature_controls: bool = False,
     ) -> None:
         if tracker is None and detector_problem is None:
             detector_problem = "detector_not_configured"
@@ -400,6 +402,14 @@ class DemoRuntime:
                 run=chat_run if chat_usable else None,
                 assess=lambda frame: assess_frame(frame, capture.connected, clock.mono(), watching, config.freshness),
                 stale_after_s=config.freshness.stale_after_s, gate=self._chat_gate, validation_run=chat_validation)
+        # D99: what the operator turned off at runtime (Features); everything this run started starts on
+        self._face_on = True
+        self._snapshots_on = True
+        self._controls = FeatureControls(clock, {
+            "face": face is not None, "scene": scene is not None,
+            "chat": self._chat is not None and self._chat.usable,
+            "live_view": self._preview is not None, "snapshots": snapshots is not None,
+        }) if feature_controls else None
         self._frames: OrderedDict[FrameKey, FrameRef] = OrderedDict()
         self._pending: deque[tuple[IncidentSignal, FrameKey | None, _Shot | None]] = deque()
         self._retry_at_ns = 0
@@ -437,6 +447,11 @@ class DemoRuntime:
     def chat(self) -> ChatService | None:
         """The status page's chat (D74); None when it is off."""
         return self._chat
+
+    @property
+    def controls(self) -> FeatureControls | None:
+        """The status page's feature controls (D99); None without --feature-controls."""
+        return self._controls
 
     # ------------------------------------------------------------ lifecycle
 
@@ -503,6 +518,7 @@ class DemoRuntime:
     # ------------------------------------------------------------ one step
 
     def step(self, timeout_s: float | None = None) -> None:
+        self._apply_features()
         captured = self._slot.take(self._tick_s if timeout_s is None else timeout_s)
         connected = self._capture.connected
         if captured is None:
@@ -527,6 +543,102 @@ class DemoRuntime:
             self._handle(None)
         self._observe_chat_gate()
         self._refresh_status()
+
+    # ------------------------------------------------------------ D99: features turned on and off at runtime
+
+    def _apply_features(self) -> None:
+        """Apply the operator's waiting changes, in order, on this loop thread (the only place features change)."""
+        if self._controls is None:
+            return
+        for change in self._controls.take():
+            if self._state is not RuntimeState.RUNNING:
+                self._controls.done(change, REFUSED)
+                continue
+            self._controls.done(change, APPLIED if self._set_feature(change) else UNCHANGED)
+            self._refresh_status(force=True)
+
+    def _set_feature(self, change: Change) -> bool:
+        """Pause or resume one feature this run started; False if it already was so. Nothing loads or unloads."""
+        name, on = change.feature, change.on
+        if name == "face" and self._face is not None and on != self._face_on:
+            self._face_on = on
+            self._core.set_face_recognition(Capability.AVAILABLE if on else Capability.DISABLED)
+            if not on:
+                self._face.worker.discard_pending()
+            return True
+        if name == "scene" and self._scene is not None and on != self._core.scene_on:
+            self._core.set_scene_analysis(on)
+            return True
+        if name == "chat" and self._chat is not None and on == self._chat.operator_off:
+            self._chat.set_operator_off(not on)
+            return True
+        if name == "live_view" and self._preview is not None and on == self._preview.paused:
+            self._preview.set_paused(not on)
+            return True
+        if name == "snapshots" and self._snapshots is not None and on != self._snapshots_on:
+            self._snapshots_on = on
+            return True
+        return False
+
+    def drain_control_records(self) -> list[dict[str, Any]]:
+        """D99: one line per change the loop applied (or found unchanged, or refused), in order."""
+        return [] if self._controls is None else self._controls.drain_records()
+
+    def _features_view(self) -> dict[str, Any]:
+        """D99: each feature's requested and actual state, the actual one read from the component itself."""
+        assert self._controls is not None
+        return {"accepting": self._state is RuntimeState.RUNNING,
+                "items": {name: self._feature_item(name) for name in FEATURES}, **self._controls.view()}
+
+    def _feature_item(self, name: str) -> dict[str, Any]:
+        controls = self._controls
+        assert controls is not None
+        item: dict[str, Any] = {"requested": "on" if controls.requested(name) else "off",
+                                "switchable": controls.switchable(name), "problem": None, "validation": None}
+
+        def state(actual: str, why: str, problem: str | None = None) -> dict[str, Any]:
+            return {**item, "actual": actual, "why": why, "problem": problem}
+
+        if name == "face" and self._face is not None:
+            item["validation"] = "pending_validation"  # the face admission is PENDING_VALIDATION (D61, D92)
+        if name == "chat" and self._chat is not None:
+            item["validation"] = "validation_run" if self._chat.summary().get("validation_run") else (
+                None if self._chat.usable else "not_admitted")
+        started = {"face": self._face, "scene": self._scene, "chat": self._chat, "live_view": self._preview,
+                   "snapshots": self._snapshots}[name]
+        if started is None:
+            problem = {"face": self._face_problem, "scene": self._scene_problem}.get(name)
+            return state("unavailable", "failed_at_start", problem) if problem else state("off", "not_started")
+        if name == "chat" and not self._chat.usable:  # type: ignore[union-attr]
+            return state("unavailable", "not_admitted", self._chat.availability()["reason"])  # type: ignore[union-attr]
+        if controls.waiting(name):
+            return state("starting" if controls.requested(name) else "stopping", "pending")
+        if name == "face":
+            if self._face_on:
+                alive = self._face.worker.status()["state"] == "running"  # type: ignore[union-attr]
+                return state("running", "running") if alive else state("error", "worker_stopped")
+            return state("stopping", "finishing") if self._face.worker.busy else state("off", "turned_off")  # type: ignore[union-attr]
+        if name == "scene":
+            lane = self._core.lane
+            if self._core.scene_on:
+                problem = self._scene_status().get("problem")
+                return state("error", "server_not_ready", problem) if problem else state("running", "running")
+            return state("stopping", "finishing") if lane is not None and lane.in_flight else state("off", "turned_off")
+        if name == "chat":
+            if self._chat.operator_off:  # type: ignore[union-attr]
+                return state("off", "turned_off")
+            available = self._chat.availability()  # type: ignore[union-attr]
+            if available["state"] == "paused":
+                return state("busy", "paused_by_gate", available["reason"])
+            return state("running", "running") if available["state"] == "available" else \
+                state("unavailable", "not_admitted", available["reason"])
+        if name == "live_view":
+            return state("off", "turned_off") if self._preview.paused else state("running", "running")  # type: ignore[union-attr]
+        writer = self._snapshots.status()  # type: ignore[union-attr]
+        if self._snapshots_on:
+            return state("error", "writer_problem", writer.get("problem")) if writer.get("problem") else \
+                state("running", "running")
+        return state("stopping", "finishing") if writer.get("queued", 0) else state("off", "turned_off")
 
     def _observe_chat_gate(self) -> None:
         """D77: one pressure sample (and the scene deadline misses so far) for chat's gate, at most once a second; a
@@ -569,7 +681,7 @@ class DemoRuntime:
             self._last_frame_problem = None
             self._core.set_detector(Capability.AVAILABLE)
             output = self._core.on_frame(frame, result.persons, connected)
-            if self._face is not None:
+            if self._face is not None and self._face_on:  # D99: not offered while turned off
                 tick = self._face.worker.consider(frame, result.persons, captured.image)  # copies it if offered
                 if tick is not None:
                     self._keep_record(tick_record(frame, result.persons, tick, self._identity_schema))
@@ -639,6 +751,8 @@ class DemoRuntime:
         """D70: the image of exactly ``source``, if still held and within the bound; else why not."""
         if self._snapshots is None or source is None:
             return None
+        if not self._snapshots_on:  # D99: turned off: recorded as missing, saying why; no image is held
+            return _Shot(source, self._frames.get(source), None, "snapshots_off")
         held = self._recent.get(source) if self._recent is not None else None
         frame, image = held if held is not None else (self._frames.get(source), None)
         if image is None and self._scene is not None:
@@ -750,6 +864,8 @@ class DemoRuntime:
             "records": {key: value for key, value in sorted(self.counters.items())
                         if key.startswith(("record_", "annotation_", "enrichment_"))},
         }
+        if self._controls is not None:  # D99: only with --feature-controls, as every new output key
+            snapshot["features"] = self._features_view()
         snapshot["degraded"] = degradation(snapshot)
         with self._status_lock:
             self._snapshot = snapshot
@@ -787,9 +903,12 @@ class DemoRuntime:
             if status.state.value != "ready":
                 problem = f"server_{status.state.value}"
         lane = self._core.lane
+        paused = lane is not None and not self._core.scene_on  # D99: turned off in Features; the model stays loaded
         return {
-            "state": (Capability.UNAVAILABLE if problem else Capability.AVAILABLE).value,
+            "state": (Capability.UNAVAILABLE if problem else Capability.DISABLED if paused
+                      else Capability.AVAILABLE).value,
             "problem": problem,
+            **({"paused": True} if paused else {}),
             "server": server,
             "worker": dict(sorted(self._scene.analyzer.counters.items())),
             "lane": dict(sorted(lane.counters.items())) if lane is not None else {},
@@ -800,8 +919,9 @@ class DemoRuntime:
             state = Capability.DISABLED if self._face_problem is None else Capability.UNAVAILABLE
             return {"state": state.value, "problem": self._face_problem}
         return {
-            "state": Capability.AVAILABLE.value,
+            "state": (Capability.AVAILABLE if self._face_on else Capability.DISABLED).value,
             "problem": None,
+            **({} if self._face_on else {"paused": True}),  # D99: turned off in Features; loaded, not analysing
             "validation_run": self._face.validation_run,
             **({"detection": self._face.detection} if self._face.detection != DETECTION_DEEPFACE else {}),
             **({"experiment": self._face.experiment} if self._face.experiment is not None else {}),
@@ -865,7 +985,8 @@ class DemoRuntime:
                    for basis in ("fresh", "retained")},
             },
             "published_utc": live.published_utc.isoformat(),
-            **(self._face_rows(live, self._face.continuity is not None) if self._face is not None else {}),
+            **(self._face_rows(live, self._face.continuity is not None)
+               if self._face is not None and self._face_on else {}),  # D99: no rows while turned off
             "scene": live.scene.value,
             "scene_reason": live.scene_reason,
             "scene_report": None if report is None else {
@@ -992,6 +1113,7 @@ class RunOptions:
     snapshots: SnapshotPolicy | None = None  # D70: incident snapshots under data_dir/snapshots; None: off (default)
     chat: bool = False  # D74: advisory chat on the status page; off by default, and unavailable unless admitted
     chat_validation: bool = False  # D77: --chat-validation: chat may ask the model in this guarded run, not admitted
+    feature_controls: bool = False  # D99: --feature-controls: the page may pause and resume what this run started
 
 
 @dataclass(frozen=True)
@@ -1510,6 +1632,7 @@ def assemble(
             face=face, face_problem=face_problem, enrollment=None if gallery is None else gallery.enrollment(),
             notifier_problems=notifier_problems, live_preview=options.live_preview, encode=devices.encode,
             snapshots=snapshots, chat=options.chat, chat_validation=options.chat_validation,
+            feature_controls=options.feature_controls,
             chat_run=(devices.chat_request(config.scene_server.port, config.scene_server.request_timeout_s)
                       if options.chat and scene is not None and devices.chat_request is not None else None),
         )
@@ -1517,6 +1640,8 @@ def assemble(
             startup["live_preview"] = runtime.preview.bounds()
         if runtime.chat is not None:
             startup["chat"] = runtime.chat.availability()
+        if runtime.controls is not None:  # D99: which features this run can pause and resume (never the key)
+            startup["feature_controls"] = {name: runtime.controls.switchable(name) for name in FEATURES}
     except BaseException:
         if server is not None:
             server.stop(10.0)

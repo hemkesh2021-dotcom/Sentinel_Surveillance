@@ -138,7 +138,8 @@ def test_the_sidebar_links_each_section_of_the_page_in_page_order() -> None:
     targets = re.findall(r'<a href="#([a-z-]+)" data-nav=\1><svg[^>]*><use href="#i-[a-z]+"/></svg>'
                          r'<span class=label>([^<]+)</span>', nav)
     assert targets == [("live", "Live view"), ("faces", "Recognition"), ("incidents", "Incidents"), ("chat", "Ask"),
-                       ("health", "Health"), ("delivery", "Alerts"), ("settings", "Appearance")]
+                       ("features", "Features"), ("health", "Health"), ("delivery", "Alerts"),  # D99: Features
+                       ("settings", "Appearance")]
     positions = [page.index(f"<section id={target} ") for target, _ in targets]
     assert positions == sorted(positions) and page.index("<nav class=nav") < positions[0]
     assert re.findall(r"<p class=group>([^<]+)</p>", nav) == ["Monitor", "System", "Preferences"]
@@ -305,12 +306,15 @@ def test_the_main_page_puts_recognition_beside_the_camera_and_incidents_below_wi
     page = render_html(build_status({"runtime": {"state": "running", "camera_id": "cam-1"}},
                                     read_store(tmp_path / "sentinel.db"), NOW))
     order = re.findall(r'<section id=([\w-]+) class="panel', page)
-    assert order == ["live", "faces", "incidents", "chat", "health", "delivery", "settings"]  # the phone's order
+    assert order == ["live", "faces", "incidents", "chat", "features", "health", "delivery",  # the phone's order
+                     "settings"]  # D99: Features before health
     assert '<a class=skip href="#live">' in page
     assert all(f'href="/incidents/{i}"' in page for i in ids)
-    assert page.count("<details class=tech") == 2  # the runtime's counters, the alert rows (the live view adds one)
-    assert re.search(r'\.board \{[^}]*grid-template-areas: "live" "faces" "incidents" "chat" "health" "delivery" '
-                     r'"settings"', STYLE)
-    assert '"live faces" "live chat" "incidents health" "incidents delivery" "settings settings"' in STYLE
+    # the runtime's counters, the alert rows and (D99) how features are chosen at launch; the live view adds one
+    assert page.count("<details class=tech") == 3
+    assert re.search(r'\.board \{[^}]*grid-template-areas: "live" "faces" "incidents" "chat" "features" "health" '
+                     r'"delivery" "settings"', STYLE)  # D99: Features before health
+    assert ('"live faces" "live chat" "incidents health" "incidents delivery" "features features"\n'
+            '                         "settings settings"') in STYLE
     # A panel never carries the watchdog's .report and the entrance animation together (D96).
     assert not re.search(r'class="panel [^"]*\breport\b', page)

@@ -166,12 +166,13 @@ html[data-rail=compact] .nav a:hover .tip, html[data-rail=compact] .nav a:focus-
 /* ---------------------------------------------------------------- panels and the board */
 .board { display: grid; gap: var(--gap); padding: 12px var(--gutter) 26px; grid-template-columns: minmax(0, 1fr);
   align-items: start;
-  grid-template-areas: "live" "faces" "incidents" "chat" "health" "delivery" "settings"; }
+  grid-template-areas: "live" "faces" "incidents" "chat" "features" "health" "delivery" "settings"; }
 .board > .panel { scroll-margin-top: 84px; }
 .panel { min-width: 0; overflow-wrap: anywhere; padding: var(--pad) calc(var(--pad) + 2px); border-radius: var(--radius);
   background: var(--panel); border: 1px solid var(--line); box-shadow: var(--raise); }
 .live { grid-area: live; } .faces { grid-area: faces; } .incidents { grid-area: incidents; } .chat { grid-area: chat; }
 .health { grid-area: health; } .delivery { grid-area: delivery; } .settings { grid-area: settings; }
+.features { grid-area: features; }
 .phead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px;
   margin-bottom: 14px; }
 .phead h2 { display: flex; align-items: center; gap: 9px; }
@@ -181,12 +182,14 @@ html[data-rail=compact] .nav a:hover .tip, html[data-rail=compact] .nav a:focus-
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-top: 12px; }
 @media (min-width: 760px) {
   .board { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    grid-template-areas: "live live" "faces faces" "incidents chat" "health delivery" "settings settings"; }
+    grid-template-areas: "live live" "faces faces" "incidents chat" "features features" "health delivery"
+                         "settings settings"; }
 }
 @media (min-width: 1180px) {
   /* The camera leads; recognition sits beside it, then the scene assistant; incidents below. */
-  .board { grid-template-columns: minmax(0, 1.75fr) minmax(330px, 1fr); grid-template-rows: auto 1fr auto auto auto;
-    grid-template-areas: "live faces" "live chat" "incidents health" "incidents delivery" "settings settings"; }
+  .board { grid-template-columns: minmax(0, 1.75fr) minmax(330px, 1fr); grid-template-rows: auto 1fr auto auto auto auto;
+    grid-template-areas: "live faces" "live chat" "incidents health" "incidents delivery" "features features"
+                         "settings settings"; }
 }
 
 /* The camera's focus view (D96): the live picture and recognition only; the page's freshness bar and recognition's
@@ -264,6 +267,38 @@ html[data-focus=live] .live .frame img, html[data-focus=live] .live .frame canva
 .unconfirmed .note { margin-top: 4px; }
 .unconfirmed .person { background: transparent; box-shadow: none; }
 
+/* ---------------------------------------------------------------- features (D99): runtime controls, apart from
+   appearance. A switch shows the REQUESTED state by its knob's position and its own text (for assistive technology);
+   the actual state is the badge beside it, read from the runtime. */
+.features > .note:first-of-type { margin-top: 0; }
+ul.features { display: grid; gap: 10px; margin: 12px 0 0; padding: 0; list-style: none; }
+@media (min-width: 900px) { ul.features { grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); } }
+.feature { display: grid; gap: 6px; align-content: start; padding: 12px 14px; border-radius: var(--radius-m);
+  background: var(--raised); border: 1px solid var(--line); box-shadow: var(--raise-s); }
+.feature .fhead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.feature .fname { font-weight: 720; }
+.feature .fstate { margin-right: auto; }
+.feature .fwhat { color: var(--muted); font-size: .86rem; }
+.feature .fwhy, .feature .freq { font-size: .9rem; }
+.feature .flag { justify-self: start; }
+.feature .steps { margin: 6px 0 0; padding-left: 1.3em; display: grid; gap: 4px; }
+.switch { position: relative; flex: none; width: 52px; height: 30px; padding: 0; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--sunken); box-shadow: var(--recess);
+  transition: background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease); }
+.switch .knob { position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%;
+  background: var(--raised); border: 1px solid var(--line-strong); box-shadow: var(--raise-s);
+  transition: transform var(--t-fast) var(--ease); }
+.switch[aria-checked=true] { background: var(--marker); border-color: var(--marker); }
+.switch[aria-checked=true] .knob { transform: translateX(22px); }
+.switch[aria-checked=true]::after { content: ""; position: absolute; left: 11px; top: 9px; width: 2px; height: 10px;
+  border-radius: 1px; background: var(--raised); }
+.switch:disabled { cursor: not-allowed; opacity: .55; }
+.unlock { display: grid; gap: 8px; margin-top: 12px; }
+.unlock label { font-weight: 680; }
+.unlock input { min-width: min(100%, 20ch); flex: 1 1 18ch; padding: 9px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius-m); background: var(--sunken); color: var(--ink); font: inherit; letter-spacing: .08em;
+  box-shadow: var(--recess); }
+.unlock .row, .unlocked { margin-top: 4px; }
 .faces .empty { margin-top: 12px; }
 
 /* ---------------------------------------------------------------- incidents */

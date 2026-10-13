@@ -128,7 +128,8 @@ class Capture:
 class Loop:
     def __init__(self, tmp_path: Path, *, analyze=analyze_with(vec(0.97, 0.1, 0.0, 0.05)), face_problem=None,
                  with_face: bool = True, validation: bool = True, comparator=None,
-                 detection: str = "deepface", shadow=None, capture=None, continuity=None) -> None:
+                 detection: str = "deepface", shadow=None, capture=None, continuity=None,
+                 feature_controls: bool = False) -> None:
         self.clock = FakeClock(utc=NOW)
         self.config = parse_config({"config_version": 1, "camera": {"id": "cam-1"}})
         self.slot = LatestFrame()
@@ -143,7 +144,7 @@ class Loop:
             incidents=IncidentService(self.db, self.clock, incidents=self.config.incidents,
                                       notifications=self.config.notifications),
             tracker=PersonTracker(self.tracker), face=face, face_problem=face_problem,
-            enrollment=GALLERY.enrollment(), status_refresh_s=0.0)
+            enrollment=GALLERY.enrollment(), status_refresh_s=0.0, feature_controls=feature_controls)
         self.runtime.start()
 
     def frame(self, persons=PERSON) -> None:
@@ -915,3 +916,62 @@ def test_a_continuity_runs_breaks_come_before_the_transitions_they_cause_and_fit
     assert face_evidence.read(out / "run.jsonl", "f2").nonconforming == []
     assert face_evidence.read(out / "status-n1.json", "f2").nonconforming == []
     loop.close()
+
+
+# ---------------------------------------------------------------- D99: face recognition turned off and on at runtime
+
+
+def test_face_turned_off_presents_nothing_earlier_as_current_and_on_again_starts_unresolved(tmp_path) -> None:
+    loop = Loop(tmp_path, feature_controls=True)
+    for _ in range(40):  # three matching face ticks: known on track 1
+        loop.frame()
+    assert loop.runtime.snapshot()["live"]["faces"][0]["state"] == "known"
+    loop.runtime.drain_identity_records()
+    assert loop.runtime.controls.request("face", "off")[0] == 202
+    loop.frame()
+    status = loop.runtime.snapshot()
+    assert status["components"]["face"]["state"] == "disabled" and status["components"]["face"]["paused"] is True
+    assert "faces" not in status["live"] and status["live"]["face_recognition"] == "disabled"
+    assert status["live"]["identity"]["known"] == 0  # nothing earlier is presented as current
+    ended = [r for r in loop.runtime.drain_identity_records() if r["identity"] == "transition"]
+    assert [(r["from"], r["to"], r["reason"]) for r in ended] == [("known", "unresolved", "face recognition disabled")]
+    offered = loop.worker.status()["counters"]["offered"]
+    for _ in range(30):  # two seconds: no frame is offered, so no face is analysed
+        loop.frame()
+    assert loop.worker.status()["counters"]["offered"] == offered
+    assert status["features"]["items"]["face"]["validation"] == "pending_validation"
+    assert loop.runtime.controls.request("face", "on")[0] == 202
+    loop.frame()
+    (row,) = loop.runtime.snapshot()["live"]["faces"]
+    assert row["state"] == "unresolved"  # every earlier vote was forgotten
+    for _ in range(40):
+        loop.frame()
+    assert loop.runtime.snapshot()["live"]["faces"][0]["state"] == "known"  # from new matches only
+    loop.close()
+
+
+def test_a_face_result_in_flight_when_face_is_turned_off_is_ignored() -> None:
+    from sentinel.contracts import TrackStatus
+    from sentinel.contracts import TrackObservation as Observation
+    from sentinel.identity.matching import EnrolledIdentity, Enrollment
+    from sentinel.runtime import EdgeCore
+
+    clock = FakeClock()
+    stamper = FrameStamper("cam-1", clock)
+    stream = stamper.connect()
+    enrollment = Enrollment(model_revision="synthetic", dimension=4, identities=(
+        EnrolledIdentity(identity_id="idn-00000000000a", prototypes=((1.0, 0.0, 0.0, 0.0),)),))
+    core = EdgeCore(parse_config({"config_version": 1, "camera": {"id": "cam-1"}}), clock, None,
+                    face_recognition=Capability.AVAILABLE, enrollment=enrollment)
+    clock.advance(0.1)
+    frame = stamper.stamp(native_width=640, native_height=480, pixel_format=PixelFormat.BGR)
+    person = Observation.detected(frame, track_id=1, box=NormalizedBox(x1=0.15, y1=0.2, x2=0.32, y2=0.85),
+                                  confidence=0.9, status=TrackStatus.CONFIRMED)
+    core.on_frame(frame, [person], stream)
+    core.set_face_recognition(Capability.DISABLED)  # turned off while that frame's analysis runs
+    face = FaceObservation(frame=frame.key, box=FACE_BOX, quality=0.95, embedding=(0.99, 0.1, 0.0, 0.0))
+    output = core.on_face_outcome(frame, [person], [face], stream)
+    assert output.face_result.outcome == "ignored_face_unavailable" and output.face_result.persons == ()
+    core.set_face_recognition(Capability.AVAILABLE)
+    clock.advance(0.1)
+    assert core.tick(stream).state.people[0].identity.value == "unresolved"

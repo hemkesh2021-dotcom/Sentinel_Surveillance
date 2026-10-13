@@ -90,11 +90,31 @@ class SceneLane:
         self._enrichment: tuple[FrameRef, str] | None = None
         self._last_periodic_ns: int | None = None
         self._timed_out: OrderedDict[str, AnalysisJob] = OrderedDict()
+        self._paused = False  # D99: turned off at runtime; nothing new is submitted
         self.counters: Counter[str] = Counter()
 
     @property
     def in_flight(self) -> AnalysisJob | None:
         return self._in_flight
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    def set_paused(self, paused: bool) -> list[Evidence]:
+        """D99: scene analysis turned off (or on again) at runtime. Paused, nothing new is submitted: a job in flight
+        still ends by its own deadline, and a waiting enrichment request is skipped for its incident, saying why.
+        Returns that skipped evidence."""
+        self._paused = paused
+        out: list[Evidence] = []
+        if paused and self._enrichment is not None:
+            self.counters["enrichment_skipped_paused"] += 1
+            out.append(self._skipped(self._job(JobPurpose.ENRICHMENT, *self._enrichment),
+                                     "skipped: scene analysis turned off"))
+            self._enrichment = None
+        if not paused:
+            self._last_periodic_ns = None  # the next live frame is checked at once, from nothing
+        return out
 
     def on_frame(self, frame: FrameRef, live: StreamIdentity | None) -> list[Evidence]:
         """Call for every new frame of the live stream, whether or not anyone is in it."""
@@ -110,6 +130,10 @@ class SceneLane:
         A replaced request is skipped, and says so in evidence for its own incident.
         """
         out: list[Evidence] = []
+        if self._paused:  # D99: never queued while scene analysis is off
+            self.counters["enrichment_skipped_paused"] += 1
+            return [self._skipped(self._job(JobPurpose.ENRICHMENT, frame, incident_id),
+                                  "skipped: scene analysis turned off")]
         if self._enrichment is not None:
             self.counters["enrichment_replaced"] += 1
             evicted = self._job(JobPurpose.ENRICHMENT, *self._enrichment)
@@ -177,6 +201,7 @@ class SceneLane:
                 out.extend(self._submit(self._job(JobPurpose.ENRICHMENT, source, incident_id)))
         if (
             self._in_flight is None
+            and not self._paused
             and frame is not None
             and stream_relation(frame.stream, live) is Applicability.CURRENT
             and (

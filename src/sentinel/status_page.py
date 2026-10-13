@@ -1,4 +1,5 @@
-"""Loopback-only, read-only status page for ``sentinel run`` (D-2; demo only).
+"""Loopback-only status page for ``sentinel run`` (D-2; demo only): read only, except advisory chat (D74) and, in a run
+with ``--feature-controls``, the operator's feature controls (D99), each refused unless it comes from this page.
 
 It stands in for V2-17/V2-18 at the Oct 20 demo and replaces neither: there are
 no sessions, roles, API or media. It is reached over an SSH port forward.
@@ -58,6 +59,13 @@ no sessions, roles, API or media. It is reached over an SSH port forward.
   watchdog rules always arrive with their markup, and the CSP allows it by its
   SHA-256 and no other inline style. Green is used for current claims only.
   Camera frames and snapshots are never filtered or recoloured.
+- **Feature controls (D99; only with ``sentinel run --feature-controls``).** POST ``/features/unlock`` and
+  ``/features`` pause and resume what the run started (features.FeatureControls; the runtime loop applies each change
+  and reports the actual state). Besides everything POST /chat needs from this page, each carries the operator's
+  control key, which the runtime writes to its data directory's CONTROL_KEY_NAME file (0600) and never prints, logs
+  or puts in a page: reaching the page through the SSH tunnel authorizes nothing. Payloads are exact; KEY_FAILURES_ALLOWED
+  wrong keys within KEY_FAILURE_WINDOW_S lock every control for KEY_LOCKOUT_S; refusals are counted, never echoed. Chat
+  has no way to reach them.
 - **Advisory chat (D74; only with ``sentinel run --chat``).** POST ``/chat``
   asks the admitted scene model about the newest live frame, and GET
   ``/chat/<job>`` reads its answer; both are this page's only non-GET route
@@ -105,6 +113,7 @@ project's pydantic models. No new dependency; portable.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import html
@@ -117,10 +126,12 @@ import socket
 import sqlite3
 import stat
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from collections import deque
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -178,6 +189,7 @@ SNAPSHOT_REASONS = {
     "unsupported_pixel_format": "the frame's pixel format cannot be encoded",
     "retention_age": "older than the retention period",
     "retention_quota": "the oldest, deleted to stay within the quota",
+    "snapshots_off": "snapshots were turned off in Features when this incident was recorded",  # D99
 }
 SNAPSHOT_NOTE = (
     f"A snapshot is the frame the observation that opened the incident came from, never a later one. Snapshots are "
@@ -215,6 +227,18 @@ CHAT_PATH = "/chat"
 CHAT_JOB_PATH = re.compile(r"/chat/(?P<id>[0-9a-f]{16})")
 CHAT_OFF = {"state": "off", "reason": "chat is off; start sentinel run with --chat to offer it"}
 CHAT_STARTING = {"state": "unavailable", "reason": "the runtime is starting"}
+# D99, feature controls (only with ``sentinel run --feature-controls``): two POST routes, refused unless they come from
+# this page (as /chat) AND carry the operator's control key, which the runtime writes to DATA_DIR/CONTROL_KEY_NAME
+# (0600) at startup and never prints, logs or puts in a page: the SSH tunnel alone authorizes nothing.
+FEATURES_PATH = "/features"
+UNLOCK_PATH = "/features/unlock"
+CONTROL_KEY_NAME = "control-key"
+CONTROL_HEADER = "X-Sentinel-Control"
+CONTROL_MAX_BODY = 256
+CONTROL_KEY_BYTES = 15  # 120 random bits, shown as six groups of four base32 characters
+KEY_FAILURES_ALLOWED = 5  # wrong keys within KEY_FAILURE_WINDOW_S before every control request is refused
+KEY_FAILURE_WINDOW_S = 60.0
+KEY_LOCKOUT_S = 60.0
 SCRIPT_PATH = "/assets/dashboard.js"
 SCRIPT = script()
 HEAD_SCRIPT_PATH = "/assets/appearance.js"  # D96: the saved appearance, before the first paint
@@ -226,6 +250,44 @@ PENDING_DURABILITY_FALLBACK = (
     "rule observations waiting to be recorded are held in memory only; "
     "they are lost if the process stops abruptly: not a crash-safe spool"
 )
+
+
+def new_control_key() -> str:
+    """D99: a fresh operator control key for one runtime (never stored but in its 0600 file)."""
+    text = base64.b32encode(secrets.token_bytes(CONTROL_KEY_BYTES)).decode("ascii")
+    return "-".join(text[i:i + 4] for i in range(0, len(text), 4))
+
+
+def normalized_key(text: str) -> bytes:
+    """The key as compared: upper case, without the separators an operator may type or omit."""
+    return re.sub(r"[\s-]", "", text).upper().encode("ascii", "replace")
+
+
+def write_control_key(directory: Path, key: str) -> Path:
+    """Write the key to DIRECTORY/CONTROL_KEY_NAME, 0600, replacing one an earlier run of this directory left; never
+    through a link."""
+    path = Path(directory) / CONTROL_KEY_NAME
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            raise OSError("the control key's path is not a regular file")
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="ascii") as file:
+        file.write(key + "\n")
+    return path
+
+
+def remove_control_key(path: Path) -> bool:
+    """Delete the key at the stop (True if it is gone)."""
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return False
+    return True
 
 
 def delivery_state(status: str, attempts: int) -> str:
@@ -588,6 +650,7 @@ def build_status(
         "incidents": store.get("incidents"),
         "delivery": store.get("delivery"),
         **({"preview": dict(preview)} if preview is not None else {}),  # absent while off: the document is unchanged
+        **({"features": snapshot["features"]} if snapshot.get("features") is not None else {}),  # D99, likewise
     }
 
 
@@ -965,7 +1028,11 @@ def _faces(status: Mapping[str, Any]) -> str:
         return (f"<p class=empty>{icon('clock')}<span><strong>Not reported yet.</strong> The runtime has not reported "
                 "face recognition yet.</span></p>")
     if state != "available" or "faces" not in live:
-        if state == "disabled":
+        if state == "disabled" and face.get("paused"):  # D99: turned off at runtime; nothing earlier is current
+            title, glyph = "Face recognition is turned off.", "off"
+            text = ("It was turned off in Features: earlier recognition is cleared and nothing is shown as current. "
+                    "Core monitoring continues.")
+        elif state == "disabled":
             title, text, glyph = "Face recognition is off.", "This run does not use face recognition.", "off"
         else:
             title, glyph = "Face recognition is unavailable:", "crit"
@@ -1025,8 +1092,193 @@ def _faces(status: Mapping[str, Any]) -> str:
     return f"{lede}{context}{people}{extra}{report}{rules}"
 
 
-PREVIEW_LABELS = {"live": "LIVE", "stale": "STALE: not current", "offline": "OFFLINE", "starting": "STARTING"}
-PREVIEW_KINDS = {"live": "ok", "stale": "warn", "offline": "crit", "starting": "off"}
+# ---------------------------------------------------------------- features (D99)
+
+FEATURE_INFO = {  # name, what it does; in page order
+    "face": ("Face recognition", "Compares faces on tracked people with the enrolled gallery, about once a second. "
+                                 "Detection, rules and alerts never depend on it."),
+    "scene": ("Scene analysis", "Asks the on-device scene model about the live picture every few seconds and adds "
+                                "its report to new incidents."),
+    "chat": ("Chat", "Lets this page ask the scene model about the live picture. Separate from scene analysis: "
+                     "either can be off while the other runs."),
+    "live_view": ("Live view", "Sends live pictures to this page while someone watches it."),
+    "snapshots": ("Incident snapshots", "Saves the frame that opened each new incident."),
+}
+FEATURE_ACTUAL = {  # actual state: (badge kind, label, glyph)
+    "running": ("ok", "Running", "check"), "starting": ("off", "Starting", "clock"),
+    "stopping": ("warn", "Stopping", "clock"), "off": ("off", "Off", "off"), "busy": ("warn", "Busy", "clock"),
+    "unavailable": ("crit", "Unavailable", "crit"), "error": ("crit", "Error", "crit"),
+}
+FEATURE_TURNED_OFF = {
+    "face": "Turned off: earlier recognition is cleared and nothing is shown as current. The model stays loaded; "
+            "turning it on starts every track unresolved.",
+    "scene": "Turned off: no scene check runs and no scene result is current. The model stays loaded, so chat can "
+             "still use it.",
+    "chat": "Turned off: questions are refused. Scene analysis is not affected.",
+    "live_view": "Turned off: no picture is made, kept or sent.",
+    "snapshots": "Turned off: new incidents record their snapshot as missing, saying so. Saved snapshots are kept "
+                 "(their retention still applies).",
+}
+FEATURE_FINISHING = {
+    "face": "Stopping: the face result in progress is discarded when it arrives.",
+    "scene": "Stopping: the scene check in progress ends by its own deadline and only annotates its own incident.",
+    "snapshots": "Stopping: snapshots already queued are still saved.",
+}
+FEATURE_RESTART = {
+    "face": "This run did not start face recognition. It starts only at launch, because the gallery's passphrase is "
+            "typed in the runtime's terminal and never in a page.",
+    "scene": "This run did not start scene analysis. It starts only at launch, after its resource admission.",
+    "chat": "This run did not offer chat. It starts only at launch, and needs scene analysis.",
+    "live_view": "This run did not start the live view. It starts only at launch.",
+    "snapshots": "This run did not start incident snapshots. They start only at launch.",
+}
+FEATURE_FLAGS = {  # added to sentinel run, besides what the run already uses
+    "face": "--face --face-validation", "scene": "--scene", "chat": "--chat (with --scene; --chat-validation in a "
+    "validation run)", "live_view": "--live-preview", "snapshots": "--snapshots",
+}
+FEATURE_VALIDATION = {
+    "pending_validation": "Experimental · pending validation: turning it on does not admit or validate it.",
+    "validation_run": "Validation run: chat is not admitted, and turning it on does not admit it.",
+    "not_admitted": "Not admitted in this build.",
+}
+FEATURES_NOTE = ("These controls change what the runtime does, for every viewer. Appearance (below) changes only this "
+                 "browser. Core monitoring (the camera, detection, tracking, rules, incidents and alerts) has no switch "
+                 "here, and nothing is loaded, admitted or restarted from this page.")
+
+
+def _feature_why(name: str, item: Mapping[str, Any]) -> str:
+    why, problem = item.get("why"), item.get("problem")
+    if why == "running":
+        return {"face": "Recognizing faces on the live stream.", "scene": "Checking the scene on the live stream.",
+                "chat": "Questions can be asked below.", "live_view": "Pictures are sent while someone watches.",
+                "snapshots": "A new incident's frame is saved."}.get(name, "Running.")
+    if why == "pending":
+        return "Waiting for the runtime to apply the change (at its next step)."
+    if why == "turned_off":
+        return FEATURE_TURNED_OFF.get(name, "Turned off.")
+    if why == "finishing":
+        return FEATURE_FINISHING.get(name, "Stopping.")
+    if why == "not_started":
+        return FEATURE_RESTART.get(name, "This run did not start it.")
+    text = {"failed_at_start": "Unavailable since startup", "not_admitted": "Unavailable",
+            "paused_by_gate": "Paused by the runtime", "worker_stopped": "Error: the face worker stopped",
+            "server_not_ready": "Error: the scene server is not ready", "writer_problem": "Error"}.get(str(why),
+                                                                                                   str(why))
+    return f"{text}: {problem}." if problem else f"{text}."
+
+
+def _feature_restart(name: str) -> str:
+    return _details(f"Restart required to turn on {FEATURE_INFO[name][0].lower()}", (
+        f"<ol class=steps><li>In the runtime's terminal, press Ctrl-C once and wait for it to stop: monitoring is "
+        f"interrupted until it runs again.</li><li>Start <code>sentinel run</code> again with what this run used, "
+        f"plus <code>{_e(FEATURE_FLAGS[name])}</code>.</li><li>Reload this page; with "
+        "<code>--feature-controls</code>, unlock it with the new run's key.</li></ol>"
+        "<p class=muted>Nothing restarts by itself; this page never restarts the runtime.</p>"), key=f"restart-{name}")
+
+
+def _features(status: Mapping[str, Any]) -> str:
+    """The Features region (D99): each feature's requested and actual state, why, and its switch. Without
+    --feature-controls it is read only and says how each feature is chosen at launch."""
+    block = status.get("features")
+    controls = status.get("controls") or {}
+    runtime_state = (status.get("runtime") or {}).get("state")
+    enabled = bool(controls.get("enabled")) and isinstance(block, Mapping)
+    items: Mapping[str, Any] = (block or {}).get("items") or {} if isinstance(block, Mapping) else {}
+    accepting = enabled and bool((block or {}).get("accepting")) and runtime_state == "running"
+    locked_s = controls.get("locked_s") or 0
+    meta = (f'<div class=fmeta data-controls={"on" if enabled else "off"} data-accepting={1 if accepting else 0} '
+            f'data-locked-s="{_e(locked_s)}">')
+    if not enabled:
+        meta += (f"<p class=note>{icon('info')}Read only: this run was started without "
+                 "<code>--feature-controls</code>, so features stay as they were chosen at launch.</p>")
+    elif not accepting:
+        meta += f"<p class=note>{icon('clock')}Changes are accepted only while the runtime is running.</p>"
+    if locked_s:
+        meta += (f"<div class='alertbox k-warn'>{icon('warn')}<p>Too many wrong control keys: every control is "
+                 f"locked for about {_e(locked_s)} s.</p></div>")
+    meta += "</div>"
+    rows = []
+    components = status.get("components") or {}
+    for name, (label, what) in FEATURE_INFO.items():
+        item = items.get(name) if enabled else None
+        if item is None:  # read only: what the run's own status says
+            item = _feature_from_components(name, status, components)
+        actual = str(item.get("actual"))
+        kind, word, glyph = FEATURE_ACTUAL.get(actual, ("off", actual.capitalize(), "info"))
+        badge = (_claim(_badge(kind, word, glyph=glyph), _badge("off", f"Was {word.lower()}", glyph="clock"))
+                 if kind == "ok" else _badge(kind, word, glyph=glyph))
+        requested = item.get("requested")
+        switchable = enabled and bool(item.get("switchable"))
+        on = requested == "on"
+        control = ""
+        if enabled:
+            control = (f'<button type=button class=switch role=switch aria-checked={"true" if on else "false"} '
+                       f'data-feature={name} data-want={"off" if on else "on"} data-allowed={1 if switchable else 0} '
+                       f'disabled aria-describedby="fw-{name}"><span class=vh>{_e(label)}: '
+                       f'{"on" if on else "off"}</span><span class=knob aria-hidden=true></span></button>')
+        validation = FEATURE_VALIDATION.get(str(item.get("validation")))
+        flag = f"<p class=flag>{icon('flask')}{_e(validation)}</p>" if validation else ""
+        restart = _feature_restart(name) if enabled and item.get("why") == "not_started" else ""
+        asked = (f"<p class=freq>Requested: <strong>{_e(requested or '–')}</strong> · now: "
+                 f"<strong>{_e(word.lower())}</strong></p>") if enabled else ""
+        rows.append(f'<li class=feature data-key="f-{name}" data-actual="{_e(actual)}">'
+                    f"<div class=fhead><span class=fname>{_e(label)}</span><span class=fstate>{badge}</span>"
+                    f"{control}</div><p class=fwhat>{_e(what)}</p>"
+                    f'<p class=fwhy id="fw-{name}">{_e(_feature_why(name, item))}</p>{asked}{flag}{restart}</li>')
+    running = {name for name, item in items.items() if isinstance(item, Mapping) and item.get("actual") == "running"}
+    combined = (f"<div class='context k-warn'>{icon('warn')}<p>Face recognition and chat are both on. They have been "
+                "checked separately only; together they are not validated.</p></div>"
+                if {"face", "chat"} <= running else "")
+    log = (block or {}).get("log") if enabled else None
+    history = ""
+    if log:
+        lines = [[entry.get("change"), _clock(entry.get("at_utc")), FEATURE_INFO.get(entry.get("feature"),
+                  (entry.get("feature"),))[0], entry.get("requested"), entry.get("result")] for entry in reversed(log)]
+        history = _details("Recent changes", _table(["change", "time", "feature", "requested", "result"], lines,
+                                                    "No change yet.") +
+                           "<p class=muted>Kept in the runtime's memory (the latest 20) and written once each to its "
+                           "output. No key or address is ever logged.</p>", key="feature-log")
+    launch = "" if enabled else _details("How features are chosen at launch", (
+        "<p>Each feature starts only if <code>sentinel run</code> is started with its flag: "
+        + ", ".join(f"{_e(FEATURE_INFO[name][0].lower())} <code>{_e(flag)}</code>" for name, flag in FEATURE_FLAGS.items())
+        + ". With <code>--feature-controls</code> as well, what a run started can be turned off and on again here, "
+        "with the operator's control key.</p><ol class=steps><li>In the runtime's terminal, press Ctrl-C once and wait "
+        "for it to stop: monitoring is interrupted until it runs again.</li><li>Start it again with the flags wanted."
+        "</li><li>Reload this page.</li></ol><p class=muted>Nothing restarts by itself; this page never restarts the "
+        "runtime.</p>"), key="feature-launch")
+    return f"{meta}{combined}<ul class=features>{''.join(rows)}</ul>{history}{launch}"
+
+
+def _feature_from_components(name: str, status: Mapping[str, Any], components: Mapping[str, Any]) -> dict[str, Any]:
+    """Read-only state of a feature from the run's own status (no --feature-controls)."""
+    if name in ("face", "scene"):
+        part = components.get(name) or {}
+        state = part.get("state")
+        if state == "available":
+            return {"actual": "running", "why": "running", "requested": "on"}
+        if state == "unavailable":
+            return {"actual": "unavailable", "why": "failed_at_start", "problem": part.get("problem")}
+        return {"actual": "off", "why": "not_started"}
+    if name == "chat":
+        chat = status.get("chat") or {}
+        if chat.get("state") == "available":
+            return {"actual": "running", "why": "running"}
+        if chat.get("state") in ("unavailable", "paused"):
+            return {"actual": "unavailable" if chat.get("state") == "unavailable" else "busy",
+                    "why": "not_admitted" if chat.get("state") == "unavailable" else "paused_by_gate",
+                    "problem": chat.get("reason")}
+        return {"actual": "off", "why": "not_started"}
+    if name == "live_view":
+        view = status.get("preview")
+        return ({"actual": "running", "why": "running"} if view is not None and view.get("enabled")
+                else {"actual": "off", "why": "not_started"})
+    return ({"actual": "running", "why": "running"} if components.get("snapshots") is not None
+            else {"actual": "off", "why": "not_started"})
+
+
+PREVIEW_LABELS = {"live": "LIVE", "stale": "STALE: not current", "offline": "OFFLINE", "starting": "STARTING",
+                  "paused": "OFF: turned off in Features"}  # D99
+PREVIEW_KINDS = {"live": "ok", "stale": "warn", "offline": "crit", "starting": "off", "paused": "off"}
 SEVERITY_KINDS = {"info": "off", "warning": "warn", "critical": "crit"}
 SEVERITY_ICONS = {"info": "info", "warning": "warn", "critical": "crit"}
 STATUS_KINDS = {"candidate": "off", "open": "warn", "acknowledged": "done", "resolved": "done", "dismissed": "off"}
@@ -1082,6 +1334,10 @@ def _frame_empty(view: Mapping[str, Any] | None) -> str:
     state = view.get("state")
     if state == "live":
         return _empty_frame("image", "No picture", f"{view.get('problem') or 'none encoded yet'}.")
+    if state == "paused":  # D99: nothing is encoded or kept while it is off
+        return _empty_frame("off", "The live view is turned off",
+                            "Turned off in Features: no picture is made, kept or sent; core monitoring "
+                            "continues.")
     label = PREVIEW_LABELS.get(str(state), str(state).upper())
     shown = view.get("picture") or view.get("frame")
     return _empty_frame(KIND_ICONS[PREVIEW_KINDS.get(str(state), "off")], label,
@@ -1312,7 +1568,9 @@ def status_regions(status: Mapping[str, Any], *, theme: Look | str | None = None
                                                       "next attempt (UTC)", "last error"], delivery_rows, "No alerts."),
                                 key="alerts")),
         "chat-state": _chat_state(status.get("chat")),
-        "foot": f"Read-only, loopback only (D45). Generated at {_clock(generated)}.",
+        "features": _features(status),
+        "foot": (f"Loopback only (D45); read only, except advisory chat (D74) and, with --feature-controls, the "
+                 f"operator's feature controls (D99). Generated at {_clock(generated)}."),
     }
 
 
@@ -1329,7 +1587,7 @@ def page_document(status: Mapping[str, Any], marker: Mapping[str, Any], *,
 NAV_GROUPS = (
     ("Monitor", (("live", "Live view", "video"), ("faces", "Recognition", "scan"), ("incidents", "Incidents", "bell"),
                  ("chat", "Ask", "chat"))),
-    ("System", (("health", "Health", "shield"), ("delivery", "Alerts", "send"))),
+    ("System", (("features", "Features", "toggle"), ("health", "Health", "shield"), ("delivery", "Alerts", "send"))),
     ("Preferences", (("settings", "Appearance", "sliders"),)),
 )
 SECTIONS = tuple((target, label) for _, items in NAV_GROUPS for target, label, _ in items)
@@ -1384,7 +1642,7 @@ def render_html(status: Mapping[str, Any], *, theme: Look | str | None = None,
 <div class=shell>
 <header class=topbar>
 {_menu_button()}
-<div class=heading><h1>Dashboard</h1><p class=sub>Camera <strong class=mono>{_e(camera)}</strong> · read-only, loopback only</p></div>
+<div class=heading><h1>Dashboard</h1><p class=sub>Camera <strong class=mono>{_e(camera)}</strong> · loopback only · {"feature controls with the operator's key" if (status.get("controls") or {}).get("enabled") else "read only"}</p></div>
 <div class=pills data-region=pills>{regions["pills"]}</div>
 </header>
 <div class=freshbar data-region=fresh>{regions["fresh"]}</div>
@@ -1427,6 +1685,17 @@ def render_html(status: Mapping[str, Any], *, theme: Look | str | None = None,
 </form>
 <noscript><p class=note>Chat needs JavaScript.</p></noscript>
 </div></section>
+<section id=features class="panel features" aria-labelledby=h-features>
+<div class=phead><h2 id=h-features>{icon("toggle")}Features</h2></div>
+<p class=note>{_e(FEATURES_NOTE)}</p>
+<form id=controls-unlock class="unlock js-only" autocomplete=off data-token="{_e(chat_token)}" hidden>
+<label for=control-key>Control key <span class=muted>(printed for the operator when the run starts; in its data directory's <code>{CONTROL_KEY_NAME}</code> file)</span></label>
+<div class=row><input id=control-key name=key type=password inputmode=text autocomplete=off autocapitalize=characters spellcheck=false maxlength=40 required><button type=submit class=button>{icon("shield")}Unlock</button></div>
+</form>
+<div class="row unlocked js-only" id=controls-unlocked hidden><span class=muted>Unlocked in this tab only; the key is kept in this tab's memory and forgotten on reload.</span><button type=button class=ghost id=controls-lock>Lock</button></div>
+<p class=note id=controls-note role=status aria-live=polite></p>
+<div class=report data-region=features>{regions["features"]}</div>
+</section>
 <section id=health class="panel health" aria-label="System health"><div class=report data-region=health>{regions["health"]}</div></section>
 <section id=delivery class="panel delivery" aria-label="Alert delivery"><div class=report data-region=delivery>{regions["delivery"]}</div></section>
 <section id=settings class="panel settings" aria-labelledby=h-settings>
@@ -1767,6 +2036,13 @@ class StatusServer:
         self._picture_slots = threading.BoundedSemaphore(MAX_PICTURE_RESPONSES)
         self._stream_slots = threading.BoundedSemaphore(MAX_STREAM_REQUESTS)
         self._instance = secrets.token_hex(8)  # a page's updates are ordered within one server instance (D73)
+        # D99: the feature controls, once the runtime runs with --feature-controls (enable_controls)
+        self._controls: Callable[[], Any] | None = None
+        self._control_key: bytes | None = None
+        self._key_lock = threading.Lock()
+        self._key_failures: deque[float] = deque()
+        self._locked_until = 0.0
+        self._monotonic = time.monotonic
         self._sequence = itertools.count(1)
         self._sequence_lock = threading.Lock()
         handler = type("StatusHandler", (_Handler,), {"page": self, "timeout": handler_timeout_s})
@@ -1783,10 +2059,47 @@ class StatusServer:
         availability, which the plain /status.json does not carry."""
         status = build_status(self._snapshot(), read_store(self._db_path), self._now(),
                               self.preview_view(with_picture=with_picture))
-        return {**status, "chat": self.chat_view()} if for_page else status
+        return {**status, "chat": self.chat_view(), "controls": self.controls_view()} if for_page else status
 
     def chat_service(self) -> Any | None:
         return None if self._chat is None else self._chat()
+
+    # ------------------------------------------------------------ D99: feature controls
+
+    def enable_controls(self, controls: Callable[[], Any], key: str) -> None:
+        """Accept feature-control requests carrying ``key`` (the runtime's FeatureControls through ``controls``)."""
+        with self._key_lock:
+            self._controls = controls
+            self._control_key = normalized_key(key)
+
+    def controls_view(self) -> dict[str, Any]:
+        """What the page needs to offer the controls: on or off for this run, and whether wrong keys locked them."""
+        with self._key_lock:
+            enabled = self._control_key is not None
+            wait = max(0.0, self._locked_until - self._monotonic())
+        return {"enabled": enabled, "locked_s": round(wait) if wait else 0,
+                "key_file": CONTROL_KEY_NAME if enabled else None}
+
+    def check_key(self, given: bytes) -> str:
+        """"ok", "wrong" or "locked" (too many wrong keys lately: even the right one waits). Constant-time compare."""
+        with self._key_lock:
+            if self._control_key is None:
+                return "wrong"
+            now = self._monotonic()
+            if now < self._locked_until:
+                return "locked"
+            if hmac.compare_digest(normalized_key(given.decode("latin-1")), self._control_key):
+                return "ok"
+            self._key_failures.append(now)
+            while self._key_failures and now - self._key_failures[0] > KEY_FAILURE_WINDOW_S:
+                self._key_failures.popleft()
+            if len(self._key_failures) >= KEY_FAILURES_ALLOWED:
+                self._locked_until = now + KEY_LOCKOUT_S
+                self._key_failures.clear()
+            return "wrong"
+
+    def feature_controls(self) -> Any | None:
+        return None if self._controls is None else self._controls()
 
     def chat_view(self) -> dict[str, str]:
         if self._chat is None:
@@ -2012,12 +2325,16 @@ class _Handler(BaseHTTPRequestHandler):
 
     do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _refuse  # noqa: N815
 
-    def do_POST(self) -> None:  # noqa: N802 - only the chat route takes a POST (D74)
-        if urlsplit(self.path).path != CHAT_PATH:
+    def do_POST(self) -> None:  # noqa: N802 - the chat route (D74) and the feature controls (D99) only
+        path = urlsplit(self.path).path
+        if path not in (CHAT_PATH, FEATURES_PATH, UNLOCK_PATH):
             self._refuse()
             return
         if not self._host_allowed():
             self._send(421, "text/plain; charset=utf-8", b"misdirected request\n")
+            return
+        if path != CHAT_PATH:
+            self._control(path)
             return
         problem = self._chat_request_problem()
         if problem is not None:
@@ -2048,7 +2365,57 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception:  # noqa: BLE001 - never show exception text
             self._json(500, {"state": "error", "reason": "the question could not be taken"})
 
-    def _chat_request_problem(self) -> tuple[int, dict[str, str]] | None:
+    def _control(self, path: str) -> None:
+        """D99: POST /features/unlock (checks the key) and POST /features (one change). Each must come from this page
+        (Origin, Sec-Fetch-Site, JSON with a Content-Length, the page token, as /chat) and carry the operator's key;
+        wrong keys are counted and, KEY_FAILURES_ALLOWED in KEY_FAILURE_WINDOW_S, lock every control for
+        KEY_LOCKOUT_S. Nothing in a request or a refusal is echoed or logged."""
+        page = self.page
+        if page._control_key is None:
+            self._json(404, {"state": "off", "reason": "feature controls are off for this run (start sentinel run "
+                                                       "with --feature-controls)"})
+            return
+        controls = page.feature_controls()
+        problem = self._chat_request_problem(max_body=CONTROL_MAX_BODY)
+        if problem is not None:
+            if controls is not None:
+                controls.refused("not_this_page")
+            self._json(*problem)
+            return
+        verdict = page.check_key(self.headers.get(CONTROL_HEADER, "").encode("latin-1", "replace"))
+        if verdict != "ok":
+            if controls is not None:
+                controls.refused("locked" if verdict == "locked" else "wrong_key")
+            wait = page.controls_view()["locked_s"]
+            if verdict == "locked":
+                self._json(429, {"state": "locked", "reason": f"too many wrong keys: controls are locked for {wait} s"})
+            else:
+                self._json(403, {"state": "refused", "reason": "the control key is not this run's"})
+            return
+        body = self.rfile.read(int(self.headers["Content-Length"]))
+        try:
+            request = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            request = None
+        if path == UNLOCK_PATH:
+            if request != {}:
+                self._json(400, {"state": "invalid", "reason": "an empty JSON object is expected"})
+                return
+            self._json(200, {"state": "unlocked"})
+            return
+        if controls is None:
+            self._json(503, {"state": "starting", "reason": "the runtime is starting"})
+            return
+        if not isinstance(request, dict) or set(request) != {"feature", "state"}:
+            controls.refused("invalid")
+            self._json(400, {"state": "invalid", "reason": "exactly a feature and a state are expected"})
+            return
+        try:
+            self._json(*controls.request(request["feature"], request["state"]))
+        except Exception:  # noqa: BLE001 - never show exception text
+            self._json(500, {"state": "error", "reason": "the change could not be taken"})
+
+    def _chat_request_problem(self, max_body: int | None = None) -> tuple[int, dict[str, str]] | None:
         """Why a POST /chat is not from this page, or None. The token check runs last."""
         port = self.server.server_address[1]
         if self.headers.get("Origin") not in (f"http://{LOOPBACK_HOST}:{port}", f"http://localhost:{port}"):
@@ -2059,6 +2426,12 @@ class _Handler(BaseHTTPRequestHandler):
             return 415, {"state": "refused", "reason": "a JSON body is required"}
         if self.headers.get("Transfer-Encoding") is not None:
             return 411, {"state": "refused", "reason": "a Content-Length is required"}
+        if max_body is not None:  # D99: the controls check the length here, before anything else is read
+            length = self.headers.get("Content-Length")
+            if length is None or not length.isdigit():
+                return 411, {"state": "refused", "reason": "a Content-Length is required"}
+            if int(length) > max_body:
+                return 413, {"state": "invalid", "reason": "request too large"}
         if not self._token_ok():
             return 403, {"state": "refused", "reason": "only this page may ask"}
         return None

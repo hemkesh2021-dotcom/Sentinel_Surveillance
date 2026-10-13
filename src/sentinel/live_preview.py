@@ -82,6 +82,8 @@ ENCODER_NICE = 10  # added to the encoder thread's own nice value (Linux)
 ENCODE_TIMES_KEPT = 64  # encode durations kept for the status summary
 NS_PER_MS = 1_000_000
 TOKEN = re.compile(r"[0-9]{1,9}-[0-9]{1,12}")  # <stream epoch>-<frame sequence>, unique within one runtime
+PAUSED = "paused"  # D99: turned off in Features: no picture is made, kept or sent
+PAUSED_REASON = "the live view is turned off in Features"
 STATE_NAMES = {
     VideoState.FRESH: "live",
     VideoState.STALE: "stale",
@@ -210,11 +212,33 @@ class LivePreview:
         self._encoder_nice: int | None = None
         self._last_viewer: float | None = None
         self._closed = False
+        self._paused = False  # D99
 
     # ------------------------------------------------------------ the page's calls
 
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    def set_paused(self, paused: bool) -> None:
+        """D99: the live view turned off (or on again) at runtime. Off, nothing is encoded, kept or sent: the kept
+        pictures are dropped, waiting requests are answered at once, and the encoder ends for want of viewers."""
+        with self._published:
+            self._paused = paused
+            if paused:
+                self._pictures.clear()
+                self._last_viewer = None
+                self._counts["paused"] += 1
+            self._published.notify_all()
+
+    def _paused_view(self) -> dict[str, Any]:
+        return {"enabled": True, "state": PAUSED, "reason": PAUSED_REASON, "age_ms": None, "frame": None,
+                "time_label": None, "picture": None, "problem": None, "bounds": self.bounds()}
+
     def view(self, *, with_picture: bool = False) -> dict[str, Any]:
         """The preview's state now; ``with_picture`` (the HTML page): also a live picture, encoded if due."""
+        if self._paused:
+            return self._paused_view()
         latest = self._frames.latest()
         frame = latest[0] if latest is not None else None
         freshness = self._assess(frame)
@@ -248,6 +272,8 @@ class LivePreview:
         if not TOKEN.fullmatch(token):
             return None
         with self._lock:
+            if self._paused:
+                return None
             picture = next((p for p in reversed(self._pictures) if p.token == token), None)
             if picture is None:
                 self._counts["not_kept"] += 1
@@ -266,6 +292,10 @@ class LivePreview:
             if self._closed:
                 return StreamAnswer(None, None, {"enabled": True, "state": "closed",
                                                  "reason": "the runtime is stopping", "frame": None, "age_ms": None})
+            if self._paused:  # D99: answered at once, without starting the encoder or counting a viewer
+                self._counts["stream_refused_paused"] += 1
+                return StreamAnswer(None, None, {key: value for key, value in self._paused_view().items()
+                                                 if key in ("enabled", "state", "reason", "frame", "age_ms")})
             self._last_viewer = self._wall()
             self._counts["stream_requests"] += 1
             if self._threaded and self._encoder is None:
@@ -283,7 +313,7 @@ class LivePreview:
                     return StreamAnswer(newest, own.last_frame_age_ns // NS_PER_MS, None)  # type: ignore[operator]
             remaining = deadline - time.monotonic()
             with self._published:
-                if remaining <= 0 or self._closed:
+                if remaining <= 0 or self._closed or self._paused:
                     break
                 current = self._pictures[-1] if self._pictures else None
                 if current is newest:  # nothing kept since the look above: wait for the encoder (or re-check)
@@ -295,6 +325,8 @@ class LivePreview:
 
     def encode_newest(self) -> str:
         """The encoder's step: encode the newest frame if it is live, not yet encoded and due. Its outcome label."""
+        if self._paused:
+            return "paused"
         latest = self._frames.latest()
         if latest is None:
             return "no_frame"
@@ -327,7 +359,8 @@ class LivePreview:
         """For the runtime status: numbers and fixed labels only."""
         with self._lock:
             spent = list(self._encode_ms)
-            return {"state": "enabled", "pictures_kept": len(self._pictures), "problem": self._problem,
+            return {"state": PAUSED if self._paused else "enabled", "pictures_kept": len(self._pictures),
+                    "problem": self._problem,
                     "encoder": {"running": self._encoder is not None, "nice": self._encoder_nice},
                     "encode_ms": None if not spent else {
                         "last": len(spent), "median": round(statistics.median(spent), 2), "max": round(max(spent), 2)},
@@ -440,7 +473,7 @@ class LivePreview:
         while True:
             with self._lock:
                 idle = self._last_viewer is None or self._wall() - self._last_viewer > VIEWER_IDLE_S
-                if self._closed or idle:
+                if self._closed or idle or self._paused:
                     if self._encoder is threading.current_thread():
                         self._encoder = None
                     return

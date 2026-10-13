@@ -136,6 +136,21 @@ class FaceWorker:
             self._condition.notify()
         return TICK_OFFERED
 
+    def discard_pending(self) -> bool:
+        """D99: face recognition turned off at runtime: the waiting job (and its frame copy) is dropped. A running one
+        cannot be interrupted; its result is ignored when the loop applies it. True if a job was dropped."""
+        with self._condition:
+            if self._pending is None:
+                return False
+            self._pending = None
+            self.counters["discarded_off"] += 1
+            return True
+
+    @property
+    def busy(self) -> bool:
+        with self._condition:
+            return self._running
+
     def drain(self) -> FaceResult | None:
         with self._condition:
             result, self._result = self._result, None

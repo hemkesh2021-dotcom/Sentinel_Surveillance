@@ -56,6 +56,7 @@
   };
   root.classList.add("js");
   let refreshAsk = () => {};  // the chat's Ask button follows chat's availability, which updates with the page
+  let refreshControls = () => {};  // D99: the feature switches follow the page's currency and the runtime's state
   let player = null;  // the live player, on the status page with the live view on
 
   // ------------------------------------------------------------------ the watchdog timers
@@ -78,6 +79,7 @@
   }
 
   function expireNow() {  // after a freeze or a back-forward restore: nothing is current until an update arrives
+    state.currentUntil = 0;
     delayTimers(10 * WINDOW);
     root.dataset.fresh = root.dataset.fresh === "1" ? "0" : "1";
     if (player) player.expire();
@@ -86,6 +88,7 @@
   const navigation = performance.getEntriesByType ? performance.getEntriesByType("navigation")[0] : null;
   const requested = navigation && navigation.requestStart > 0 ? navigation.requestStart : 0;
   restart("fresh", requested);
+  state.currentUntil = requested + WINDOW;  // the served document's own window (D71), for the feature switches (D99)
 
   // ------------------------------------------------------------------ keyed placement of server fragments
 
@@ -254,6 +257,7 @@
       if (player) player.status(doc);
     }
     lastApplied = new Date();
+    state.currentUntil = sent + WINDOW;  // D99: what this document says is current until then, at most
     if (state.chosenInPlace) stripLinks();  // a region asked for before an in-place choice keeps no old appearance
     filterIncidents();
     markSelected();
@@ -262,6 +266,7 @@
     root.dataset.instance = doc.page.instance;
     root.dataset.sequence = String(doc.page.sequence);
     refreshAsk();
+    refreshControls();
     restart("fresh", sent);
   }
 
@@ -345,7 +350,17 @@
       disconnected: ["crit", "off", "DISCONNECTED", ""], busy: ["warn", "warn", "BUSY", ""],
       reload: ["off", "off", "RELOAD TO RESUME", "the runtime restarted after this page was loaded; reload the page"],
       error: ["crit", "crit", "NO PICTURE", ""], off: ["off", "off", "OFF", ""],
+      turned_off: ["off", "off", "OFF", "the live view is turned off in Features"],  // D99
     };
+
+    function clearPicture() {  // D99: turned off: the picture is removed, not kept dimmed; the server's empty frame
+      p.shown = null;
+      p.after = null;
+      p.pending = null;
+      if (slot.querySelector("figure.frame")) slot.replaceChildren();
+      delete state.last["frame-empty"];
+      if (p.empty) place("frame-empty", p.empty);
+    }
 
     function setState(name, reason) {
       const text = reason || "";
@@ -557,6 +572,11 @@
           p.token = token;
           p.failures = 0;
           if (doc.state === "live") return 0;  // live, but nothing newer within the device's wait: ask again
+          if (doc.state === "paused") {  // D99: turned off in Features; asked again slowly, to notice it back on
+            setState("turned_off", reason);
+            clearPicture();
+            return 2000;
+          }
           setState(LABELS[doc.state] ? doc.state : "error", reason);
           return 500;
         }
@@ -657,7 +677,12 @@
       run, resume, expire,
       status(doc) {  // a status update may say the live view is off or starting; it never restarts the picture's timer
         const preview = doc.preview;
+        p.empty = doc.page.frame_empty;
         if (preview && preview.enabled === false) setState("off", preview.reason);
+        if (preview && preview.state === "paused") {  // D99
+          setState("turned_off", preview.reason);
+          clearPicture();
+        }
         if (!p.shown && !slot.querySelector("figure.frame")) place("frame-empty", doc.page.frame_empty);
       },
     };
@@ -949,6 +974,125 @@
     });
     box.addEventListener("input", () => refreshAsk());
     refreshAsk();
+  }
+
+  // ------------------------------------------------------------------ feature controls (D99)
+
+  // The operator's key is kept in this closure only: never in storage, a region, the address or a log; reloading the
+  // page forgets it, and so does a runtime restart (its key is new). A switch can be used only while the key is
+  // unlocked, this page is current (a stale page never acts on what it last saw), the runtime accepts changes and the
+  // feature is switchable; one request at a time. The switches show the REQUESTED state; the actual state is the
+  // server's, in the region, and updates with the page.
+  const unlockForm = document.getElementById("controls-unlock");
+  if (unlockForm) {
+    const keyBox = document.getElementById("control-key");
+    const unlocked = document.getElementById("controls-unlocked");
+    const lock = document.getElementById("controls-lock");
+    const note = document.getElementById("controls-note");
+    const panel = document.querySelector('[data-region="features"]');
+    const KEY = /^[A-Za-z2-7\s-]{24,40}$/;
+    const ctl = {key: null, servedBy: null, sending: false};
+    const tell = (text) => {
+      if (note.textContent !== text) note.textContent = text;
+    };
+    const meta = () => panel && panel.querySelector(".fmeta");
+    const current = () => Number.isFinite(state.currentUntil) && performance.now() < state.currentUntil;
+    const forget = (why) => {
+      ctl.key = null;
+      ctl.servedBy = null;
+      if (why) tell(why);
+    };
+    const pageToken = () => state.token || unlockForm.dataset.token || "";
+
+    refreshControls = () => {  // declared at the top, so that updates can call it
+      const m = meta();
+      const enabled = !!m && m.dataset.controls === "on";
+      const accepting = !!m && m.dataset.accepting === "1";
+      if (ctl.key && ctl.servedBy !== state.instance) {
+        forget("The runtime restarted after these controls were unlocked: unlock them again with its new key.");
+      }
+      unlockForm.hidden = !enabled || !!ctl.key;
+      unlocked.hidden = !enabled || !ctl.key;
+      const live = current();
+      for (const button of panel ? panel.querySelectorAll("button.switch") : []) {
+        button.disabled = !(ctl.key && enabled && accepting && live && button.dataset.allowed === "1" && !ctl.sending);
+      }
+      if (ctl.key && enabled && !live) tell("This page is not current: the switches wait for a current update.");
+      else if (ctl.key && enabled && !accepting) tell("The runtime accepts changes only while it is running.");
+      else if (ctl.key && note.dataset.stale === "1") tell("");
+      note.dataset.stale = ctl.key && enabled && (!live || !accepting) ? "1" : "0";
+    };
+
+    const post = async (url, body, key) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      try {
+        const response = await fetch(url, {method: "POST", cache: "no-store", credentials: "same-origin",
+          redirect: "error", signal: controller.signal, body: JSON.stringify(body),
+          headers: {"Content-Type": "application/json", "X-Sentinel-Token": pageToken(), "X-Sentinel-Control": key}});
+        const type = response.headers.get("Content-Type") || "";
+        const text = type.startsWith("application/json") ? await response.text() : "";
+        const parsed = text && text.length < 4000 ? JSON.parse(text) : null;
+        return {status: response.status, doc: parsed && typeof parsed === "object" ? parsed : {}};
+      } catch (error) {
+        return {status: 0, doc: {reason: error && error.name === "AbortError" ? "no answer in time"
+          : "the connection failed"}};
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    const reason = (doc) => (typeof doc.reason === "string" ? doc.reason.slice(0, 200) : "");
+
+    unlockForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const key = keyBox.value.trim();
+      if (!KEY.test(key)) {
+        tell("That is not a control key: six groups of four letters and digits.");
+        return;
+      }
+      tell("Checking the key…");
+      const {status, doc} = await post("/features/unlock", {}, key);
+      if (status === 200 && doc.state === "unlocked") {
+        ctl.key = key;
+        ctl.servedBy = state.instance;
+        keyBox.value = "";
+        tell("Unlocked. A switch asks the runtime for a change; the actual state below follows from the runtime.");
+      } else {
+        tell(status === 0 ? `Not checked: ${reason(doc)}.` : `Not unlocked: ${reason(doc) || `HTTP ${status}`}.`);
+      }
+      refreshControls();
+    });
+    lock.addEventListener("click", () => {
+      forget("Locked: the key is forgotten in this tab.");
+      refreshControls();
+      keyBox.focus();
+    });
+    if (panel) {
+      panel.addEventListener("click", async (event) => {
+        const button = event.target.closest("button.switch");
+        if (!button || button.disabled || !ctl.key) return;
+        refreshControls();
+        if (button.disabled) return;
+        const feature = button.dataset.feature;
+        const want = button.dataset.want;
+        if (!/^[a-z_]{1,20}$/.test(feature) || (want !== "on" && want !== "off")) return;
+        ctl.sending = true;
+        refreshControls();
+        tell(`Asking the runtime to turn ${want} ${feature.replace("_", " ")}…`);
+        const {status, doc} = await post("/features", {feature, state: want}, ctl.key);
+        ctl.sending = false;
+        if (status === 202) tell(`Requested: ${feature.replace("_", " ")} ${want} (change ${doc.change}). The actual `
+          + "state below follows when the runtime applies it.");
+        else if (status === 200) tell(`Already requested: ${feature.replace("_", " ")} ${want}.`);
+        else if (status === 403 && doc.state === "refused" && /key/.test(reason(doc))) {
+          forget("The key was refused (the runtime may have restarted): unlock again with its key.");
+        } else tell(`Not changed: ${reason(doc) || (status ? `HTTP ${status}` : "no answer")}.`);
+        refreshControls();
+        if (status === 202) schedule(250);  // show the actual state soon
+      });
+    }
+    setInterval(refreshControls, 1000);  // a page that stops being current disables the switches by itself
+    refreshControls();
   }
 
   // ------------------------------------------------------------------ appearance (D96): applied in place, saved here

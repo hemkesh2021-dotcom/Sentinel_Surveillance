@@ -104,6 +104,7 @@ CHAT_ADMISSION = ChatAdmission(
             "interference checks, so chat stays unavailable"),
     validation_allowed=True,  # D77: only a guarded --chat-validation run, to make those checks
 )
+OPERATOR_OFF = "chat is turned off in Features"  # D99
 VALIDATION_NOTE = ("validation run: chat is not admitted; its answers and their effect on monitoring are being "
                    "checked")
 CANCELLED = "cancelled"
@@ -276,6 +277,7 @@ class ChatService:
         self._lock = threading.Lock()
         self._jobs: OrderedDict[str, _Job] = OrderedDict()
         self._last_accepted_ns: int | None = None
+        self._operator_off = False  # D99: turned off in Features; scene analysis is not touched
         self.counters: Counter[str] = Counter()
 
     # ------------------------------------------------------------ state
@@ -284,6 +286,8 @@ class ChatService:
         """off, unavailable or available, with the reason; fixed text."""
         if not self._enabled:
             return {"state": "off", "reason": "chat is off; start sentinel run with --chat to offer it"}
+        if self._operator_off:
+            return {"state": "off", "reason": OPERATOR_OFF}
         if not self._admission.admitted and not self._validation:
             return {"state": "unavailable", "reason": self._admission.reason}
         if self._scene is None or self._run is None:
@@ -307,6 +311,24 @@ class ChatService:
         if self._scene is not None:
             out["scene_waits_behind_chat"] = self._scene.side_delays()
         return out
+
+    @property
+    def operator_off(self) -> bool:
+        return self._operator_off
+
+    @property
+    def usable(self) -> bool:
+        """Whether questions can reach the model in this run at all (admitted, or a validation run, with the scene model
+        running); the operator's switch and the pressure gate aside."""
+        return self._enabled and (self._admission.admitted or self._validation) and self._scene is not None \
+            and self._run is not None
+
+    def set_operator_off(self, off: bool) -> None:
+        """D99: chat turned off (or on again) in Features. Off, new questions are refused and a running one is ended; the
+        scene worker and scene analysis carry on."""
+        self._operator_off = off
+        if off and self.abort_running(OPERATOR_OFF):
+            self._count("cancelled_operator_off")
 
     def abort_running(self, reason: str) -> bool:
         """End a running question (memory pressure, stopping); True if one was running."""

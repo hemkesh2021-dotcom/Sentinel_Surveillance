@@ -98,6 +98,8 @@ ICONS = {
     "expand": '<path d="M14.5 3.5h6v6M9.5 20.5h-6v-6M20.5 3.5l-7 7M3.5 20.5l7-7"/>',
     "shrink": '<path d="M20.5 9.5h-6v-6M3.5 14.5h6v6M14.5 9.5l6-6M9.5 14.5l-6 6"/>',
     "filter": '<path d="M4 5h16l-6.2 7.3v5.9l-3.6 1.8v-7.7z"/>',
+    # D99: the feature controls
+    "toggle": '<rect x="2.5" y="7" width="19" height="10" rx="5"/><circle class="solid" cx="16.5" cy="12" r="3"/>',
 }
 
 SPRITE = (

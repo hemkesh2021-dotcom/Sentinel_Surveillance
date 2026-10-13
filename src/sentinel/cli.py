@@ -428,6 +428,13 @@ def main(
         help="D77: a guarded validation run only: chat may ask the scene model although it is not admitted, so that "
         "its resource and interference checks can be made; the page and the status say so. Needs --chat",
     )
+    run.add_argument(
+        "--feature-controls", action="store_true",
+        help="D99 (off by default): let the status page pause and resume what this run started (face recognition, "
+        "scene analysis, chat, the live view, incident snapshots); never starts, loads or admits anything. Each change "
+        "needs the operator's control key, written to DATA_DIR/control-key (0600) at startup and removed at the stop; "
+        "it is never printed or logged. Needs the status page",
+    )
     run.add_argument("--status-interval-s", type=_positive_seconds, default=30.0,
                      help="print a numbers-only status line this often (default 30)")
     incident_parser = commands.add_parser(
@@ -752,6 +759,9 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
     if args.chat_validation and not args.chat:
         print("run: --chat-validation needs --chat", file=sys.stderr)
         return 1
+    if args.feature_controls and not args.status_port:
+        print("run: --feature-controls needs the status page (--status-port other than 0)", file=sys.stderr)
+        return 1
     face = None
     if args.face:
         if secret is None:
@@ -780,6 +790,7 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
         snapshots=SnapshotPolicy() if args.snapshots else None,
         chat=args.chat,
         chat_validation=args.chat_validation,
+        feature_controls=args.feature_controls,
     )
     clock = SystemClock()
     holder: dict[str, Any] = {}
@@ -824,6 +835,20 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
         raise
     runtime = assembly.runtime
     holder["runtime"] = runtime
+    key_path = None
+    if page is not None and runtime.controls is not None:  # D99: the key only in its 0600 file, never on stdout
+        from .status_page import new_control_key, write_control_key
+
+        key = new_control_key()
+        try:
+            key_path = write_control_key(options.data_dir, key)
+        except OSError as exc:
+            page.stop(2.0)
+            assembly.close(runtime.shutdown())
+            print(f"run: control_key_unwritable:{type(exc).__name__}", file=sys.stderr)
+            return 1
+        page.enable_controls(lambda: runtime.controls, key)
+        del key
     startup = {**assembly.startup, "status_page": None if page is None else "http://%s:%d/" % page.address}
     print(json.dumps({"run": "starting", "startup": startup}), file=out, flush=True)
     handlers = {sig: signal.signal(sig, lambda *_: runtime.request_stop()) for sig in (signal.SIGINT, signal.SIGTERM)}
@@ -834,6 +859,8 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
             runtime.step()
             for record in runtime.drain_identity_records():  # opaque IDs, numbers and fixed labels only
                 print(json.dumps(record), file=out, flush=True)
+            for record in runtime.drain_control_records():  # D99: features and fixed labels only, never the key
+                print(json.dumps(record), file=out, flush=True)
             if time.monotonic() >= next_line:
                 print(json.dumps(status_line(runtime.snapshot())), file=out, flush=True)
                 next_line = time.monotonic() + args.status_interval_s
@@ -841,11 +868,18 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
         shutdown = runtime.shutdown()
         if page is not None:
             shutdown["stopped"]["status_page"] = page.stop(2.0)
+        if key_path is not None:
+            from .status_page import remove_control_key
+
+            shutdown["stopped"]["control_key_removed"] = remove_control_key(key_path)
+        if page is not None or key_path is not None:
             shutdown["all_stopped"] = all(shutdown["stopped"].values())
         closed = assembly.close(shutdown)
         for sig, handler in handlers.items():
             signal.signal(sig, handler)
     for record in runtime.drain_identity_records():
+        print(json.dumps(record), file=out, flush=True)
+    for record in runtime.drain_control_records():
         print(json.dumps(record), file=out, flush=True)
     print(json.dumps({"run": "stopped", "shutdown": shutdown, "database_closed": closed,
                       "status": status_line(runtime.snapshot())}), file=out, flush=True)

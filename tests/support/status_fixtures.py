@@ -50,7 +50,8 @@ class Runtime:
     ``faces`` (a list of face_row()s) turns face recognition on, as a validation run (D92, D95)."""
 
     def __init__(self, *, degraded: list[str] | None = None, faces: list[dict[str, Any]] | None = None,
-                 video: str = "fresh") -> None:
+                 video: str = "fresh", controls: Any = None) -> None:
+        self.controls = controls  # D99: a FeatureControls; its waiting changes are applied when the status is read
         self.answering = threading.Event()
         self.answering.set()
         self.lag_s = 0.0
@@ -83,6 +84,17 @@ class Runtime:
                                      "confirmed_people": sum(f["track_status"] == "confirmed" for f in faces),
                                      "published_utc": updated.isoformat(), "faces": faces[:8],
                                      "faces_not_shown": max(0, len(faces) - 8)})
+        if self.controls is not None:  # D99: the stand-in's loop applies each waiting change, then reports it
+            for change in self.controls.take():
+                self.controls.done(change, "applied")
+            items = {}
+            for name in ("face", "scene", "chat", "live_view", "snapshots"):
+                on, switchable = self.controls.requested(name), self.controls.switchable(name)
+                items[name] = {"requested": "on" if on else "off", "switchable": switchable,
+                               "actual": "running" if on else "off",
+                               "why": "running" if on else "turned_off" if switchable else "not_started",
+                               "problem": None, "validation": "pending_validation" if name == "face" else None}
+            snapshot["features"] = {"accepting": True, "items": items, **self.controls.view()}
         return snapshot
 
 

@@ -36,7 +36,7 @@ from .media.health import FreshnessMonitor, VideoFreshness, VideoState
 from .rules.scene_hazard import HazardCandidate, SceneHazardRule
 from .rules.zones import ZoneObservation, ZoneRules
 from .scene.lane import SceneAnalyzer, SceneLane, SceneLaneSettings
-from .scene.state import CurrentScene, Routing, SceneView
+from .scene.state import CurrentScene, Routing, SceneView, route_evidence
 from .tracking.tracks import TrackTable
 
 NS_PER_MS = 1_000_000
@@ -281,6 +281,8 @@ class EdgeCore:
         # D97 (opt-in): each track's continuity, watched on every processed frame; None: the rules as they were
         self._continuity = None if continuity is None else ContinuityMonitor(continuity)
         self._new_breaks: list[Break] = []
+        self._scene_on = True  # D99: scene analysis turned off at runtime (the lane paused, nothing held)
+        self._queued_evidence: list[Evidence] = []  # D99: skipped by turning scene analysis off; routed next step
         self._face_result_max_age_ns = identity.face_result_max_age_ns
         self.face_counters: Counter[str] = Counter()  # face results: applied or rejected, and why
         self._reported: dict[TrackKey, tuple[str, str | None, str | None]] = {}
@@ -316,6 +318,34 @@ class EdgeCore:
 
     def set_detector(self, capability: Capability) -> None:
         self._detector = capability
+
+    def set_face_recognition(self, capability: Capability) -> None:
+        """D99: face recognition turned off at runtime (DISABLED) or on again (AVAILABLE). Either way every vote, note and
+        break is forgotten: nothing from before is presented as current, the identities that were reported end at the
+        next step (to unresolved, "face recognition disabled"), and on again every track starts unresolved. A result
+        still in flight when it is off is ignored (``ignored_face_unavailable``)."""
+        if capability is self._face_recognition:
+            return
+        self._face_recognition = capability
+        self._identities.forget_all()
+
+    def set_scene_analysis(self, on: bool) -> None:
+        """D99: scene analysis turned off at runtime, or on again. Off: no new scene job (one in flight ends by its
+        deadline and may only annotate its own incident), the held report is dropped, so no scene state is current, and
+        the fire or smoke confirmation starts over; the scene model stays loaded (chat may still use it). On: the next
+        live frame is checked, from nothing. An enrichment request still waiting is skipped for its incident, saying
+        why, at the next step."""
+        if self._lane is None or on == self._scene_on:
+            return
+        self._scene_on = on
+        self._scene = CurrentScene()
+        self._hazard = SceneHazardRule(confirmations=self._config.hazard.confirmations,
+                                       max_gap_ns=self._config.hazard.max_gap_ns)
+        self._queued_evidence += self._lane.set_paused(not on)
+
+    @property
+    def scene_on(self) -> bool:
+        return self._lane is not None and self._scene_on
 
     def on_frame(
         self,
@@ -457,9 +487,14 @@ class EdgeCore:
         return self._finish(freshness, new)
 
     def _finish(self, freshness: VideoFreshness, new: list[Evidence]) -> CoreOutput:
+        if self._queued_evidence:
+            new, self._queued_evidence = [*self._queued_evidence, *new], []
         now = self._clock.mono()
         live = freshness.live
-        routed = tuple(RoutedEvidence(e, self._scene.offer(e, live, now)) for e in new)
+        # D99: while scene analysis is off nothing becomes current scene state; evidence still annotates its incident
+        routed = tuple(RoutedEvidence(e, self._scene.offer(e, live, now) if self._scene_on
+                                      else dataclasses.replace(route_evidence(e, live, now), updates_current=False))
+                       for e in new)
         view = self._scene.view(live, now)
         tracks = self._tracks.current(live, now)
         self._identities.retain_only(t.key for t in tracks)
@@ -487,9 +522,13 @@ class EdgeCore:
         self, tracks: tuple[TrackObservation, ...], identities: dict[TrackKey, TrackIdentity], now: MonoInstant
     ) -> tuple[IdentityTransition, ...]:
         """Changes since the last step; only while face recognition is available (otherwise all is unresolved)."""
-        if self._face_recognition is not Capability.AVAILABLE:
-            return ()
         unresolved = (IdentityState.UNRESOLVED.value, None, None)
+        if self._face_recognition is not Capability.AVAILABLE:  # D99: what was reported ends once, then nothing
+            ended = tuple(IdentityTransition(key.stream_epoch, key.track_id, before[0], unresolved[0], None, None, None,
+                                             f"face recognition {self._face_recognition.value}", now.ns)
+                          for key, before in self._reported.items() if before != unresolved)
+            self._reported = {}
+            return ended
         changes = []
         current: dict[TrackKey, tuple[str, str | None, str | None]] = {}
         for track in tracks:
@@ -551,6 +590,8 @@ class EdgeCore:
                 if self._scene_problem is None
                 else f"scene analysis unavailable: {self._scene_problem}"
             )
+        elif not self._scene_on:  # D99
+            scene, scene_reason = SceneStatus.NO_CURRENT_RESULT, "scene analysis turned off"
         elif view.report is not None:
             scene, scene_reason = SceneStatus.REPORTED, "current scene report"
         elif view.evidence is not None:
@@ -603,7 +644,7 @@ class EdgeCore:
 
     def _scene_capability(self) -> Capability:
         if self._lane is not None:
-            return Capability.AVAILABLE
+            return Capability.AVAILABLE if self._scene_on else Capability.DISABLED
         return Capability.DISABLED if self._scene_problem is None else Capability.UNAVAILABLE
 
     def _identity(self, track: TrackObservation, now: MonoInstant) -> TrackIdentity:

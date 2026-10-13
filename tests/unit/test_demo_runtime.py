@@ -188,7 +188,7 @@ class Harness:
                  flaky: dict[str, int] | None = None, live_preview: bool = False, picture_bytes: int = 0,
                  snapshots: bool = False, chat: bool = False, chat_run: Any = None,
                  chat_admission: ChatAdmission = CHAT_ADMISSION, chat_validation: bool = False,
-                 pressure: Any = lambda: 2_000_000_000) -> None:
+                 pressure: Any = lambda: 2_000_000_000, feature_controls: bool = False) -> None:
         self.clock = FakeClock(utc=T0)
         self.config = config or make_config()
         self.db = Database.open(tmp_path / "sentinel.db")
@@ -216,6 +216,7 @@ class Harness:
             encode=lambda image, fmt, **kw: label_encode(image, fmt, picture_bytes=picture_bytes, **kw),
             snapshots=self.writer, chat=chat, chat_run=chat_run, chat_admission=chat_admission,
             chat_validation=chat_validation, pressure=pressure,  # never this machine's own memory
+            feature_controls=feature_controls,
         )
         self.capture.connect()
 
@@ -1545,3 +1546,261 @@ def test_sentinel_run_saves_shows_and_keeps_the_snapshot_across_a_restart(tmp_pa
     finally:
         assert later.stop(2.0)
     assert fetched["after"][0] == 200 and fetched["after"][2] == fetched["jpg"][2]
+
+
+# ---------------------------------------------------------------- D99: features turned off and on at runtime
+
+
+def scene_and_chat(tmp_path: Path, **options: Any) -> tuple[Harness, ThreadedSceneAnalyzer]:
+    images = RecentImages()
+    analyzer = ThreadedSceneAnalyzer(lambda job, image: WorkerOutcome.completed(job.job_id, REPORT), images,
+                                     revision="1+lfm2")
+    h = Harness(tmp_path, scene=SceneRuntime(analyzer, images), chat=True,
+                chat_run=lambda question, image, abort=None: ("A chair by the window.", False), chat_validation=True,
+                feature_controls=True, **options)
+    return h, analyzer
+
+
+def item(h: Harness, name: str) -> dict[str, Any]:
+    return h.runtime.snapshot()["features"]["items"][name]
+
+
+def test_scene_analysis_turned_off_submits_nothing_holds_no_report_and_keeps_the_model_for_chat(tmp_path) -> None:
+    h, analyzer = scene_and_chat(tmp_path)
+    h.runtime.start()
+    try:
+        h.frame()
+        wait_for(lambda: analyzer.counters["delivered"] >= 1 and not analyzer.busy())
+        h.frame()
+        assert h.live()["scene"] == SceneStatus.REPORTED.value and item(h, "scene")["actual"] == "running"
+        controls = h.runtime.controls
+        assert controls.request("scene", "off")[0] == 202
+        pending = h.runtime._features_view()["items"]["scene"]  # type: ignore[attr-defined]  # before the loop's step
+        assert (pending["requested"], pending["actual"], pending["why"]) == ("off", "stopping", "pending")
+        h.frame()  # the loop applies it at its next step
+        submitted = analyzer.counters["submitted"]
+        live = h.live()
+        assert (live["scene"], live["scene_reason"], live["scene_analysis"]) == (
+            SceneStatus.NO_CURRENT_RESULT.value, "scene analysis turned off", "disabled")  # no report is current
+        for _ in range(80):  # five seconds of frames: no scene check is submitted
+            h.frame()
+        assert analyzer.counters["submitted"] == submitted
+        component = h.runtime.snapshot()["components"]["scene"]
+        assert component["state"] == "disabled" and component["paused"] is True
+        assert (item(h, "scene")["actual"], item(h, "scene")["why"]) == ("off", "turned_off")
+        assert h.runtime.chat.availability()["state"] == "available"  # the model stays loaded; chat may ask it
+        code, accepted = h.runtime.chat.ask(ChatQuestion("What is visible?"))
+        assert code == 202
+        wait_for(lambda: h.runtime.chat.poll(accepted["job"])[1]["state"] == "answered")
+        assert controls.request("scene", "on")[0] == 202
+        h.frame()
+        wait_for(lambda: analyzer.counters["submitted"] > submitted)  # checks resume, from nothing
+        h.idle(0.0)
+        assert item(h, "scene")["actual"] == "running" and h.runtime.snapshot()["degraded"] == []
+    finally:
+        h.runtime.shutdown()
+    records = h.runtime.drain_control_records()
+    assert [(r["feature"], r["requested"], r["result"]) for r in records] == [("scene", "off", "applied"),
+                                                                            ("scene", "on", "applied")]
+
+
+def test_chat_turned_off_refuses_questions_and_scene_analysis_goes_on(tmp_path) -> None:
+    h, analyzer = scene_and_chat(tmp_path)
+    h.runtime.start()
+    try:
+        h.frame()
+        wait_for(lambda: analyzer.counters["delivered"] >= 1 and not analyzer.busy())
+        assert h.runtime.controls.request("chat", "off")[0] == 202
+        h.frame()
+        assert h.runtime.chat.availability() == {"state": "off", "reason": "chat is turned off in Features"}
+        code, refused = h.runtime.chat.ask(ChatQuestion("What is visible?"))
+        assert code == 503 and refused["state"] == "off"
+        submitted = analyzer.counters["submitted"]
+        for _ in range(70):
+            h.frame()
+        assert analyzer.counters["submitted"] > submitted  # scene analysis was not touched
+        assert item(h, "chat")["actual"] == "off" and item(h, "scene")["actual"] == "running"
+        assert item(h, "chat")["validation"] == "validation_run"
+    finally:
+        h.runtime.shutdown()
+
+
+def test_the_live_view_turned_off_makes_keeps_and_sends_no_picture(tmp_path) -> None:
+    h = Harness(tmp_path, live_preview=True, feature_controls=True)
+    h.runtime.start()
+    try:
+        h.frame(image=SimpleNamespace(shape=(480, 640, 3), label="seen"))
+        preview = h.runtime.preview
+        assert preview.next_frame(None, 2.0).picture is not None
+        assert h.runtime.controls.request("live_view", "off")[0] == 202
+        h.frame(image=SimpleNamespace(shape=(480, 640, 3), label="unseen"))
+        answer = preview.next_frame(None, 2.0)
+        assert answer.picture is None and answer.view["state"] == "paused"
+        assert preview.view(with_picture=True)["picture"] is None and preview.summary()["pictures_kept"] == 0
+        encodes = preview.summary()["counters"]["encodes"]
+        for _ in range(10):
+            h.frame()
+            assert preview.encode_newest() == "paused"
+        assert preview.summary()["counters"]["encodes"] == encodes and item(h, "live_view")["actual"] == "off"
+        assert h.runtime.controls.request("live_view", "on")[0] == 202
+        h.frame(image=SimpleNamespace(shape=(480, 640, 3), label="again"))
+        assert preview.next_frame(None, 2.0).picture is not None
+    finally:
+        h.runtime.shutdown()
+
+
+def test_snapshots_turned_off_are_recorded_missing_and_saved_ones_are_kept(tmp_path) -> None:
+    h = Harness(tmp_path, snapshots=True, feature_controls=True)
+    h.runtime.start()
+    try:
+        assert h.runtime.controls.request("snapshots", "off")[0] == 202
+        n = 0
+        while not h.outbox_rows():
+            h.frame(image=labelled(n))
+            n += 1
+        wait_for(lambda: h.rows("SELECT state FROM incident_snapshots"))
+        (state, reason), = h.rows("SELECT state, reason FROM incident_snapshots")
+        assert (state, reason) == ("missing", "snapshots_off")  # said so; no other frame substituted
+        detail = read_incident(tmp_path / "sentinel.db", h.rows("SELECT incident_id FROM incidents")[0][0])["snapshot"]
+        assert detail["text"] == ("missing: snapshots were turned off in Features when this incident was recorded; "
+                                  "no other frame was substituted")
+        assert not list((tmp_path / "snapshots").glob("snap-*.jpg")) and h.runtime._pinned == {}  # type: ignore[attr-defined]
+        h.idle(0.0)  # the status as the loop reports it at its next step
+        assert item(h, "snapshots")["actual"] == "off"
+    finally:
+        h.runtime.shutdown()
+
+
+def test_turning_snapshots_off_deletes_no_saved_snapshot(tmp_path) -> None:
+    h = Harness(tmp_path, snapshots=True, feature_controls=True)
+    h.runtime.start()
+    try:
+        n = 0
+        while not h.outbox_rows():
+            h.frame(image=labelled(n))
+            n += 1
+        wait_for(lambda: h.rows("SELECT state FROM incident_snapshots WHERE state = 'saved'"))
+        saved = sorted((tmp_path / "snapshots").glob("snap-*.jpg"))
+        assert h.runtime.controls.request("snapshots", "off")[0] == 202
+        for _ in range(30):
+            h.frame(image=labelled(n))
+            n += 1
+        assert sorted((tmp_path / "snapshots").glob("snap-*.jpg")) == saved and saved
+        assert h.rows("SELECT state FROM incident_snapshots") == [("saved",)]
+    finally:
+        h.runtime.shutdown()
+
+
+def test_what_this_run_did_not_start_says_so_and_cannot_be_switched(tmp_path) -> None:
+    h = Harness(tmp_path, feature_controls=True)
+    h.runtime.start()
+    try:
+        h.frame()
+        view = h.runtime.snapshot()["features"]
+        assert view["accepting"] is True
+        for name in ("face", "scene", "chat", "live_view", "snapshots"):
+            assert (view["items"][name]["actual"], view["items"][name]["why"],
+                    view["items"][name]["switchable"]) == ("off", "not_started", False), name
+            assert h.runtime.controls.request(name, "on")[0] == 409
+        processed = h.runtime.snapshot()["frames"]["processed"]
+        h.frame()
+        assert h.runtime.snapshot()["frames"]["processed"] == processed + 1  # core monitoring never paused
+    finally:
+        h.runtime.shutdown()
+    plain = Harness(tmp_path / "plain")
+    plain.frame()
+    assert "features" not in plain.runtime.snapshot() and plain.runtime.controls is None  # off by default
+
+
+def test_rapid_toggles_coalesce_and_changes_while_not_running_are_refused(tmp_path) -> None:
+    h = Harness(tmp_path, live_preview=True, feature_controls=True)
+    controls = h.runtime.controls
+    assert controls.request("live_view", "off")[0] == 202
+    h.frame()  # not started yet: the loop refuses rather than applies
+    assert h.runtime.drain_control_records()[0]["result"] == "refused"
+    h.runtime.start()
+    try:
+        for state in ("on", "off", "on", "off"):  # before the loop's next step: only the last waits
+            controls.request("live_view", state)
+        assert [c.on for c in controls._waiting.values()] == [False]  # type: ignore[attr-defined]
+        h.frame()
+        assert h.runtime.preview.paused is True
+        assert [(r["requested"], r["result"]) for r in h.runtime.drain_control_records()] == [("off", "applied")]
+        assert controls.view()["counters"]["replaced"] == 3
+    finally:
+        h.runtime.shutdown()
+
+
+def test_sentinel_run_with_feature_controls_keeps_the_key_in_its_private_file_only(tmp_path, capsys, monkeypatch) -> None:
+    """D99 end to end: the key is written 0600 in the data directory after startup, never printed; a change made with
+    it through the page is applied by the loop and printed once as a control line; the key file is gone at the stop."""
+    import http.client
+    import stat as stat_
+
+    monkeypatch.setenv("SENTINEL_RTSP_URL", FAKE_URL)
+    config = tmp_path / "config.yaml"
+    config.write_text("config_version: 1\ncamera: {id: cam-1}\n")
+    port = free_port()
+    data = tmp_path / "data"
+    seen: dict[str, Any] = {}
+
+    def post(path: str, body: bytes, key: str) -> int:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        page = json.loads(get("/status.json?page=1"))
+        conn.request("POST", path, body=body, headers={
+            "Host": f"127.0.0.1:{port}", "Origin": f"http://127.0.0.1:{port}", "Content-Type": "application/json",
+            "X-Sentinel-Token": page["page"]["token"], "X-Sentinel-Control": key})
+        status = conn.getresponse().status
+        conn.close()
+        return status
+
+    def get(path: str) -> str:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", path, headers={"Host": f"127.0.0.1:{port}"})
+        text = conn.getresponse().read().decode()
+        conn.close()
+        return text
+
+    def act(reads: int) -> None:
+        if reads == 12:
+            path = data / "control-key"
+            seen["mode"] = stat_.S_IMODE(path.stat().st_mode)
+            seen["key"] = path.read_text().strip()
+            seen["wrong"] = post("/features", b'{"feature": "live_view", "state": "off"}', "AAAA-BBBB-CCCC-DDDD-EEEE-FFFF")
+            seen["right"] = post("/features", b'{"feature": "live_view", "state": "off"}', seen["key"])
+        if reads == 20:
+            seen["status"] = get("/status.json")
+            seen["pages"] = get("/") + seen["status"] + get("/status.json?page=1")
+        if reads == 25:
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    code = main(["run", str(config), "--data-dir", str(data), "--engine", str(tmp_path / "x.engine"),
+                 "--status-port", str(port), "--live-preview", "--feature-controls"],
+                devices=fake_devices(ThreadedSource(on_read=act)))
+    out = capsys.readouterr()
+    assert code == 0, out.err
+    assert seen["mode"] == 0o600 and (seen["wrong"], seen["right"]) == (403, 202)
+    lines = [json.loads(line) for line in out.out.splitlines()]
+    assert lines[0]["startup"]["feature_controls"] == {"face": False, "scene": False, "chat": False,
+                                                       "live_view": True, "snapshots": False}
+    controls = [line for line in lines if line.get("control") == "feature"]
+    assert [(c["feature"], c["requested"], c["result"]) for c in controls] == [("live_view", "off", "applied")]
+    assert lines[-1]["shutdown"]["stopped"]["control_key_removed"] is True and not (data / "control-key").exists()
+    for form in (seen["key"], seen["key"].replace("-", "")):
+        assert form not in out.out + out.err + seen["pages"]
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "benchmarks/runner"))
+    import face_evidence  # the evidence profiles declare every new field exactly
+
+    (tmp_path / "run.jsonl").write_text(out.out)
+    (tmp_path / "status-n1.json").write_text(seen["status"])
+    assert json.loads(seen["status"])["features"]["items"]["live_view"]["actual"] == "off"
+    assert face_evidence.read(tmp_path / "run.jsonl", "f2").nonconforming == []
+    assert face_evidence.read(tmp_path / "status-n1.json", "f2").nonconforming == []
+
+
+def test_feature_controls_need_the_status_page(tmp_path, capsys) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("config_version: 1\ncamera: {id: cam-1}\n")
+    code = main(["run", str(config), "--data-dir", str(tmp_path / "data"), "--engine", str(tmp_path / "x.engine"),
+                 "--status-port", "0", "--feature-controls"], devices=fake_devices(ThreadedSource()))
+    assert code == 1 and "--feature-controls needs the status page" in capsys.readouterr().err

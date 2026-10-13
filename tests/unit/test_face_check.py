@@ -1769,6 +1769,13 @@ def test_the_vocabularies_are_the_codes(mods) -> None:
     from sentinel.identity.continuity import NOT_CARRIED, Cause, ContinuityPolicy
     assert set(fe.CONTINUITY_CAUSES) == {c.value for c in Cause} and set(fe.NOT_CARRIED) == set(NOT_CARRIED.values())
     assert set(fe.CONTINUITY_POLICY) == set(ContinuityPolicy().numbers())
+    from sentinel import features, status_page
+    from sentinel.live_preview import PAUSED, PAUSED_REASON
+    from sentinel.scene.chat import OPERATOR_OFF
+    assert fe.FEATURES == features.FEATURES and set(fe.FEATURE_RESULTS) == set(features.OUTCOMES)  # D99
+    assert set(fe.FEATURE_ACTUAL) == set(status_page.FEATURE_ACTUAL)
+    assert PAUSED in fe.PREVIEW_STATE.values and fe.PREVIEW_REASON.fit(PAUSED_REASON) == (True, [])
+    assert fe.CHAT_REASON.fit(OPERATOR_OFF)[0] and "snapshots_off" in status_page.SNAPSHOT_REASONS
     assert fe.TICKS.values == {TICK_OFFERED, TICK_SKIPPED_NO_PERSON, TICK_STOPPING}
     assert fe.RELEASE_RESULTS.values == set(RELEASE_RESULTS)
     assert fe.RELEASE_COMPONENTS.values == set(RELEASE_FILE_ROLES)

@@ -191,6 +191,12 @@ class IdentityResolver:
         self._broken[key] = (at_ns if previous is None else max(previous[0], at_ns), cause)
         self.counters[f"breaks_{cause.value}"] += 1
 
+    def forget_all(self) -> None:
+        """Drop every vote, note and break (face recognition turned off at runtime, D99): nothing earlier may be
+        presented as current, and a later start begins unresolved."""
+        for table in (self._votes, self._last_note, self._broken):
+            table.clear()
+
     def diagnostic_similarity(self, embedding: Sequence[float]) -> float | None:
         """D87: the best cosine similarity of an embedding to the enrollment, exactly as a vote computes it
         (``best_match``), for a diagnostic comparison. Read only: no vote, note, counter or state changes. None when

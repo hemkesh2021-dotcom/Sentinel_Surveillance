@@ -196,7 +196,8 @@ RELEASE_RESULTS = vocab("returned_0", "returned_error", "open_failed", "unsuppor
 RELEASE_COMPONENTS = vocab("scene", "detector", "face")  # memory_policy.RELEASE_FILE_ROLES
 RELEASE_ROLES = vocab("llm", "mmproj", "engine", "facenet512_weights.h5", "face_detection_yunet_2023mar.onnx")
 STOPPED_PARTS = vocab("capture", "face_worker", "scene_server", "scene_worker", "outbox", "status_page",
-                      "snapshots", "live_view")  # the last two only with --snapshots and --live-preview (D70, D75)
+                      "snapshots", "live_view",  # only with --snapshots and --live-preview (D70, D75)
+                      "control_key_removed")  # D99, only with --feature-controls
 CHANNELS = vocab("telegram")
 GUARD_STATUS = Either((vocab("duration_stop", "child_exited", "cleanup_failed", "forced_stop", "guard_stop",
                              "ready_timeout", "operator_interrupt"), template(r"refused:(.+)")))
@@ -210,7 +211,8 @@ PENDING_DURABILITY = template(
 OCCUPANCY_REASON = template(r"no fresh video \((.+)\)", r"person detector (.+)",
                             fixed("detector has not processed a recent frame"),
                             r"(\d+) confirmed person\(s\) on fresh video", fixed("nobody detected on fresh video"))
-SCENE_REASON = template(fixed("scene analysis disabled"), r"scene analysis unavailable: (.+)",
+SCENE_REASON = template(fixed("scene analysis disabled"), fixed("scene analysis turned off"),  # D99
+                        r"scene analysis unavailable: (.+)",
                         fixed("current scene report"), r"last scene check ([^:]+): (.*)", fixed("no scene result yet"),
                         r"last scene result not current \((.+)\)")
 DEGRADED = template(r"capture (\S+)(?: \((.+)\))?", r"video (\S+)", r"detector unavailable \((.*)\)",
@@ -220,7 +222,8 @@ DEGRADED = template(r"capture (\S+)(?: \((.+)\))?", r"video (\S+)", r"detector u
                     r"queued", r"delivery worker problem \((.*)\)", fixed("delivery worker stopped"))
 TRANSITION_REASON = template(*(fixed(t) for t in (
     *VOTE_NOTES, "no face visible", "face ownership ambiguous", *OWNERSHIP, "no face observed yet",
-    "consistent faces matched nobody", "contradictory face evidence", "track no longer current", *NOT_CARRIED)),
+    "consistent faces matched nobody", "contradictory face evidence", "track no longer current", *NOT_CARRIED,
+    "face recognition disabled")),  # D99: identities end when face recognition is turned off
     r"(\d+) consistent matches")
 TRACK_STATUS = vocab("tentative", "confirmed")  # contracts.TrackStatus
 # A person's identity reason (D95): the core's own (identity.state, runtime.EdgeCore._identity), never free text.
@@ -235,12 +238,13 @@ INCIDENT_TITLE = template(r"Person in restricted zone '(.*)'", r"Person dwelling
 # D78: what --live-preview (D69, D75), --snapshots (D70) and --chat [--chat-validation] (D74, D77) add to a run's
 # evidence, field by field, so that a combined run is read as strictly as a face-only one. A run without those flags
 # has none of these fields. Fixed text is declared as fixed text, never as free text.
-PREVIEW_STATE = vocab("live", "stale", "offline", "starting")  # live_preview.STATE_NAMES
+PREVIEW_STATE = vocab("live", "stale", "offline", "starting", "paused")  # live_preview.STATE_NAMES, PAUSED (D99)
 PREVIEW_REASON = template(
     fixed("the newest frame of the connected stream"), fixed("no frame yet since the runtime started"),
     fixed("no frame received"), r"no new frame for (\d+) s \(offline after ([\d.]+) s\)",
     r"no new frame for ([\d.]+) s \(stale after ([\d.]+) s\)",
-    fixed("the stream connection this frame came from has ended; reconnecting"))
+    fixed("the stream connection this frame came from has ended; reconnecting"),
+    fixed("the live view is turned off in Features"))  # D99: live_preview.PAUSED_REASON
 TIME_QUALITY = vocab("none", "stream_relative", "capture_synced")  # contracts.SourceTimeQuality
 TIME_LABEL = template(*(fixed("ingest time: when this device received and decoded the frame, not when the camera "
                               f"captured it; {text} (source time quality: {quality})") for quality, text in (
@@ -253,14 +257,14 @@ PREVIEW_BOUNDS = {"max_width": INT, "max_height": INT, "jpeg_quality": INT, "max
 PREVIEW_COUNTERS = vocab(  # LivePreview counters
     "reused", "encode_busy", "rate_limited", "encodes", "encode_failures", "served", "not_kept", "refused_not_current",
     "stream_requests", "stream_pictures_sent", "stream_no_newer_picture", "stream_not_live", "yielded",
-    "encoder_starts")
+    "encoder_starts", "paused", "stream_refused_paused")  # the last two D99
 SNAPSHOT_POLICY = {"retention_s": NUM, "quota_bytes": INT, "max_count": INT, "reserve_min_bytes": INT,
                    "reserve_fraction": NUM, "max_bytes": INT, "max_width": INT, "max_height": INT,
                    "jpeg_quality": INT, "prune_interval_s": NUM}  # incidents.snapshots.SnapshotPolicy
 SNAPSHOT_MISSING = ("frame_not_retained", "too_many_waiting", "queue_full", "frame_identity_mismatch",
                     "incident_id_not_file_safe", "not_an_image", "unexpected_channels", "unsupported_pixel_format",
                     "jpeg_encode_failed", "encode_failed", "too_large", "retention_failed", "free_space_reserve",
-                    "write_failed")  # SnapshotStore._missing labels, before any ':'
+                    "write_failed", "snapshots_off")  # SnapshotStore._missing labels, before any ':' (D99 last)
 SNAPSHOT_STORE_COUNTERS = vocab("saved", "duplicate", *(f"missing:{label}" for label in SNAPSHOT_MISSING),
                                 "pruned:retention_age", "pruned:retention_quota")
 SNAPSHOT_WRITER_COUNTERS = vocab("queued", "not_queued_full", "not_queued_stopped", "saved", "missing", "duplicate",
@@ -279,30 +283,59 @@ CHAT_REASON = Either((template(
     fixed("ask about the picture the camera is showing now"),
     fixed("ask about the picture the camera is showing now (validation run: chat is not admitted; its answers and "
           "their effect on monitoring are being checked)"),
-    fixed("monitoring comes first")), GATE_REASON))
+    fixed("monitoring comes first"), fixed("chat is turned off in Features")), GATE_REASON))  # the last D99
 CHAT_ADVISORY = template(fixed(
     "Answers come from the on-device scene model and describe one frame: they are advisory. Chat cannot acknowledge "
     "incidents, change rules, control the camera, run commands or identify anyone."))
 CHAT_COUNTERS = vocab(  # ChatService counters
     "refused_unavailable", "refused_paused", "busy_pending", "busy_interval", "no_frame", "no_fresh_frame",
-    "busy_scene", "accepted", "gave_up_waiting", "timeouts", "answered", "errors", "cancelled")
+    "busy_scene", "accepted", "gave_up_waiting", "timeouts", "answered", "errors", "cancelled",
+    "cancelled_operator_off")  # D99
 GATE_COUNTERS = vocab("samples", "closed", "reopened", "cancel_requests")  # ChatGate counters
 GATE_LIMITS = {"stop_new_bytes": INT, "stop_samples": INT, "cancel_bytes": INT, "readmit_bytes": INT,
                "readmit_s": NUM, "misses_window_s": NUM, "misses_to_stop": INT}
+# D99: --feature-controls adds the features block (DemoRuntime._features_view), the startup's switchable features and
+# one "control" line per applied change (features.FeatureControls); fixed labels and numbers only, never the key.
+FEATURES = ("face", "scene", "chat", "live_view", "snapshots")  # features.FEATURES
+FEATURE_STATES = ("on", "off")
+FEATURE_ACTUAL = ("running", "starting", "stopping", "off", "busy", "unavailable", "error")
+FEATURE_WHY = ("running", "pending", "finishing", "turned_off", "not_started", "failed_at_start", "not_admitted",
+               "paused_by_gate", "worker_stopped", "server_not_ready", "writer_problem")
+FEATURE_VALIDATION = ("pending_validation", "validation_run", "not_admitted")
+FEATURE_RESULTS = ("accepted", "replaced", "applied", "unchanged", "refused")  # features.OUTCOMES
+FEATURE_COUNTERS = vocab("accepted", "replaced", "applied", "unchanged", "refused", "records_dropped",
+                         "refused_invalid", "refused_not_switchable", "refused_busy", "refused_not_this_page",
+                         "refused_wrong_key", "refused_locked")
+FEATURES_STATUS = {
+    "features.accepting": BOOL,
+    "features.items.*.requested": vocab(*FEATURE_STATES), "features.items.*.actual": vocab(*FEATURE_ACTUAL),
+    "features.items.*.why": vocab(*FEATURE_WHY), "features.items.*.problem": maybe(TEXT),
+    "features.items.*.switchable": BOOL, "features.items.*.validation": maybe(vocab(*FEATURE_VALIDATION)),
+    "features.log[].change": INT, "features.log[].at_utc": ISO, "features.log[].feature": vocab(*FEATURES),
+    "features.log[].requested": vocab(*FEATURE_STATES), "features.log[].result": vocab(*FEATURE_RESULTS),
+    "features.counters.*": INT, "features.rate.limit": INT, "features.rate.window_s": NUM,
+    "components.face.paused": BOOL, "components.scene.paused": BOOL,
+}
+FEATURE_RECORDS = {  # features.FeatureControls.done: one per change the loop applied, found unchanged or refused
+    "control": vocab("feature"), "change": INT, "at_utc": ISO, "feature": vocab(*FEATURES),
+    "requested": vocab(*FEATURE_STATES), "result": vocab(*FEATURE_RESULTS),
+}
 OPTIONAL_STARTUP = {  # assemble's startup fields for the live view, snapshots and chat
     **{f"live_preview.{k}": v for k, v in PREVIEW_BOUNDS.items()},
     **{f"snapshots.{k}": INT for k in ("removed_temporary", "removed_unrecorded", "unexpected_files", "pruned")},
     **{f"snapshots.policy.{k}": v for k, v in SNAPSHOT_POLICY.items()},
     "chat.state": CHAT_STATE, "chat.reason": CHAT_REASON,
+    "feature_controls.*": BOOL,  # D99
 }
 OPTIONAL_STATUS = {  # build_status's preview, and DemoRuntime's preview, snapshots and chat components
+    **FEATURES_STATUS,
     "preview.enabled": BOOL, "preview.state": PREVIEW_STATE, "preview.reason": PREVIEW_REASON, "preview.age_ms": COUNT,
     "preview.frame": NULL, **{f"preview.frame.{k}": INT for k in ("stream_epoch", "frame_seq", "native_width",
                                                                   "native_height")},
     "preview.frame.ingest_utc": ISO, "preview.frame.source_time_quality": TIME_QUALITY,
     "preview.time_label": maybe(TIME_LABEL), "preview.picture": NULL, "preview.problem": maybe(TEXT),
     **{f"preview.bounds.{k}": v for k, v in PREVIEW_BOUNDS.items()},
-    "components.preview.state": vocab("enabled"), "components.preview.pictures_kept": INT,
+    "components.preview.state": vocab("enabled", "paused"), "components.preview.pictures_kept": INT,
     "components.preview.problem": maybe(TEXT), "components.preview.encoder.running": BOOL,
     "components.preview.encoder.nice": COUNT, "components.preview.encode_ms": NULL,
     "components.preview.encode_ms.last": INT, "components.preview.encode_ms.median": NUM,
@@ -326,7 +359,8 @@ OPTIONAL_STATUS = {  # build_status's preview, and DemoRuntime's preview, snapsh
     **{f"components.chat.scene_waits_behind_chat.run_ms.{group}.{k}": (INT if k == "n" else SECONDS)
        for group in ("behind_side", "others") for k in ("n", "median_ms", "max_ms")},
 }
-OPTIONAL_STATUS_KEYS = {"components.preview.counters": PREVIEW_COUNTERS,
+OPTIONAL_STATUS_KEYS = {"features.items": vocab(*FEATURES), "features.counters": FEATURE_COUNTERS,
+                        "components.preview.counters": PREVIEW_COUNTERS,
                         "components.snapshots.writer": SNAPSHOT_WRITER_COUNTERS,
                         "components.snapshots.store": SNAPSHOT_STORE_COUNTERS,
                         "components.chat.counters": CHAT_COUNTERS, "components.chat.gate.counters": GATE_COUNTERS}
@@ -439,7 +473,7 @@ STARTUP = {  # the runtime's ``starting`` line (demo_runtime.assemble and cli)
 }
 STARTUP_KEYS = {"scene_memory_before": MEMFREE_KEYS, "detector_memory_before": MEMFREE_KEYS,
                 "face_memory_before": MEMFREE_KEYS, "releases": RELEASE_COMPONENTS, "releases.*.files": RELEASE_ROLES,
-                "notifier_problems": CHANNELS}
+                "notifier_problems": CHANNELS, "feature_controls": vocab(*FEATURES)}
 STATUS_LINE = {  # cli.status_line
     "updated_utc": ISO, "state": RUNTIME, "video": maybe(VIDEO), "occupancy": maybe(OCCUPANCY),
     "scene": maybe(SCENE_STATUS), "identities": NULL,
@@ -487,7 +521,7 @@ IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransitio
 }
 RUN = JsonProfile({
     "run": vocab("starting", "stopped"), **nest("startup", STARTUP),
-    **STATUS_LINE, **IDENTITY_RECORDS,
+    **STATUS_LINE, **IDENTITY_RECORDS, **FEATURE_RECORDS,
     "shutdown.stopped.*": BOOL, "shutdown.all_stopped": BOOL, "shutdown.signals_not_recorded": INT,
     "database_closed": BOOL, **nest("status", STATUS_LINE),
 }, keys={**{f"startup.{k}": v for k, v in STARTUP_KEYS.items()}, "shutdown.stopped": STOPPED_PARTS}, lines=True)
@@ -628,7 +662,8 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
     "components.scene.lane": vocab(  # scene.lane counters (JobPurpose: periodic, enrichment)
         "submitted_periodic", "submitted_enrichment", "enrichment_replaced", "result_for_unknown_job", "late_result",
         "enrichment_skipped", "submit_failed", "cancel_failed", "timed_out_job_forgotten",
-        "deadline_missed"),  # D77
+        "deadline_missed",  # D77
+        "enrichment_skipped_paused"),  # D99
     "components.scene.worker": vocab(  # scene.analyzer counters
         "submitted", "delivered", "image_not_retained", "replaced_waiting", "cancelled_waiting", "cancelled_running",
         "dropped_at_stop", "inbox_dropped",
@@ -641,7 +676,8 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
     "components.face.worker.counters": vocab(  # identity.worker counters
         "ticks", "skipped_no_person", "replaced", "offered", "abandoned_at_stop", "expired_before_start", "started",
         "results_replaced", "errors", "completed", "faces_detected", "fallback_dropped", "faces_returned",
-        "yielded_to_comparison", "comparison_outcomes_dropped", "comparison_plan_errors"),  # D87
+        "yielded_to_comparison", "comparison_outcomes_dropped", "comparison_plan_errors",  # D87
+        "discarded_off"),  # D99
     "components.face.worker.comparison.counters": Either((  # identity.comparison counters; failure labels are content
         vocab(*(f"{stage}_{kind}" for stage in ("eligible", "attempted", "completed", "failed")
                 for kind in COMPARISON_KINDS), *(d for d in COMPARISON_DISPOSITIONS if d.startswith("skipped_"))),
