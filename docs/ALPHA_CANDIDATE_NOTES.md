@@ -43,7 +43,9 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
 ## Gates still open for the alpha
 
 1. Face recognition: a passing F2 (the seated-away procedure is undecided), false-acceptance data from consenting
-   non-enrolled participants, and the maintainer's decision on any detection or enrollment change.
+   non-enrolled participants, and the maintainer's decision on any detection or enrollment change. Daytime matching
+   with the photo gallery has been poor since 12 October (session 70: no implementation defect found); the daylight
+   diagnostic `daylight-eval` is prepared and has not run.
 2. Chat: admission (operator-run resource and interference checks; the maintainer's decision).
 3. Face and chat together: no combined run yet.
 4. The feature controls on the device and in Safari (`features`, two sessions: the face session ran once with its switch
