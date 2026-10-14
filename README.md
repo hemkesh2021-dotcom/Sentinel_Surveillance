@@ -25,6 +25,36 @@
 
 ---
 
+## Sentinel v2: EXPERIMENTAL ALPHA (this branch)
+
+**This branch, `alpha-candidate-2026-10`, is an experimental alpha candidate of Sentinel v2. It is not a release.**
+Nothing on it is tagged, merged into `master` or accepted for deployment, and face recognition and chat are not
+admitted for normal use. The v2 package is in `src/sentinel/`; the v1 files described in the rest of this README
+(`surveillance4_1.py`, `dashboard.py`, `build_face_db.py`, `start_sentinel.sh`) are unchanged on this branch.
+
+| | What it covers |
+|---|---|
+| **Implemented, portable-tested** | Core monitoring (capture, person detection and tracking, zone rules, incidents, alert outbox), the incident and status pages, the live view and snapshots, the live dashboard, face recognition in guarded validation runs, advisory chat about the live frame, the identity continuity rule (proposed) and the feature controls. Tests run without a camera, GPU or model. |
+| **Tested on the device, each within a bounded scope** | One Jetson Orin Nano with one camera: core monitoring in a guarded run; the incident page and acknowledgment; the live view and snapshots; the live dashboard with face recognition in validation runs (described, not accepted); two chat runs whose runtime and browser checks passed. |
+| **Pending** | Everything listed below, and the gates in [`docs/ALPHA_CANDIDATE_NOTES.md`](docs/ALPHA_CANDIDATE_NOTES.md). |
+
+Known limits of this candidate:
+
+- **Face recognition fails intermittently, and the cause is unresolved.** In some daytime sessions the enrolled person
+  was matched on few faces; in others, by day and at night, on most. No implementation defect has been established.
+- **Face acceptance and checks with non-enrolled people are pending.** The formal face validation has not passed, and
+  there is no false-acceptance data. Face recognition stays `PENDING_VALIDATION`.
+- **The proposed identity continuity rule and the feature controls are not fully validated on the device.**
+- **Chat's runtime checks passed in earlier device runs; the factual accuracy of its answers is not established.**
+  Chat is not admitted.
+- **Face recognition and the scene model (VLM) running together have not been validated.**
+
+Hardware throughput, memory with every feature on, long-duration behaviour and production use are untested; browsers
+other than headless Chromium have only been observed by the operator. Evidence for every claim, session by session, is in
+[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md).
+
+---
+
 ## What is SENTINEL?
 
 SENTINEL is a self-hosted, edge-AI surveillance system built for **NVIDIA Jetson** hardware. It fuses classical computer vision with a modern vision-language model to give you a complete picture of your space — who is there, what they are doing, and whether anything needs your attention — all in real time, with **zero cloud dependency** for inference.

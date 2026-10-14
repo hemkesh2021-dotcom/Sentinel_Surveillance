@@ -1,12 +1,34 @@
-# Sentinel v2 — alpha-candidate development branch: notes
+# Sentinel v2 — EXPERIMENTAL ALPHA candidate: notes
 
-**This is a development branch, not a release.** Nothing here is tagged, merged or declared accepted. As of
-2026-10-14 (session 68), the code is on branch `v2-ui-refresh`, which descends from `v2-beta`; it is published only if
-and when the maintainer decides. `docs/IMPLEMENTATION_STATUS.md`
+**EXPERIMENTAL ALPHA. This is a development candidate, not a release.** Nothing here is tagged, merged into `master` or
+`v2-beta`, or declared accepted. On 2026-10-14 (session 73), at the maintainer's request, the local branch `v2-ui-refresh`
+(which descends from `v2-beta`) was published as the remote branch `alpha-candidate-2026-10` for review. `docs/IMPLEMENTATION_STATUS.md`
 is the source of every result named here, by session; where the two differ, the status record governs.
 
 Device: one Jetson Orin Nano (JetPack 6, L4T 36.4.7) with one camera, reached from a Mac over SSH. Portable tests run
 on any machine without a camera, GPU or model; browser tests use headless Chromium when one is installed.
+
+## Status at a glance
+
+- **Implemented and portable-tested:** everything named below. Portable tests show the code does what its tests state;
+  they show nothing about the camera, the GPU, memory, accuracy or a browser other than headless Chromium.
+- **Tested on the device:** only the checks in the next table, each within its own bounded scope. A device check that
+  passed its execution and privacy items describes recognition; it does not accept it.
+- **Pending, and known to be unresolved:**
+  - **Intermittent face recognition failure, unresolved.** With the same matching code and photo enrollment, the enrolled person was
+    matched on few compared faces in four daytime sessions of 12-14 October (the dashboard session at 13:15 on
+    14 October: 36 of 185) and on most in others (204 of 207 at 15:18 and 171 of 176 at 17:05 the same day, and in the
+    evening and night sessions). No implementation defect has been established and the cause is not known; lighting
+    is not established as the cause.
+  - **Face acceptance and the non-enrolled-person checks, pending.** The formal validation (F2) has never passed, and
+    no session with consenting non-enrolled participants has run, so there is no false-acceptance data. Face
+    recognition stays `PENDING_VALIDATION` and runs only in guarded validation runs.
+  - **The proposed identity continuity rule (D97) and the feature controls (D99), not fully validated on the device.**
+    The rule ran in one device session without changing any vote; the controls' face session ran with its switch
+    items not exercised, and their scene session has not run.
+  - **Chat: its runtime checks passed in two earlier device runs; the factual accuracy of its answers is not
+    established** (one unverified operator report of a wrong answer). Chat is not admitted.
+  - **Face recognition and the scene model (VLM) together: unvalidated.** No combined run has taken place.
 
 ## What has been shown on the device (each within its own bounded scope)
 
@@ -16,6 +38,7 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
 | Incident detail page and acknowledgment while monitoring is stopped | Incident-page check passed (session 52) | Read-only loopback page over an SSH forward |
 | Live view (the frames the runtime already reads) and incident snapshots | Saved-evidence checks passed (session 53); continuous delivery since D75 | Encoded only while viewed; bounded; Safari observed by the maintainer (user-reported) |
 | The live dashboard with face recognition in a validation run (D95, D96) | The dashboard check `dash-20261013T181703Z` (session 68): execution and privacy passed; recognition described, not judged | Safari observed by the maintainer (user-reported); departure and return not exercised; **face recognition stays pending validation** |
+| The dashboard's detection path, compared on the same frames (production detection with the live view) | `dpath2-20261014T113113Z` (session 73): execution and privacy passed; 171 of 176 compared faces matched, outcome D1 for that session's late-afternoon light (launched 17:04 IST, reported apart) | Investigative, not acceptance; one control pair and three full-scale-only faces compared, too few to compare the detection paths; the live view sent no picture for at least 90 s of the run; **face recognition stays pending validation** |
 | Advisory chat about the live frame, answered by the local scene model | Two passing device runs: `alpha-20261012T040450Z` (`f6ced5e`) and `alpha-20261013T084310Z` (`c3a37f0`), runtime and browser results | **Chat is not admitted.** Answers' accuracy is not evaluated (one unverified operator report of a wrong answer); never with face recognition running |
 
 ## Implemented and portable-tested, not validated on the device
@@ -36,7 +59,8 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
   is followed without a break, up to 120 s, never on a track number alone); the Sentinel mark (D98); the Features panel
   (D99: face recognition, scene analysis, chat, the live view and snapshots paused and resumed at runtime with the
   run's own control key; core monitoring has no switch; nothing is loaded, admitted or restarted from the page); viewing
-  preferences kept in the browser only (D100). Their two-session operator check `features` is prepared and has not run.
+  preferences kept in the browser only (D100). Their two-session operator check `features`: the face session ran with
+  its switch items not exercised (session 69); the scene session has not run.
 - Chat cancellation, the memory-pressure response and the scene-job grace (D77, D81); the combined face-and-chat
   reading (D80) and a grounding check (G, designed for the combined package, not implemented).
 
@@ -45,8 +69,10 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
 1. Face recognition: a passing F2 (the seated-away procedure is undecided), false-acceptance data from consenting
    non-enrolled participants, and the maintainer's decision on any detection or enrollment change. Daytime matching
    with the photo gallery was poor in four daytime sessions from 12 October and good in the daylight evaluation of 14
-   October (204 of 207 faces; session 71), so it is not a general daytime failure (no implementation defect found);
-   whether the dashboard's own detection loses matches on daylight frames is checked by `dash-path`, prepared and not run.
+   October (204 of 207 faces; session 71), so it is not a general daytime failure (no implementation defect established).
+   The dashboard's own detection matched 171 of 176 compared faces in late-afternoon daylight (`dpath2-20261014T113113Z`,
+   17:04 IST, outcome D1 for that light only; session 73), too few paired comparisons to judge another detection path,
+   so no detection change. The failure seen at 13:15 on 14 October is unexplained.
 2. Chat: admission (operator-run resource and interference checks; the maintainer's decision).
 3. Face and chat together: no combined run yet.
 4. The feature controls on the device and in Safari (`features`, two sessions: the face session ran once with its switch
@@ -62,7 +88,7 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
 
 - No credentials, tokens, keys, enrollment galleries, face images, embeddings, similarity values, photos, run evidence or
   the local-only planning documents are tracked; test fixtures use synthetic values and reserved documentation
-  addresses. The publication scan (session 67) lists what was checked and how.
+  addresses. The publication scans (sessions 67 and 73) list what was checked and how.
 - The status record names device runs, packages and some machine identifiers (the device's user name, the USB tether's
   default address, boot IDs), as earlier published records already do; they hold no credential.
 - Face recognition is context only: it never grants or denies anything, and no page, record or log shows a name.
