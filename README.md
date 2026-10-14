@@ -269,7 +269,7 @@ Then visit `http://127.0.0.1:5000` on that computer and log in with `DASH_USER` 
 |---|---|---|
 | `RTSP_URL` | Full RTSP stream URL with credentials | `rtsp://admin:pass@192.168.1.100:554/cam/realmonitor?channel=1&subtype=1` |
 | `BOT_TOKEN` | Telegram bot token from [@BotFather](https://t.me/BotFather) | `123456:ABC-DEF...` |
-| `CHAT_ID` | Your Telegram user/group ID | `1223049319` |
+| `CHAT_ID` | Your Telegram user/group ID | `<YOUR_TELEGRAM_CHAT_ID>` |
 | `DASH_USER` | Dashboard login username | `admin` |
 | `DASH_PASS` | Dashboard login password (**required**) | `choose-a-strong-one` |
 
