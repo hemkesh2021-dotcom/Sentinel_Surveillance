@@ -169,16 +169,11 @@ More detail: [Getting started](https://github.com/hemkesh2021-dotcom/Sentinel_Su
 | `docs/` | v2 status record, requirements trace, alpha notes, release notes, legacy v1 README |
 | `surveillance4_1.py`, `dashboard.py`, `build_face_db.py`, `start_sentinel.sh`, `requirements.txt`, `.env.example`, `BUILD.md`, `SETUP_GUIDE.txt`, `tests/test_dashboard.py` | legacy v1, unchanged; see [`docs/LEGACY_V1.md`](docs/LEGACY_V1.md) |
 
-## Authors
+## Maintainer
 
-<div align="center">
+V2 maintainer: Hemkesh ([@hemkesh2021-dotcom](https://github.com/hemkesh2021-dotcom)).
 
-| Name | Role | GitHub |
-|---|---|---|
-| Hemkesh | Lead Developer | [@hemkesh2021-dotcom](https://github.com/hemkesh2021-dotcom) |
-| V S Yogeshvar | Co-Developer | [@Yogeshvar425](https://github.com/Yogeshvar425) |
-
-</div>
+Historical v1 contributor credits are kept in [`docs/LEGACY_V1.md`](docs/LEGACY_V1.md#authors).
 
 ## License
 
