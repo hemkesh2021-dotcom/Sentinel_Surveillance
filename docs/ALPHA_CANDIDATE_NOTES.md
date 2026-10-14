@@ -46,8 +46,9 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
    non-enrolled participants, and the maintainer's decision on any detection or enrollment change.
 2. Chat: admission (operator-run resource and interference checks; the maintainer's decision).
 3. Face and chat together: no combined run yet.
-4. The feature controls on the device and in Safari (`features`, two sessions), departure and return on the dashboard, and
-   resource use with face and the live view together (the dashboard check ran; session 68).
+4. The feature controls on the device and in Safari (`features`, two sessions: the face session ran once with its switch
+   items not exercised, session 69; the scene session pending), departure and return on the dashboard, and resource
+   use with face and the live view together (the dashboard check ran; session 68).
 5. The Review 1 rehearsal is incomplete (resumable with its own package).
 6. Whole-device memory targets (5,000,000,000 B steady, 5,400,000,000 B peak) are acceptance targets. The two chat
    runs' readings passed their memory items (peaks 3,773,243,392 B and 3,721,973,760 B); the full alpha configuration
