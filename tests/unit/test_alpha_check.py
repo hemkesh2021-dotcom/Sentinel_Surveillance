@@ -16,6 +16,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -417,7 +418,12 @@ def test_the_load_tool_asks_and_watches_a_real_page_and_keeps_numbers_and_labels
     assert exits == {"chat": 0, "chat_for": 0, "view": 0}
     limited = [json.loads(line) for line in (tmp_path / "limited" / "chat-load.jsonl").read_text().splitlines()]
     asked = [x["asked_mono_s"] for x in limited if "asked_mono_s" in x]
-    assert limited[-1]["event"] == "stopped_asking" and asked and asked[-1] - asked[0] < 1.2 + 0.5
+    # --for-s counts from the first ACCEPTED question (202, then followed to its end: 200), not the first asked one,
+    # which the page may refuse (busy, or no fresh frame yet) depending on thread scheduling. Against the tool's own
+    # recorded times (rounded to 1 ms): nothing is asked 1.2 s or more after that question, and it stops at or after it.
+    first = next(x["asked_mono_s"] for x in limited if x.get("http_status") in (200, 202))
+    assert limited[-1]["event"] == "stopped_asking" and limited[-1]["mono_s"] - first >= 1.2 - 0.001
+    assert all(t - first < 1.2 + 0.001 for t in asked)
     assert mods.evidence.read(tmp_path / "limited" / "chat-load.jsonl", "f2").nonconforming == []
     chat_text, view_text = (tmp_path / "chat-load.jsonl").read_text(), (tmp_path / "viewer.jsonl").read_text()
     assert "secret-free" not in chat_text and token not in chat_text and token not in view_text
@@ -435,6 +441,40 @@ def test_the_load_tool_asks_and_watches_a_real_page_and_keeps_numbers_and_labels
     assert all(isinstance(x["max_age_ms_when_sent"], int) for x in seconds if x["pictures"])
     for name in ("chat-load.jsonl", "viewer.jsonl"):
         assert mods.evidence.read(tmp_path / name, "f2").nonconforming == []
+
+
+def test_the_load_tools_for_s_window_counts_from_the_first_accepted_question(mods, tmp_path, monkeypatch) -> None:
+    """--for-s on a fake clock with a scripted page whose first question is refused: no wall time, no scheduling."""
+    now = [0.0]
+    monkeypatch.setattr(mods.load, "time", SimpleNamespace(monotonic=lambda: now[0],
+                                                           sleep=lambda s: now.__setitem__(0, now[0] + s)))
+
+    class ScriptedPage:
+        def __init__(self, port: int) -> None:
+            self.posts = 0
+
+        def refresh_token(self) -> bool:
+            return True
+
+        def json(self, method: str, path: str, document: dict | None = None) -> tuple[int, dict]:
+            if method == "GET":
+                return 200, {"state": "answered", "answer": "An answer."}
+            self.posts += 1
+            if self.posts == 1:
+                return 409, {"state": "no_fresh_frame", "reason": "no fresh frame yet"}
+            if self.posts > 8:  # a tool that never stops would see the page go away, not stop by itself
+                raise OSError("the page has gone")
+            return 202, {"job": f"job-{self.posts}", "state": "sending"}
+
+    monkeypatch.setattr(mods.load, "Page", ScriptedPage)
+    monkeypatch.setattr(mods.load, "_wait_for", lambda page, wait_s: True)
+    out = tmp_path / "chat-load.jsonl"
+    assert mods.load.chat(out, 18090, every_s=0.5, wait_s=5.0, for_s=1.2) == 0
+    lines = [json.loads(line) for line in out.read_text().splitlines()]
+    asked = [(x["asked_mono_s"], x["state"]) for x in lines if "asked_mono_s" in x]
+    # refused at 0.0 (not counted); accepted at 0.5, so asking continues while less than 1.2 s has passed since then
+    assert asked == [(0.0, "no_fresh_frame"), (0.5, "answered"), (1.0, "answered"), (1.5, "answered")]
+    assert lines[-1] == {"event": "stopped_asking", "mono_s": 2.0}
 
 
 def test_the_combined_reading_needs_an_incident_with_its_snapshot_and_reads_f2_with_its_gate(mods, made,

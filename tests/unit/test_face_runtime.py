@@ -129,14 +129,15 @@ class Loop:
     def __init__(self, tmp_path: Path, *, analyze=analyze_with(vec(0.97, 0.1, 0.0, 0.05)), face_problem=None,
                  with_face: bool = True, validation: bool = True, comparator=None,
                  detection: str = "deepface", shadow=None, capture=None, continuity=None,
-                 feature_controls: bool = False) -> None:
+                 feature_controls: bool = False, perf_counter=None) -> None:
         self.clock = FakeClock(utc=NOW)
         self.config = parse_config({"config_version": 1, "camera": {"id": "cam-1"}})
         self.slot = LatestFrame()
         self.capture = Capture(self.clock, self.slot)
         self.tracker = Tracker()
         self.db = Database.open(tmp_path / "sentinel.db")
-        self.worker = FaceWorker(analyze, self.clock, comparator=comparator)
+        timing = {} if perf_counter is None else {"perf_counter": perf_counter}  # the worker's own timer by default
+        self.worker = FaceWorker(analyze, self.clock, comparator=comparator, **timing)
         face = (FaceRuntime(self.worker, 1, validation, comparator is not None, detection, shadow, capture, continuity)
                 if with_face else None)
         self.runtime = DemoRuntime(
@@ -720,6 +721,13 @@ def _candidate_analyze(embeddings, people_per_result=None):
     return analyze
 
 
+def _step_timer(step_s: float):
+    """A deterministic stand-in for the worker's wall-clock timer: each reading is `step_s` after the one before, so
+    every face job (one reading at its start, one at its end) measures exactly `step_s`."""
+    readings = iter(range(1, 1_000_000))
+    return lambda: next(readings) * step_s
+
+
 def test_a_shadow_run_records_the_working_gallerys_numbers_and_votes_only_from_the_original(tmp_path) -> None:
     from sentinel.identity.experiment import Shadow
     from sentinel.identity.matching import EnrolledIdentity, Enrollment
@@ -729,16 +737,20 @@ def test_a_shadow_run_records_the_working_gallerys_numbers_and_votes_only_from_t
         identity_id="idn-00000000000a", prototypes=(vec(0.0, 0.0, 0.0, 1.0), near)),))
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
+    # Each run gets the same deterministic timer: processing_ms is the worker's wall-clock measurement, which differs
+    # between any two real runs (0.0 against 0.1 ms on a CI runner) and says nothing about the shadow's isolation.
     shadowed = Loop(tmp_path / "a", analyze=_candidate_analyze([near, near, other]), detection="full_scale",
-                    shadow=Shadow(work, 2))
-    plain = Loop(tmp_path / "b", analyze=_candidate_analyze([near, near, other]), detection="full_scale")
+                    shadow=Shadow(work, 2), perf_counter=_step_timer(0.0025))
+    plain = Loop(tmp_path / "b", analyze=_candidate_analyze([near, near, other]), detection="full_scale",
+                 perf_counter=_step_timer(0.0025))
     for _ in range(40):  # three face ticks
         shadowed.frame()
         plain.frame()
     with_shadow, without = shadowed.runtime.drain_identity_records(), plain.runtime.drain_identity_records()
     strip = [{**r, "persons": [{**p, "shadow": None} for p in r["persons"]]} if r["identity"] == "result" else r
              for r in with_shadow]
-    assert strip == without  # only the shadow numbers differ: the votes, labels, states and transitions are the same
+    assert strip == without  # only the shadow numbers differ: the votes, labels, states, transitions and times are the same
+    assert [r["processing_ms"] for r in with_shadow if r["identity"] == "result"] == [2.5] * 3  # the measurement, carried
     shadows = [r["persons"][0]["shadow"] for r in with_shadow if r["identity"] == "result"]
     assert shadows[:2] == [{"similarity": 1.0, "prototype": 1}] * 2  # the working gallery's own copy of that face
     assert shadows[2]["prototype"] in (0, 1) and shadows[2]["similarity"] < 0.70
