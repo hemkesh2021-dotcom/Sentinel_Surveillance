@@ -56,7 +56,7 @@ and browser checks passed. Safari was observed by the operator; the browser test
 
 ## Since the branch was first published (`35f1a3a`)
 
-- Two tests that depended on scheduling or wall-clock time are now deterministic, with their coverage kept (no bound
+- Three tests that depended on scheduling or wall-clock time are now deterministic, with their coverage kept (no bound
   widened, nothing skipped, no runtime change).
 - The README is about v2; the v1 README moved, unchanged, to [`LEGACY_V1.md`](LEGACY_V1.md).
 - The package version is `2.0.0a1`; this file; the wiki.

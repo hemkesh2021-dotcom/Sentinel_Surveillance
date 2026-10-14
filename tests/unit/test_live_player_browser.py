@@ -57,10 +57,12 @@ def padded(jpeg: bytes, size: int) -> bytes:
 
 
 class Counting:
-    """The preview, with the number of picture requests under way at once recorded."""
+    """The preview, with the number of picture requests under way at once recorded, and each picture it hands out
+    (when, on the test's monotonic clock, and its frame sequence)."""
 
     def __init__(self, camera: Camera) -> None:
         self.camera, self.now, self.most, self.lock = camera, 0, 0, threading.Lock()
+        self.served: list[tuple[float, int]] = []
         original = camera.preview.next_frame
 
         def next_frame(*args: Any, **kwargs: Any) -> Any:
@@ -68,12 +70,20 @@ class Counting:
                 self.now += 1
                 self.most = max(self.most, self.now)
             try:
-                return original(*args, **kwargs)
+                answer = original(*args, **kwargs)
+                if answer.picture is not None:
+                    with self.lock:
+                        self.served.append((time.monotonic(), answer.picture.order[1]))
+                return answer
             finally:
                 with self.lock:
                     self.now -= 1
 
         camera.preview.next_frame = next_frame  # type: ignore[method-assign]
+
+    def served_by(self, moment: float) -> list[int]:
+        with self.lock:
+            return [seq for at, seq in self.served if at <= moment]
 
 
 @pytest.fixture(scope="module")
@@ -131,11 +141,6 @@ def opened(browser: Browser, url: str, **options: Any) -> Page:
     return page
 
 
-def newest_seq(camera: Camera) -> int:
-    latest = camera.frames.latest()
-    return latest[0].frame_seq if latest else -1
-
-
 def test_pictures_arrive_at_the_sources_rate_apart_from_the_status_updates(browser: Browser, tmp_path: Path) -> None:
     with serving(tmp_path, fps=15.0) as served:
         page = opened(browser, served["url"])
@@ -185,20 +190,29 @@ def test_a_slow_viewer_gets_fewer_pictures_never_older_ones(browser: Browser, tm
             page.call("Network.emulateNetworkConditions", {"offline": False, "latency": 40,
                                                            "downloadThroughput": 150_000, "uploadThroughput": 150_000})
             time.sleep(1.5)  # what was under way when the link slowed has arrived
-            camera, lags, frames = served["camera"], [], set()
+            counting, frames, shown = served["counting"], set(), []
             started = time.monotonic()
             while time.monotonic() - started < 6.0:
+                before = counting.served_by(time.monotonic())  # what the server had handed out before this look
                 seen = read(page)
-                newest = newest_seq(camera)
                 if seen["frame"]:
                     frames.add(seen["frame"])
-                    lags.append(newest - int(seen["frame"].split("-")[1]))
+                    shown.append((int(seen["frame"].split("-")[1]), before))
                 time.sleep(0.05)
-            # About 2.5 pictures a second fit through this link: fewer pictures, each the newest when asked for,
-            # so how far the shown frame trails the camera stays bounded instead of growing.
+            # About 2.5 pictures a second fit through this link (60 kB each at 150 kB/s): fewer pictures than the
+            # camera's 15 a second, never an older one, and never falling behind what the link delivers. The player
+            # asks for the next picture once the last one's bytes have arrived and decodes the newest (D75), so when
+            # the server has handed out pictures ..., p[k-1], p[k], p[k-1] has arrived: the page shows p[k-2] or
+            # newer unless decoding this small picture took longer than a whole transfer of the next one. Counted in
+            # the player's own pictures, so neither the camera's rate nor the link's speed sets the bound. That each
+            # picture handed out is the newest, never a backlog, is the server's (test_live_stream.py).
             assert 6 <= len(frames) <= 6 * 6
-            first, last = lags[: len(lags) // 3], lags[-len(lags) // 3:]
-            assert max(lags) <= 15 and max(last) <= max(first) + 4, (max(first), max(last))
+            sequence = [seq for seq, _ in shown]
+            assert sequence == sorted(sequence)  # never an older picture than one already shown
+            served_all = set(counting.served_by(time.monotonic()))
+            assert all(seq in served_all for seq in sequence)  # only pictures the server handed out
+            behind = [(seq, before[-3]) for seq, before in shown if len(before) >= 3 and seq < before[-3]]
+            assert not behind, behind  # (shown, the picture two before the newest handed out) when it fell behind
         finally:
             with contextlib.suppress(DevToolsError):
                 page.call("Network.emulateNetworkConditions", {"offline": False, "latency": 0,

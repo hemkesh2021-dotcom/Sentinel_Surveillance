@@ -107,6 +107,5 @@ sentinel config validate config/default.yaml
 
 The two tests that used to fail intermittently (`test_alpha_check`'s load-tool window, anchored on a question the page
 could refuse, and `test_face_runtime`'s shadow-run comparison, which included wall-clock `processing_ms`) are
-deterministic since v2.0.0-alpha.1, with their coverage kept. One timing-dependent browser test remains:
-`test_live_player_browser`'s slow-viewer test bounds a throttled real browser's lag on the wall clock and failed 3 of 6
-runs on the Jetson on 14 October (a lag of 16 frames against 15); it is unchanged, pending a redesign of its bound.
+deterministic since v2.0.0-alpha.1, with their coverage kept, and so is `test_live_player_browser`'s slow-viewer test
+(its wall-clock lag bound, which failed on the Jetson and in CI, replaced by checks in the player's own protocol).
