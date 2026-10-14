@@ -5,4 +5,4 @@ CUDA, TensorRT, GStreamer or OpenCV. Hardware adapters belong in separate
 modules that import those libraries only when the adapter is used.
 """
 
-__version__ = "2.0.0.dev0"
+__version__ = "2.0.0a1"

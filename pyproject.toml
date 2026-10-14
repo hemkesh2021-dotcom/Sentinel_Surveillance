@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sentinel-surveillance"
-version = "2.0.0.dev0"
+version = "2.0.0a1"
 description = "Sentinel v2 edge monitoring runtime (portable foundation; v1 prototype remains in the repository root)"
 requires-python = ">=3.10"
 # Portable dependencies only. Jetson-only libraries (TensorRT, CUDA, GStreamer,

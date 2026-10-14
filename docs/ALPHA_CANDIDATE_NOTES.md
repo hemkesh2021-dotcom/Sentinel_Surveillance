@@ -1,9 +1,12 @@
-# Sentinel v2 — EXPERIMENTAL ALPHA candidate: notes
+# Sentinel v2 — EXPERIMENTAL ALPHA (v2.0.0-alpha.1): notes
 
-**EXPERIMENTAL ALPHA. This is a development candidate, not a release.** Nothing here is tagged, merged into `master` or
-`v2-beta`, or declared accepted. On 2026-10-14 (session 73), at the maintainer's request, the local branch `v2-ui-refresh`
-(which descends from `v2-beta`) was published as the remote branch `alpha-candidate-2026-10` for review. `docs/IMPLEMENTATION_STATUS.md`
-is the source of every result named here, by session; where the two differ, the status record governs.
+**EXPERIMENTAL ALPHA. v2.0.0-alpha.1 is an experimental pre-release, not a production release.** Production acceptance
+and feature admission are separate decisions, and this pre-release makes neither: nothing is declared accepted, face
+recognition stays `PENDING_VALIDATION`, chat is not admitted, and nothing is merged into `master` or `v2-beta`. The
+branch `alpha-candidate-2026-10` (published 2026-10-14 from the local `v2-ui-refresh`, which descends from `v2-beta`)
+carries the pre-release; the tag is `v2.0.0-alpha.1` and the package version `2.0.0a1` (release notes:
+[`RELEASE_NOTES_v2.0.0-alpha.1.md`](RELEASE_NOTES_v2.0.0-alpha.1.md)). `docs/IMPLEMENTATION_STATUS.md` is the source of
+every result named here, by session; where the two differ, the status record governs.
 
 Device: one Jetson Orin Nano (JetPack 6, L4T 36.4.7) with one camera, reached from a Mac over SSH. Portable tests run
 on any machine without a camera, GPU or model; browser tests use headless Chromium when one is installed.
@@ -26,8 +29,8 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
   - **The proposed identity continuity rule (D97) and the feature controls (D99), not fully validated on the device.**
     The rule ran in one device session without changing any vote; the controls' face session ran with its switch
     items not exercised, and their scene session has not run.
-  - **Chat: its runtime checks passed in two earlier device runs; the factual accuracy of its answers is not
-    established** (one unverified operator report of a wrong answer). Chat is not admitted.
+  - **Chat: its earlier runtime checks passed (two device runs); admission, factual accuracy and combined face/VLM
+    validation remain pending** (one unverified operator report of a wrong answer). Chat is not admitted.
   - **Face recognition and the scene model (VLM) together: unvalidated.** No combined run has taken place.
 
 ## What has been shown on the device (each within its own bounded scope)
@@ -73,8 +76,9 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
    The dashboard's own detection matched 171 of 176 compared faces in late-afternoon daylight (`dpath2-20261014T113113Z`,
    17:04 IST, outcome D1 for that light only; session 73), too few paired comparisons to judge another detection path,
    so no detection change. The failure seen at 13:15 on 14 October is unexplained.
-2. Chat: admission (operator-run resource and interference checks; the maintainer's decision).
-3. Face and chat together: no combined run yet.
+2. Chat: its earlier runtime checks passed; admission (operator-run resource and interference checks; the maintainer's
+   decision) and factual accuracy (the grounding check G is designed, not implemented) remain pending.
+3. Face and chat (the VLM) together: no combined run yet.
 4. The feature controls on the device and in Safari (`features`, two sessions: the face session ran once with its switch
    items not exercised, session 69; the scene session pending), departure and return on the dashboard, and resource
    use with face and the live view together (the dashboard check ran; session 68).
@@ -101,5 +105,8 @@ python -m pytest            # browser tests skip when no Chromium-family browser
 sentinel config validate config/default.yaml
 ```
 
-Known intermittent tests (pre-existing, timing-dependent): `test_alpha_check`'s load-tool timing test and
-`test_face_runtime`'s shadow-run comparison of wall-clock `processing_ms`.
+The two tests that used to fail intermittently (`test_alpha_check`'s load-tool window, anchored on a question the page
+could refuse, and `test_face_runtime`'s shadow-run comparison, which included wall-clock `processing_ms`) are
+deterministic since v2.0.0-alpha.1, with their coverage kept. One timing-dependent browser test remains:
+`test_live_player_browser`'s slow-viewer test bounds a throttled real browser's lag on the wall clock and failed 3 of 6
+runs on the Jetson on 14 October (a lag of 16 frames against 15); it is unchanged, pending a redesign of its bound.
