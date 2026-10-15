@@ -72,18 +72,18 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
 
 ## Gates still open for the alpha
 
-1. Face recognition: a passing F2 (the seated-away procedure is undecided), false-acceptance data from consenting
-   non-enrolled participants, and the maintainer's decision on any detection or enrollment change. Daytime matching
-   with the photo gallery was poor in four daytime sessions from 12 October and good in the daylight evaluation of 14
-   October (204 of 207 faces on the full-scale detection candidate, not the normal path; session 71), so it is not a
-   general daytime failure (no implementation defect established). Session 77 prepared F2 on the normal recognition
-   path (production detection, D97 off; its still away posture pending the maintainer's confirmation) and the
-   non-enrolled sessions on the same path (the earlier plan measured the candidate); the combined run launches only
-   after a validated F2. A passing F2 shows retention with the face hidden and the body still, not through a chair
-   swivel; the non-enrolled sessions give per-person counts, never a false-acceptance rate.
-   The dashboard's own detection matched 171 of 176 compared faces in late-afternoon daylight (`dpath2-20261014T113113Z`,
-   17:04 IST, outcome D1 for that light only; session 73), too few paired comparisons to judge another detection path,
-   so no detection change. The failure seen at 13:15 on 14 October is unexplained.
+1. Face recognition: a passing F2 (its seated-away posture decided in session 77, below), false-acceptance data from
+   consenting non-enrolled participants, and the maintainer's decision on any detection or enrollment change. Daytime
+   matching with the photo gallery was poor in four daytime sessions from 12 October and good in the daylight
+   evaluation of 14 October (204 of 207 faces on the full-scale detection candidate, not the normal path; session 71),
+   so it is not a general daytime failure (no implementation defect established). Session 77 prepared F2 on the normal
+   recognition path (production detection, D97 off; its still away posture, the face hidden behind a book or sheet
+   with the body still, confirmed by the maintainer) and the non-enrolled sessions on the same path (the earlier plan
+   measured the candidate); the combined run launches only after a validated F2. A passing F2 shows retention with the
+   face hidden and the body still, not through a chair swivel; the non-enrolled sessions give per-person counts, never
+   a false-acceptance rate. The dashboard's own detection matched 171 of 176 compared faces in late-afternoon daylight
+   (`dpath2-20261014T113113Z`, 17:04 IST, outcome D1 for that light only; session 73), too few paired comparisons to
+   judge another detection path, so no detection change. The failure seen at 13:15 on 14 October is unexplained.
 2. Chat: its earlier runtime checks passed; admission (operator-run resource and interference checks; the maintainer's
    decision) and factual accuracy (the grounding check G is designed, not implemented) remain pending.
 3. Face and chat (the VLM) together: no combined run yet.
