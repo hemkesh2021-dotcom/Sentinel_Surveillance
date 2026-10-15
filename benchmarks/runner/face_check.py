@@ -33,9 +33,11 @@ runtime's records). Judged windows come from the account, never from the schedul
   [max(0, d - v), d + v]; the clamp at 0 assumes the stopwatch cannot be started before a cue that comes at
   readiness. A movement then lies in the interval [r - u + max(0, d - v), r + u + d + v] after T0. The account's
   times are aligned to T0 here, never by the operator. Item 15 needs the delay's upper end d + v <= DELAY_MAX_S.
-- **Formats 3 and 4** (D79 cued; D85 the same, with the 4:00 head turn stated in the cue and the account): no
-  stopwatch; each movement lies in [cue, cue + allowance] from the guard's own cue times, where the account says it
-  was done within its allowance and every cue was printed on time. Format 4 is read exactly as format 3.
+- **Formats 3, 4 and 9** (D79 cued; D85 the same, with the 4:00 head turn stated in the cue and the account; D101 the
+  same, with the away posture named by the package's 4:00 cue): no stopwatch; each movement lies in [cue, cue +
+  allowance] from the guard's own cue times, where the account says it was done within its allowance and every cue was
+  printed on time. Formats 4 and 9 are read exactly as format 3; format 9's reading adds one DESCRIPTIVE line saying
+  that its away window is face occlusion with the body still, never a chair swivel (OCCLUSION_SCOPE).
 
 With lo and hi each movement's interval ends (lo = hi = t in format 1), every window starts W after the latest
 time its opening movement could have happened and ends W before the earliest time its closing movement could have
@@ -101,6 +103,14 @@ person on each applied result whose frame had exactly one person, and counts res
 result-level numbers (D86's pass, the candidate's own) and person-level ones (the face, the vote) count the same people;
 the natural and comparison readings gain the same line beside their older ones, whose denominators are unchanged and
 named (people, or results).
+
+**The non-enrolled reading on the normal path** (``face_check.py non-enrolled``, D102; descriptive, validates nothing):
+a consenting non-enrolled participant's session with production detection and the original gallery voting, as the
+alpha's recognition runs, and nothing that pictures or describes the participant. Execution and privacy items as in
+the other readings (format 8's account and cues); then DESCRIPTIVE lines over W naming the answers they depend on:
+every match vote on the participant's faces and every KNOWN interval is a false acceptance by the normal path in that
+session, counted per session and person, never pooled into a rate. The enrollment experiment's working gallery is not
+compared in such a run: its comparison needs the full-scale candidate and is read by ``experiment``, apart.
 """
 
 from __future__ import annotations
@@ -132,6 +142,10 @@ GEOMETRY_SCHEMA = 6  # runtime.IDENTITY_GEOMETRY_SCHEMA: schema 5 plus each pers
 SCHEMAS = (SCHEMA, DIAGNOSTIC_SCHEMA, FULL_SCALE_SCHEMA, COMPARISON_SCHEMA, CANDIDATE_SCHEMA, GEOMETRY_SCHEMA)
 CANDIDATE_SCHEMAS = (CANDIDATE_SCHEMA, GEOMETRY_SCHEMA)  # what runs of the candidate write (D88; D90 from 6)
 F2_FACE = {"validation_run": True, "identities_enrolled": 1}  # the startup's face entry of a production F2 run
+OCCLUSION_SCOPE = ("scope of A (account format 9, D101): retention while the face was hidden in the still posture the "
+                   "4:00 cue named, seated, the torso where it was and the chair neither moved nor swivelled; a chair "
+                   "swivel or any other movement of the body is not exercised by this run, and nothing in this reading "
+                   "applies to it (the account's answers for the posture)")
 FULL_SCALE_KEYS = {"faces", "assigned", "best_score", "best_w_px", "ms"}
 DETECTION_KEYS = {"best_below_score", "best_below_w_px", "detect_ms", "embed_ms"}  # runtime.detection_numbers (D88)
 DETECTION_FULL_SCALE = "full_scale"  # legacy_deepface.DETECTION_FULL_SCALE: the startup line's face "detection"
@@ -557,7 +571,7 @@ def _cues_on_time(offsets: dict[str, float]) -> bool:
 
 def _bounds(account: dict[str, str], fmt: int, cues: dict[str, float] | None = None) -> dict[str, tuple[float, float]] | None:
     """Each movement's interval (lo, hi) in seconds after T0; None if any reading, uncertainty or the delay is
-    unknown or malformed. Format 1: [t, t], the reading taken as exact, as it always was. Formats 3 and 4: [cue, cue +
+    unknown or malformed. Format 1: [t, t], the reading taken as exact, as it always was. Formats 3, 4, 9: [cue, cue +
     allowance] from the guard's own cue times, only where the account says the movement was done within its allowance
     after its cue (yes), and only when every cue was printed on time."""
     if fmt in face_account.CUED_FORMATS:
@@ -711,10 +725,10 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
     if account is None:
         return r
     if fmt is None:
-        r.item("account complete and in order", "the account's header names none of formats 1 to 4", False)
+        r.item("account complete and in order", "the account's header names none of formats 1 to 4 and 9", False)
         return r
     fields = {1: face_account.FIELDS_V1, 2: face_account.FIELDS, 3: face_account.FIELDS_V3,
-              4: face_account.FIELDS_V4}.get(fmt)
+              4: face_account.FIELDS_V4, 9: face_account.FIELDS_V9}.get(fmt)
     if fields is None:
         r.item("account complete and in order", f"format {fmt} is not an F2 account", False)
         return r
@@ -729,6 +743,9 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
         _declared(r, account)
     else:
         _declared_cued(r, account, cues or {})
+    if fmt == 9:  # D101: what the away window can establish, beside the account answers it rests on
+        r.describe(OCCLUSION_SCOPE, {k: account.get(k) for k in (face_account.within_key("turned_away"),
+                                                                 "face_hidden_while_turned")})
     duration = s5._get(result, "parameters", "duration_s")
     bounds = _bounds(account, fmt, cues)
     windows = _windows(bounds, duration) if bounds is not None and isinstance(duration, (int, float)) else None
@@ -1179,7 +1196,7 @@ def _declared(r: Reading, account: dict[str, str]) -> None:
 
 
 def _declared_cued(r: Reading, account: dict[str, str], cues: dict[str, float]) -> None:
-    """Item 15 for a format-3 or format-4 account (D79, D85): every movement cue printed on time by the guard, every
+    """Item 15 for a format-3, 4 or 9 account (D79, D85, D101): every movement cue printed on time by the guard, every
     movement done within its allowance after its cue; stayed until the stop; no other face in view."""
     value = {"cues_s_after_t0": {name: (round(cues[name], 2) if name in cues else None)
                                  for name in face_account.CUE_AT_S},
@@ -1711,6 +1728,134 @@ def read_experiment(directory: Path, f1: Path, gate: tuple[Path, Path, Path | No
                                                                                (p.get("shadow") or {}).get(
                                                                                    "similarity", -1.0))))})
     r.describe(GEOMETRY_LINE.replace("diagnostics: ", "", 1), {"W": _geometry_by_vote(line, window)})
+    return r
+
+
+# ---------------------------------------------------------------- D102: a non-enrolled participant, normal path
+
+NON_ENROLLED_DURATION_S = float(face_account.COMPARISON_DURATION_S)
+NON_ENROLLED_CONDITIONS = ("framing_since_capture", "lighting")
+# The startup keys a run writes only with the scene server, live view, snapshots, chat or feature controls: none here.
+NOT_PICTURED = ("live_preview", "snapshots", "chat", "feature_controls", "scene_server")
+NORMAL_PATH_VOTES = ("the normal recognition path's votes on the participant's faces (one-person results with a "
+                     f"computed similarity; production detection, the original gallery, MATCH_THRESHOLD "
+                     f"{MATCH_THRESHOLD:g} unchanged, as the runtime voted): faces compared, match votes (each one a "
+                     "false acceptance by the normal path in this session), unknown votes, similarities [min, median, "
+                     "max]")
+NON_ENROLLED_SCOPE = ("what this session can show (D102): one consenting non-enrolled person at one seat, in one "
+                      "light, for about 5 minutes; their faces are strongly correlated, so the counts above are one "
+                      "person's observation on the normal path, never a false-acceptance rate; none observed bounds "
+                      "nothing for other people, people who look alike, other distances or other light; sessions are "
+                      "reported per person and never pooled into a rate")
+
+
+def _startup_keys(path: Path) -> set[str]:
+    """The keys of the runtime's own starting line in run.jsonl (the guard's summary keeps only some of them)."""
+    try:
+        with path.open() as handle:
+            for raw in handle:
+                item = json.loads(raw)
+                if isinstance(item, dict) and item.get("run") == "starting":
+                    startup = item.get("startup")
+                    return set(startup) if isinstance(startup, dict) else set()
+    except (OSError, ValueError):
+        pass
+    return set()
+
+
+def _normal_votes(line: Timeline, window: tuple[float, float]) -> dict:
+    applied = [x for x in line.in_window(line.results, window) if x["outcome"] == "applied" and len(x["persons"]) == 1]
+    people = [x["persons"][0] for x in applied if x["persons"][0].get("similarity") is not None]
+    return {"faces_compared": len(people), "match_votes": sum(1 for p in people if p["label"] == "match"),
+            "unknown_votes": sum(1 for p in people if p["label"] == "unknown"),
+            "similarity": _spread([p["similarity"] for p in people])}
+
+
+def read_non_enrolled(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | None = None) -> Reading:
+    """D102, a consenting non-enrolled participant's session on the normal recognition path: production detection in a
+    validation run, the original gallery voting at the unchanged MATCH_THRESHOLD, and nothing else (no full-scale
+    candidate, comparison, working gallery, capture or continuity rule; no scene, live view, snapshots, chat or feature
+    controls, so nothing pictures or describes the participant). Execution and privacy items are judged as in the
+    other readings, with the experiment's format-8 account and cues. The recognition is only described: every match
+    vote on the participant's faces and every KNOWN interval is a false acceptance by the normal path in this session,
+    counted and never turned into a rate. The experiment's working gallery is not part of this run (its comparison runs
+    only with the candidate, read by ``experiment``). It validates nothing and changes no gallery or threshold."""
+    r = Reading()
+    if gate is not None:
+        ok, lines = f1_gate(*gate)
+        r.item("F1 basis for this run: the run's own F1 validated, or the maintainer's accepted corrected F1 reading "
+               "of it", dict(line.split("=", 1) for line in lines), ok and f1.resolve() == (gate[0] / "f1").resolve())
+    result = s5._load(directory / "result.json")
+    s5._supervision(r, result, "duration_stop", 0)
+    start = s5._get(result, "run_output", "starting")
+    present = sorted(_startup_keys(directory / "run.jsonl") & set(NOT_PICTURED))
+    r.item("face admitted for this validation run on the normal recognition path: production detection, one enrolled "
+           "identity, no problem; no full-scale candidate, comparison, working gallery, capture or continuity rule; no "
+           "scene server, live view, snapshots, chat or feature controls",
+           {"face": s5._get(start, "face"), "face_problem": s5._get(start, "face_problem"), "present": present},
+           s5._get(start, "face") == F2_FACE and s5._get(start, "face_problem") is None and not present)
+    stopped = s5._get(result, "run_output", "stopped")
+    r.item("clean shutdown: all stopped (the face worker included), database closed", stopped,
+           isinstance(stopped, dict) and stopped.get("all_stopped") is True and stopped.get("database_closed") is True
+           and (stopped.get("stopped") or {}).get("face_worker") is True)
+    records, problems, _, _ = read_records(directory / "run.jsonl")
+    total = sum(len(v) for v in records.values())
+    schemas = sorted({item["schema"] for kind in records.values() for item in kind})
+    saved = [s5._load(directory / f"status-{c.get('name')}.json") for c in s5._list(s5._get(result, "captures"))
+             if isinstance(c, dict) and (directory / f"status-{c.get('name')}.json").is_file()]
+    dropped = s5._get(saved[-1] if saved else MISSING, "components", "face", "records", "dropped")
+    r.item(f"identity records: schema {FULL_SCALE_SCHEMA}, complete, none dropped, no comparison or capture record",
+           {"records": {k: len(v) for k, v in records.items()}, "schemas": schemas, "problems": problems[:5],
+            "dropped": dropped} if total else MISSING,
+           total > 0 and not problems and schemas == [FULL_SCALE_SCHEMA] and dropped == 0
+           and not records.get("comparison") and not records.get("capture") and total < MAX_IDENTITY_RECORDS)
+    ready = s5._get(result, "child", "ready_mono_s")
+    cues = _cue_offsets(result)
+    duration = s5._get(result, "parameters", "duration_s")
+    expected = face_account.NON_ENROLLED_CUE_AT_S
+    r.item(f"the run's {NON_ENROLLED_DURATION_S:g} s and every cue printed within {CUE_TOLERANCE_S:g} s of its time",
+           {"duration_s": duration, "cues_s_after_t0": {k: round(v, 2) for k, v in cues.items()}},
+           duration == NON_ENROLLED_DURATION_S
+           and all(name in cues and 0 <= cues[name] - at <= CUE_TOLERANCE_S for name, at in expected.items()))
+    account, problem, fmt = _account(directory)
+    r.item("account saved and locked before any result was shown", problem or "locked", account is not None)
+    if account is not None:
+        review = (face_account.review_separate(account, face_account.FIELDS_V8) if fmt == 8
+                  else [f"format {fmt} is not this run's account (format 8)"])
+        r.item("account in format 8, every answer yes, no or unknown (unknown is accepted)", review,
+               fmt == 8 and review[-1].endswith(": yes"))
+    _counts_items(r, directory)
+    if account is None or fmt != 8 or problems or not total or not isinstance(ready, float) or present \
+            or not all(name in cues for name in expected) or s5._get(start, "face") != F2_FACE:
+        return r
+    window = _comparison_window(cues)
+    line = Timeline(records, round((cues["t0"] + ready) * NS), NON_ENROLLED_DURATION_S)
+    context = _support(account, NON_ENROLLED_CONTEXT)
+    r.describe("window W (s after T0: the washout after T0 and before the stop cue)",
+               [round(window[0], 1), round(window[1], 1)])
+    r.describe("session kind and account answers (each line below names those it depends on)",
+               {"kind": "non-enrolled, normal recognition path", **{k: v for k, v in account.items() if k != "notes"}})
+    recorded = _key_values(directory / "provenance.txt")
+    r.describe("the run's conditions as its launch recorded them: the framing since the capture (anything but none is "
+               "a changed-camera session, reported apart) and the room light",
+               {k: recorded.get(k, MISSING) for k in NON_ENROLLED_CONDITIONS})
+    _say(r, context, PER_PERSON + ", and D86's full-scale pass beside production (never a vote), in W",
+         _per_person(line, window, "full_scale"))
+    _say(r, context, NORMAL_PATH_VOTES + ", in W", _normal_votes(line, window))
+    look = (cues["look"], cues["look"] + LOOK_WINDOW_S)
+    _say(r, _support(account, {**NON_ENROLLED_CONTEXT, "participant_looked_at_cue": "yes"}),
+         f"the same, within {LOOK_WINDOW_S:g} s of the look cue (s after T0 {round(look[0], 1)})",
+         _normal_votes(line, look))
+    _say(r, context, IDENTITY_TIME + ", in W, as the runtime decided on the normal path (any KNOWN interval is a "
+         "false acceptance of the enrolled identity in this session)", _identity_time(line, window))
+    reached: dict[str, int] = {}
+    for transition in line.transitions:
+        label = f"{transition['to']}/{transition['basis'] or 'none'}"
+        reached[label] = reached.get(label, 0) + 1
+    r.describe("identity transitions over the run, by state reached and basis", dict(sorted(reached.items())))
+    r.describe("guard peak pressure, min MemFree, min MemAvailable (B)",
+               [s5._get(result, "guard", k) for k in s5.GUARD_FIGURES])
+    _say(r, context, NON_ENROLLED_SCOPE, {"sessions": 1, "participants": 1})
     return r
 
 
@@ -2272,7 +2417,9 @@ def main(argv: list[str] | None = None) -> int:
                        ("experiment", "read an enrollment experiment session (D91, descriptive): genuine (format 6) "
                                       "or a non-enrolled participant's (format 8)"),
                        ("dashboard", "read the live dashboard check (D95, descriptive): execution and privacy judged, "
-                                     "recognition described")):
+                                     "recognition described"),
+                       ("non-enrolled", "read a non-enrolled participant's session on the normal recognition path "
+                                        "(D102, descriptive; format 8): false acceptances counted, never a rate")):
         sub = commands.add_parser(part, help=text)
         sub.add_argument("directory", type=Path)
         sub.add_argument("--f1", type=Path, required=True, help="F1's evidence directory")
@@ -2309,9 +2456,10 @@ def main(argv: list[str] | None = None) -> int:
         if (args.run is None) != (args.identity_dir is None):
             parser.error(f"{args.part}: --run and --identity-dir go together")
         gate_args = None if args.run is None else (args.run, args.identity_dir, args.recheck_root)
-        if args.part in ("natural", "comparison", "candidate", "experiment", "dashboard"):
+        if args.part in ("natural", "comparison", "candidate", "experiment", "dashboard", "non-enrolled"):
             read = {"natural": read_natural, "comparison": read_comparison, "candidate": read_candidate,
-                    "experiment": read_experiment, "dashboard": read_dashboard}[args.part]
+                    "experiment": read_experiment, "dashboard": read_dashboard,
+                    "non-enrolled": read_non_enrolled}[args.part]
             reading = read(args.directory, args.f1, gate_args)
             for line in reading.lines:
                 print(line)

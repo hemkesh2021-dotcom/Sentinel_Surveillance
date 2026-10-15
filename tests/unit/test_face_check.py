@@ -281,8 +281,8 @@ def save_account(mods, out: Path, account: dict[str, str], cued_format: int = 3)
         assert mods.account.enter(out, ask=lambda prompt: next(answers), say=lambda text: None,
                                   account_format_number=cued_format) == 0
         return
-    if any(key.endswith("_within_20_s") for key in account):  # format 3 (D79) or 4 (D85), through the prompts
-        fields = {3: mods.account.FIELDS_V3, 4: mods.account.FIELDS_V4}[cued_format]
+    if any(key.endswith("_within_20_s") for key in account):  # format 3 (D79), 4 (D85) or 9 (D101), by the prompts
+        fields = {3: mods.account.FIELDS_V3, 4: mods.account.FIELDS_V4, 9: mods.account.FIELDS_V9}[cued_format]
         answers = iter([account[f.key] for f in fields] + ["SAVE"])
         assert mods.account.enter(out, ask=lambda prompt: next(answers), say=lambda text: None,
                                   account_format_number=cued_format) == 0
@@ -1046,7 +1046,7 @@ def test_format_4_is_format_3_with_the_4_00_posture_stated(mods) -> None:
         assert words in comment["turned_away_within_5_s"], words
     for words in ("until the 6:00 cue", "could not see your face at all", "not even in profile"):
         assert words in comment["face_hidden_while_turned"], words
-    assert mods.account.FORMATS[mods.account.HEADER_V4] == (4, v4) and mods.account.CUED_FORMATS == (3, 4)
+    assert mods.account.FORMATS[mods.account.HEADER_V4] == (4, v4) and mods.account.CUED_FORMATS == (3, 4, 9)
     assert mods.account.FORMATS[mods.account.HEADER_V3] == (3, v3)  # format 3 unchanged: saved accounts read as before
 
 
@@ -1081,7 +1081,94 @@ def test_a_format_4_account_is_schema_text_and_the_helper_offers_it(mods, tmp_pa
     assert read.nonconforming == [] and read.content == [(f"line {len(mods.account.FIELDS_V4) + 1}: notes",
                                                           "a note that is never printed")]
     with pytest.raises(SystemExit):
-        mods.account.main(["enter", str(run), "--format", "9"])  # 6 is the comparison's (D87), 7 and 8 D91's
+        mods.account.main(["enter", str(run), "--format", "10"])  # 6 the comparison's (D87), 7, 8 D91's, 9 D101's
+
+
+# ---------------------------------------------------------------- D101: format 9, the away posture named by the cue
+
+POSTURE_WORDS = ("book", "sheet", "paper", "cover", "bow", "head away", "turned your head", "hand")  # none of them
+
+
+def test_format_9_is_format_3_with_the_away_posture_named_by_the_cue_and_the_body_still(mods) -> None:
+    """The same keys in the same order; only the two away questions differ. They name no posture (the package's 4:00
+    cue does, once the maintainer has confirmed one at the seat) and ask for the body still: seated, the torso where it
+    was, the chair neither moved nor swivelled. The intro says that a chair swivel is not that posture."""
+    v3, v9 = mods.account.FIELDS_V3, mods.account.FIELDS_V9
+    assert [f.key for f in v9] == [f.key for f in v3] and [f.kind for f in v9] == [f.kind for f in v3]
+    assert {f9.key for f3, f9 in zip(v3, v9) if f3 != f9} == {"turned_away_within_5_s", "face_hidden_while_turned"}
+    comment = {f.key: f.comment for f in v9}
+    for words in ("within 5 s after the 4:00 cue", "not before it", "the away posture that cue named",
+                  "held it until the 6:00 cue", "seated", "torso where it was", "neither moved nor swivelled"):
+        assert words in comment["turned_away_within_5_s"], words
+    for words in ("until the 6:00 cue", "could not see your face at all", "not even in profile"):
+        assert words in comment["face_hidden_while_turned"], words
+    for words in POSTURE_WORDS:  # the posture-specific wording stays pending (the cue's, not the account's)
+        assert words not in comment["turned_away_within_5_s"] + comment["face_hidden_while_turned"], words
+    assert "A chair swivel or any other movement of the body is not that posture" in mods.account.INTRO_V9.replace(
+        "\n", " ")
+    assert mods.account.FORMATS[mods.account.HEADER_V9] == (9, v9) and 9 in mods.account.CUED_FORMATS
+    assert mods.account.FORMATS[mods.account.HEADER_V4] == (4, mods.account.FIELDS_V4)  # format 4 unchanged
+
+
+@pytest.mark.parametrize(("change", "item", "label"), [
+    ({}, None, None),  # every answer yes: format 3's reading and the scope line
+    ({"face_hidden_while_turned": "no"}, "A: a known identity is retained", "NOT_EXERCISED"),
+    ({"turned_away_within_5_s": "no"}, "judged windows from the account's intervals", "MISSING"),  # e.g. a swivel
+    ({"turned_away_within_5_s": "unknown"}, "judged windows from the account's intervals", "MISSING"),
+])
+def test_a_format_9_account_is_read_as_format_3_plus_its_occlusion_scope(mods, tmp_path, startup, f1_list, change,
+                                                                          item, label) -> None:
+    """F2's criteria are unchanged: format 9 reads exactly as format 3, item for item; its reading adds one DESCRIPTIVE
+    line saying the away window is face occlusion with the body still and that a chair swivel is not exercised. A
+    swivel (or any other move) answered no leaves no windows, so it never passes as retention."""
+    run = simulate(tmp_path, startup)
+    twin = tmp_path / "twin"
+    shutil.copytree(run, twin)
+    finish(mods, run, account=account_v3(mods, **change), cues=FORMAT3_CUES)
+    finish(mods, twin, account=account_v3(mods, **change), cues=FORMAT3_CUES, cued_format=9)
+    assert (twin / "account.txt").read_text().splitlines()[0] == mods.account.HEADER_V9
+    three, (result, nine) = reading(mods, run, f1_list)[1], reading(mods, twin, f1_list)
+    scope = [line for line in nine.splitlines() if line.startswith("DESCRIPTIVE scope of A")]
+    assert len(scope) == 1 and [line for line in nine.splitlines() if line not in scope] == three.splitlines()
+    assert "chair swivel or any other movement of the body is not exercised by this run" in scope[0]
+    assert json.loads(scope[0][scope[0].index(": {") + 2:]) == {
+        "turned_away_within_5_s": change.get("turned_away_within_5_s", "yes"),
+        "face_hidden_while_turned": change.get("face_hidden_while_turned", "yes")}
+    assert "DESCRIPTIVE scope of A" not in three
+    if item is None:
+        assert result.ok, nine
+    else:
+        assert not result.ok and line_for(nine, item).startswith(label)
+
+
+def test_a_format_9_account_is_schema_text_and_the_helper_offers_it(mods, tmp_path) -> None:
+    run = tmp_path / "f2"
+    run.mkdir()
+    (run / "provenance.txt").write_text(F2_PROVENANCE)
+    assert mods.account.main(["enter", str(run), "--format", "9"]) == 2  # accepted; refused only as the run is unfinished
+    (run / "result.json").write_text("{}")
+    save_account(mods, run, account_v3(mods), cued_format=9)
+    read = mods.evidence.read(run / "account.txt", "f2")
+    assert read.nonconforming == [] and read.content == [(f"line {len(mods.account.FIELDS_V9) + 1}: notes",
+                                                          "a note that is never printed")]
+    assert mods.account.check(run, say=lambda text: None) == 0
+
+
+def test_a_combined_run_with_a_format_9_account_and_the_normal_launch_lines_is_read_as_f2(mods, tmp_path, startup,
+                                                                                         f1_list) -> None:
+    """What the F2 package's f-C writes: the combined load (live view, snapshots, chat in a validation run) with the
+    normal path's launch provenance (normal_launch_provenance: framing and light) and a format-9 account; every evidence
+    file fits its profile and F2 reads it (the combined reading delegates its F2 part to read_f2)."""
+    done = normal_launch(PIN, BOOT, "none", "lamps", GATE_LINES.rstrip("\n"))
+    assert done.returncode == 0, done.stderr
+    out = simulate(tmp_path, startup, combined=True)
+    finish(mods, out, account=account_v3(mods), cues=FORMAT3_CUES, cued_format=9, provenance=done.stdout)
+    for path in sorted(out.iterdir()):
+        if path.is_file() and path.name not in mods.check.NOT_COUNTED:
+            assert mods.evidence.read(path, "f2").nonconforming == [], path.name
+    result, text = reading(mods, out, f1_list)
+    assert result.ok, text
+    assert line_for(text, "scope of A").startswith("DESCRIPTIVE")
 
 
 # ---------------------------------------------------------------- the turn and the departure as intervals
@@ -2896,6 +2983,12 @@ def launch_provenance(*args: str, env: dict[str, str] | None = None) -> subproce
                        prelude="source benchmarks/runner/experiment_launch.sh;")
 
 
+def normal_launch(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    """experiment_launch.sh's normal-path function (D102), run by bash as the normal-path blocks run it."""
+    return bash_counts("normal_launch_provenance", *args, env=env,
+                       prelude="source benchmarks/runner/experiment_launch.sh;")
+
+
 BOOT = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
 
 
@@ -3232,3 +3325,146 @@ def test_a_run_with_the_scene_server_or_without_the_live_view_is_not_this_check(
     text = "\n".join(reading.lines)
     assert not reading.ok and line_for(text, "face admitted for this validation run with production detection") \
         .startswith("FAIL")
+
+
+# ---------------------------------------------------------------- D102: a non-enrolled participant on the normal path
+
+LOOKALIKE_S = (100.0, 130.0)  # seconds after T0 in which the participant's face reaches the enrolled prototype
+
+
+def normal_path_run(mods, tmp_path, accepted_scene, *, faces, name: str = "ne", scene: bool = False,
+                    preview: bool = False, continuity: bool = False) -> Path:
+    """The real runtime as the non-enrolled block runs it (D102): production detection in a validation run, no scene
+    server, live view or snapshots, 300 s, the participant seated throughout; ``faces(t)`` gives each analysed frame's
+    embedding. ``scene``, ``preview`` and ``continuity`` make it something this reading must refuse."""
+    root = tmp_path / name
+    root.mkdir()
+    (root / "startup").mkdir()
+    startup = startup_line(real_face_startup(root / "startup", accepted_scene, continuity=continuity))
+    if not scene:
+        del startup["startup"]["scene_server"]
+
+    def analyze_from(t0):
+        def analyze(frame, image):
+            face = FaceObservation(frame=frame.key, box=FACE_BOX, quality=0.9,
+                                   embedding=faces((frame.ingest_mono_ns - t0) / 1e9))
+            return FaceRun((face,), 1, 0)
+        return analyze
+
+    return simulate(root, startup, script=((0, 301, "facing", 1),), duration=300.0, analyze=analyze_from,
+                    captures=COMPARISON_CAPTURES, preview=preview)
+
+
+def test_a_non_enrolled_session_on_the_normal_path_counts_each_false_acceptance_and_never_a_rate(
+        mods, tmp_path, accepted_scene, basis) -> None:
+    """The non-enrolled block's launch provenance (normal_launch_provenance with the real F1 gate's lines), its run, the
+    format-8 account and face_counts.sh's counts with the participant's name: every evidence file conforms, execution
+    is complete, and the participant's match votes and KNOWN time are counted as false acceptances by the normal path in
+    this one session, beside a scope line that refuses a rate. The working gallery is not part of it."""
+    f1_ok, f1_lines = mods.check.f1_gate(*basis.gate)
+    assert f1_ok
+    done = normal_launch(PIN, BOOT, "none", "lamps", "\n".join(f1_lines))
+    assert done.returncode == 0, done.stderr
+    assert [x.split("=", 1)[0] for x in done.stdout.splitlines()] == [
+        "f2_launch_utc", "boot_id", "commit", "pin_commit", "framing_since_capture", "lighting",
+        *[x.split("=", 1)[0] for x in f1_lines]]
+    out = normal_path_run(mods, tmp_path, accepted_scene,
+                          faces=lambda t: FACE if LOOKALIKE_S[0] <= t < LOOKALIKE_S[1] else NOBODY)
+    finish(mods, out, account=account_v8(), cues=NON_ENROLLED_CUES, cued_format=8, duration_s=300.0,
+           captures=COMPARISON_CAPTURES, provenance=done.stdout)
+    counted = bash_counts("face_counts_f2", str(out), env={**TERMS, "N3": "Ola"})  # x-NE counts the participant's name
+    assert counted.returncode == 0, counted.stderr
+    (out / "secret-counts-identity.txt").write_text(counted.stdout)
+    for path in sorted(out.iterdir()):
+        if path.is_file() and path.name not in mods.check.NOT_COUNTED:
+            assert mods.evidence.read(path, "f2").nonconforming == [], path.name
+    reading = mods.check.read_non_enrolled(out, basis.f1, basis.gate)
+    text = "\n".join(reading.lines)
+    assert reading.ok, text
+    assert not [line for line in reading.lines if line.startswith(("FAIL", "MISSING"))], text
+    assert line_for(text, "F1 basis for this run").startswith("PASS")
+    assert _plain(text, "session kind")["kind"] == "non-enrolled, normal recognition path"
+    assert _plain(text, "the run's conditions") == {"framing_since_capture": "none", "lighting": "lamps"}
+    label, votes = _described(text, "the normal recognition path's votes")
+    assert label.startswith("SUPPORTED")
+    assert votes["match_votes"] > 0 and votes["unknown_votes"] > 0  # the look-alike stretch, and the rest
+    assert votes["match_votes"] + votes["unknown_votes"] == votes["faces_compared"]
+    _, look = _described(text, "the same, within 30 s of the look cue")
+    assert look["faces_compared"] > 0 and look["match_votes"] == 0  # the cue at 150 s is after the look-alike stretch
+    _, known = _described(text, "identity time")
+    assert known["known_s"] > 0 and known["known_intervals"] >= 1  # a false acceptance of the identity, counted
+    scope_label, scope = _described(text, "what this session can show")
+    assert scope == {"sessions": 1, "participants": 1} and scope_label.startswith("SUPPORTED")
+    assert "never a false-acceptance rate" in next(line for line in text.splitlines() if "what this session" in line)
+    assert '"rate' not in text and "shadow" not in text and "working" not in json.dumps(votes)
+    assert mods.check.main(["non-enrolled", str(out), "--f1", str(basis.f1), "--run", str(basis.gate[0]),
+                            "--identity-dir", str(basis.gate[1]), "--recheck-root", str(basis.gate[2])]) == 0
+
+
+def test_a_participant_never_matched_shows_zero_counts_qualified_by_the_account(mods, tmp_path, accepted_scene,
+                                                                                f1_list) -> None:
+    out = normal_path_run(mods, tmp_path, accepted_scene, faces=lambda t: NOBODY)
+    finish(mods, out, account=account_v8(only_participant_in_view="unknown"), cues=NON_ENROLLED_CUES, cued_format=8,
+           duration_s=300.0, captures=COMPARISON_CAPTURES, counts={})
+    reading = mods.check.read_non_enrolled(out, f1_list)
+    text = "\n".join(reading.lines)
+    assert reading.ok, text  # unknown is an accepted answer: it qualifies the lines, it does not stop the reading
+    label, votes = _described(text, "the normal recognition path's votes")
+    assert label == "QUALIFIED: only_participant_in_view=unknown"
+    assert votes["faces_compared"] > 0 and votes["match_votes"] == 0
+    _, known = _described(text, "identity time")
+    assert known["known_s"] == 0.0 and known["known_intervals"] == 0
+
+
+@pytest.mark.parametrize("kind", ["scene", "preview", "continuity", "candidate_with_working_gallery"])
+def test_only_a_normal_path_run_that_pictures_nobody_is_read_as_a_non_enrolled_session(mods, tmp_path, accepted_scene,
+                                                                                    f1_list, kind) -> None:
+    if kind == "candidate_with_working_gallery":  # the experiment's session (read by `experiment`, never here)
+        out, _ = experiment_run(mods, tmp_path, accepted_scene, kind="shadow", faces=lambda t: NOBODY)
+    else:
+        out = normal_path_run(mods, tmp_path, accepted_scene, faces=lambda t: NOBODY, scene=kind == "scene",
+                              preview=kind == "preview", continuity=kind == "continuity")
+    finish(mods, out, account=account_v8(), cues=NON_ENROLLED_CUES, cued_format=8, duration_s=300.0,
+           captures=COMPARISON_CAPTURES, counts={})
+    reading = mods.check.read_non_enrolled(out, f1_list)
+    text = "\n".join(reading.lines)
+    assert not reading.ok
+    assert line_for(text, "face admitted for this validation run on the normal recognition path").startswith("FAIL")
+    assert not any(line.startswith("DESCRIPTIVE [") for line in reading.lines)  # nothing described as the normal path
+
+
+def test_the_experiment_and_f2_readings_do_not_read_a_normal_path_session(mods, tmp_path, accepted_scene,
+                                                                         f1_list) -> None:
+    out = normal_path_run(mods, tmp_path, accepted_scene, faces=lambda t: NOBODY)
+    finish(mods, out, account=account_v8(), cues=NON_ENROLLED_CUES, cued_format=8, duration_s=300.0,
+           captures=COMPARISON_CAPTURES, counts={})
+    experiment = mods.check.read_experiment(out, f1_list)
+    assert not experiment.ok and line_for("\n".join(experiment.lines),
+                                          "face admitted for this validation run").startswith("FAIL")
+    assert not any(line.startswith("DESCRIPTIVE [") for line in experiment.lines)
+    assert not mods.check.read_f2(out, f1_list).ok
+
+
+def test_a_non_enrolled_session_needs_its_look_cue_and_a_format_8_account(mods, tmp_path, accepted_scene,
+                                                                         f1_list) -> None:
+    out = normal_path_run(mods, tmp_path, accepted_scene, faces=lambda t: NOBODY)
+    finish(mods, out, account=account_v6(mods), cues=COMPARISON_CUES, cued_format=6, duration_s=300.0,
+           captures=COMPARISON_CAPTURES, counts={})
+    reading = mods.check.read_non_enrolled(out, f1_list)
+    text = "\n".join(reading.lines)
+    assert not reading.ok
+    assert line_for(text, "the run's 300 s and every cue").startswith("FAIL")
+    assert line_for(text, "account in format 8").startswith("FAIL")
+    assert not any(line.startswith("DESCRIPTIVE") for line in reading.lines)
+    assert mods.check.main(["non-enrolled", str(out), "--f1", str(f1_list)]) == 1
+
+
+@pytest.mark.parametrize(("framing", "lighting", "f1", "message"), [
+    ("maybe", "daylight", "f1_gate=passed", "framing answer"),
+    ("none", "dusk", "f1_gate=passed", "room light"),
+    ("none", "", "f1_gate=passed", "room light"),
+    ("none", "lamps", "f1_gate=refused", "F1 gate"),
+])
+def test_the_normal_launch_provenance_is_refused_with_nothing_written(framing, lighting, f1, message) -> None:
+    done = normal_launch(PIN, BOOT, framing, lighting, f1)
+    assert done.returncode == 2 and done.stdout == "" and message in done.stderr

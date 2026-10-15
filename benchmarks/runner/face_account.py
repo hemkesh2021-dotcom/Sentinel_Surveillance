@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The F2 operator account (V2-25 live validation): what the operator actually did, entered before any result.
 
-    python3 benchmarks/runner/face_account.py enter F2_DIR [--format 3|4]
+    python3 benchmarks/runner/face_account.py enter F2_DIR [--format 3|4|9]
     python3 benchmarks/runner/face_account.py check F2_DIR
 
 ``enter`` asks for each item in turn and writes ``F2_DIR/account.txt`` (key=value) in **format 2** (D66):
@@ -35,6 +35,13 @@ allowance]; the judged windows, their washout and minimum, and every other crite
 stated, in the cue and in the account alike: a head turn within 5 s, seated, the torso upright where it was and the
 chair not moved until 6:00, and no face, not even in profile, visible to the camera. Same keys, cues, allowances,
 windows and criteria as format 3; only those two questions' wording differs.
+
+**Format 9** (D101, the maintainer's instruction, 2026-10-15; ``enter --format 9``): format 4 with the away posture
+named by the package's 4:00 cue rather than in the account, so that the same account serves the still posture the
+maintainer confirms at the seat. Same keys, cues, allowances, windows and criteria as formats 3 and 4; only the two away
+questions' wording differs. They ask about face occlusion with the body still (seated, the torso where it was, the chair
+neither moved nor swivelled); a chair swivel is not that posture, so a run with one is answered no and is never read as
+retention through a swivel.
 
 **Format 6** (D87; ``enter --format 6``): the natural recognition comparison's account, not an F2 account. No timed
 movement: the operator sits and works as usual for the whole run. Four separate questions (stayed seated; worked as
@@ -185,7 +192,28 @@ INTRO_V4 = (
     "no part of your face toward the camera, not even in profile. Answer yes or no, or unknown if you are not\n"
     "sure. Then the three questions about your face and the room. Nothing here shows an identity result."
 )
-CUED_FORMATS = (3, 4)  # face_check reads both alike: each movement's interval from the guard's cue times
+# Format 9 (D101, the maintainer's instruction, 2026-10-15): format 4 with the away posture named by the package's 4:00
+# cue instead of in these questions, so that one account serves whichever still posture the maintainer confirms at the
+# seat (a hand-held cover, a bowed head or the head turn). The same keys, cues, allowances, windows and criteria; only
+# the two away questions' wording differs. What they ask is face occlusion with the body still: a chair swivel or any
+# other movement of the body is not that posture, and the answer to it is no.
+HEADER_V9 = ("# F2 account, format 9 (cued, the away posture named by the 4:00 cue), entered with "
+             "benchmarks/runner/face_account.py; values as typed")
+TURN_V9 = Field(within_key("turned_away"), "choice", "yes / no: within 5 s after the 4:00 cue, and not before it, you "
+                "took the away posture that cue named, and you held it until the 6:00 cue, seated, with your torso "
+                "where it was and the chair neither moved nor swivelled", YES_NO)
+HIDDEN_V9 = Field("face_hidden_while_turned", "choice", "yes / no: from taking that posture until the 6:00 cue the "
+                  "camera could not see your face at all, not even in profile", YES_NO)
+FIELDS_V9 = tuple({TURN_V9.key: TURN_V9, HIDDEN_V9.key: HIDDEN_V9}.get(f.key, f) for f in FIELDS_V3)
+INTRO_V9 = (
+    "Your F2 account (format 9, cued). For each movement: did you do it within its allowance after its cue, and not\n"
+    "before the cue? At 4:00 the movement is the away posture the 4:00 cue named, held until 6:00: seated, the torso\n"
+    "where it was, the chair neither moved nor swivelled, no part of your face visible to the camera, not even in\n"
+    "profile. A chair swivel or any other movement of the body is not that posture: then the answer is no. Answer yes\n"
+    "or no, or unknown if you are not sure. Then the three questions about your face and the room. Nothing here shows\n"
+    "an identity result."
+)
+CUED_FORMATS = (3, 4, 9)  # face_check reads them alike: each movement's interval from the guard's cue times
 
 # Format 5 (D86): the natural seated check's account, not an F2 account. The operator sits and moves as usual; the
 # guard cues four phases; the reading is descriptive (face_check natural) and validates nothing.
@@ -273,7 +301,8 @@ INTRO_V8 = (
 )
 SEPARATE_FORMATS = (6, 7, 8)  # formats whose answers are read one by one: unknown is accepted, never "incomplete"
 FORMATS = {HEADER_V1: (1, FIELDS_V1), HEADER: (2, FIELDS), HEADER_V3: (3, FIELDS_V3), HEADER_V4: (4, FIELDS_V4),
-           HEADER_V5: (5, FIELDS_V5), HEADER_V6: (6, FIELDS_V6), HEADER_V7: (7, FIELDS_V7), HEADER_V8: (8, FIELDS_V8)}
+           HEADER_V5: (5, FIELDS_V5), HEADER_V6: (6, FIELDS_V6), HEADER_V7: (7, FIELDS_V7), HEADER_V8: (8, FIELDS_V8),
+           HEADER_V9: (9, FIELDS_V9)}
 INTRO = (
     "Your F2 account (format 2). Answer from what you noted; type unknown for anything you did not note or are not\n"
     "sure of. First: how many whole seconds after the T0 cue you started the stopwatch (0 if at the cue, as far as\n"
@@ -428,11 +457,12 @@ def _answer(index: int, values: dict[str, str], ask: Callable[[str], str], say: 
 
 def enter(run_dir: Path, ask: Callable[[str], str] = input, say: Callable[[str], None] = print,
           account_format_number: int = 2) -> int:
-    """Format 2 (D66), or format 3 (D79, cued) or 4 (D85, cued, the 4:00 head turn stated) when asked for."""
+    """Format 2 (D66), or format 3 (D79, cued), 4 (D85, cued, the 4:00 head turn stated) or 9 (D101, cued, the away
+    posture named by the 4:00 cue) when asked for."""
     fields, header, intro = {3: (FIELDS_V3, HEADER_V3, INTRO_V3), 4: (FIELDS_V4, HEADER_V4, INTRO_V4),
                              5: (FIELDS_V5, HEADER_V5, INTRO_V5), 6: (FIELDS_V6, HEADER_V6, INTRO_V6),
-                             7: (FIELDS_V7, HEADER_V7, INTRO_V7),
-                             8: (FIELDS_V8, HEADER_V8, INTRO_V8)}.get(account_format_number, (FIELDS, HEADER, INTRO))
+                             7: (FIELDS_V7, HEADER_V7, INTRO_V7), 8: (FIELDS_V8, HEADER_V8, INTRO_V8),
+                             9: (FIELDS_V9, HEADER_V9, INTRO_V9)}.get(account_format_number, (FIELDS, HEADER, INTRO))
     checker = review_separate if account_format_number in SEPARATE_FORMATS else review
     problem = not_ready(run_dir)
     if problem is not None:
@@ -513,11 +543,12 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     enter_parser = commands.add_parser("enter", help="answer each item; saving locks the account")
     enter_parser.add_argument("run_dir", type=Path)
-    enter_parser.add_argument("--format", type=int, choices=(2, 3, 4, 5, 6, 7, 8), default=2,
+    enter_parser.add_argument("--format", type=int, choices=(2, 3, 4, 5, 6, 7, 8, 9), default=2,
                               help="2 (D66, the default), 3 (D79, cued), 4 (D85, cued, the 4:00 head turn stated), 5 "
                                    "(D86, the natural seated check), 6 (D87, the natural recognition comparison), 7 "
-                                   "(D91, the enrollment experiment's capture) or 8 (D91, a non-enrolled participant's "
-                                   "session); 3 to 8 only with the maintainer's approval")
+                                   "(D91, the enrollment experiment's capture), 8 (D91, a non-enrolled participant's "
+                                   "session) or 9 (D101, cued, the away posture named by the 4:00 cue); 3 to 9 only "
+                                   "with the maintainer's approval")
     commands.add_parser("check", help="show a saved account and its lock state").add_argument("run_dir", type=Path)
     args = parser.parse_args(argv)
     if args.command == "enter":
