@@ -92,6 +92,10 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
    exercised: a non-matching face at the 4:00 cue ended the KNOWN identity, and the person's track changed twice while
    the face was hidden. A bounded rule for isolated non-matching faces is proposed for review, to be judged with the
    non-enrolled sessions' votes first; it is not implemented, and it would not have changed this F2.
+   Session 79: an opt-in tracking diagnostic (`--tracking-diagnostic`, validation runs only) records per frame what the
+   tracker was handed, published and lost, its own association costs and a shadow pass below the 0.4 cut, so a track
+   break during the occlusion can be read from evidence; its package `tracking-diag-4e3c46c` is dry-run and never an
+   F2 attempt; nothing changes with the flag off; hardware validation and its overhead are pending.
 2. Chat: its earlier runtime checks passed; admission (operator-run resource and interference checks; the maintainer's
    decision) and factual accuracy (the grounding check G is designed, not implemented) remain pending.
 3. Face and chat (the VLM) together: no combined run yet.
