@@ -26,8 +26,11 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
     come from production detection, the normal recognition path the dashboard runs; the 15:18 figure comes from the
     full-scale detection candidate (a validation-only option, not adopted), so it is not evidence for the normal path
     (session 77).
-  - **Face acceptance and the non-enrolled-person checks, pending.** The formal validation (F2) has never passed, and
-    no session with consenting non-enrolled participants has run, so there is no false-acceptance data. Face
+  - **Face acceptance and the non-enrolled-person checks, pending.** The formal validation (F2) has never passed. Its
+    attempt on the normal recognition path (15 October, under lamps) did not validate: retention while the face was
+    hidden was not exercised, though recognition while facing the camera and clearing across both absences passed in
+    that one session (session 78). No session with consenting non-enrolled participants has run, so there is no
+    false-acceptance data. Face
     recognition stays `PENDING_VALIDATION` and runs only in guarded validation runs.
   - **The proposed identity continuity rule (D97) and the feature controls (D99), not fully validated on the device.**
     The rule ran in one device session without changing any vote; the controls' face session ran with its switch
@@ -45,6 +48,7 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
 | Live view (the frames the runtime already reads) and incident snapshots | Saved-evidence checks passed (session 53); continuous delivery since D75 | Encoded only while viewed; bounded; Safari observed by the maintainer (user-reported) |
 | The live dashboard with face recognition in a validation run (D95, D96) | The dashboard check `dash-20261013T181703Z` (session 68): execution and privacy passed; recognition described, not judged | Safari observed by the maintainer (user-reported); departure and return not exercised; **face recognition stays pending validation** |
 | The dashboard's detection path, compared on the same frames (production detection with the live view) | `dpath2-20261014T113113Z` (session 73): execution and privacy passed; 171 of 176 compared faces matched, outcome D1 for that session's late-afternoon light (launched 17:04 IST, reported apart) | Investigative, not acceptance; one control pair and three full-scale-only faces compared, too few to compare the detection paths; the live view sent no picture for at least 90 s of the run; **face recognition stays pending validation** |
+| F2 on the normal recognition path (production detection, the original enrollment, D97 off) | `f2n-20261015T125427Z` (session 78): **not validated**. Recognition while seated facing the camera (K1, K2) and clearing across both absences (E1, E2) passed; retention with the face hidden (A) NOT_EXERCISED | One session, under lamps; not reliable recognition and not validated retention; **face recognition stays pending validation** |
 | Advisory chat about the live frame, answered by the local scene model | Two passing device runs: `alpha-20261012T040450Z` (`f6ced5e`) and `alpha-20261013T084310Z` (`c3a37f0`), runtime and browser results | **Chat is not admitted.** Answers' accuracy is not evaluated (one unverified operator report of a wrong answer); never with face recognition running |
 
 ## Implemented and portable-tested, not validated on the device
@@ -84,6 +88,10 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
    a false-acceptance rate. The dashboard's own detection matched 171 of 176 compared faces in late-afternoon daylight
    (`dpath2-20261014T113113Z`, 17:04 IST, outcome D1 for that light only; session 73), too few paired comparisons to
    judge another detection path, so no detection change. The failure seen at 13:15 on 14 October is unexplained.
+   Session 78: F2 on the normal path ran once (`f2n-20261015T125427Z`, under lamps) and did not validate. A was not
+   exercised: a non-matching face at the 4:00 cue ended the KNOWN identity, and the person's track changed twice while
+   the face was hidden. A bounded rule for isolated non-matching faces is proposed for review, to be judged with the
+   non-enrolled sessions' votes first; it is not implemented, and it would not have changed this F2.
 2. Chat: its earlier runtime checks passed; admission (operator-run resource and interference checks; the maintainer's
    decision) and factual accuracy (the grounding check G is designed, not implemented) remain pending.
 3. Face and chat (the VLM) together: no combined run yet.
