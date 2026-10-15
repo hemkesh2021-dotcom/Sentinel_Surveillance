@@ -397,6 +397,14 @@ def main(
         "is followed without a break (no detection gap over identity.continuity_max_gap_s, no jump, no overlapping "
         "detection), for at most identity.continuity_retention_s after its matches; a break drops it at once",
     )
+    run.add_argument(
+        "--tracking-diagnostic", action="store_true",
+        help="with --face-validation (session 79, a diagnostic; production detection only): record, per processed "
+        "frame, the person detections handed to the tracker, its published rows and unpublished detections, its lost "
+        "tracks, its own association costs, a separate shadow NMS at a lower confidence on the same forward pass, and "
+        "the tracks this runtime held current; numbers only, bounded; detection, tracking and identity unchanged. "
+        "Such a run is never an F2 attempt (its startup marker makes the F2 reading refuse it)",
+    )
     run.add_argument("--identity-dir", type=Path, default=DEFAULT_IDENTITY_DIR,
                      help=f"the private (0700) identity directory (default {DEFAULT_IDENTITY_DIR})")
     run.add_argument(
@@ -750,6 +758,14 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
         print("run: --face-continuity runs with production detection and no comparison or experiment",
               file=sys.stderr)
         return 1
+    if args.tracking_diagnostic and not args.face_validation:
+        print("run: --tracking-diagnostic needs --face-validation", file=sys.stderr)
+        return 1
+    if args.tracking_diagnostic and (args.face_full_scale_detection or args.face_comparison or experiment
+                                     or args.face_continuity):
+        print("run: --tracking-diagnostic runs with production detection and the plain identity rules: no candidate, "
+              "comparison, experiment or continuity rule", file=sys.stderr)
+        return 1
     if args.live_preview and not args.status_port:
         print("run: --live-preview needs the status page (--status-port other than 0)", file=sys.stderr)
         return 1
@@ -773,7 +789,8 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
                            shadow_dir=None if args.face_shadow_gallery is None else args.face_shadow_gallery.expanduser(),
                            capture_dir=(None if args.face_capture_gallery is None
                                         else args.face_capture_gallery.expanduser()),
-                           capture_consent_date=args.face_capture_consent_date, continuity=args.face_continuity)
+                           capture_consent_date=args.face_capture_consent_date, continuity=args.face_continuity,
+                           tracking_diagnostic=args.tracking_diagnostic)
     del secret
     scene = None
     if args.scene:

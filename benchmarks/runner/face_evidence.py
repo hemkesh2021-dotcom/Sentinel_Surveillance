@@ -325,6 +325,20 @@ FEATURE_RECORDS = {  # features.FeatureControls.done: one per change the loop ap
     "control": vocab("feature"), "change": INT, "at_utc": ISO, "feature": vocab(*FEATURES),
     "requested": vocab(*FEATURE_STATES), "result": vocab(*FEATURE_RESULTS),
 }
+# Session 79: the tracking diagnostic's startup marker inside the face entry (demo_runtime.assemble): the bounds
+# (tracking.diagnostic.DiagnosticBounds.numbers) and the tracker's settings as the loaded objects hold them
+# (legacy_ultralytics.LegacyUltralyticsTracker.diagnostic_settings; null when the detector did not load)
+TRACKING_BOUNDS = ("shadow_conf", "max_records", "max_bytes", "max_line_bytes", "max_det", "max_shadow", "max_lost",
+                   "max_assign_tracks", "max_assign_dets")
+TRACKER_SETTINGS = ("conf", "match_thresh", "track_high_thresh", "track_low_thresh", "new_track_thresh",
+                    "track_buffer", "max_time_lost", "unconfirmed_thresh", "shadow_conf", "shadow_max_nms", "max_det",
+                    "iou")
+TRACKING_STARTUP = {
+    **{f"face.tracking_diagnostic.{k}": NUM for k in TRACKING_BOUNDS},
+    "face.tracking_diagnostic.tracker": NULL,
+    **{f"face.tracking_diagnostic.tracker.{k}": NUM for k in TRACKER_SETTINGS},
+    "face.tracking_diagnostic.tracker.fuse_score": BOOL,
+}
 OPTIONAL_STARTUP = {  # assemble's startup fields for the live view, snapshots and chat
     **{f"live_preview.{k}": v for k, v in PREVIEW_BOUNDS.items()},
     **{f"snapshots.{k}": INT for k in ("removed_temporary", "removed_unrecorded", "unexpected_files", "pruned")},
@@ -473,6 +487,7 @@ STARTUP = {  # the runtime's ``starting`` line (demo_runtime.assemble and cli)
     "face.detection": vocab("full_scale"),  # D88, only in --face-full-scale-detection runs
     "face.shadow": BOOL, "face.capture": BOOL,  # D91, only in the enrollment experiment's runs
     **{f"face.continuity.{k}": NUM for k in CONTINUITY_POLICY},  # D97, only in --face-continuity runs
+    **TRACKING_STARTUP,  # session 79, only in --tracking-diagnostic runs
     "status_page": maybe(LOOPBACK_URL),
     **OPTIONAL_STARTUP,
 }
@@ -524,12 +539,40 @@ IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransitio
     "kind": vocab(*COMPARISON_KINDS), "disposition": vocab(*COMPARISON_DISPOSITIONS), "score": NUM, "w_px": INT,
     "similarity": maybe(NUM), "ms": maybe(NUM),
 }
+# Session 79, the tracking diagnostic (tracking.diagnostic.frame_record and summary_record, only in
+# --tracking-diagnostic runs): numbers and fixed labels only; boxes are fractions of the frame; track numbers are the
+# tracker's; nothing here is a picture, a crop or an identity.
+TRACKING_PUBLISHED = ("continued", "refound", "confirmed")  # tracking.diagnostic.PUBLISHED_OUTCOMES
+TRACKING_UNPUBLISHED = ("new_unconfirmed", "unmatched")  # tracking.diagnostic.UNPUBLISHED_OUTCOMES
+TRACKING_PROBLEMS = ("capture_missing", "capture_failed", "tracker_replaced", "raw_missing", "clone_failed",
+                     "shadow_failed", "layout_unknown", "snapshot_failed", "assign_failed",
+                     "no_backend_diagnostics")  # tracking.diagnostic.PROBLEMS
+TRACKING_SHORTENED = ("shadow", "assign", "unpub", "lost", "pub", "det")  # tracking.diagnostic.SHORTENED
+TRACKING_TIMINGS = ("backend", "capture", "clone", "shadow", "snapshot", "record")  # tracking.diagnostic.TIMINGS
+TRACKING_RECORDS = {
+    "tracking": vocab("frame", "summary"), "n": INT, "tf": COUNT,
+    "det[].i": INT, "det[].s": NUM, "det[].b[]": NUM,
+    "pub[].id": INT, "pub[].i": COUNT, "pub[].o": vocab(*TRACKING_PUBLISHED), "pub[].b[]": NUM,
+    "unpub[].i": INT, "unpub[].o": vocab(*TRACKING_UNPUBLISHED), "unpub[].id": COUNT,
+    "lost[].id": INT, "lost[].lost": INT, "lost[].b[]": NUM, "removed[]": INT,
+    "assign[].stage": vocab("pool", "unconfirmed"), "assign[].thresh": NUM, "assign[].tracks[].id": INT,
+    "assign[].tracks[].st": vocab("tracked", "lost"), "assign[].tracks[].lost": INT, "assign[].dets[]": INT,
+    "assign[].rows[].id": INT, "assign[].rows[].c[]": NUM, "assign[].cut": BOOL,
+    "ss": INT, "shadow[].s": NUM, "shadow[].b[]": NUM, "sh_hi": INT, "sh_agree": INT, "sh_cand": COUNT,
+    "sh_lim": maybe(BOOL), "cur[]": INT, **{f"ns.{k}": COUNT for k in TRACKING_TIMINGS},
+    "problems[]": vocab(*TRACKING_PROBLEMS), "trunc.*": INT,
+    # the summary line at the stop
+    "kept": INT, "dropped": INT, "bytes": INT, "truncated_lines": INT, "max_line_bytes_seen": INT, "processed": INT,
+    "problem_counts.*": INT, "limits.max_records": INT, "limits.max_bytes": INT, "limits.max_line_bytes": INT,
+}
+TRACKING_KEYS = {"trunc": vocab(*TRACKING_SHORTENED), "problem_counts": vocab(*TRACKING_PROBLEMS)}
 RUN = JsonProfile({
     "run": vocab("starting", "stopped"), **nest("startup", STARTUP),
-    **STATUS_LINE, **IDENTITY_RECORDS, **FEATURE_RECORDS,
+    **STATUS_LINE, **IDENTITY_RECORDS, **FEATURE_RECORDS, **TRACKING_RECORDS,
     "shutdown.stopped.*": BOOL, "shutdown.all_stopped": BOOL, "shutdown.signals_not_recorded": INT,
     "database_closed": BOOL, **nest("status", STATUS_LINE),
-}, keys={**{f"startup.{k}": v for k, v in STARTUP_KEYS.items()}, "shutdown.stopped": STOPPED_PARTS}, lines=True)
+}, keys={**{f"startup.{k}": v for k, v in STARTUP_KEYS.items()}, "shutdown.stopped": STOPPED_PARTS,
+         **TRACKING_KEYS}, lines=True)
 
 GUARD = JsonProfile({"*": maybe(NUM)}, keys={"": SAMPLE_KEYS}, lines=True)  # step5_guard's samples
 
@@ -548,6 +591,7 @@ STARTING_SUMMARY = {  # step5_guard._starting_summary
     "face.detection": vocab("full_scale"),  # D88
     "face.shadow": BOOL, "face.capture": BOOL,  # D91
     **{f"face.continuity.{k}": NUM for k in CONTINUITY_POLICY},  # D97: the guard keeps the startup's face entry
+    **TRACKING_STARTUP,  # session 79: likewise
 }
 STARTING_SUMMARY_KEYS = {"releases": RELEASE_COMPONENTS, "releases.*": RELEASE_ROLES, "notifier_problems": CHANNELS,
                          "scene_memory_before": MEMFREE_KEYS, "detector_memory_before": MEMFREE_KEYS,
@@ -620,6 +664,10 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
     "components.capture.retry_delay_s": SECONDS,
     "components.detector.state": CAPABILITY, "components.detector.problem": maybe(TEXT),
     "components.detector.counters.*": INT,
+    # session 79: the tracking diagnostic's budget (DemoRuntime._tracking_status), only in its runs
+    **{f"components.detector.tracking.{k}": INT for k in ("kept", "dropped", "truncated_lines", "bytes",
+                                                           "max_line_bytes_seen", "limit", "byte_limit")},
+    "components.detector.tracking.problems.*": INT,
     "components.scene.state": CAPABILITY, "components.scene.problem": maybe(TEXT),
     **nest("components.scene.server", SCENE_SERVER), "components.scene.lane.*": INT, "components.scene.worker.*": INT,
     "components.face.state": CAPABILITY, "components.face.problem": maybe(TEXT),
@@ -664,6 +712,7 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
     "components.detector.counters": Either((  # tracking.tracker counters; skip and failure labels are content
         vocab("processed", "epoch_resets", "failed", "failure_resets", "boxes_dropped_small",
               "boxes_dropped_overflow"), template(r"skipped_([a-z0-9_]+)", r"failed_([a-z0-9_]+)"))),
+    "components.detector.tracking.problems": vocab(*TRACKING_PROBLEMS),  # session 79
     "components.scene.lane": vocab(  # scene.lane counters (JobPurpose: periodic, enrichment)
         "submitted_periodic", "submitted_enrichment", "enrichment_replaced", "result_for_unknown_job", "late_result",
         "enrichment_skipped", "submit_failed", "cancel_failed", "timed_out_job_forgotten",

@@ -2381,6 +2381,14 @@ def capture_gate(session: Path, working_gallery: Path, f1: Path, gate: tuple[Pat
                   f"capture_accepted_utc={accepted['accepted_utc']}"]
 
 
+def read_tracking(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | None = None) -> Reading:
+    """Session 79: the tracking diagnostic's reading (tracking_check.py, beside this file; it reuses this module's
+    helpers, so it is imported when asked for)."""
+    import tracking_check
+
+    return tracking_check.read_tracking(directory, f1, gate)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="part", required=True)
@@ -2419,7 +2427,10 @@ def main(argv: list[str] | None = None) -> int:
                        ("dashboard", "read the live dashboard check (D95, descriptive): execution and privacy judged, "
                                      "recognition described"),
                        ("non-enrolled", "read a non-enrolled participant's session on the normal recognition path "
-                                        "(D102, descriptive; format 8): false acceptances counted, never a rate")):
+                                        "(D102, descriptive; format 8): false acceptances counted, never a rate"),
+                       ("tracking", "read a tracking diagnostic session (session 79, descriptive; format 9): the "
+                                    "detections, published tracks, association costs and shadow boxes described per "
+                                    "window and per gap; never an F2 reading, and F2's reading refuses such a run")):
         sub = commands.add_parser(part, help=text)
         sub.add_argument("directory", type=Path)
         sub.add_argument("--f1", type=Path, required=True, help="F1's evidence directory")
@@ -2456,10 +2467,10 @@ def main(argv: list[str] | None = None) -> int:
         if (args.run is None) != (args.identity_dir is None):
             parser.error(f"{args.part}: --run and --identity-dir go together")
         gate_args = None if args.run is None else (args.run, args.identity_dir, args.recheck_root)
-        if args.part in ("natural", "comparison", "candidate", "experiment", "dashboard", "non-enrolled"):
+        if args.part in ("natural", "comparison", "candidate", "experiment", "dashboard", "non-enrolled", "tracking"):
             read = {"natural": read_natural, "comparison": read_comparison, "candidate": read_candidate,
                     "experiment": read_experiment, "dashboard": read_dashboard,
-                    "non-enrolled": read_non_enrolled}[args.part]
+                    "non-enrolled": read_non_enrolled, "tracking": read_tracking}[args.part]
             reading = read(args.directory, args.f1, gate_args)
             for line in reading.lines:
                 print(line)

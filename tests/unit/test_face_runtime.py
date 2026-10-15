@@ -304,7 +304,7 @@ def face_setup(tmp_path, accepted_scene):
 
 def start(setup, *, store=None, backend_error=None, compatibility=COMPAT, validation=True, memfree=7e9,
           identity=None, policy=None, manifests=None, comparison=False, backend_class=None, detection=None,
-          stores=None, face_extra=None):
+          stores=None, face_extra=None, tracker_backend=None):
     calls: list[str] = []
     data = setup.tmp / "data"
     data.mkdir(exist_ok=True)
@@ -312,7 +312,7 @@ def start(setup, *, store=None, backend_error=None, compatibility=COMPAT, valida
                            "adapters": [setup.manifest] if manifests is None else manifests})
     devices = Devices(
         capture_source=lambda capture: SimpleNamespace(),
-        tracker_backend=lambda engine: Tracker(calls),
+        tracker_backend=lambda engine: Tracker(calls) if tracker_backend is None else tracker_backend(calls),
         scene_server=lambda options, port: None,
         scene_request=lambda port, timeout: None,
         meminfo=lambda: {"MemFree": int(memfree), "MemAvailable": 7_000_000_000},
@@ -987,3 +987,64 @@ def test_a_face_result_in_flight_when_face_is_turned_off_is_ignored() -> None:
     core.set_face_recognition(Capability.AVAILABLE)
     clock.advance(0.1)
     assert core.tick(stream).state.people[0].identity.value == "unresolved"
+
+
+# ---------------------------------------------------------------- session 79: the tracking diagnostic (validation runs only)
+
+
+def test_the_tracking_diagnostic_is_refused_outside_plain_validation_runs_and_without_a_reading_backend(
+        face_setup) -> None:
+    from face_runs import DiagnosticTracker
+
+    with pytest.raises(StartupRefused, match="tracking_diagnostic_needs_validation"):
+        start(face_setup, validation=False, face_extra={"tracking_diagnostic": True})
+    with pytest.raises(StartupRefused, match="tracking_diagnostic_plain_only"):
+        start(face_setup, face_extra={"tracking_diagnostic": True, "continuity": True})
+    with pytest.raises(StartupRefused, match="tracking_diagnostic_plain_only"):
+        start(face_setup, detection="full_scale", backend_class=CandidateBackend,
+              face_extra={"tracking_diagnostic": True})
+    with pytest.raises(StartupRefused, match="tracking_diagnostic_plain_only"):
+        start(face_setup, comparison=True, backend_class=ComparingBackend, face_extra={"tracking_diagnostic": True})
+    with pytest.raises(StartupRefused, match="tracking_diagnostic_unavailable"):  # the plain test Tracker reads nothing
+        start(face_setup, face_extra={"tracking_diagnostic": True})
+    assembly, _ = start(face_setup, face_extra={"tracking_diagnostic": True},
+                        tracker_backend=lambda calls: DiagnosticTracker())
+    assembly.database.close()
+
+
+def test_a_tracking_diagnostic_run_is_marked_at_startup_and_f2s_marker_is_otherwise_unchanged(face_setup) -> None:
+    from face_runs import TRACKER_SETTINGS, DiagnosticTracker
+
+    backends: list[DiagnosticTracker] = []
+
+    def make(calls):
+        backends.append(DiagnosticTracker())
+        return backends[-1]
+
+    assembly, _ = start(face_setup, face_extra={"tracking_diagnostic": True}, tracker_backend=make)
+    face = assembly.startup["face"]
+    assert {k: v for k, v in face.items() if k != "tracking_diagnostic"} == {"validation_run": True,
+                                                                             "identities_enrolled": 1}
+    marker = face["tracking_diagnostic"]
+    assert marker["tracker"] == TRACKER_SETTINGS and marker["shadow_conf"] == 0.1
+    assert marker["max_records"] == 20_000 and marker["max_line_bytes"] == 4096 and marker["max_bytes"] == 32_000_000
+    assert backends[-1].enabled == 0.1  # enabled before the backend loaded
+    status = assembly.runtime.snapshot()["components"]["detector"]["tracking"]
+    assert status == {"kept": 0, "dropped": 0, "truncated_lines": 0, "bytes": 0, "max_line_bytes_seen": 0,
+                      "limit": 20_000, "byte_limit": 32_000_000, "problems": {}}
+    assembly.database.close()
+    plain, _ = start(face_setup)  # without the flag: the startup and the status exactly as before
+    assert plain.startup["face"] == {"validation_run": True, "identities_enrolled": 1}
+    assert "tracking" not in plain.runtime.snapshot()["components"]["detector"]
+    plain.database.close()
+
+
+def test_the_tracking_diagnostic_flag_needs_validation_and_the_plain_rules(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
+    assert main(_cli(tmp_path, "--face", "--tracking-diagnostic"), devices=_refusing_devices()) == 1
+    assert "--tracking-diagnostic needs --face-validation" in capsys.readouterr().err
+    for extra in (("--face-continuity",), ("--face-full-scale-detection",), ("--face-comparison",)):
+        monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
+        assert main(_cli(tmp_path, "--face", "--face-validation", "--tracking-diagnostic", *extra),
+                    devices=_refusing_devices()) == 1
+        assert "plain identity rules" in capsys.readouterr().err

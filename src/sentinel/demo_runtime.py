@@ -179,7 +179,8 @@ from .scene.chat import CHAT_ADMISSION, ChatAdmission, ChatService
 from .scene.chat_gate import SAMPLE_INTERVAL_S as CHAT_GATE_SAMPLE_S, ChatGate, read_pressure
 from .scene.llama_server import PROFILED_FLAGS, PROMPT_CACHE_FLAGS, SCENE_REQUEST_SHA256
 from .storage.database import Database, DatabaseError
-from .tracking.tracker import FrameOutcome, PersonTracker, TrackerError
+from .tracking.diagnostic import DiagnosticBounds, TrackerDiagnostics, bounded_line, frame_record, summary_record
+from .tracking.tracker import FrameOutcome, PersonTracker, TrackerError, TrackingResult
 
 SCENE_ADAPTER_ID = "llama-lfm2-vl-scene"
 DATABASE_NAME = "sentinel.db"
@@ -338,9 +339,15 @@ class DemoRuntime:
         chat_validation: bool = False,
         pressure: Callable[[], int | None] = read_pressure,
         feature_controls: bool = False,
+        tracking_diagnostic: DiagnosticBounds | None = None,
     ) -> None:
         if tracker is None and detector_problem is None:
             detector_problem = "detector_not_configured"
+        # The tracking diagnostic (session 79): one bounded record per processed frame, in its own budget
+        self._tracking = tracking_diagnostic
+        self._tracking_bytes = 0
+        self._tracking_max_line = 0
+        self._tracking_problems: Counter[str] = Counter()
         self._config = config
         self._clock = clock
         self._capture = capture
@@ -494,6 +501,11 @@ class DemoRuntime:
             if self._face.capture is not None:  # D91: after the worker stops (a result in flight is not applied,
                 # as in every run); the working gallery is written or refused once, and its record is numbers only
                 self._keep_record({**self._face.capture.finish(), "schema": self._identity_schema})
+        if self._tracking is not None:  # the diagnostic's summary: what was kept, dropped and shortened
+            self._identity_records.append(summary_record(
+                self.counters["tracking_records_kept"], self.counters["tracking_records_dropped"],
+                self._tracking_bytes, self.counters["tracking_records_truncated"], self._tracking_max_line,
+                self.counters["frames_processed"], dict(self._tracking_problems), self._tracking))
         if self._scene is not None:
             self._scene.analyzer.stop(0.0)  # drop a waiting job; a running request ends when the server goes
             if self._scene.server is not None:
@@ -681,6 +693,8 @@ class DemoRuntime:
             self._last_frame_problem = None
             self._core.set_detector(Capability.AVAILABLE)
             output = self._core.on_frame(frame, result.persons, connected)
+            if self._tracking is not None:
+                self._keep_tracking(frame, result, output)
             if self._face is not None and self._face_on:  # D99: not offered while turned off
                 tick = self._face.worker.consider(frame, result.persons, captured.image)  # copies it if offered
                 if tick is not None:
@@ -722,6 +736,42 @@ class DemoRuntime:
             return
         self.counters["identity_records_kept"] += 1
         self._identity_records.append(record)
+
+    def _keep_tracking(self, frame: FrameRef, result: TrackingResult, output: CoreOutput) -> None:
+        """The frame's tracking record, shortened to its line bound and kept within the run's count and byte
+        budgets; what was shortened or dropped is counted, never silent."""
+        bounds = self._tracking
+        assert bounds is not None
+        started = time.perf_counter_ns()
+        diagnostics = result.diagnostics
+        if diagnostics is None:
+            diagnostics = TrackerDiagnostics(None, problems=("no_backend_diagnostics",))
+        current = [person.track_id for person in output.state.people]
+        record = frame_record(frame, diagnostics, current, self.counters["frames_processed"], result.backend_ns,
+                              bounds)
+        record["ns"]["record"] = time.perf_counter_ns() - started
+        record, line = bounded_line(record, bounds)
+        for problem in record["problems"]:
+            self._tracking_problems[problem] += 1
+        size = len(line.encode())
+        self._tracking_max_line = max(self._tracking_max_line, size)
+        if self.counters["tracking_records_kept"] >= bounds.max_records \
+                or self._tracking_bytes + size > bounds.max_bytes:
+            self.counters["tracking_records_dropped"] += 1
+            return
+        if record["trunc"]:
+            self.counters["tracking_records_truncated"] += 1
+        self.counters["tracking_records_kept"] += 1
+        self._tracking_bytes += size
+        self._identity_records.append(record)
+
+    def _tracking_status(self) -> dict[str, Any]:
+        bounds = self._tracking
+        assert bounds is not None
+        return {"kept": self.counters["tracking_records_kept"], "dropped": self.counters["tracking_records_dropped"],
+                "truncated_lines": self.counters["tracking_records_truncated"], "bytes": self._tracking_bytes,
+                "max_line_bytes_seen": self._tracking_max_line, "limit": bounds.max_records,
+                "byte_limit": bounds.max_bytes, "problems": dict(sorted(self._tracking_problems.items()))}
 
     def drain_identity_records(self) -> list[dict[str, Any]]:
         """Opaque identity records (ticks, results, transitions) since the last call, in order (loop thread)."""
@@ -888,7 +938,8 @@ class DemoRuntime:
             return {"state": Capability.UNAVAILABLE.value, "problem": self._detector_problem}
         state = Capability.UNAVAILABLE if self._last_frame_problem else Capability.AVAILABLE
         return {"state": state.value, "problem": self._last_frame_problem,
-                "counters": dict(sorted(self._tracker.counters.items()))}
+                "counters": dict(sorted(self._tracker.counters.items())),
+                **({"tracking": self._tracking_status()} if self._tracking is not None else {})}
 
     def _scene_status(self) -> dict[str, Any]:
         if self._scene is None:
@@ -1097,6 +1148,9 @@ class FaceOptions:
     capture_dir: Path | None = None  # --face-capture-gallery: where the capture's working gallery is written
     capture_consent_date: str | None = None  # --face-capture-consent-date, the enrolled person's, for that gallery
     continuity: bool = False  # --face-continuity (D97): the continuity rule; validation runs, production detection only
+    # --tracking-diagnostic (session 79): the detector backend's per-frame reading, recorded; validation runs with
+    # production detection and the plain identity rules only; nothing it reads changes
+    tracking_diagnostic: bool = False
     weights_dir: Path | None = None  # DeepFace's weights; None: ~/.deepface/weights
     min_free_bytes: int = 1_500_000_000  # the detector's provisional precheck, reused (U18 open)
 
@@ -1475,6 +1529,15 @@ def assemble(
                                         or options.face.capture_dir is not None):
             raise StartupRefused("face_continuity_production_only: the continuity rule runs with production detection "
                                  "and no comparison or experiment")
+        if options.face.tracking_diagnostic and not options.face.validation_run:
+            raise StartupRefused("tracking_diagnostic_needs_validation: the tracking diagnostic is for "
+                                 "--face-validation runs")
+        if options.face.tracking_diagnostic and (candidate or options.face.comparison or options.face.continuity
+                                                 or options.face.shadow_dir is not None
+                                                 or options.face.capture_dir is not None):
+            raise StartupRefused("tracking_diagnostic_plain_only: the tracking diagnostic runs with production "
+                                 "detection and the plain identity rules: no candidate, comparison, experiment or "
+                                 "continuity rule")
         _experiment_options(options.face)  # D91: before anything loads
         face_backend = devices.face_backend(options.face.weights_dir)
         if options.face.comparison and not hasattr(face_backend, "enable_comparison"):
@@ -1559,14 +1622,22 @@ def assemble(
         tracker = None
         detector_problem, memory = memfree_problem(devices.meminfo, options.min_free_bytes)
         startup["detector_memory_before"] = memory
+        tracking = DiagnosticBounds() if options.face is not None and options.face.tracking_diagnostic else None
+        tracking_settings = None
         if detector_problem is None:
             backend = devices.tracker_backend(options.engine)
+            if tracking is not None:  # before load(): the backend verifies what it reads while loading
+                if not callable(getattr(backend, "enable_diagnostic", None)):
+                    raise StartupRefused("tracking_diagnostic_unavailable: this detector backend has no diagnostic")
+                backend.enable_diagnostic(tracking.shadow_conf)
             try:
                 backend.load()  # the D27 guard and the engine pin run first
             except TrackerError as exc:
                 detector_problem = exc.label + (f" ({exc.error_type})" if exc.error_type else "")
             else:
-                tracker = PersonTracker(backend)
+                tracker = PersonTracker(backend, diagnostics=tracking is not None)
+                if tracking is not None:
+                    tracking_settings = backend.diagnostic_settings()
                 if releasing:  # D58: after the detector's load and settle
                     startup.setdefault("releases", {})["detector"] = post_load_release(
                         ops, "detector", {"engine": options.engine})
@@ -1584,7 +1655,11 @@ def assemble(
                                **({"shadow": True} if options.face.shadow_dir is not None else {}),
                                **({"capture": True} if options.face.capture_dir is not None else {}),
                                **({"continuity": config.identity.continuity_policy().numbers()}
-                                  if options.face.continuity else {})}
+                                  if options.face.continuity else {}),
+                               # session 79: the marker that keeps such a run out of F2's reading, with the bounds
+                               # and the tracker's settings as the loaded objects hold them
+                               **({"tracking_diagnostic": {**tracking.numbers(), "tracker": tracking_settings}}
+                                  if tracking is not None else {})}
             if face_problem is None and gallery is not None:
                 face_problem, memory = memfree_problem(devices.meminfo, options.face.min_free_bytes)
                 startup["face_memory_before"] = memory
@@ -1635,6 +1710,7 @@ def assemble(
             feature_controls=options.feature_controls,
             chat_run=(devices.chat_request(config.scene_server.port, config.scene_server.request_timeout_s)
                       if options.chat and scene is not None and devices.chat_request is not None else None),
+            tracking_diagnostic=tracking,
         )
         if runtime.preview is not None:  # only when enabled, as every new output key (evidence profiles are strict)
             startup["live_preview"] = runtime.preview.bounds()

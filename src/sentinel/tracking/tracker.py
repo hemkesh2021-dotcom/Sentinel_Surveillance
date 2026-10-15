@@ -47,6 +47,7 @@ from enum import Enum
 from typing import Any, Protocol
 
 from ..contracts import FrameKey, FrameRef, NormalizedBox, TrackObservation, TrackStatus
+from .diagnostic import TrackerDiagnostics
 from .tracks import MAX_TRACKS
 
 MIN_BOX_PX = 1.0
@@ -94,6 +95,7 @@ class TrackingResult:
     problem: str | None = None  # fixed label when SKIPPED or FAILED
     error_type: str | None = None  # exception class name, when a backend call raised
     backend_ns: int | None = None  # time spent in backend.track() on this frame
+    diagnostics: TrackerDiagnostics | None = None  # the tracking diagnostic's reading of this frame, when enabled
 
 
 class PersonTracker:
@@ -103,12 +105,14 @@ class PersonTracker:
         *,
         confirm_detections: int = 2,
         timer: Callable[[], int] = time.perf_counter_ns,
+        diagnostics: bool = False,
     ) -> None:
         if confirm_detections < 1:
             raise ValueError("confirm_detections must be at least 1")
         self._backend = backend
         self._confirm = confirm_detections
         self._timer = timer
+        self._diagnostics = diagnostics  # the tracking diagnostic: the backend's reading of each frame, passed through
         self._last: FrameKey | None = None
         self._needs_reset = True  # the backend may hold state from before this tracker
         self._id_offset = 0
@@ -148,7 +152,13 @@ class PersonTracker:
         except ValueError:
             return self._failed("invalid_output", None, elapsed)
         self.counters["processed"] += 1
-        return TrackingResult(FrameOutcome.PROCESSED, persons, backend_ns=elapsed)
+        diagnostics = None
+        if self._diagnostics:  # read after this frame's output, with this epoch's ID offset; it changes nothing
+            collect = getattr(self._backend, "last_diagnostics", None)
+            read = None if collect is None else collect()
+            diagnostics = (TrackerDiagnostics(None, problems=("no_backend_diagnostics",)) if read is None
+                           else read.with_id_offset(self._id_offset))
+        return TrackingResult(FrameOutcome.PROCESSED, persons, backend_ns=elapsed, diagnostics=diagnostics)
 
     def _skip_reason(self, key: FrameKey) -> str | None:
         last = self._last

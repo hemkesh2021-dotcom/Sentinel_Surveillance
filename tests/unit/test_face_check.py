@@ -50,6 +50,7 @@ from face_runs import (  # the shared real-runtime helpers (tests/support)
     RUNNERS,
     TERMS,
     Capture,
+    DiagnosticTracker,
     Image,
     Tracker,
     bash_counts,
@@ -104,6 +105,7 @@ from sentinel.runtime import (
 from sentinel.scene.analyzer import RecentImages, ThreadedSceneAnalyzer
 from sentinel.status_page import build_status, read_store
 from sentinel.storage.database import Database
+from sentinel.tracking.diagnostic import DiagnosticBounds
 from sentinel.tracking.tracker import PersonTracker, RawTrack
 
 # What the operator did (seconds after the T0 cue), and the account they would give.
@@ -130,17 +132,20 @@ def mods(monkeypatch):
 def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: float = 4.0,
              duration: float = 600.0, combined: bool = False, analyze=None, comparator=None,
              captures=CAPTURES, detection: str = "deepface", shadow=None, experiment_capture=None,
-             preview: bool = False) -> Path:
+             preview: bool = False, tracking=None, tracking_bounds=None) -> Path:
     """Run the real runtime through ``script`` and write the F2 directory as the package's blocks would.
 
     ``combined`` (D78): with the live view, incident snapshots and chat in a validation run as well, each used during
     the run (pictures made, a question asked now and then), and the status captures as the plain /status.json serves
-    them (the live view's state included). ``preview`` (D95's dashboard check): the live view alone, likewise."""
+    them (the live view's state included). ``preview`` (D95's dashboard check): the live view alone, likewise.
+    ``tracking`` (session 79): a function (t, state, track) -> TrackerDiagnostics that scripts what the diagnostic
+    backend reads on each frame; the run then carries the tracking records within ``tracking_bounds``."""
     out = root / "f2"
     out.mkdir()
     clock = FakeClock(utc=NOW)
     config = parse_config({"config_version": 1, "camera": {"id": "cam-1"}})
-    slot, capture, tracker = LatestFrame(), Capture(clock), Tracker()
+    slot, capture = LatestFrame(), Capture(clock)
+    tracker = DiagnosticTracker() if tracking is not None else Tracker()
     t0 = clock.monotonic_ns()
 
     analyze_override = analyze
@@ -180,10 +185,12 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
     runtime = DemoRuntime(config, clock, capture=capture, slot=slot,
                           incidents=IncidentService(db, clock, incidents=config.incidents,
                                                     notifications=config.notifications),
-                          tracker=PersonTracker(tracker), scene=scene,
+                          tracker=PersonTracker(tracker, diagnostics=tracking is not None), scene=scene,
                           face=FaceRuntime(worker, 1, True, comparator is not None, detection, shadow,
                                            experiment_capture),
-                          enrollment=GALLERY.enrollment(), status_refresh_s=0.0, **extra)
+                          enrollment=GALLERY.enrollment(), status_refresh_s=0.0,
+                          tracking_diagnostic=((tracking_bounds or DiagnosticBounds()) if tracking is not None
+                                               else None), **extra)
     runtime.start()
     if combined:  # what assemble adds to the starting line for these flags, from the same objects
         startup = {**startup, "startup": {**startup["startup"], "live_preview": runtime.preview.bounds(),
@@ -198,6 +205,8 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
         t = n / fps
         state, track = segment(script, t)
         tracker.next = [] if state == "absent" else [RawTrack(track, *BOX, 0.9)]
+        if tracking is not None:
+            tracker.diag = tracking(t, state, track, tracker)
         clock.advance(ns=t0 + round(n * 1e9 / fps) - clock.monotonic_ns())
         frame = capture.stamper.stamp(native_width=640, native_height=480, pixel_format=PixelFormat.BGR)
         slot.publish(CapturedFrame(frame, Image()))

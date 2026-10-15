@@ -73,7 +73,7 @@ def bash_counts(function: str, *args: str, env: dict[str, str] | None = None, ph
 
 def real_face_startup(root: Path, accepted_scene, *, comparison: bool = False,
                       candidate: bool = False, experiment: str | None = None,
-                      continuity: bool = False) -> dict[str, Any]:
+                      continuity: bool = False, tracking: bool = False) -> dict[str, Any]:
     """assemble()'s face fields and post_load_release()'s face record, as `sentinel run --face` writes them (with
     ``comparison``, as `--face-validation --face-comparison` writes them, D87; with ``candidate``, as
     `--face-validation --face-full-scale-detection` writes them, D88; with ``continuity``, as `--face-validation
@@ -98,7 +98,9 @@ def real_face_startup(root: Path, accepted_scene, *, comparison: bool = False,
         "input_kinds": ["frame"], "output_kinds": ["face.observation"], "model_revision": "facenet512-yunet",
         "resource_profile_id": scene.profile.profile_id, "timeout_ms": 3000}]})
     devices = Devices(capture_source=lambda c: SimpleNamespace(),
-                      tracker_backend=lambda e: SimpleNamespace(load=lambda: None, track=lambda i: [], reset=lambda: None),
+                      tracker_backend=lambda e: (DiagnosticTracker() if tracking else
+                                                 SimpleNamespace(load=lambda: None, track=lambda i: [],
+                                                                 reset=lambda: None)),
                       scene_server=lambda o, p: None, scene_request=lambda p, t: None,
                       meminfo=lambda: {"MemFree": 5_000_000_000, "MemAvailable": 6_000_000_000},
                       notifiers=lambda c: ({}, {}), face_backend=lambda w: backend,
@@ -110,7 +112,8 @@ def real_face_startup(root: Path, accepted_scene, *, comparison: bool = False,
              if experiment == "capture" else {})
     assembly = assemble(config, RunOptions(root / "data", root / "x.engine", face=FaceOptions(
         root / "identity", Secret("a long synthetic passphrase"), validation_run=True, comparison=comparison,
-        continuity=continuity, **({"detection": "full_scale"} if candidate else {}), **extra)),
+        continuity=continuity, tracking_diagnostic=tracking, **({"detection": "full_scale"} if candidate else {}),
+        **extra)),
         devices, FakeClock(),
         profiles=scene.profiles, face_admissions={admission.profile_id: admission})
     assembly.database.close()
@@ -177,6 +180,31 @@ class Tracker:
 
     def reset(self) -> None:
         pass
+
+
+# Session 79: the tracker's settings as the pinned backend reads them from the loaded objects
+# (legacy_ultralytics.LegacyUltralyticsTracker.diagnostic_settings), for a synthetic diagnostic run's startup marker.
+TRACKER_SETTINGS = {"conf": 0.4, "match_thresh": 0.8, "track_high_thresh": 0.25, "track_low_thresh": 0.1,
+                    "new_track_thresh": 0.25, "track_buffer": 30, "max_time_lost": 30, "fuse_score": True,
+                    "unconfirmed_thresh": 0.7, "shadow_conf": 0.1, "shadow_max_nms": 30000, "max_det": 300, "iou": 0.7}
+
+
+class DiagnosticTracker(Tracker):
+    """A Tracker that also hands the boundary a scripted reading of each frame (the tracking diagnostic)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.diag: Any = None
+        self.enabled: float | None = None
+
+    def enable_diagnostic(self, shadow_conf: float = 0.1) -> None:
+        self.enabled = shadow_conf
+
+    def diagnostic_settings(self) -> dict[str, Any]:
+        return dict(TRACKER_SETTINGS)
+
+    def last_diagnostics(self) -> Any:
+        return self.diag
 
 
 def segment(script, t: float) -> tuple[str, int | None]:
