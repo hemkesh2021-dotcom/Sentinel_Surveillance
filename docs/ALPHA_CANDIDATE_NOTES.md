@@ -96,6 +96,10 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
    tracker was handed, published and lost, its own association costs and a shadow pass below the 0.4 cut, so a track
    break during the occlusion can be read from evidence; its package `tracking-diag-4e3c46c` is dry-run and never an
    F2 attempt; nothing changes with the flag off; hardware validation and its overhead are pending.
+   Session 80: its one device session ran its cues against no detector (the load check expected the capture callback
+   first in Ultralytics' callback list, where 8.4.25 keeps its own no-op); fixed at `732d82d`, and the diagnostic's
+   readiness is now a prerequisite for T0 (the runtime refuses to start and the guard prints no cue without it); the
+   package is regenerated as `tracking-diag-732d82d`; hardware validation and its overhead are still pending.
 2. Chat: its earlier runtime checks passed; admission (operator-run resource and interference checks; the maintainer's
    decision) and factual accuracy (the grounding check G is designed, not implemented) remain pending.
 3. Face and chat (the VLM) together: no combined run yet.
