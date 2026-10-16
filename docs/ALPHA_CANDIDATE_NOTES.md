@@ -100,6 +100,11 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
    first in Ultralytics' callback list, where 8.4.25 keeps its own no-op); fixed at `732d82d`, and the diagnostic's
    readiness is now a prerequisite for T0 (the runtime refuses to start and the guard prints no cue without it); the
    package is regenerated as `tracking-diag-732d82d`; hardware validation and its overhead are still pending.
+   Session 81: that package's device session met readiness, then the memory guard stopped it 18.7 s after T0, and its
+   shadow pass failed on every frame (an inference-mode defect, fixed at `c530ff2` and tested on the installed
+   libraries on the CPU); a launch block's success now comes from the guard's result, and a run with no completed shadow
+   pass fails its reading. A short integration check (`tracking-integration-c530ff2`, at most 2 minutes) comes
+   before any ten-minute session; hardware validation and the diagnostic's overhead are still pending.
 2. Chat: its earlier runtime checks passed; admission (operator-run resource and interference checks; the maintainer's
    decision) and factual accuracy (the grounding check G is designed, not implemented) remain pending.
 3. Face and chat (the VLM) together: no combined run yet.
