@@ -105,6 +105,10 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
    libraries on the CPU); a launch block's success now comes from the guard's result, and a run with no completed shadow
    pass fails its reading. A short integration check (`tracking-integration-c530ff2`, at most 2 minutes) comes
    before any ten-minute session; hardware validation and the diagnostic's overhead are still pending.
+   Session 82: that check ran once; the memory guard stopped it 3.0 s after T0 (MemFree under its floor) while the
+   shadow pass completed on its 10 recorded frames. Same-boot observations showed far less anonymous memory resident
+   once the development processes and the VNC desktop session were closed; a preparation supplement that closes them
+   on request before launch (limits and criteria unchanged) is dry-run and pending.
 2. Chat: its earlier runtime checks passed; admission (operator-run resource and interference checks; the maintainer's
    decision) and factual accuracy (the grounding check G is designed, not implemented) remain pending.
 3. Face and chat (the VLM) together: no combined run yet.
