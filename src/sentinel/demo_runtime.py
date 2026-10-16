@@ -179,7 +179,14 @@ from .scene.chat import CHAT_ADMISSION, ChatAdmission, ChatService
 from .scene.chat_gate import SAMPLE_INTERVAL_S as CHAT_GATE_SAMPLE_S, ChatGate, read_pressure
 from .scene.llama_server import PROFILED_FLAGS, PROMPT_CACHE_FLAGS, SCENE_REQUEST_SHA256
 from .storage.database import Database, DatabaseError
-from .tracking.diagnostic import DiagnosticBounds, TrackerDiagnostics, bounded_line, frame_record, summary_record
+from .tracking.diagnostic import (
+    DiagnosticBounds,
+    TrackerDiagnostics,
+    bounded_line,
+    frame_record,
+    settings_problem,
+    summary_record,
+)
 from .tracking.tracker import FrameOutcome, PersonTracker, TrackerError, TrackingResult
 
 SCENE_ADAPTER_ID = "llama-lfm2-vl-scene"
@@ -1474,7 +1481,10 @@ def assemble(
     profile (D46; checked before the database opens or llama-server starts), a
     database another process owns. ``profiles`` is the static registry; tests
     pass synthetic fixtures, and ``sentinel run`` has no option to change it. Model failures do not refuse: that component
-    is unavailable, with its reason, and core monitoring runs without it.
+    is unavailable, with its reason, and core monitoring runs without it. The one exception (session 80): a
+    ``--tracking-diagnostic`` run refuses (``tracking_diagnostic_not_ready:<reason>``) when its detector cannot load
+    with the diagnostic's hooks or the tracker's settings are not complete, since such a run exists for the diagnostic
+    alone; the refusal is cleaned up like every other.
 
     Memory policies (D58, ``options.memory_policy``; the default does none of this), in the profiler's order:
 
@@ -1624,6 +1634,8 @@ def assemble(
         startup["detector_memory_before"] = memory
         tracking = DiagnosticBounds() if options.face is not None and options.face.tracking_diagnostic else None
         tracking_settings = None
+        if tracking is not None and detector_problem is not None:  # session 80: no detector, no diagnostic, no run
+            raise StartupRefused(f"tracking_diagnostic_not_ready:{detector_problem}")
         if detector_problem is None:
             backend = devices.tracker_backend(options.engine)
             if tracking is not None:  # before load(): the backend verifies what it reads while loading
@@ -1634,10 +1646,15 @@ def assemble(
                 backend.load()  # the D27 guard and the engine pin run first
             except TrackerError as exc:
                 detector_problem = exc.label + (f" ({exc.error_type})" if exc.error_type else "")
+                if tracking is not None:  # session 80: a diagnostic run never starts without its detector and hooks
+                    raise StartupRefused(f"tracking_diagnostic_not_ready:{detector_problem}") from None
             else:
-                tracker = PersonTracker(backend, diagnostics=tracking is not None)
-                if tracking is not None:
+                if tracking is not None:  # the marker must carry the tracker's settings, complete, before T0
                     tracking_settings = backend.diagnostic_settings()
+                    problem = settings_problem(tracking_settings)
+                    if problem is not None:
+                        raise StartupRefused(f"tracking_diagnostic_not_ready:{problem}")
+                tracker = PersonTracker(backend, diagnostics=tracking is not None)
                 if releasing:  # D58: after the detector's load and settle
                     startup.setdefault("releases", {})["detector"] = post_load_release(
                         ops, "detector", {"engine": options.engine})

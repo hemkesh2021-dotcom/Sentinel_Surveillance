@@ -54,7 +54,7 @@ from sentinel.media.clock import FakeClock
 from sentinel.media.frames import FrameStamper
 from sentinel.memory_policy import CANDIDATE_POLICY
 from sentinel.storage.database import Database
-from sentinel.tracking.tracker import PersonTracker, RawTrack
+from sentinel.tracking.tracker import PersonTracker, RawTrack, TrackerError
 
 SECRET = Secret("a long synthetic passphrase")
 NOW = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
@@ -1037,6 +1037,80 @@ def test_a_tracking_diagnostic_run_is_marked_at_startup_and_f2s_marker_is_otherw
     assert plain.startup["face"] == {"validation_run": True, "identities_enrolled": 1}
     assert "tracking" not in plain.runtime.snapshot()["components"]["detector"]
     plain.database.close()
+
+
+def test_a_tracking_diagnostic_run_refuses_to_start_unless_its_detector_loaded_with_the_hooks_and_settings(
+        face_setup) -> None:
+    """Session 80: the device run trk-20261016T032337Z started with detector_problem set and ran its cues against no
+    detector. A diagnostic run now refuses at startup (tracking_diagnostic_not_ready:<reason>), before the face model
+    loads, whenever the detector cannot load with the diagnostic's hooks or the tracker's settings are incomplete."""
+    from face_runs import TRACKER_SETTINGS, DiagnosticTracker
+
+    class Backend(DiagnosticTracker):
+        def __init__(self, calls, *, error=None, settings=TRACKER_SETTINGS):
+            super().__init__()
+            self.calls, self.error, self.settings = calls, error, settings
+
+        def load(self):
+            self.calls.append("tracker_load")
+            if self.error is not None:
+                raise self.error
+
+        def diagnostic_settings(self):
+            return None if self.settings is None else dict(self.settings)
+
+    flag = {"tracking_diagnostic": True}
+    seen: dict[str, list[str]] = {}
+
+    def make(calls, **kwargs):
+        seen["calls"] = calls
+        return Backend(calls, **kwargs)
+
+    with pytest.raises(StartupRefused, match=r"tracking_diagnostic_not_ready:diagnostic_unsupported \(callback_order\)"):
+        start(face_setup, face_extra=flag,
+              tracker_backend=lambda calls: make(calls, error=TrackerError("diagnostic_unsupported", "callback_order")))
+    assert seen["calls"] == ["tracker_load"]  # the face model never loaded: the refusal came first
+    with pytest.raises(StartupRefused, match=r"tracking_diagnostic_not_ready:load_failed \(RuntimeError\)"):
+        start(face_setup, face_extra=flag,
+              tracker_backend=lambda calls: make(calls, error=TrackerError("load_failed", "RuntimeError")))
+    seen.clear()
+    with pytest.raises(StartupRefused, match="tracking_diagnostic_not_ready:memfree_below_minimum"):
+        start(face_setup, face_extra=flag, memfree=0, tracker_backend=make)
+    assert seen == {}  # no backend made, nothing loaded: the detector's memory check refused first
+    with pytest.raises(StartupRefused, match="tracking_diagnostic_not_ready:tracker_settings_missing"):
+        start(face_setup, face_extra=flag, tracker_backend=lambda calls: make(calls, settings=None))
+    assert seen["calls"] == ["tracker_load"]
+    with pytest.raises(StartupRefused, match="tracking_diagnostic_not_ready:tracker_settings_incomplete:iou"):
+        start(face_setup, face_extra=flag, tracker_backend=lambda calls: make(
+            calls, settings={k: v for k, v in TRACKER_SETTINGS.items() if k != "iou"}))
+    assembly, calls = start(face_setup, face_extra=flag, tracker_backend=make)  # ready: as in session 79
+    assert calls == ["tracker_load", "face_load"] and assembly.startup["detector_problem"] is None
+    assert assembly.startup["face"]["tracking_diagnostic"]["tracker"] == TRACKER_SETTINGS
+    assembly.database.close()
+
+
+def test_without_the_diagnostic_a_detector_that_fails_to_load_still_starts_as_before(face_setup) -> None:
+    class Failing:
+        def __init__(self, calls):
+            self.calls = calls
+
+        def load(self):
+            self.calls.append("tracker_load")
+            raise TrackerError("diagnostic_unsupported", "callback_order")
+
+        def track(self, image):
+            return []
+
+        def reset(self):
+            pass
+
+    assembly, calls = start(face_setup, tracker_backend=Failing)
+    assert calls == ["tracker_load", "face_load"]  # the detector unavailable with its reason; everything else loads
+    assert assembly.startup["detector_problem"] == "diagnostic_unsupported (callback_order)"
+    assert assembly.startup["face"] == {"validation_run": True, "identities_enrolled": 1}
+    detector = assembly.runtime.snapshot()["components"]["detector"]
+    assert detector == {"state": "unavailable", "problem": "diagnostic_unsupported (callback_order)"}
+    assembly.database.close()
 
 
 def test_the_tracking_diagnostic_flag_needs_validation_and_the_plain_rules(tmp_path, monkeypatch, capsys) -> None:

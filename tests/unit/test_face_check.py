@@ -243,13 +243,17 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
 
 def finish(mods, out: Path, *, cue_delay_s: float = 0.1, account: dict[str, str] | None = ACCOUNT,
            counts: dict[str, int] | None = None, cues: dict[str, float] | None = None, cued_format: int = 3,
-           duration_s: float = 600.0, captures=CAPTURES, provenance: str = F2_PROVENANCE) -> None:
+           duration_s: float = 600.0, captures=CAPTURES, provenance: str = F2_PROVENANCE,
+           readiness: dict | None = None) -> None:
     """result.json as the guard writes it, then the account and the counts, in the package's order (the counts by
-    face_counts.sh unless ``counts`` fakes them); ``provenance`` is what the launch block wrote before the account."""
+    face_counts.sh unless ``counts`` fakes them); ``provenance`` is what the launch block wrote before the account.
+    ``readiness`` (session 80): the guard's record of its --require-ready requirement, when the block passed one."""
     ready = 1.0  # FakeClock's default start (seconds), the runtime's T0
     result = {
         "schema_version": 1, "mode": "step5_guard", "status": "duration_stop",
-        "parameters": {"duration_s": duration_s, "cues": [{"at_s": 0.0, "name": "t0"}]},
+        "parameters": {"duration_s": duration_s, "cues": [{"at_s": 0.0, "name": "t0"}],
+                       **({"require_ready": readiness["required"]} if readiness is not None else {})},
+        **({"readiness": readiness} if readiness is not None else {}),
         "child": {"returncode": 0, "ready_after_s": 70.0, "ready_mono_s": ready},
         "guard": {"trigger": None, "peak_pressure_bytes": 1, "min_mem_free_bytes": 2, "min_mem_available_bytes": 3},
         "stop": {"forced": False}, "cleanup_clear": True,

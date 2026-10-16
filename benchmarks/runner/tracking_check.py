@@ -6,7 +6,10 @@ tracker, what the tracker published, its own association costs, its lost tracks,
 production confidence, and the tracks the runtime held current (tracking.diagnostic). This reading judges execution
 and privacy only. Everything about detection, tracking and association is DESCRIPTIVE, per window and per gap, and it
 is not an F2 reading: the startup marker that names the diagnostic makes ``face_check f2`` refuse such a run, and
-this reading refuses a run without it. It validates nothing and changes nothing.
+this reading refuses a run without it. It validates nothing and changes nothing. Since session 80 the guard's
+``--require-ready tracking_diagnostic`` makes the diagnostic's readiness a prerequisite for T0 (the detector loaded
+with the diagnostic's hooks and the tracker's settings in the starting line); this reading judges the guard's own
+record of it, so a run whose guard did not require it, or found it unmet, never passes.
 
 Evidence rules it keeps:
 
@@ -392,6 +395,13 @@ def read_tracking(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None
                "of it", dict(line.split("=", 1) for line in lines), ok and f1.resolve() == (gate[0] / "f1").resolve())
     result = s5._load(directory / "result.json")
     s5._supervision(r, result, "duration_stop", 0)
+    readiness = s5._get(result, "readiness")  # session 80: the guard's own record, never inferred from the exit
+    r.item("readiness required before T0: the guard required the diagnostic's readiness on the runtime's starting "
+           "line (no detector problem; the marker with the tracker's settings complete) and found it met, so the cues "
+           "ran against a loaded detector with the diagnostic's hooks",
+           readiness,
+           isinstance(readiness, dict) and readiness.get("required") == "tracking_diagnostic"
+           and readiness.get("met") is True and readiness.get("reason") is None)
     start = s5._get(result, "run_output", "starting")
     face = s5._get(start, "face")
     marker = face.get("tracking_diagnostic") if isinstance(face, dict) else None

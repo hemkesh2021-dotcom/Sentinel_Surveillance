@@ -114,9 +114,12 @@ def tracking_lines(out: Path) -> tuple[list[dict], dict | None]:
     return frames, summary
 
 
+READINESS = {"required": "tracking_diagnostic", "met": True, "reason": None, "starting_after_s": 70.0}  # session 80
+
+
 def session(mods, tmp_path, tracking_startup, kind=None, **kwargs) -> Path:
     out = simulate(tmp_path, tracking_startup, tracking=make_script(kind, **kwargs))
-    finish(mods, out, account=account_v3(mods), cues=FORMAT3_CUES, cued_format=9)
+    finish(mods, out, account=account_v3(mods), cues=FORMAT3_CUES, cued_format=9, readiness=READINESS)
     return out
 
 
@@ -328,6 +331,72 @@ def test_the_tracking_lines_are_numbers_and_fixed_labels_to_the_privacy_profile(
             break
     (out / "run.jsonl").write_text("\n".join(lines) + "\n")
     assert len(mods.evidence.read(out / "run.jsonl", "f2").nonconforming) == 1
+
+
+# ---------------------------------------------------------------- session 80: readiness before T0
+
+
+def test_the_readiness_item_reads_the_guards_own_record_and_never_passes_without_it(mods, tmp_path, tracking_startup,
+                                                                                  f1_list) -> None:
+    out = session(mods, tmp_path, tracking_startup, "filtered")
+    text = "\n".join(mods.check.read_tracking(out, f1_list).lines)
+    assert line_for(text, "readiness required before T0").startswith("PASS")
+    result = json.loads((out / "result.json").read_text())
+    for readiness, label in (({**READINESS, "met": False, "reason": "tracker_settings_missing"}, "FAIL"),
+                             ({**READINESS, "required": "detector"}, "FAIL"), (None, "MISSING")):
+        edited = dict(result)
+        if readiness is None:
+            edited.pop("readiness")  # a guard that required nothing (the session-79 package): never a pass
+        else:
+            edited["readiness"] = readiness
+        (out / "result.json").write_text(json.dumps(edited))
+        reading = mods.check.read_tracking(out, f1_list)
+        line = line_for("\n".join(reading.lines), "readiness required before T0")
+        assert line.startswith(label) and not reading.ok, line
+        if readiness is not None and readiness.get("reason"):
+            assert "tracker_settings_missing" in line
+
+
+def test_a_run_refused_before_t0_reads_as_incomplete_with_the_reason_and_claims_nothing(mods, tmp_path,
+                                                                                         tracking_startup,
+                                                                                         f1_list) -> None:
+    """The device run's shape after the fix: the guard stopped the runtime on its starting line (no cue, no capture,
+    no record); the reading fails the supervision and readiness items with the reason, finds no records and no T0,
+    describes no window or gap, and the refusal's keys conform to the evidence profile."""
+    out = session(mods, tmp_path, tracking_startup, "filtered")
+    starting = json.loads((out / "run.jsonl").read_text().splitlines()[0])
+    starting["startup"]["detector_problem"] = "diagnostic_unsupported (callback_order)"
+    starting["startup"]["face"]["tracking_diagnostic"]["tracker"] = None
+    stopped = {"run": "stopped", "shutdown": {"stopped": {"capture": True, "face_worker": True}, "all_stopped": True,
+                                              "signals_not_recorded": 0}, "database_closed": True}
+    (out / "run.jsonl").write_text(json.dumps(starting) + "\n" + json.dumps(stopped) + "\n")
+    result = json.loads((out / "result.json").read_text())
+    result.update(status="readiness_refused", stop={"requested_by": "readiness_refused", "requested_at_s": 55.0,
+                                                    "exited_after_stop_s": 14.0, "forced": False},
+                  child={"returncode": 0, "ran_s": 69.0, "launched_utc": "2026-10-16T08:15:21Z"},
+                  captures=[{"name": c["name"], "at_s": c["at_s"], "status": "not_reached", "bytes": 0,
+                             "listeners": None} for c in result["captures"]],
+                  cues=[{"name": c["name"], "at_s": c["at_s"], "printed_after_launch_s": None, "printed_mono_s": None}
+                        for c in result["cues"]],
+                  readiness={"required": "tracking_diagnostic", "met": False,
+                             "reason": "detector_problem:diagnostic_unsupported (callback_order)",
+                             "starting_after_s": 55.0},
+                  run_output=mods.guard.read_run_output(out / "run.jsonl"))
+    (out / "result.json").write_text(json.dumps(result))
+    reading = mods.check.read_tracking(out, f1_list)
+    text = "\n".join(reading.lines)
+    assert not reading.ok
+    assert line_for(text, "supervision status").startswith("FAIL")
+    readiness = line_for(text, "readiness required before T0")
+    assert readiness.startswith("FAIL") and "detector_problem:diagnostic_unsupported (callback_order)" in readiness
+    assert line_for(text, "a tracking diagnostic run").startswith("FAIL")
+    assert line_for(text, "tracking records").startswith("MISSING")
+    assert line_for(text, "T0:").startswith("MISSING")
+    assert "A gap" not in text and "per window: coverage" not in text  # nothing described without T0 and windows
+    assert mods.evidence.read(out / "result.json", "f2").nonconforming == []  # the refusal's keys are declared
+    result["readiness"]["note"] = "Jane"  # an undeclared key, a name: nonconforming
+    (out / "result.json").write_text(json.dumps(result))
+    assert len(mods.evidence.read(out / "result.json", "f2").nonconforming) == 1
 
 
 def test_the_cli_reads_a_tracking_session_and_never_prints_an_f2_verdict(mods, tmp_path, tracking_startup, f1_list,

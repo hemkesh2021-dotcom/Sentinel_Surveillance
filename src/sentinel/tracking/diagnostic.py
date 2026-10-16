@@ -39,6 +39,27 @@ TRACKING_SCHEMA = 1
 PUBLISHED_OUTCOMES = ("continued", "refound", "confirmed")
 UNPUBLISHED_OUTCOMES = ("new_unconfirmed", "unmatched")
 STAGES = ("pool", "unconfirmed")
+# The tracker settings a diagnostic run records at startup (legacy_ultralytics.diagnostic_settings reads them from the
+# loaded objects into face.tracking_diagnostic.tracker). A run is not ready for the diagnostic until every one is a
+# number (fuse_score a flag): the runtime refuses to start otherwise (session 80), and the guard requires the same on
+# the starting line before T0 (step5_guard.TRACKING_SETTING_KEYS, kept equal to this by a test).
+SETTING_KEYS = ("conf", "match_thresh", "track_high_thresh", "track_low_thresh", "new_track_thresh", "track_buffer",
+                "max_time_lost", "fuse_score", "unconfirmed_thresh", "shadow_conf", "shadow_max_nms", "max_det", "iou")
+
+
+def settings_problem(settings: Any) -> str | None:
+    """None when ``settings`` carries every SETTING_KEYS entry as a number (``fuse_score`` a flag), else a fixed
+    label: ``tracker_settings_missing`` (no mapping) or ``tracker_settings_incomplete:<key>``."""
+    if not isinstance(settings, dict):
+        return "tracker_settings_missing"
+    for key in SETTING_KEYS:
+        value = settings.get(key)
+        if key == "fuse_score":
+            if not isinstance(value, bool):
+                return f"tracker_settings_incomplete:{key}"
+        elif isinstance(value, bool) or not isinstance(value, (int, float)):
+            return f"tracker_settings_incomplete:{key}"
+    return None
 TRACK_STATES = ("tracked", "lost")
 PROBLEMS = ("capture_missing", "capture_failed", "tracker_replaced", "raw_missing", "clone_failed", "shadow_failed",
             "layout_unknown", "snapshot_failed", "assign_failed", "no_backend_diagnostics")

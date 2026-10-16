@@ -25,9 +25,12 @@ Errors are fixed labels with an exception class name; exception text is never ke
 
 The tracking diagnostic (session 79; ``enable_diagnostic`` before ``load``, only for ``sentinel run
 --face-validation --tracking-diagnostic``) reads, and never changes, what this path computes on each frame: the
-detections handed to the tracker (a callback registered before Ultralytics registers its own, so it runs first on the
-post-processed, pre-tracking results), the tracker's own association costs (its ``get_dists`` wrapped on the
-instance; the matrix it returns is handed back unchanged), its track lists after the update, and separately a
+detections handed to the tracker (a callback registered before Ultralytics registers its tracker's, so it runs first
+on the post-processed, pre-tracking results; Ultralytics seeds every event's list with one no-op of its own, which
+precedes ours and does nothing, so load verifies by identity that only those defaults precede the capture and that the
+tracker's own callback follows it, once, with nothing else registered), the tracker's own association costs (its
+``get_dists`` wrapped on the instance; the matrix it returns is handed back unchanged), its track lists after the
+update, and separately a
 second NMS at a lower confidence on a clone of the raw head output (``inference`` wrapped on the predictor; the
 original output object is returned untouched). Production boxes, IDs and tracker state are the same with or without
 it; without it no callback or wrapper is installed. Every part of it fails into a named problem on the frame's record,
@@ -37,6 +40,7 @@ never into the production path.
 from __future__ import annotations
 
 import ctypes
+import functools
 import hashlib
 import os
 import time
@@ -118,6 +122,43 @@ def _import_diagnostic_tools() -> tuple[Any, Any, Any]:
     return nms.non_max_suppression, ops.scale_boxes, TrackState
 
 
+CallbackReferences = Callable[[], tuple[tuple[Callable[..., Any], ...], Callable[..., Any]]]
+
+
+def _import_callback_references() -> tuple[tuple[Callable[..., Any], ...], Callable[..., Any]]:
+    """(Ultralytics' own default callbacks for CALLBACK, the function its tracker registers for it), from the installed
+    package; only with the diagnostic. ``callbacks.get_default_callbacks()`` seeds every event's list with the
+    defaults (one no-op each; the model's and the predictor's dict), and ``register_tracker`` appends a ``partial``
+    of the tracker's function on the first ``track()``. Session 80: the device run `trk-20261016T032337Z` refused
+    with ``callback_order`` because the check expected the capture at index 0, where the default no-op is."""
+    from ultralytics.trackers import track
+    from ultralytics.utils.callbacks import base
+
+    return tuple(base.default_callbacks.get(CALLBACK, ())), track.on_predict_postprocess_end
+
+
+def callback_problem(order: Any, capture: Callable[..., Any], defaults: tuple[Callable[..., Any], ...],
+                     tracker_callback: Callable[..., Any]) -> str | None:
+    """None when the callbacks registered for CALLBACK run the capture before the tracker's own callback and nothing
+    else: ``order`` holds ``capture`` exactly once, exactly one ``functools.partial`` of ``tracker_callback`` after it,
+    and otherwise only Ultralytics' own ``defaults`` for the event (by identity). ``callback_order`` when the capture
+    or the tracker's callback is missing, repeated or in the wrong order; ``callback_unknown`` when anything else is
+    registered (it could change the results between post-processing and the capture, or the capture and the
+    tracker)."""
+    if not isinstance(order, (list, tuple)):
+        return "callback_order"
+    captures = [i for i, cb in enumerate(order) if cb is capture]
+    trackers = [i for i, cb in enumerate(order)
+                if isinstance(cb, functools.partial) and cb.func is tracker_callback]
+    if len(captures) != 1 or len(trackers) != 1 or captures[0] > trackers[0]:
+        return "callback_order"
+    for i, cb in enumerate(order):
+        if i in (captures[0], trackers[0]) or any(cb is default for default in defaults):
+            continue
+        return "callback_unknown"
+    return None
+
+
 def _iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
     width = min(a[2], b[2]) - max(a[0], b[0])
     height = min(a[3], b[3]) - max(a[1], b[1])
@@ -137,6 +178,7 @@ class LegacyUltralyticsTracker:
         driver_check: Callable[[], str | None] = cuda_driver_problem,
         importer: Callable[[], tuple[Any, Any, Any]] = _import_runtime,
         diagnostic_tools: Callable[[], tuple[Any, Any, Any]] = _import_diagnostic_tools,
+        callback_references: CallbackReferences = _import_callback_references,
     ) -> None:
         self._engine = Path(engine)
         self._expected = expected_sha256
@@ -145,6 +187,7 @@ class LegacyUltralyticsTracker:
         self._model: Any = None
         # The tracking diagnostic (off unless enable_diagnostic() ran before load())
         self._diagnostic_tools = diagnostic_tools
+        self._callback_references = callback_references
         self._shadow_conf: float | None = None
         self._capture_callback: Callable[[Any], None] = self._capture  # one bound object: registered and checked
         self._tools: tuple[Any, Any, Any] | None = None
@@ -215,7 +258,10 @@ class LegacyUltralyticsTracker:
         except Exception as exc:
             raise TrackerError("load_failed", type(exc).__name__) from None
         if self._shadow_conf is not None:
-            self._install(model)  # refuses before this backend is usable; nothing of the diagnostic is left half set
+            # Refuses before this backend is usable; nothing of the diagnostic is left half set. The runtime treats
+            # the refusal as "not ready" for a diagnostic run (demo_runtime.assemble), never as a detector to run
+            # without.
+            self._install(model)
         self._model = model
         self.reset()
 
@@ -256,9 +302,14 @@ class LegacyUltralyticsTracker:
         predictor's inference on the instances; TrackerError(``diagnostic_unsupported``, what) otherwise."""
         predictor = getattr(model, "predictor", None)
         callbacks = getattr(predictor, "callbacks", None)
-        order = callbacks.get(CALLBACK) if isinstance(callbacks, dict) else None
-        if not order or order[0] is not self._capture_callback or len(order) < 2:
-            raise TrackerError("diagnostic_unsupported", "callback_order")
+        try:
+            defaults, tracker_callback = self._callback_references()
+        except Exception as exc:  # noqa: BLE001 - an import problem is a label, never text
+            raise TrackerError("diagnostic_unsupported", type(exc).__name__) from None
+        problem = callback_problem(callbacks.get(CALLBACK) if isinstance(callbacks, dict) else None,
+                                   self._capture_callback, defaults, tracker_callback)
+        if problem is not None:
+            raise TrackerError("diagnostic_unsupported", problem)
         trackers = getattr(predictor, "trackers", None)
         tracker = trackers[0] if trackers else None
         needed = ("tracked_stracks", "lost_stracks", "removed_stracks", "frame_id", "max_time_lost", "args",

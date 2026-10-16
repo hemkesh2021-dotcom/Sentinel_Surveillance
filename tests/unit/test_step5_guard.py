@@ -70,7 +70,7 @@ class FakeChild:
             elif b.script.get("ready_s") is not None and age >= b.script["ready_s"] and not self.ready_written:
                 for line in b.script.get("noise", ()):
                     self._write(line)
-                self._write(STARTING)
+                self._write(b.script.get("starting", STARTING))
                 self.ready_written = True
             if self.stop_at is not None and b.now >= self.stop_at:
                 self._write(STOPPED)
@@ -451,3 +451,118 @@ def test_the_starting_summary_keeps_the_face_fields(mod, tmp_path) -> None:
     assert starting["face"] == {"validation_run": True, "identities_enrolled": 1} and starting["face_problem"] is None
     assert starting["releases"]["face"] == {"facenet512_weights.h5": "returned_0",
                                             "face_detection_yunet_2023mar.onnx": "returned_0"}
+
+
+# ---------------------------------------------------------------- session 80: readiness before T0 (--require-ready)
+
+TRACKER = {"conf": 0.4, "match_thresh": 0.8, "track_high_thresh": 0.25, "track_low_thresh": 0.1,
+           "new_track_thresh": 0.25, "track_buffer": 30, "max_time_lost": 30, "fuse_score": True,
+           "unconfirmed_thresh": 0.7, "shadow_conf": 0.1, "shadow_max_nms": 30000, "max_det": 300, "iou": 0.7}
+BOUNDS = {"shadow_conf": 0.1, "max_records": 20000, "max_bytes": 32000000, "max_line_bytes": 4096, "max_det": 16,
+          "max_shadow": 12, "max_lost": 8, "max_assign_tracks": 8, "max_assign_dets": 16}
+# The device run trk-20261016T032337Z's starting line (its detector and face entries as sealed): the detector refused
+# the diagnostic, the marker's tracker is null, and the session-79 guard then printed every cue against no detector.
+DEVICE_NOT_READY = {"run": "starting", "startup": {
+    **STARTING["startup"], "detector_problem": "diagnostic_unsupported (callback_order)",
+    "face": {"validation_run": True, "identities_enrolled": 1, "tracking_diagnostic": {**BOUNDS, "tracker": None}},
+    "face_problem": None}}
+READY = {"run": "starting", "startup": {
+    **STARTING["startup"],
+    "face": {"validation_run": True, "identities_enrolled": 1, "tracking_diagnostic": {**BOUNDS, "tracker": TRACKER}},
+    "face_problem": None}}
+REQUIRE = "tracking_diagnostic"
+
+
+def test_the_devices_starting_line_is_refused_before_t0_no_cue_printed_no_status_saved(mod, tmp_path) -> None:
+    backend = FakeBackend(ready_s=5, stop_s=1, starting=DEVICE_NOT_READY)
+    said = []
+    result, out = run(mod, tmp_path, backend, duration_s=60.0, require_ready=REQUIRE, status_at=((2.0, "e1"),),
+                      cues=((0.0, "t0", "T0 - leave the camera view now"), (4.0, "k1", "come back")), say=said.append)
+    assert result["status"] == "readiness_refused" and result["stop"]["requested_by"] == "readiness_refused"
+    assert result["readiness"] == {"required": REQUIRE, "met": False,
+                                   "reason": "detector_problem:diagnostic_unsupported (callback_order)",
+                                   "starting_after_s": result["stop"]["requested_at_s"]}
+    assert 5.0 <= result["stop"]["requested_at_s"] < 5.5  # stopped on the tick that read the starting line
+    assert backend.children[0].signals == [signal.SIGINT]  # the runtime's own Ctrl-C path, at once
+    assert said == [] and all(c["printed_mono_s"] is None for c in result["cues"])
+    assert "ready_mono_s" not in result["child"] and "ready_after_s" not in result["child"]
+    assert [c["status"] for c in result["captures"]] == ["not_reached"] and backend.fetched == []
+    assert result["child"]["returncode"] == 0 and result["cleanup_clear"] is True  # a clean exit, still refused
+    assert result["run_output"]["starting"]["detector_problem"] == "diagnostic_unsupported (callback_order)"
+    assert result["parameters"]["require_ready"] == REQUIRE and not (out / "status-e1.json").exists()
+
+
+def test_readiness_met_counts_the_cues_from_the_starting_line_as_before(mod, tmp_path) -> None:
+    backend = FakeBackend(ready_s=5, stop_s=1, starting=READY)
+    said = []
+    result, _ = run(mod, tmp_path, backend, duration_s=10.0, require_ready=REQUIRE,
+                    cues=((0.0, "t0", "go"), (4.0, "k1", "sit")), say=said.append)
+    assert result["status"] == "duration_stop" and result["stop"]["requested_by"] == "duration_elapsed"
+    assert result["readiness"] == {"required": REQUIRE, "met": True, "reason": None,
+                                   "starting_after_s": result["child"]["ready_after_s"]}
+    assert [line.split("] ", 1)[1] for line in said] == ["go", "sit"]
+    assert 0 <= result["cues"][0]["printed_mono_s"] - result["child"]["ready_mono_s"] < 0.25
+
+
+def test_without_the_requirement_the_devices_starting_line_still_counts_as_ready(mod, tmp_path) -> None:
+    said = []
+    result, _ = run(mod, tmp_path, FakeBackend(ready_s=5, stop_s=1, starting=DEVICE_NOT_READY), duration_s=10.0,
+                    cues=((0.0, "t0", "go"),), say=said.append)  # as the session-79 package ran it: unchanged
+    assert result["status"] == "duration_stop" and len(said) == 1 and "readiness" not in result
+    assert result["parameters"]["require_ready"] is None
+
+
+@pytest.mark.parametrize(("startup", "reason"), [
+    (None, "startup_missing"),
+    (STARTING["startup"], "marker_missing"),
+    ({**STARTING["startup"], "face": {"validation_run": True, "identities_enrolled": 1}}, "marker_missing"),
+    (DEVICE_NOT_READY["startup"], "detector_problem:diagnostic_unsupported (callback_order)"),
+    ({**READY["startup"], "detector_problem": "memfree_below_minimum"}, "detector_problem:memfree_below_minimum"),
+    ({**READY["startup"], "face": {**READY["startup"]["face"], "tracking_diagnostic": {**BOUNDS, "tracker": None}}},
+     "tracker_settings_missing"),
+    ({**READY["startup"], "face": {**READY["startup"]["face"], "tracking_diagnostic": {
+        **BOUNDS, "tracker": {k: v for k, v in TRACKER.items() if k != "iou"}}}}, "tracker_settings_incomplete:iou"),
+    ({**READY["startup"], "face": {**READY["startup"]["face"], "tracking_diagnostic": {
+        **BOUNDS, "tracker": {**TRACKER, "fuse_score": 1}}}}, "tracker_settings_incomplete:fuse_score"),
+    ({**READY["startup"], "face": {**READY["startup"]["face"], "tracking_diagnostic": {
+        **BOUNDS, "tracker": {**TRACKER, "conf": "0.4"}}}}, "tracker_settings_incomplete:conf"),
+])
+def test_each_unmet_readiness_reason_is_a_fixed_label(mod, startup, reason) -> None:
+    assert mod.readiness_problem(REQUIRE, startup) == reason
+    assert mod.readiness_problem(None, startup) is None  # no requirement: the starting line is readiness
+
+
+def test_readiness_met_needs_the_whole_marker_and_the_keys_are_the_runtimes(mod) -> None:
+    from sentinel.tracking.diagnostic import SETTING_KEYS
+
+    assert mod.readiness_problem(REQUIRE, READY["startup"]) is None
+    assert mod.readiness_problem("something_else", READY["startup"]) == "unknown_requirement"
+    assert mod.TRACKING_SETTING_KEYS == SETTING_KEYS and mod.READINESS == ("tracking_diagnostic",)
+
+
+def test_a_clean_exit_before_the_starting_line_never_meets_the_requirement(mod, tmp_path, monkeypatch) -> None:
+    result, _ = run(mod, tmp_path, FakeBackend(exit_s=2.0, exit_rc=0), duration_s=60.0, require_ready=REQUIRE)
+    assert result["status"] == "child_exited" and result["child"]["returncode"] == 0
+    assert result["readiness"] == {"required": REQUIRE, "met": False, "reason": "no_starting_line",
+                                   "starting_after_s": None}
+    # main: exit 1 whenever the requirement is unmet (a clean process exit alone never implies readiness); 0 when met
+    for name, script, expected in (("exit0", dict(exit_s=1.0, exit_rc=0), 1),
+                                   ("device", dict(ready_s=1, stop_s=1, starting=DEVICE_NOT_READY), 1),
+                                   ("ready", dict(ready_s=1, stop_s=1, starting=READY), 0)):
+        monkeypatch.setattr(mod, "SystemBackend", lambda script=script: FakeBackend(**script))
+        out = tmp_path / name
+        assert mod.main(["--out", str(out), "--duration-s", "5", "--require-ready", REQUIRE, "--cue-at", "0:t0:go",
+                         "--", "true"]) == expected, name
+        assert json.loads((out / "result.json").read_text())["readiness"]["met"] is (expected == 0)
+    monkeypatch.setattr(mod, "SystemBackend", lambda: FakeBackend(exit_s=1.0, exit_rc=0))
+    assert mod.main(["--out", str(tmp_path / "plain"), "--duration-s", "5", "--", "true"]) == 0  # unchanged without it
+
+
+def test_the_requirement_is_a_fixed_choice_on_the_command_line(mod, tmp_path, monkeypatch, capsys) -> None:
+    with pytest.raises(SystemExit):
+        mod.main(["--out", str(tmp_path / "x"), "--duration-s", "5", "--require-ready", "detector", "--", "true"])
+    assert "invalid choice" in capsys.readouterr().err
+    seen = {}
+    monkeypatch.setattr(mod, "supervise", lambda command, out, **kw: seen.update(kw) or {"status": "x"})
+    mod.main(["--out", str(tmp_path / "y"), "--duration-s", "5", "--require-ready", REQUIRE, "--", "true"])
+    assert seen["require_ready"] == REQUIRE

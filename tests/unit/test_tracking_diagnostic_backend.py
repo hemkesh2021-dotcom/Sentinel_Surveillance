@@ -1,11 +1,15 @@
-"""The tracking diagnostic on the legacy Ultralytics backend (session 79), with fakes that keep the installed
-8.4.25 shape: the predictor runs inference, post-processing, then its callbacks in order (ours first, the tracker's
-after, which calls the tracker's update and replaces the results with the published rows); the tracker calls its own
-get_dists before assigning and keeps tracked, lost and removed lists. No GPU, engine or Ultralytics import."""
+"""The tracking diagnostic on the legacy Ultralytics backend (session 79; the callback check corrected in session 80),
+with fakes that keep the installed 8.4.25 shape: the model's callback dict is seeded with Ultralytics' own no-op for
+each event (``get_default_callbacks``), the first ``track()`` appends a ``functools.partial`` of the tracker's
+callback (``register_tracker``) and makes the predictor, which shares the dict; the predictor runs inference,
+post-processing, then the event's callbacks in order (the no-op, ours, the tracker's, which calls the tracker's update
+and replaces the results with the published rows); the tracker calls its own get_dists before assigning and keeps
+tracked, lost and removed lists. No GPU, engine or Ultralytics import."""
 
 from __future__ import annotations
 
 import copy
+import functools
 import hashlib
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,8 +17,8 @@ from typing import Any
 
 import pytest
 
-from sentinel.inference.legacy_ultralytics import CALLBACK, TRACK_ARGS, LegacyUltralyticsTracker
-from sentinel.tracking.diagnostic import TrackerDiagnostics
+from sentinel.inference.legacy_ultralytics import CALLBACK, TRACK_ARGS, LegacyUltralyticsTracker, callback_problem
+from sentinel.tracking.diagnostic import SETTING_KEYS, TrackerDiagnostics, settings_problem
 from sentinel.tracking.tracker import PersonTracker, TrackerError
 
 LOST, TRACKED = 2, 1
@@ -192,15 +196,41 @@ class Predictor:
         return self.raw.pop(0) if self.raw else Raw([])
 
 
+def default_postprocess_end(predictor: Any) -> None:
+    """Ultralytics' own no-op for the event (utils/callbacks/base.py), with which it seeds every model's list."""
+
+
+def tracker_postprocess_end(predictor: Any, persist: bool = False) -> None:
+    """Ultralytics' tracker callback (trackers/track.py): the tracker's update, then the results replaced."""
+    det = predictor.results[0].boxes
+    if det is None:  # already replaced by an earlier tracker callback on this frame (a doubled registration)
+        det = Boxes([])
+    rows = predictor.trackers[0].update(det, None, None)
+    predictor.results[0] = SimpleNamespace(  # Ultralytics' rows: x1, y1, x2, y2, id, conf, cls, idx
+        boxes=Boxes([(*r[:4], r[5]) for r in rows], [int(r[4]) for r in rows]) if rows else None)
+
+
+def other_callback(predictor: Any) -> None:
+    """A callback that is neither ours, Ultralytics' default nor its tracker's."""
+
+
+def references() -> tuple[tuple[Any, ...], Any]:
+    """What _import_callback_references reads from the installed package: (the defaults, the tracker's function)."""
+    return (default_postprocess_end,), tracker_postprocess_end
+
+
 class Yolo:
-    """YOLO.track() as the diagnostic relies on it: trackers made on the first call and their callback registered
-    then (after any callback added before), inference, post-processing, the callbacks in order."""
+    """YOLO as the diagnostic relies on it (8.4.25): the callback dict seeded with the default no-op per event
+    (``get_default_callbacks``); the first ``track()`` registers a ``partial`` of the tracker's callback after any
+    callback added before (``register_tracker``) and makes the predictor, which shares the dict and the trackers; then
+    inference, post-processing and the event's callbacks in order."""
 
     instances: list[Yolo] = []
+    register: Any = None  # a test's own registration in place of register_tracker's (None: as installed)
 
     def __init__(self, path: str, task: str) -> None:
         self.path, self.task = path, task
-        self.callbacks: dict[str, list] = {}
+        self.callbacks: dict[str, list] = {CALLBACK: [default_postprocess_end]}
         self.predictor: Predictor | None = None
         self.detections: list[list[tuple[float, float, float, float, float]]] = []
         self.calls = 0
@@ -209,17 +239,14 @@ class Yolo:
     def add_callback(self, event: str, func: Any) -> None:
         self.callbacks.setdefault(event, []).append(func)
 
-    def _tracker_callback(self, predictor: Predictor) -> None:
-        det = predictor.results[0].boxes
-        rows = predictor.trackers[0].update(det, None, None)
-        predictor.results[0] = SimpleNamespace(  # Ultralytics' rows: x1, y1, x2, y2, id, conf, cls, idx
-            boxes=Boxes([(*r[:4], r[5]) for r in rows], [int(r[4]) for r in rows]) if rows else None)
-
     def track(self, image: Any, **kwargs: Any) -> list[Any]:
         self.calls += 1
         if self.predictor is None:
+            if Yolo.register is None:
+                self.add_callback(CALLBACK, functools.partial(tracker_postprocess_end, persist=kwargs.get("persist")))
+            else:
+                Yolo.register(self)
             self.predictor = Predictor(self.callbacks, ByteTrack())
-            self.add_callback(CALLBACK, self._tracker_callback)
         self.predictor.inference(SimpleNamespace(shape=(1, 3, 640, 640)))
         self.predictor.results = [SimpleNamespace(boxes=Boxes(self.detections.pop(0) if self.detections else []))]
         for callback in list(self.callbacks.get(CALLBACK, [])):
@@ -239,6 +266,7 @@ class Runtime:
 @pytest.fixture(autouse=True)
 def clean(monkeypatch: pytest.MonkeyPatch) -> None:
     Yolo.instances = []
+    Yolo.register = None
     monkeypatch.setenv("YOLO_OFFLINE", "operator-value")
 
 
@@ -249,10 +277,11 @@ def engine(tmp_path: Path) -> tuple[Path, str]:
     return path, hashlib.sha256(b"not a real engine").hexdigest()
 
 
-def backend(engine: tuple[Path, str], tools: Tools | None = None, *, diagnostic: bool = True) -> LegacyUltralyticsTracker:
+def backend(engine: tuple[Path, str], tools: Tools | None = None, *, diagnostic: bool = True,
+            refs: Any = references) -> LegacyUltralyticsTracker:
     path, digest = engine
     tracker = LegacyUltralyticsTracker(path, expected_sha256=digest, driver_check=lambda: None, importer=Runtime(),
-                                       diagnostic_tools=tools or Tools())
+                                       diagnostic_tools=tools or Tools(), callback_references=refs)
     if diagnostic:
         tracker.enable_diagnostic()
     return tracker
@@ -275,7 +304,9 @@ def loaded(engine: tuple[Path, str], tools: Tools | None = None, *, diagnostic: 
 
 def test_without_the_diagnostic_no_callback_wrapper_or_reading_exists(engine) -> None:
     adapter, model, tracker = loaded(engine, diagnostic=False)
-    assert model.callbacks[CALLBACK] == [model._tracker_callback]  # the tracker's own callback only
+    default, trackers = model.callbacks[CALLBACK]  # Ultralytics' own no-op and its tracker's partial, nothing else
+    assert default is default_postprocess_end and trackers.func is tracker_postprocess_end
+    assert trackers.keywords == {"persist": True}
     assert "inference" not in vars(model.predictor) and "get_dists" not in vars(tracker)
     model.detections.append([PERSON])
     tracker.steps.append({"tracked": [STrack(1, 0, PERSON[:4], TRACKED, True, 1)], "lost": []})
@@ -298,7 +329,10 @@ def test_the_diagnostic_is_enabled_before_load_only_and_below_the_production_con
 def test_load_registers_the_capture_before_the_trackers_callback_and_wraps_the_instances(engine) -> None:
     adapter, model, tracker = loaded(engine)
     order = model.callbacks[CALLBACK]
-    assert order[0] is adapter._capture_callback and order[1] == model._tracker_callback
+    # 8.4.25's list: Ultralytics' default no-op first, then the capture, then the tracker's partial. Session 80: the
+    # device run trk-20261016T032337Z was refused "callback_order" by a check that required the capture at index 0.
+    assert order[0] is default_postprocess_end and order[1] is adapter._capture_callback and len(order) == 3
+    assert isinstance(order[2], functools.partial) and order[2].func is tracker_postprocess_end
     assert "inference" in vars(model.predictor) and "get_dists" in vars(tracker)
     assert adapter.diagnostic_settings() == {
         "conf": 0.4, "match_thresh": 0.8, "track_high_thresh": 0.25, "track_low_thresh": 0.1,
@@ -307,19 +341,33 @@ def test_load_registers_the_capture_before_the_trackers_callback_and_wraps_the_i
     assert tracker.resets == 1 and model.calls == 3  # the warm-up and the reset as before
 
 
-@pytest.mark.parametrize("break_what, label", [("order", "callback_order"), ("tracker", "tracker_state"),
-                                               ("predictor", "predictor"), ("tools", "RuntimeError")])
+@pytest.mark.parametrize("break_what, label", [
+    ("tracker_first", "callback_order"), ("tracker_missing", "callback_order"), ("tracker_twice", "callback_order"),
+    ("tracker_bare", "callback_order"), ("capture_twice", "callback_order"), ("unknown_before", "callback_unknown"),
+    ("unknown_between", "callback_unknown"), ("tracker", "tracker_state"), ("predictor", "predictor"),
+    ("tools", "RuntimeError"), ("references", "ImportError")])
 def test_load_refuses_when_the_installed_objects_are_not_what_the_diagnostic_reads(engine, monkeypatch, break_what,
                                                                                    label) -> None:
-    if break_what == "order":
-        original = Yolo.track
-
-        def track(self, image, **kwargs):  # the tracker's callback registered before ours
-            if self.predictor is None:
-                self.predictor = Predictor(self.callbacks, ByteTrack())
-                self.callbacks[CALLBACK].insert(0, self._tracker_callback)
-            return original(self, image, **kwargs)
-        monkeypatch.setattr(Yolo, "track", track)
+    partial = functools.partial(tracker_postprocess_end, persist=True)
+    registrations = {  # in place of register_tracker's, on the first track(); the list holds the default, then ours
+        "tracker_first": lambda m: m.callbacks[CALLBACK].insert(0, partial),
+        "tracker_missing": lambda m: None,
+        "tracker_twice": lambda m: (m.add_callback(CALLBACK, partial),
+                                    m.add_callback(CALLBACK, functools.partial(tracker_postprocess_end, persist=True))),
+        "tracker_bare": lambda m: m.add_callback(CALLBACK, tracker_postprocess_end),
+        "capture_twice": lambda m: (m.add_callback(CALLBACK, m.callbacks[CALLBACK][1]),
+                                    m.add_callback(CALLBACK, partial)),
+        "unknown_before": lambda m: (m.callbacks[CALLBACK].insert(0, other_callback),
+                                     m.add_callback(CALLBACK, partial)),
+        "unknown_between": lambda m: (m.add_callback(CALLBACK, other_callback), m.add_callback(CALLBACK, partial)),
+    }
+    refs: Any = references
+    if break_what in registrations:
+        monkeypatch.setattr(Yolo, "register", registrations[break_what])
+    elif break_what == "references":
+        def missing():
+            raise ImportError("no ultralytics.trackers.track")
+        refs = missing
     elif break_what == "tracker":
         monkeypatch.delattr(ByteTrack, "get_dists")
     elif break_what == "predictor":
@@ -334,11 +382,50 @@ def test_load_refuses_when_the_installed_objects_are_not_what_the_diagnostic_rea
         def failing():
             raise RuntimeError("no ultralytics")
         tools = failing  # type: ignore[assignment]
-    adapter = backend(engine, tools)
+    adapter = backend(engine, tools, refs=refs)
     with pytest.raises(TrackerError) as caught:
         adapter.load()
     assert caught.value.label == "diagnostic_unsupported" and caught.value.error_type == label
     assert repr(adapter) == "LegacyUltralyticsTracker(loaded=False)"
+
+
+def test_the_callback_check_accepts_the_installed_lifecycle_and_refuses_every_other_shape() -> None:
+    """Session 80: callback_problem on the lists themselves. The installed 8.4.25 shape is [default no-op, capture,
+    partial(tracker)]; the session-79 check required the capture at index 0 and refused the device run."""
+    def capture(predictor):
+        pass
+
+    partial = functools.partial(tracker_postprocess_end, persist=True)
+
+    def check(order):
+        return callback_problem(order, capture, (default_postprocess_end,), tracker_postprocess_end)
+
+    installed = [default_postprocess_end, capture, partial]
+    assert installed[0] is not capture  # what the device run's list looked like to the session-79 check: refused
+    assert check(installed) is None
+    assert check([capture, partial]) is None  # an Ultralytics that seeded no default
+    assert check([default_postprocess_end, partial, capture]) == "callback_order"  # ours after the tracker's: too late
+    assert check([default_postprocess_end, capture]) == "callback_order"  # no tracker callback
+    assert check([default_postprocess_end, partial]) == "callback_order"  # no capture
+    assert check([*installed, functools.partial(tracker_postprocess_end)]) == "callback_order"  # the tracker's twice
+    assert check([default_postprocess_end, capture, capture, partial]) == "callback_order"  # ours twice
+    assert check([default_postprocess_end, capture, tracker_postprocess_end]) == "callback_order"  # bare, no partial
+    assert check([default_postprocess_end, capture, functools.partial(other_callback)]) == "callback_order"
+    assert check([other_callback, capture, partial]) == "callback_unknown"  # could change the results before ours
+    assert check([default_postprocess_end, capture, other_callback, partial]) == "callback_unknown"
+    assert check([*installed, other_callback]) == "callback_unknown"
+    assert check(None) == "callback_order" and check({}) == "callback_order" and check([]) == "callback_order"
+
+
+def test_the_settings_carry_every_key_the_runtime_and_the_guard_require_before_t0(engine) -> None:
+    adapter, _, _ = loaded(engine)
+    settings = adapter.diagnostic_settings()
+    assert set(settings) == set(SETTING_KEYS) and settings_problem(settings) is None
+    assert settings_problem(None) == "tracker_settings_missing"
+    assert settings_problem({k: v for k, v in settings.items() if k != "iou"}) == "tracker_settings_incomplete:iou"
+    assert settings_problem({**settings, "fuse_score": 1}) == "tracker_settings_incomplete:fuse_score"
+    assert settings_problem({**settings, "conf": True}) == "tracker_settings_incomplete:conf"
+    assert settings_problem({**settings, "max_det": None}) == "tracker_settings_incomplete:max_det"
 
 
 # ---------------------------------------------------------------- a frame: inputs, outcomes, costs, shadow

@@ -205,8 +205,9 @@ STOPPED_PARTS = vocab("capture", "face_worker", "scene_server", "scene_worker", 
                       "control_key_removed")  # D99, only with --feature-controls
 CHANNELS = vocab("telegram")
 GUARD_STATUS = Either((vocab("duration_stop", "child_exited", "cleanup_failed", "forced_stop", "guard_stop",
-                             "ready_timeout", "operator_interrupt"), template(r"refused:(.+)")))
-STOP_BY = maybe(vocab("duration_elapsed", "guard_stop", "ready_timeout", "operator_interrupt"))
+                             "ready_timeout", "operator_interrupt", "readiness_refused"), template(r"refused:(.+)")))
+STOP_BY = maybe(vocab("duration_elapsed", "guard_stop", "ready_timeout", "operator_interrupt", "readiness_refused"))
+READINESS = vocab("tracking_diagnostic")  # step5_guard.READINESS (--require-ready; session 80)
 CAPTURE_RESULT = Either((vocab("saved", "too_large", "not_json", "not_reached"), template(r"unavailable:(.+)")))
 LISTENER = {"port": INT, "family": vocab("tcp", "tcp6"), "scope": vocab("loopback", "any", "other")}
 
@@ -602,6 +603,10 @@ RESULT = JsonProfile({  # step5_guard.supervise
     "parameters.stop_grace_s": NUM, "parameters.step4_headroom": BOOL,
     "parameters.status_at[].at_s": NUM, "parameters.status_at[].name": vocab(*STATUS_NAMES),
     "parameters.cues[].at_s": NUM, "parameters.cues[].name": vocab(*CUE_NAMES),
+    "parameters.require_ready": maybe(READINESS),
+    # session 80: the readiness requirement's outcome on the starting line (step5_guard.readiness_problem's label)
+    "readiness.required": READINESS, "readiness.met": BOOL, "readiness.reason": maybe(TEXT),
+    "readiness.starting_after_s": SECONDS,
     "limits.pressure_stop_bytes": INT, "limits.mem_free_floor_bytes": INT, "limits.mem_available_floor_bytes": INT,
     "limits.swap_counters": vocab("unchanged"), "limits.max_sample_gap_s": NUM,
     "preflight_sample.*": maybe(NUM), "baseline.*": maybe(NUM),

@@ -25,6 +25,13 @@ stderr, the operator's terminal, and records when: the guard's monotonic clock i
 too, so ``child.ready_mono_s`` and each cue's ``printed_mono_s`` place the runtime's records relative to the cue
 the operator's stopwatch started from. Cue texts are fixed protocol text, never a secret.
 
+With ``--require-ready tracking_diagnostic`` (session 80) the ``starting`` line alone is not readiness: its startup
+must report no detector problem and the tracking diagnostic's marker with the tracker's settings complete (the
+detector loaded with the diagnostic's hooks). Otherwise the runtime is stopped at once (``readiness_refused``; the
+reason, a fixed label, under ``readiness`` in ``result.json``), nothing counts from readiness, no cue is printed and
+no status is saved; a runtime that exits before its ``starting`` line leaves the requirement unmet
+(``no_starting_line``). The exit status is then 1: a clean process exit alone never implies the diagnostic was ready.
+
 At each ``--status-at SECONDS:NAME`` offset it saves ``status-NAME.json`` from the loopback status page, and it
 classifies the listeners on 18090 and 18081 as loopback, any or other. ``result.json`` holds numbers and fixed labels
 only. No stream URL, token, chat ID, address or environment value is read or written; the command's own output goes
@@ -64,6 +71,13 @@ MAX_DURATION_S = 900.0
 STOP_GRACE_S = 90.0
 KILL_GRACE_S = 5.0
 READY_TIMEOUT_S = 300.0
+READINESS = ("tracking_diagnostic",)  # --require-ready values
+# What the tracking diagnostic's startup marker must hold before T0: the tracker's settings as the runtime records
+# them under face.tracking_diagnostic.tracker (legacy_ultralytics.diagnostic_settings; equal to
+# sentinel.tracking.diagnostic.SETTING_KEYS, kept so by a test; this script imports nothing from the runtime).
+TRACKING_SETTING_KEYS = ("conf", "match_thresh", "track_high_thresh", "track_low_thresh", "new_track_thresh",
+                         "track_buffer", "max_time_lost", "fuse_score", "unconfirmed_thresh", "shadow_conf",
+                         "shadow_max_nms", "max_det", "iou")
 
 
 def utc_now() -> str:
@@ -243,6 +257,38 @@ def _starting_summary(startup: dict) -> dict[str, Any]:
     }
 
 
+def readiness_problem(required: str | None, startup: Any) -> str | None:
+    """None when ``startup`` (the runtime's ``starting`` line's ``startup``) meets ``required``, else a fixed label
+    naming what is missing; None without a requirement. ``tracking_diagnostic``: no ``detector_problem`` and the
+    marker ``face.tracking_diagnostic.tracker`` a mapping with every TRACKING_SETTING_KEYS entry a number
+    (``fuse_score`` a flag). The device run trk-20261016T032337Z started with ``detector_problem`` set and the
+    marker's ``tracker`` null, and its cues ran against no detector (session 80)."""
+    if required is None:
+        return None
+    if required not in READINESS:
+        return "unknown_requirement"
+    if not isinstance(startup, dict):
+        return "startup_missing"
+    problem = startup.get("detector_problem")
+    if problem is not None:
+        return f"detector_problem:{problem}"
+    face = startup.get("face")
+    marker = face.get("tracking_diagnostic") if isinstance(face, dict) else None
+    if not isinstance(marker, dict):
+        return "marker_missing"
+    tracker = marker.get("tracker")
+    if not isinstance(tracker, dict):
+        return "tracker_settings_missing"
+    for key in TRACKING_SETTING_KEYS:
+        value = tracker.get(key)
+        if key == "fuse_score":
+            if not isinstance(value, bool):
+                return f"tracker_settings_incomplete:{key}"
+        elif isinstance(value, bool) or not isinstance(value, (int, float)):
+            return f"tracker_settings_incomplete:{key}"
+    return None
+
+
 def read_run_output(path: Path) -> dict[str, Any]:
     """Line counts (D48: every stdout line is JSON), the starting summary and the stopped line."""
     lines = json_lines = 0
@@ -304,14 +350,16 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
               ready_timeout_s: float = READY_TIMEOUT_S, stop_grace_s: float = STOP_GRACE_S,
               status_at: tuple[tuple[float, str], ...] = (), step4_headroom: bool = False, backend=None,
               interrupted=lambda: False, cues: tuple[tuple[float, str, str], ...] = (),
-              say=lambda text: (sys.stderr.write(text + "\n"), sys.stderr.flush())) -> dict:
+              say=lambda text: (sys.stderr.write(text + "\n"), sys.stderr.flush()),
+              require_ready: str | None = None) -> dict:
     backend = backend or SystemBackend()
     result: dict[str, Any] = {"schema_version": 1, "mode": "step5_guard", "status": None,
                               "parameters": {"duration_s": duration_s, "from_launch": from_launch,
                                              "ready_timeout_s": ready_timeout_s, "stop_grace_s": stop_grace_s,
                                              "step4_headroom": step4_headroom,
                                              "status_at": [{"at_s": at, "name": name} for at, name in status_at],
-                                             "cues": [{"at_s": at, "name": name} for at, name, _ in cues]},
+                                             "cues": [{"at_s": at, "name": name} for at, name, _ in cues],
+                                             "require_ready": require_ready},
                               "limits": {"pressure_stop_bytes": oc.PRESSURE_STOP, "mem_free_floor_bytes": oc.FREE_FLOOR,
                                          "mem_available_floor_bytes": oc.AVAILABLE_FLOOR,
                                          "swap_counters": "unchanged", "max_sample_gap_s": 0.5}}
@@ -332,6 +380,7 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
     result["child"] = {"launched_utc": backend.utc()}
     child = backend.spawn(argv, stdout, stderr)
     ready_at = None
+    not_ready = False  # the starting line came, but the readiness requirement was not met: stop, no cue, no capture
     read_offset = 0
     stop = {"requested_by": None, "requested_at_s": None, "exited_after_stop_s": None, "forced": False}
     pending = sorted(status_at)
@@ -376,9 +425,16 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
                     except ValueError:
                         continue
                     if isinstance(item, dict) and item.get("run") == "starting":
-                        ready_at = now
-                        result["child"]["ready_after_s"] = round(now - launch, 3)
-                        result["child"]["ready_mono_s"] = round(now, 6)
+                        problem = readiness_problem(require_ready, item.get("startup"))
+                        if require_ready is not None:
+                            result["readiness"] = {"required": require_ready, "met": problem is None,
+                                                   "reason": problem, "starting_after_s": round(now - launch, 3)}
+                        if problem is None:
+                            ready_at = now
+                            result["child"]["ready_after_s"] = round(now - launch, 3)
+                            result["child"]["ready_mono_s"] = round(now, 6)
+                        else:
+                            not_ready = True
                         break
             returncode = child.poll()
             if returncode is not None:
@@ -390,6 +446,8 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
                     reason = "guard_stop"
                 elif interrupted():
                     reason = "operator_interrupt"
+                elif not_ready:
+                    reason = "readiness_refused"
                 elif ready_at is None and not from_launch and now - launch >= ready_timeout_s:
                     reason = "ready_timeout"
                 elif base is not None and now - base >= duration_s:
@@ -421,6 +479,9 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
         for worker in workers:
             worker.join(STATUS_TIMEOUT_S + 1.0)
     ended = backend.clock()
+    if require_ready is not None and "readiness" not in result:  # no starting line: never ready, whatever the exit
+        result["readiness"] = {"required": require_ready, "met": False, "reason": "no_starting_line",
+                               "starting_after_s": None}
     if stop["requested_at_s"] is not None:
         stop["exited_after_stop_s"] = round(ended - launch - stop["requested_at_s"], 3)
     result["child"].update(returncode=returncode, exited_utc=backend.utc(), ran_s=round(ended - launch, 3))
@@ -456,7 +517,7 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
         status = "cleanup_failed"
     elif stop["forced"]:
         status = "forced_stop"
-    elif stop["requested_by"] in ("guard_stop", "ready_timeout", "operator_interrupt"):
+    elif stop["requested_by"] in ("guard_stop", "ready_timeout", "operator_interrupt", "readiness_refused"):
         status = stop["requested_by"]
     elif stop["requested_by"] == "duration_elapsed":
         status = "duration_stop"
@@ -516,6 +577,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--step4-headroom", action="store_true",
                         help="also refuse before launch unless step 4's admission headroom holds (operator_check: "
                              "pressure below 2.0 GB, MemFree at least 3.5 GB, MemAvailable at least 4.0 GB)")
+    parser.add_argument("--require-ready", choices=READINESS, default=None, metavar="REQUIREMENT",
+                        help="readiness needs more than the starting line: tracking_diagnostic = no detector problem "
+                             "and the diagnostic's marker with the tracker's settings; otherwise the runtime is "
+                             "stopped at once, no cue is printed and the exit status is 1")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="-- then the sentinel run command")
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -531,7 +596,8 @@ def main(argv: list[str] | None = None) -> int:
         result = supervise(command, args.out, duration_s=args.duration_s, from_launch=args.from_launch,
                            ready_timeout_s=args.ready_timeout_s, stop_grace_s=args.stop_grace_s,
                            status_at=tuple(args.status_at), step4_headroom=args.step4_headroom,
-                           interrupted=lambda: flag["set"], cues=tuple(args.cue_at))
+                           interrupted=lambda: flag["set"], cues=tuple(args.cue_at),
+                           require_ready=args.require_ready)
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
@@ -539,9 +605,11 @@ def main(argv: list[str] | None = None) -> int:
     if result["status"] != "refused:out_exists" and args.out.is_dir():
         (args.out / "result.json").write_text(text + "\n")
     print(text)
+    readiness = result.get("readiness")
     clean = result.get("cleanup_clear") is True and (
         result["status"] == "child_exited"
-        or (result["status"] == "duration_stop" and (result.get("child") or {}).get("returncode") == 0))
+        or (result["status"] == "duration_stop" and (result.get("child") or {}).get("returncode") == 0)
+    ) and (readiness is None or readiness.get("met") is True)  # a clean exit alone never implies readiness
     return 0 if clean else 1
 
 
