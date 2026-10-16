@@ -24,7 +24,18 @@ Evidence rules it keeps:
 - departures use the account's earliest and latest possible times: nothing inside the departure interval is judged,
   and persistence is counted only after the latest possible time;
 - every gap is described on its own; repeatability is a count of gaps, never a rate; no gap in A means the target
-  failure was not reproduced in this session; the summaries' fractions are exploratory, not decision thresholds.
+  failure was not reproduced in this session; the summaries' fractions are exploratory, not decision thresholds;
+- diagnostic health (session 81): a run in which no frame's shadow pass completed is a failed diagnostic, never an
+  empty result. A completed pass that found nothing counts as completed; a pass that raised (``shadow_failed``) or had
+  no clone to read (``raw_missing``, ``clone_failed``) does not. The device run trk-20261016T100149Z recorded
+  ``shadow_failed`` on all 242 frames; such frames stay unreadable for absences whatever the run's verdict.
+
+The short integration check (session 81; ``face_check.py tracking-integration``) reads a run of the same workload (the
+scene model and face recognition loaded, production settings, the diagnostic on, the guard's memory limits unchanged)
+for at most 120 s after readiness, with no movement cue and no account. It judges execution, readiness, the
+diagnostic's health and privacy, and describes the shadow passes, the records' coverage, timing and memory. A pass
+establishes only that the parts ran together for that short run: not ten-minute stability, not tracking behaviour, not
+recognition, and nothing about F2.
 """
 
 from __future__ import annotations
@@ -36,6 +47,7 @@ from pathlib import Path
 from typing import Any
 
 import face_account
+import operator_check as oc
 import step5_check as s5
 from face_check import (
     CUE_TOLERANCE_S,
@@ -44,6 +56,8 @@ from face_check import (
     MAX_IDENTITY_RECORDS,
     MIN_WINDOW_S,
     MISSING,
+    RELEASES,
+    SCENE_SCOPE,
     WASHOUT_S,
     Reading,
     Timeline,
@@ -66,6 +80,16 @@ PINNED_TRACKER = {"conf": 0.4, "match_thresh": 0.8, "track_high_thresh": 0.25, "
                   "new_track_thresh": 0.25, "track_buffer": 30, "max_time_lost": 30, "fuse_score": True,
                   "unconfirmed_thresh": 0.7, "shadow_conf": 0.1}
 NOT_IN_THIS_RUN = ("live_preview", "snapshots", "chat", "feature_controls")  # the scene server runs, as in f-V
+# A frame's shadow pass did not complete when one of these is on its record (session 81): it raised, or there was no
+# clone of the raw output to read. Anything else (an empty result included) is a completed pass.
+SHADOW_NOT_COMPLETED = ("raw_missing", "clone_failed", "shadow_failed")
+INTEGRATION_MAX_S = 120.0  # the short integration check: at most this long after readiness (session 81)
+INTEGRATION_CUES = ("t0", "stop")  # its only cues: the start and the stop; no movement is asked
+SCOPE_INTEGRATION = ("scope: a short integration check of the tracking diagnostic on the normal recognition path, the "
+                     "scene model and face recognition loaded as in the diagnostic session, production settings and the "
+                     "guard's memory limits unchanged; at most 120 s after readiness, no movement asked, no account; a "
+                     "pass establishes only that these parts ran together for this short run, not ten-minute "
+                     "stability, tracking behaviour, recognition or anything about F2")
 MIN_GAP_FRAMES = 2
 AT_SEAT = 0.5  # exploratory: intersection over the smaller box at or above this, with a centre inside, is "at the seat"
 ELSEWHERE = 0.1  # exploratory: below this, with neither centre inside, is "elsewhere"; between: inconclusive
@@ -195,6 +219,31 @@ def _shadow_readable(frame: dict) -> bool:
     return (_complete(frame, "shadow") and not set(frame["problems"]) & {"raw_missing", "clone_failed",
                                                                         "shadow_failed", "layout_unknown"}
             and frame.get("sh_lim") is False)
+
+
+def shadow_health(frames: list[dict]) -> dict[str, Any]:
+    """Per frame, whether its shadow pass completed (session 81): no SHADOW_NOT_COMPLETED problem on its record and its
+    limit flag recorded. A completed pass counts whether or not it found a box below the confidence."""
+    completed = [f for f in frames if not set(f["problems"]) & set(SHADOW_NOT_COMPLETED)
+                 and isinstance(f.get("sh_lim"), bool)]
+    by_problem = Counter(p for f in frames for p in f["problems"] if p in SHADOW_NOT_COMPLETED)
+    unflagged = sum(1 for f in frames if not set(f["problems"]) & set(SHADOW_NOT_COMPLETED)
+                    and not isinstance(f.get("sh_lim"), bool))
+    return {"frames": len(frames), "completed": len(completed),
+            "completed_with_shadow_boxes": sum(1 for f in completed if f["shadow"]),
+            "completed_without_shadow_boxes": sum(1 for f in completed if not f["shadow"]),
+            "completed_limited": sum(1 for f in completed if f["sh_lim"] is True),
+            "not_completed": len(frames) - len(completed), "not_completed_by_problem": dict(sorted(by_problem.items())),
+            "not_completed_without_a_problem_named": unflagged}
+
+
+def _health_item(r: Reading, frames: list[dict]) -> dict[str, Any]:
+    health = shadow_health(frames)
+    r.item("diagnostic health: at least one frame's shadow pass completed (a pass that found nothing below the "
+           "confidence counts; one that raised or had no clone to read does not); none completed is a failed "
+           "diagnostic, never an empty result (the frames without one stay unreadable for absences)",
+           health if frames else MISSING, health["completed"] > 0)
+    return health
 
 
 def _window_frames(frames: list[dict], window: tuple[float, float], t0_ns: int) -> list[dict]:
@@ -387,8 +436,10 @@ def _gap(frames: list[dict], run: list[int], before: dict, end_index: int | None
 # ---------------------------------------------------------------- the reading
 
 
-def read_tracking(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | None = None) -> Reading:
-    r = Reading()
+def _execution(r: Reading, directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | None) -> dict[str, Any]:
+    """The items a diagnostic session and the short integration check judge alike, in this order: the F1 basis, the
+    supervision, readiness, the run's configuration, the clean shutdown, the identity records, the tracking records,
+    the diagnostic's health and T0. Returns what the rest of each reading uses."""
     if gate is not None:
         ok, lines = f1_gate(*gate)
         r.item("F1 basis for this run: the run's own F1 validated, or the maintainer's accepted corrected F1 reading "
@@ -424,7 +475,7 @@ def read_tracking(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None
     r.item("clean shutdown: all stopped (the face worker included), database closed", stopped,
            isinstance(stopped, dict) and stopped.get("all_stopped") is True and stopped.get("database_closed") is True
            and (stopped.get("stopped") or {}).get("face_worker") is True)
-    records, problems, _, _ = read_records(directory / "run.jsonl")
+    records, problems, starting_line, _ = read_records(directory / "run.jsonl")
     total = sum(len(v) for v in records.values())
     schemas = sorted({item["schema"] for kind in records.values() for item in kind})
     names = [c.get("name") for c in s5._list(s5._get(result, "captures")) if isinstance(c, dict)]
@@ -445,12 +496,23 @@ def read_tracking(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None
            if frames or summary else MISSING,
            bool(frames) and isinstance(summary, dict) and not shape and summary.get("dropped") == 0
            and kept == len(frames) and summary.get("processed") == kept)
+    health = _health_item(r, frames)
     cue = next((c for c in s5._list(s5._get(result, "cues")) if isinstance(c, dict) and c.get("name") == "t0"),
                MISSING)
     ready = s5._get(result, "child", "ready_mono_s")
     printed = s5._get(cue, "printed_mono_s")
     r.item("T0: the t0 cue printed when the runtime was ready", {"printed_mono_s": printed, "ready_mono_s": ready},
            isinstance(printed, float) and isinstance(ready, float) and 0 <= printed - ready <= CUE_TOLERANCE_S)
+    return {"result": result, "start": start, "marker": marker, "records": records, "frames": frames,
+            "summary": summary, "captures": captures, "last": last, "printed": printed, "health": health,
+            "starting_line": starting_line}
+
+
+def read_tracking(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | None = None) -> Reading:
+    r = Reading()
+    run = _execution(r, directory, f1, gate)
+    result, marker, records, frames = run["result"], run["marker"], run["records"], run["frames"]
+    captures, printed = run["captures"], run["printed"]
     account, problem, fmt = _account(directory)
     r.item("account saved and locked before any result was shown", problem or "locked", account is not None)
     if account is None:
@@ -548,4 +610,110 @@ def read_tracking(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None
                                  "current_ids": sorted({n for f in after for n in f["cur"]})}})
     r.describe("guard peak pressure, min MemFree, min MemAvailable (B)",
                [s5._get(result, "guard", k) for k in s5.GUARD_FIGURES])
+    return r
+
+
+# ---------------------------------------------------------------- the short integration check (session 81)
+
+
+def _margin(value: Any, limit: Any, *, below: bool) -> Any:
+    """How far a figure stayed from its guard limit (bytes): limit - value for a ceiling, value - limit for a floor."""
+    if not isinstance(value, int) or not isinstance(limit, int):
+        return MISSING
+    return limit - value if below else value - limit
+
+
+def _workload_items(r: Reading, start: Any, result: Any) -> None:
+    """The production settings and the diagnostic session's workload at startup, judged as F2's reading judges them
+    (the memory policy, THP, the post-load releases, the scene server), and the guard's limits as pinned."""
+    r.item("memory policy selected: THP workload_disabled, release post_load", s5._get(start, "memory_policy"),
+           s5._get(start, "memory_policy") == s5.CANDIDATE_POLICY)
+    r.item("THP scope at each startup checkpoint", s5._get(start, "thp_scope"), s5._get(start, "thp_scope") == SCENE_SCOPE)
+    disable = s5._get(start, "thp_disable")
+    r.item("THP disable verified in the runtime process", disable,
+           isinstance(disable, dict) and disable.get("verified") is True and disable.get("reason") is None)
+    r.item("post-load releases, the face weights' included: every call returned 0", s5._get(start, "releases"),
+           s5._get(start, "releases") == RELEASES)
+    server = s5._get(start, "scene_server")
+    r.item("the scene model loaded as in the diagnostic session: scene server ready, 17/17 layers, vision encoder on "
+           "GPU; scene admitted", {"scene_server": server, "scene_problem": s5._get(start, "scene_problem")},
+           isinstance(server, dict) and server.get("state") == "ready" and server.get("problem") is None
+           and server.get("layers") == s5.LAYERS and server.get("vision_on_gpu") is True
+           and s5._get(start, "scene_problem") is None)
+    limits, headroom = s5._get(result, "limits"), s5._get(result, "parameters", "step4_headroom")
+    r.item("the guard's memory limits as pinned (pressure 4.8 GB, MemFree 1 GiB, MemAvailable 2 GiB, swap counters "
+           "unchanged, sampling gaps of 0.5 s at most) and step 4's headroom required before launch",
+           {"limits": limits, "step4_headroom": headroom},
+           limits == {"pressure_stop_bytes": oc.PRESSURE_STOP, "mem_free_floor_bytes": oc.FREE_FLOOR,
+                      "mem_available_floor_bytes": oc.AVAILABLE_FLOOR, "swap_counters": "unchanged",
+                      "max_sample_gap_s": 0.5} and headroom is True)
+
+
+def read_integration(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | None = None) -> Reading:
+    """The short integration check: the diagnostic session's execution items, its duration and cues (at most
+    INTEGRATION_MAX_S after readiness, only INTEGRATION_CUES, each printed), the production settings and workload at
+    startup and the guard's limits as pinned, the privacy counts; then the shadow passes, the records' coverage, timing
+    and memory described. No account, window or gap: nothing about tracking behaviour."""
+    r = Reading()
+    run = _execution(r, directory, f1, gate)
+    result, frames, summary, captures = run["result"], run["frames"], run["summary"], run["captures"]
+    parameters = s5._get(result, "parameters")
+    duration, from_launch = s5._get(parameters, "duration_s"), s5._get(parameters, "from_launch")
+    declared = [c.get("name") for c in s5._list(s5._get(parameters, "cues")) if isinstance(c, dict)]
+    printed = {c.get("name"): c.get("printed_mono_s") for c in s5._list(s5._get(result, "cues")) if isinstance(c, dict)}
+    r.item(f"a short run: at most {INTEGRATION_MAX_S:g} s counted from readiness, with only the start and stop cues "
+           "(no movement asked), each printed",
+           {"duration_s": duration, "from_launch": from_launch, "cues": declared, "printed": printed}
+           if isinstance(parameters, dict) else MISSING,
+           isinstance(duration, (int, float)) and 0 < duration <= INTEGRATION_MAX_S and from_launch is False
+           and declared == list(INTEGRATION_CUES) and sorted(printed) == sorted(INTEGRATION_CUES)
+           and all(isinstance(v, float) for v in printed.values()))
+    _workload_items(r, run["start"], result)
+    _counts_items(r, directory)
+    r.describe(SCOPE_INTEGRATION, {"duration_s": duration})
+    r.describe("the diagnostic's bounds and the tracker's settings as the run recorded them at startup", run["marker"])
+    r.describe("the run's conditions as its launch recorded them (the framing since the capture and the room light)",
+               {k: _key_values(directory / "provenance.txt").get(k, MISSING) for k in CONDITIONS})
+    r.describe("shadow passes per frame (completed, with and without a box below the confidence, limited; not "
+               "completed, by problem) and the runtime's own problem counts in the summary line",
+               {"frames": run["health"],
+                "summary": {k: summary.get(k) for k in ("processed", "kept", "dropped", "problem_counts")}
+                if isinstance(summary, dict) else MISSING})
+    r.describe("record coverage over the run (missing frames between records, shortened lists, per-frame problems, "
+               "shadow passes at a limit)", _coverage(frames) if frames else MISSING)
+    started = s5._get(result, "child", "ready_after_s")
+    r.describe("timing (this run's own numbers, at most two minutes of them): startup to readiness (s), the production "
+               "backend's time per frame and the diagnostic's parts (ns, p50/p95/max), the processed rate over the "
+               "records and the status captures' rates", {
+                   "ready_after_launch_s": started,
+                   "backend_ns": _percentiles([f["ns"]["backend"] for f in frames if "backend" in f["ns"]]),
+                   "diagnostic_ns": _percentiles([sum(v for k, v in f["ns"].items() if k != "backend")
+                                                  for f in frames]),
+                   **{f"{k}_ns": _percentiles([f["ns"][k] for f in frames if k in f["ns"]])
+                      for k in ("capture", "clone", "shadow", "snapshot", "record")},
+                   "processed_fps_over_the_records": _window_summary(frames)["processed_fps"] if frames else None,
+                   "captures": [s5._get(c, "rates") for c in captures]})
+    limits, guard, baseline = s5._get(result, "limits"), s5._get(result, "guard"), s5._get(result, "baseline")
+    loads = run["starting_line"] if isinstance(run["starting_line"], dict) else MISSING  # the runtime's own line
+    r.describe("memory (bytes; the guard's limits unchanged): its baseline before launch, the peak pressure and the "
+               "lowest MemFree and MemAvailable over the run with each one's margin to its limit, and the runtime's "
+               "readings before each model load", {
+                   "limits": limits,
+                   "baseline": {k: s5._get(baseline, k) for k in ("MemFree", "MemAvailable", "pressure_bytes")},
+                   **{k: s5._get(guard, k) for k in s5.GUARD_FIGURES},
+                   "margin_to_pressure_stop": _margin(s5._get(guard, "peak_pressure_bytes"),
+                                                      s5._get(limits, "pressure_stop_bytes"), below=True),
+                   "margin_to_mem_free_floor": _margin(s5._get(guard, "min_mem_free_bytes"),
+                                                       s5._get(limits, "mem_free_floor_bytes"), below=False),
+                   "margin_to_mem_available_floor": _margin(s5._get(guard, "min_mem_available_bytes"),
+                                                            s5._get(limits, "mem_available_floor_bytes"), below=False),
+                   "before_loads": {k: s5._get(loads, k) for k in ("scene_memory_before", "detector_memory_before",
+                                                                   "face_memory_before")}})
+    last = run["last"]
+    results = run["records"].get("result", [])
+    r.describe("the workload at the last status capture (scene jobs submitted and delivered, the face worker's "
+               "counters and processing time) and the face results by outcome in the records",
+               {"scene_worker": s5._get(last, "components", "scene", "worker"),
+                "face_worker": s5._get(last, "components", "face", "worker"),
+                "face_results_by_outcome": dict(sorted(Counter(x.get("outcome") for x in results).items()))})
     return r

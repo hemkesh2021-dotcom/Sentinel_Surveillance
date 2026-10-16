@@ -32,7 +32,8 @@ tracker's own callback follows it, once, with nothing else registered), the trac
 ``get_dists`` wrapped on the instance; the matrix it returns is handed back unchanged), its track lists after the
 update, and separately a
 second NMS at a lower confidence on a clone of the raw head output (``inference`` wrapped on the predictor; the
-original output object is returned untouched). Production boxes, IDs and tracker state are the same with or without
+original output object is returned untouched; the clone is made inside Ultralytics' inference mode, so the NMS and
+its box scaling run in inference mode too, session 81). Production boxes, IDs and tracker state are the same with or without
 it; without it no callback or wrapper is installed. Every part of it fails into a named problem on the frame's record,
 never into the production path.
 """
@@ -114,12 +115,18 @@ def _import_runtime() -> tuple[Any, Any, Any]:
     return torch, YOLO, numpy
 
 
-def _import_diagnostic_tools() -> tuple[Any, Any, Any]:
-    """(non_max_suppression, scale_boxes, TrackState) from the installed Ultralytics; only with the diagnostic."""
+def _import_diagnostic_tools() -> tuple[Any, Any, Any, Any]:
+    """(non_max_suppression, scale_boxes, TrackState, inference_mode) from the installed Ultralytics and torch; only
+    with the diagnostic. The raw output is cloned inside Ultralytics' ``stream_inference``, which runs under
+    ``smart_inference_mode`` (``torch.inference_mode`` on this torch), so the clone is an inference tensor; 8.4.25's
+    NMS writes into its input (the xywh-to-xyxy conversion on the transposed view) and ``scale_boxes`` into the boxes
+    it is given, and torch refuses an in-place write to an inference tensor outside inference mode. Session 81: the
+    device run trk-20261016T100149Z failed its shadow pass on every frame (``shadow_failed``, 242 of 242) for that."""
+    import torch
     from ultralytics.trackers.basetrack import TrackState
     from ultralytics.utils import nms, ops
 
-    return nms.non_max_suppression, ops.scale_boxes, TrackState
+    return nms.non_max_suppression, ops.scale_boxes, TrackState, torch.inference_mode
 
 
 CallbackReferences = Callable[[], tuple[tuple[Callable[..., Any], ...], Callable[..., Any]]]
@@ -177,7 +184,7 @@ class LegacyUltralyticsTracker:
         expected_sha256: str = LEGACY_ENGINE_SHA256,
         driver_check: Callable[[], str | None] = cuda_driver_problem,
         importer: Callable[[], tuple[Any, Any, Any]] = _import_runtime,
-        diagnostic_tools: Callable[[], tuple[Any, Any, Any]] = _import_diagnostic_tools,
+        diagnostic_tools: Callable[[], tuple[Any, Any, Any, Any]] = _import_diagnostic_tools,
         callback_references: CallbackReferences = _import_callback_references,
     ) -> None:
         self._engine = Path(engine)
@@ -190,7 +197,7 @@ class LegacyUltralyticsTracker:
         self._callback_references = callback_references
         self._shadow_conf: float | None = None
         self._capture_callback: Callable[[Any], None] = self._capture  # one bound object: registered and checked
-        self._tools: tuple[Any, Any, Any] | None = None
+        self._tools: tuple[Any, Any, Any, Any] | None = None
         self._settings: dict[str, Any] | None = None
         self._predictor: Any = None
         self._tracker_ref: Any = None
@@ -321,9 +328,13 @@ class LegacyUltralyticsTracker:
                 or not callable(getattr(predictor, "inference", None)):
             raise TrackerError("diagnostic_unsupported", "predictor")
         try:
-            self._tools = self._diagnostic_tools()
+            tools = self._diagnostic_tools()
         except Exception as exc:  # noqa: BLE001 - an import problem is a label, never text
             raise TrackerError("diagnostic_unsupported", type(exc).__name__) from None
+        if not (isinstance(tools, tuple) and len(tools) == 4 and callable(tools[0]) and callable(tools[1])
+                and hasattr(tools[2], "Lost") and callable(tools[3])):
+            raise TrackerError("diagnostic_unsupported", "tools")  # refused before T0, never failed on every frame
+        self._tools = tools
         targs = tracker.args
         try:
             self._settings = {
@@ -454,7 +465,7 @@ class LegacyUltralyticsTracker:
             problems.append("shadow_failed")
         else:
             try:
-                nms_fn, scale_boxes, _ = self._tools
+                nms_fn, scale_boxes, _, inference_mode = self._tools
                 raw, im_shape = self._raw
                 args = self._predictor.args
                 conf = float(TRACK_ARGS["conf"])
@@ -466,15 +477,19 @@ class LegacyUltralyticsTracker:
                         problems.append("layout_unknown")
                 except Exception:  # noqa: BLE001
                     problems.append("layout_unknown")
-                out = nms_fn(raw, conf_thres=float(self._shadow_conf or 0.0), iou_thres=float(args.iou),
-                             classes=list(TRACK_ARGS["classes"]), max_det=int(args.max_det), end2end=end2end)
-                det = out[0]
                 rows: list[tuple[float, tuple[float, float, float, float]]] = []
-                if len(det):
-                    boxes = scale_boxes(im_shape, det[:, :4], image.shape)
-                    scores = det[:, 4]
-                    rows = [(float(s), tuple(float(v) for v in b))
-                            for b, s in zip(boxes.cpu().tolist(), scores.cpu().tolist())]
+                # In inference mode, as Ultralytics' own post-processing runs: the clone is an inference tensor (see
+                # _import_diagnostic_tools). The NMS writes into the clone and scale_boxes into the NMS's own output;
+                # production's tensors are never reached, and the raw output is not copied a second time.
+                with inference_mode():
+                    out = nms_fn(raw, conf_thres=float(self._shadow_conf or 0.0), iou_thres=float(args.iou),
+                                 classes=list(TRACK_ARGS["classes"]), max_det=int(args.max_det), end2end=end2end)
+                    det = out[0]
+                    if len(det):
+                        boxes = scale_boxes(im_shape, det[:, :4], image.shape)
+                        scores = det[:, 4]
+                        rows = [(float(s), tuple(float(v) for v in b))
+                                for b, s in zip(boxes.cpu().tolist(), scores.cpu().tolist())]
                 shadow = tuple(ShadowBox(s, b) for s, b in rows if s < conf)
                 high = [b for s, b in rows if s >= conf]
                 high_count = len(high)

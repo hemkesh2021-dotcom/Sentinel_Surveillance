@@ -2389,6 +2389,20 @@ def read_tracking(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None
     return tracking_check.read_tracking(directory, f1, gate)
 
 
+def read_tracking_integration(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | None = None) -> Reading:
+    """Session 81: the short integration check of the tracking diagnostic (tracking_check.read_integration)."""
+    import tracking_check
+
+    return tracking_check.read_integration(directory, f1, gate)
+
+
+INTEGRATION_VERDICT = {  # the short integration check's verdict lines (session 81): what a pass does and does not show
+    True: "face-tracking-integration: short-run integration complete (at most 120 s after readiness; not ten-minute "
+          "stability, tracking behaviour, recognition or F2)",
+    False: "face-tracking-integration: short-run integration incomplete",
+}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="part", required=True)
@@ -2430,7 +2444,11 @@ def main(argv: list[str] | None = None) -> int:
                                         "(D102, descriptive; format 8): false acceptances counted, never a rate"),
                        ("tracking", "read a tracking diagnostic session (session 79, descriptive; format 9): the "
                                     "detections, published tracks, association costs and shadow boxes described per "
-                                    "window and per gap; never an F2 reading, and F2's reading refuses such a run")):
+                                    "window and per gap; never an F2 reading, and F2's reading refuses such a run"),
+                       ("tracking-integration", "read the tracking diagnostic's short integration check (session 81; "
+                                                "no account): execution, readiness, the diagnostic's health and "
+                                                "privacy judged; shadow passes, coverage, timing and memory "
+                                                "described; a pass shows short-run integration only")):
         sub = commands.add_parser(part, help=text)
         sub.add_argument("directory", type=Path)
         sub.add_argument("--f1", type=Path, required=True, help="F1's evidence directory")
@@ -2467,15 +2485,20 @@ def main(argv: list[str] | None = None) -> int:
         if (args.run is None) != (args.identity_dir is None):
             parser.error(f"{args.part}: --run and --identity-dir go together")
         gate_args = None if args.run is None else (args.run, args.identity_dir, args.recheck_root)
-        if args.part in ("natural", "comparison", "candidate", "experiment", "dashboard", "non-enrolled", "tracking"):
+        if args.part in ("natural", "comparison", "candidate", "experiment", "dashboard", "non-enrolled", "tracking",
+                         "tracking-integration"):
             read = {"natural": read_natural, "comparison": read_comparison, "candidate": read_candidate,
                     "experiment": read_experiment, "dashboard": read_dashboard,
-                    "non-enrolled": read_non_enrolled, "tracking": read_tracking}[args.part]
+                    "non-enrolled": read_non_enrolled, "tracking": read_tracking,
+                    "tracking-integration": read_tracking_integration}[args.part]
             reading = read(args.directory, args.f1, gate_args)
             for line in reading.lines:
                 print(line)
-            print(f"face-{args.part}: " + ("execution complete (descriptive only; it validates nothing)"
-                                           if reading.ok else "execution incomplete"))
+            if args.part == "tracking-integration":
+                print(INTEGRATION_VERDICT[reading.ok])
+            else:
+                print(f"face-{args.part}: " + ("execution complete (descriptive only; it validates nothing)"
+                                               if reading.ok else "execution incomplete"))
             return 0 if reading.ok else 1
         if args.part == "capture":
             reading = read_capture(args.directory, args.f1, gate_args)

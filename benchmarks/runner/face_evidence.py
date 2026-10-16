@@ -35,7 +35,8 @@ STATUS_NAMES = ("e1", "k1", "a", "e2", "k2", "end", "n1", "look", "turn", "n2",
                 "c1", "c2", "c3",  # F2's, the natural check's and the comparison check's (D87)
                 "seated", "turned", "out", "returned", "faceoff1", "faceoff2", "faceon", "liveoff1", "liveoff2",
                 "liveon", "asked", "sceneoff1", "sceneoff2", "sceneon", "chatoff1", "chatoff2", "chaton",
-                "snapoff")  # the feature-controls check's (D99, features_check)
+                "snapoff",  # the feature-controls check's (D99, features_check)
+                "i1")  # the tracking diagnostic's short integration check's (session 81; with "end")
 CUE_NAMES = ("t0", "k1", "a", "e2", "k2", "stop", "look", "turn", "n2",  # F2's, the natural check's, D91's
              "leave", "back", "pause", "resume",  # D95's live dashboard check
              "away", "faceoff", "faceon", "liveoff", "liveon", "ask", "sceneoff", "askoff", "sceneon", "chatoff",
@@ -597,6 +598,27 @@ STARTING_SUMMARY = {  # step5_guard._starting_summary
 STARTING_SUMMARY_KEYS = {"releases": RELEASE_COMPONENTS, "releases.*": RELEASE_ROLES, "notifier_problems": CHANNELS,
                          "scene_memory_before": MEMFREE_KEYS, "detector_memory_before": MEMFREE_KEYS,
                          "face_memory_before": MEMFREE_KEYS}
+# The memory guard's first stopping sample (operator_check.PressureGuard._stop; null when nothing stopped it): its
+# conditions as operator_check.memory_conditions and _condition write them, numbers and fixed texts only. Session 81:
+# declared as text before, so the device run trk-20261016T100149Z's guard stop was the only nonconforming location in
+# its result.json.
+GUARD_STOPS = vocab("telemetry_unavailable", "telemetry_invalid", "sampled_pressure_stop", "free_or_available_stop",
+                    "swap_counter_change", "clock_unavailable", "sampling_gap")
+GUARD_TRIGGER = {
+    "guard.trigger": NULL, "guard.trigger.stop": GUARD_STOPS, "guard.trigger.conditions[].stop": GUARD_STOPS,
+    "guard.trigger.conditions[].condition": template(
+        r"MemTotal - MemAvailable >= \d+", r"Mem(?:Free|Available) < \d+", r"pswp(?:in|out) != \d+",
+        r"t_mono interval [<>] (?:0|0\.5)", fixed("required field missing or invalid"),
+        fixed("MemTotal <= 0 or MemFree/MemAvailable > MemTotal"), fixed("t_mono missing or not finite")),
+    "guard.trigger.conditions[].field": vocab("MemTotal - MemAvailable", "MemFree", "MemAvailable", "pswpin",
+                                              "pswpout", "t_mono interval"),
+    "guard.trigger.conditions[].comparison": vocab(">=", "<", ">", "!="),
+    "guard.trigger.conditions[].threshold": NUM, "guard.trigger.conditions[].value": NUM,
+    "guard.trigger.conditions[].fields[]": vocab("MemTotal", "MemAvailable", "MemFree", "pswpin", "pswpout",
+                                                 "t_mono"),
+    "guard.trigger.t_mono": maybe(NUM), "guard.trigger.guard_jsonl_line": INT, "guard.trigger.sample.*": maybe(NUM),
+    "guard.trigger.basis": template(fixed("the sample that stopped the guard, before the owned group's cleanup")),
+}
 RESULT = JsonProfile({  # step5_guard.supervise
     "schema_version": INT, "mode": vocab("step5_guard"), "status": GUARD_STATUS,
     "parameters.duration_s": NUM, "parameters.from_launch": BOOL, "parameters.ready_timeout_s": NUM,
@@ -615,7 +637,7 @@ RESULT = JsonProfile({  # step5_guard.supervise
     "child.launched_utc": maybe(ISO), "child.exited_utc": maybe(ISO), "child.returncode": COUNT,
     "child.ran_s": SECONDS, "child.ready_after_s": SECONDS, "child.ready_mono_s": SECONDS,
     "guard.samples": INT, "guard.largest_gap_s": SECONDS, "guard.peak_pressure_bytes": COUNT,
-    "guard.min_mem_free_bytes": COUNT, "guard.min_mem_available_bytes": COUNT, "guard.trigger": maybe(TEXT),
+    "guard.min_mem_free_bytes": COUNT, "guard.min_mem_available_bytes": COUNT, **GUARD_TRIGGER,
     "guard.trigger_after_stop_request": BOOL,
     "captures[].name": vocab(*STATUS_NAMES), "captures[].at_s": NUM, "captures[].taken_after_launch_s": SECONDS,
     "captures[].status": CAPTURE_RESULT, "captures[].bytes": INT, "captures[].listeners": NULL,
@@ -631,7 +653,7 @@ RESULT = JsonProfile({  # step5_guard.supervise
     "leftovers.llama_server_after_exit": INT, "leftovers.llama_server_left": INT,
     "leftovers.runtime_group_left": BOOL, **{f"leftovers.listeners_after[].{k}": v for k, v in LISTENER.items()},
     "cleanup_clear": BOOL,
-}, keys={"preflight_sample": SAMPLE_KEYS, "baseline": SAMPLE_KEYS,
+}, keys={"preflight_sample": SAMPLE_KEYS, "baseline": SAMPLE_KEYS, "guard.trigger.sample": SAMPLE_KEYS,
          **{f"run_output.starting.{k}": v for k, v in STARTING_SUMMARY_KEYS.items()},
          "run_output.stopped.stopped": STOPPED_PARTS})
 

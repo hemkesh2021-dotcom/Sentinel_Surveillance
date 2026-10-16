@@ -39,7 +39,8 @@ to ``run.jsonl`` and ``run.err`` unchanged.
 
 Exit status 0 means the supervision itself was clean: the runtime exited on its own, or exited 0 after the duration's
 stop, with no guard stop, no forced stop, no leftover process and no listener left. Whether the runtime did what a
-step-5 part expects is judged from ``result.json`` by the operator block.
+step-5 part expects is judged from ``result.json`` by the operator block (``guard_verdict.py`` since session 81: the
+exit alone also covers a runtime that exited on its own before the duration).
 """
 
 from __future__ import annotations

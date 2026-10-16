@@ -4,10 +4,15 @@ each event (``get_default_callbacks``), the first ``track()`` appends a ``functo
 callback (``register_tracker``) and makes the predictor, which shares the dict; the predictor runs inference,
 post-processing, then the event's callbacks in order (the no-op, ours, the tracker's, which calls the tracker's update
 and replaces the results with the published rows); the tracker calls its own get_dists before assigning and keeps
-tracked, lost and removed lists. No GPU, engine or Ultralytics import."""
+tracked, lost and removed lists. Session 81: inference, post-processing and the callbacks run in torch's inference mode
+(``smart_inference_mode`` around ``stream_inference``), so a clone made there is an inference tensor, and an in-place
+write to one outside the mode raises, as torch 2.9.1 does (the device run trk-20261016T100149Z's shadow pass failed on
+every frame for that). No GPU, engine or Ultralytics import here; test_tracking_diagnostic_installed.py runs the same
+path on the installed torch and Ultralytics, CPU only."""
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import functools
 import hashlib
@@ -24,9 +29,34 @@ from sentinel.tracking.tracker import PersonTracker, TrackerError
 LOST, TRACKED = 2, 1
 
 
+class Mode:
+    """torch's inference mode as the shadow pass meets it: what is made while it is on is an inference tensor, and an
+    in-place write to one while it is off raises (torch: "Inplace update to inference tensor outside InferenceMode is
+    not allowed"). ``inference_mode`` is what the tools hand the adapter (torch.inference_mode on the device)."""
+
+    enabled = False
+    entered = 0
+
+    @classmethod
+    @contextlib.contextmanager
+    def inference_mode(cls):
+        previous, cls.enabled = cls.enabled, True
+        cls.entered += 1
+        try:
+            yield
+        finally:
+            cls.enabled = previous
+
+    @classmethod
+    def write(cls, tensor: Any) -> None:
+        if getattr(tensor, "inference", False) and not cls.enabled:
+            raise RuntimeError("Inplace update to inference tensor outside InferenceMode is not allowed.")
+
+
 class Tensor:
-    def __init__(self, values: list[Any]) -> None:
+    def __init__(self, values: list[Any], inference: bool = False) -> None:
         self.values = values
+        self.inference = inference
 
     def cpu(self) -> Tensor:
         return self
@@ -63,17 +93,18 @@ class Row:
 class Raw:
     """The head's raw output (1, 84, anchors): anchors as (x1, y1, x2, y2, person score)."""
 
-    def __init__(self, anchors: list[tuple[float, float, float, float, float]]) -> None:
+    def __init__(self, anchors: list[tuple[float, float, float, float, float]], inference: bool = False) -> None:
         self.anchors = anchors
         self.ndim, self.shape = 3, (1, 84, len(anchors))
         self.clones = 0
+        self.inference = inference
 
     def detach(self) -> Raw:
         return self
 
     def clone(self) -> Raw:
         self.clones += 1
-        return Raw(list(self.anchors))
+        return Raw(list(self.anchors), inference=Mode.enabled)
 
     def __getitem__(self, key: Any) -> Row:
         assert key[0] == 0 and key[1] == 4
@@ -83,40 +114,49 @@ class Raw:
 class Det:
     """What non_max_suppression returns for one image: det[:, :4] boxes, det[:, 4] scores."""
 
-    def __init__(self, rows: list[tuple[float, float, float, float, float]]) -> None:
+    def __init__(self, rows: list[tuple[float, float, float, float, float]], inference: bool = False) -> None:
         self.rows = rows
+        self.inference = inference
 
     def __len__(self) -> int:
         return len(self.rows)
 
     def __getitem__(self, key: Any) -> Tensor:
         if key[1] == 4:
-            return Tensor([r[4] for r in self.rows])
-        return Tensor([list(r[:4]) for r in self.rows])
+            return Tensor([r[4] for r in self.rows], self.inference)
+        return Tensor([list(r[:4]) for r in self.rows], self.inference)
 
 
 class Tools:
-    """(non_max_suppression, scale_boxes, TrackState) stand-ins; the NMS filters the raw anchors by score and
-    mutates what it is given (so a clone must have been handed to it)."""
+    """(non_max_suppression, scale_boxes, TrackState, inference_mode) stand-ins; the NMS filters the raw anchors by
+    score and mutates what it is given (so a clone must have been handed to it), and scale_boxes writes into the boxes
+    it is given, as 8.4.25's do: each write raises on an inference tensor outside inference mode (Mode.write).
+    ``inference_mode`` replaces what is handed to the adapter (``contextlib.nullcontext`` = the code before session 81,
+    which ran both outside the mode)."""
 
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(self, *, fail: bool = False, inference_mode: Any = None) -> None:
         self.calls: list[dict] = []
         self.fail = fail
+        self.inference_mode = inference_mode or Mode.inference_mode
+        self.modes: list[bool] = []  # whether inference mode was on at each NMS call
 
     def nms(self, raw: Raw, **kwargs: Any) -> list[Det]:
         self.calls.append(kwargs)
+        self.modes.append(Mode.enabled)
         if self.fail:
             raise RuntimeError("nms broke")
+        Mode.write(raw)  # 8.4.25: prediction[..., :4] = xywh2xyxy(...) on the transposed view of its input
         kept = [a for a in raw.anchors if a[4] >= kwargs["conf_thres"]][:kwargs["max_det"]]
         raw.anchors.clear()  # the mutation the adapter must never let reach production
-        return [Det(kept)]
+        return [Det(kept, inference=Mode.enabled)]
 
     @staticmethod
     def scale_boxes(im_shape: tuple[int, int], boxes: Tensor, img0_shape: tuple[int, ...]) -> Tensor:
+        Mode.write(boxes)  # 8.4.25: boxes[..., 0] -= pad_x ... and clip_boxes' clamp_, in place
         return boxes
 
-    def __call__(self) -> tuple[Any, Any, Any]:
-        return self.nms, self.scale_boxes, SimpleNamespace(Lost=LOST, Tracked=TRACKED)
+    def __call__(self) -> tuple[Any, Any, Any, Any]:
+        return self.nms, self.scale_boxes, SimpleNamespace(Lost=LOST, Tracked=TRACKED), self.inference_mode
 
 
 class STrack:
@@ -223,7 +263,8 @@ class Yolo:
     """YOLO as the diagnostic relies on it (8.4.25): the callback dict seeded with the default no-op per event
     (``get_default_callbacks``); the first ``track()`` registers a ``partial`` of the tracker's callback after any
     callback added before (``register_tracker``) and makes the predictor, which shares the dict and the trackers; then
-    inference, post-processing and the event's callbacks in order."""
+    inference, post-processing and the event's callbacks in order, all in inference mode (``stream_inference`` under
+    ``smart_inference_mode``)."""
 
     instances: list[Yolo] = []
     register: Any = None  # a test's own registration in place of register_tracker's (None: as installed)
@@ -247,10 +288,11 @@ class Yolo:
             else:
                 Yolo.register(self)
             self.predictor = Predictor(self.callbacks, ByteTrack())
-        self.predictor.inference(SimpleNamespace(shape=(1, 3, 640, 640)))
-        self.predictor.results = [SimpleNamespace(boxes=Boxes(self.detections.pop(0) if self.detections else []))]
-        for callback in list(self.callbacks.get(CALLBACK, [])):
-            callback(self.predictor)
+        with Mode.inference_mode():
+            self.predictor.inference(SimpleNamespace(shape=(1, 3, 640, 640)))
+            self.predictor.results = [SimpleNamespace(boxes=Boxes(self.detections.pop(0) if self.detections else []))]
+            for callback in list(self.callbacks.get(CALLBACK, [])):
+                callback(self.predictor)
         return self.predictor.results
 
 
@@ -267,6 +309,7 @@ class Runtime:
 def clean(monkeypatch: pytest.MonkeyPatch) -> None:
     Yolo.instances = []
     Yolo.register = None
+    Mode.enabled, Mode.entered = False, 0
     monkeypatch.setenv("YOLO_OFFLINE", "operator-value")
 
 
@@ -345,7 +388,7 @@ def test_load_registers_the_capture_before_the_trackers_callback_and_wraps_the_i
     ("tracker_first", "callback_order"), ("tracker_missing", "callback_order"), ("tracker_twice", "callback_order"),
     ("tracker_bare", "callback_order"), ("capture_twice", "callback_order"), ("unknown_before", "callback_unknown"),
     ("unknown_between", "callback_unknown"), ("tracker", "tracker_state"), ("predictor", "predictor"),
-    ("tools", "RuntimeError"), ("references", "ImportError")])
+    ("tools", "RuntimeError"), ("tools_shape", "tools"), ("references", "ImportError")])
 def test_load_refuses_when_the_installed_objects_are_not_what_the_diagnostic_reads(engine, monkeypatch, break_what,
                                                                                    label) -> None:
     partial = functools.partial(tracker_postprocess_end, persist=True)
@@ -382,6 +425,9 @@ def test_load_refuses_when_the_installed_objects_are_not_what_the_diagnostic_rea
         def failing():
             raise RuntimeError("no ultralytics")
         tools = failing  # type: ignore[assignment]
+    elif break_what == "tools_shape":  # the tools as handed out before session 81: no inference mode
+        three = Tools()
+        tools = lambda: three()[:3]  # type: ignore[assignment]  # noqa: E731
     adapter = backend(engine, tools, refs=refs)
     with pytest.raises(TrackerError) as caught:
         adapter.load()
@@ -465,6 +511,47 @@ def test_the_shadow_pass_runs_on_a_clone_and_the_inference_output_is_returned_un
     tracker.steps.append({"tracked": [STrack(1, 0, PERSON[:4], TRACKED, True, 1)], "lost": []})
     adapter.track(IMAGE)
     assert raw.clones == 1 and raw.anchors == [(*PERSON[:4], 0.9)]  # the NMS stand-in emptied the clone, not this
+
+
+def test_the_shadow_pass_runs_in_inference_mode_like_the_clone_it_reads(engine) -> None:
+    """Session 81: the clone is made inside stream_inference's inference mode, so it is an inference tensor, and the
+    NMS's and scale_boxes' in-place writes raise outside the mode. The device run trk-20261016T100149Z recorded
+    shadow_failed on 242 of 242 frames; the shadow pass as it ran before the fix (outside the mode) fails here the
+    same way, and the fixed pass reads the same clone, once, with production's output unchanged either way."""
+    def frame(tools: Tools) -> tuple[list[Any], TrackerDiagnostics, Raw]:
+        Yolo.instances = []
+        adapter, model, tracker = loaded(engine, tools)
+        raw = Raw([(*PERSON[:4], 0.9), (300.0, 300.0, 340.0, 360.0, 0.3)])
+        model.predictor.raw.append(raw)
+        model.detections.append([PERSON])
+        tracker.steps.append({"tracked": [STrack(1, 0, PERSON[:4], TRACKED, True, 1)], "lost": []})
+        published = adapter.track(IMAGE)
+        return published, adapter.last_diagnostics(), raw
+
+    old = Tools(inference_mode=contextlib.nullcontext)
+    before, failed, _ = frame(old)
+    assert old.modes == [False] and failed.problems == ("shadow_failed",)  # the device run's failure, reproduced
+    assert failed.shadow == () and failed.shadow_limited is None and failed.shadow_candidates == 2
+    tools = Tools()
+    after, d, raw = frame(tools)
+    assert tools.modes == [True] and d.problems == ()  # the NMS ran in inference mode, and so did scale_boxes
+    assert [(s.score, s.box) for s in d.shadow] == [(0.3, (300.0, 300.0, 340.0, 360.0))]
+    assert (d.shadow_high, d.shadow_agree, d.shadow_candidates, d.shadow_limited) == (1, 1, 2, False)
+    assert raw.clones == 1 and raw.anchors == [(*PERSON[:4], 0.9), (300.0, 300.0, 340.0, 360.0, 0.3)]  # one copy
+    assert after == before and [t.track_id for t in after] == [1]  # production's tracks the same either way
+    assert Mode.enabled is False  # the mode is left as it was found
+
+
+def test_an_empty_shadow_result_is_a_completed_pass_and_an_exception_is_not(engine) -> None:
+    """A shadow pass that finds nothing below the confidence completed (no problem; shadow_limited a flag); one that
+    raises is shadow_failed, with shadow_limited left None (the reading tells them apart, session 81)."""
+    adapter, model, tracker = loaded(engine)
+    model.predictor.raw.append(Raw([(*PERSON[:4], 0.9)]))
+    model.detections.append([PERSON])
+    tracker.steps.append({"tracked": [STrack(1, 0, PERSON[:4], TRACKED, True, 1)], "lost": []})
+    adapter.track(IMAGE)
+    d = adapter.last_diagnostics()
+    assert d.problems == () and d.shadow == () and d.shadow_limited is False and d.shadow_high == 1
 
 
 def test_the_association_costs_are_the_trackers_own_matrices_at_the_pre_assignment_stage(engine) -> None:

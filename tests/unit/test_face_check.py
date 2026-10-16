@@ -244,10 +244,11 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
 def finish(mods, out: Path, *, cue_delay_s: float = 0.1, account: dict[str, str] | None = ACCOUNT,
            counts: dict[str, int] | None = None, cues: dict[str, float] | None = None, cued_format: int = 3,
            duration_s: float = 600.0, captures=CAPTURES, provenance: str = F2_PROVENANCE,
-           readiness: dict | None = None) -> None:
+           readiness: dict | None = None, result_update: dict | None = None) -> None:
     """result.json as the guard writes it, then the account and the counts, in the package's order (the counts by
     face_counts.sh unless ``counts`` fakes them); ``provenance`` is what the launch block wrote before the account.
-    ``readiness`` (session 80): the guard's record of its --require-ready requirement, when the block passed one."""
+    ``readiness`` (session 80): the guard's record of its --require-ready requirement, when the block passed one.
+    ``result_update`` (session 81): top-level fields of result.json replaced before anything is counted."""
     ready = 1.0  # FakeClock's default start (seconds), the runtime's T0
     result = {
         "schema_version": 1, "mode": "step5_guard", "status": "duration_stop",
@@ -265,6 +266,7 @@ def finish(mods, out: Path, *, cue_delay_s: float = 0.1, account: dict[str, str]
                   "printed_mono_s": ready + at + cue_delay_s} for name, at in (cues or {"t0": 0.0}).items()],
         "run_output": mods.guard.read_run_output(out / "run.jsonl"),
     }
+    result.update(result_update or {})
     (out / "result.json").write_text(json.dumps(result))
     (out / "provenance.txt").write_text(provenance)
     if account is not None:

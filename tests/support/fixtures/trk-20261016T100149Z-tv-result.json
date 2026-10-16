@@ -1,0 +1,358 @@
+{
+  "schema_version": 1,
+  "mode": "step5_guard",
+  "status": "guard_stop",
+  "parameters": {
+    "duration_s": 600.0,
+    "from_launch": false,
+    "ready_timeout_s": 300.0,
+    "stop_grace_s": 90.0,
+    "step4_headroom": true,
+    "status_at": [
+      {
+        "at_s": 60.0,
+        "name": "e1"
+      },
+      {
+        "at_s": 180.0,
+        "name": "k1"
+      },
+      {
+        "at_s": 300.0,
+        "name": "a"
+      },
+      {
+        "at_s": 420.0,
+        "name": "e2"
+      },
+      {
+        "at_s": 540.0,
+        "name": "k2"
+      },
+      {
+        "at_s": 590.0,
+        "name": "end"
+      }
+    ],
+    "cues": [
+      {
+        "at_s": 0.0,
+        "name": "t0"
+      },
+      {
+        "at_s": 120.0,
+        "name": "k1"
+      },
+      {
+        "at_s": 240.0,
+        "name": "a"
+      },
+      {
+        "at_s": 360.0,
+        "name": "e2"
+      },
+      {
+        "at_s": 480.0,
+        "name": "k2"
+      },
+      {
+        "at_s": 595.0,
+        "name": "stop"
+      }
+    ],
+    "require_ready": "tracking_diagnostic"
+  },
+  "limits": {
+    "pressure_stop_bytes": 4800000000,
+    "mem_free_floor_bytes": 1073741824,
+    "mem_available_floor_bytes": 2147483648,
+    "swap_counters": "unchanged",
+    "max_sample_gap_s": 0.5
+  },
+  "baseline": {
+    "MemTotal": 7990005760,
+    "MemFree": 5461884928,
+    "MemAvailable": 6615363584,
+    "Cached": 1139466240,
+    "SwapTotal": 3994976256,
+    "SwapFree": 3994976256,
+    "Shmem": 14254080,
+    "Unevictable": 36249600,
+    "Mlocked": 0,
+    "SUnreclaim": 100126720,
+    "KReclaimable": 126926848,
+    "CmaFree": 227393536,
+    "AnonPages": 668848128,
+    "Mapped": 319447040,
+    "Active(file)": 428929024,
+    "Inactive(file)": 805564416,
+    "pswpin": 0,
+    "pswpout": 0,
+    "t_mono": 7706.70121195,
+    "pressure_bytes": 1374642176
+  },
+  "child": {
+    "launched_utc": "2026-10-16T11:56:11Z",
+    "ready_after_s": 70.213,
+    "ready_mono_s": 7776.914173,
+    "returncode": 0,
+    "exited_utc": "2026-10-16T11:57:55Z",
+    "ran_s": 104.014
+  },
+  "readiness": {
+    "required": "tracking_diagnostic",
+    "met": true,
+    "reason": null,
+    "starting_after_s": 70.213
+  },
+  "stop": {
+    "requested_by": "guard_stop",
+    "requested_at_s": 88.932,
+    "exited_after_stop_s": 15.082,
+    "forced": false
+  },
+  "guard": {
+    "samples": 518,
+    "largest_gap_s": 0.204,
+    "peak_pressure_bytes": 4641280000,
+    "min_mem_free_bytes": 1071239168,
+    "min_mem_available_bytes": 3348725760,
+    "trigger": {
+      "stop": "free_or_available_stop",
+      "conditions": [
+        {
+          "stop": "free_or_available_stop",
+          "condition": "MemFree < 1073741824",
+          "field": "MemFree",
+          "comparison": "<",
+          "threshold": 1073741824,
+          "value": 1071239168
+        }
+      ],
+      "t_mono": 7795.633775772,
+      "guard_jsonl_line": 443,
+      "sample": {
+        "MemTotal": 7990005760,
+        "MemFree": 1071239168,
+        "MemAvailable": 3348725760,
+        "Cached": 2216800256,
+        "SwapTotal": 3994976256,
+        "SwapFree": 3994976256,
+        "Shmem": 14266368,
+        "Unevictable": 36249600,
+        "Mlocked": 0,
+        "SUnreclaim": 102928384,
+        "KReclaimable": 154275840,
+        "CmaFree": 21749760,
+        "AnonPages": 2195521536,
+        "Mapped": 1106477056,
+        "Active(file)": 451190784,
+        "Inactive(file)": 1879961600,
+        "pswpin": 0,
+        "pswpout": 0,
+        "t_mono": 7795.633775772,
+        "pressure_bytes": 4641280000
+      },
+      "basis": "the sample that stopped the guard, before the owned group's cleanup"
+    },
+    "trigger_after_stop_request": false
+  },
+  "captures": [
+    {
+      "name": "e1",
+      "at_s": 60.0,
+      "status": "not_reached",
+      "bytes": 0,
+      "listeners": null
+    },
+    {
+      "name": "k1",
+      "at_s": 180.0,
+      "status": "not_reached",
+      "bytes": 0,
+      "listeners": null
+    },
+    {
+      "name": "a",
+      "at_s": 300.0,
+      "status": "not_reached",
+      "bytes": 0,
+      "listeners": null
+    },
+    {
+      "name": "e2",
+      "at_s": 420.0,
+      "status": "not_reached",
+      "bytes": 0,
+      "listeners": null
+    },
+    {
+      "name": "k2",
+      "at_s": 540.0,
+      "status": "not_reached",
+      "bytes": 0,
+      "listeners": null
+    },
+    {
+      "name": "end",
+      "at_s": 590.0,
+      "status": "not_reached",
+      "bytes": 0,
+      "listeners": null
+    }
+  ],
+  "cues": [
+    {
+      "name": "t0",
+      "at_s": 0.0,
+      "printed_after_launch_s": 70.213,
+      "printed_mono_s": 7776.914173
+    },
+    {
+      "name": "k1",
+      "at_s": 120.0,
+      "printed_after_launch_s": null,
+      "printed_mono_s": null
+    },
+    {
+      "name": "a",
+      "at_s": 240.0,
+      "printed_after_launch_s": null,
+      "printed_mono_s": null
+    },
+    {
+      "name": "e2",
+      "at_s": 360.0,
+      "printed_after_launch_s": null,
+      "printed_mono_s": null
+    },
+    {
+      "name": "k2",
+      "at_s": 480.0,
+      "printed_after_launch_s": null,
+      "printed_mono_s": null
+    },
+    {
+      "name": "stop",
+      "at_s": 595.0,
+      "printed_after_launch_s": null,
+      "printed_mono_s": null
+    }
+  ],
+  "run_output": {
+    "lines": 266,
+    "json_lines": 266,
+    "non_json_lines": 0,
+    "starting": {
+      "memory_policy": {
+        "thp": "workload_disabled",
+        "model_file_release": "post_load"
+      },
+      "thp_scope": {
+        "before_launch": {
+          "runtime": 1
+        },
+        "llama_ready": {
+          "runtime": 1,
+          "scene_server": 1
+        },
+        "workload_verified": {
+          "runtime": 0,
+          "scene_server": 1
+        }
+      },
+      "thp_disable": {
+        "verified": true,
+        "reason": null,
+        "set_rc": 0,
+        "thp_enabled": 0
+      },
+      "releases": {
+        "scene": {
+          "llm": "returned_0",
+          "mmproj": "returned_0"
+        },
+        "detector": {
+          "engine": "returned_0"
+        },
+        "face": {
+          "facenet512_weights.h5": "returned_0",
+          "face_detection_yunet_2023mar.onnx": "returned_0"
+        }
+      },
+      "scene_server": {
+        "state": "ready",
+        "problem": null,
+        "layers": "17/17",
+        "vision_on_gpu": true
+      },
+      "scene_problem": null,
+      "detector_problem": null,
+      "face": {
+        "validation_run": true,
+        "identities_enrolled": 1,
+        "tracking_diagnostic": {
+          "shadow_conf": 0.1,
+          "max_records": 20000,
+          "max_bytes": 32000000,
+          "max_line_bytes": 4096,
+          "max_det": 16,
+          "max_shadow": 12,
+          "max_lost": 8,
+          "max_assign_tracks": 8,
+          "max_assign_dets": 16,
+          "tracker": {
+            "conf": 0.4,
+            "match_thresh": 0.8,
+            "track_high_thresh": 0.25,
+            "track_low_thresh": 0.1,
+            "new_track_thresh": 0.25,
+            "track_buffer": 30,
+            "max_time_lost": 30,
+            "fuse_score": true,
+            "unconfirmed_thresh": 0.7,
+            "shadow_conf": 0.1,
+            "shadow_max_nms": 30000,
+            "max_det": 300,
+            "iou": 0.7
+          }
+        }
+      },
+      "face_problem": null,
+      "face_memory_before": {
+        "MemFree": 2377433088,
+        "MemAvailable": 4115881984
+      },
+      "notifier_problems": {},
+      "scene_memory_before": {
+        "MemFree": 5411008512,
+        "MemAvailable": 6589464576
+      },
+      "detector_memory_before": {
+        "MemFree": 3499143168,
+        "MemAvailable": 4879052800
+      }
+    },
+    "stopped": {
+      "all_stopped": true,
+      "stopped": {
+        "capture": true,
+        "face_worker": true,
+        "scene_server": true,
+        "scene_worker": true,
+        "outbox": true,
+        "status_page": true
+      },
+      "database_closed": true,
+      "signals_not_recorded": 0
+    }
+  },
+  "run_error_label": null,
+  "leftovers": {
+    "llama_server_after_exit": 0,
+    "llama_server_left": 0,
+    "runtime_group_left": false,
+    "listeners_after": []
+  },
+  "cleanup_clear": true
+}

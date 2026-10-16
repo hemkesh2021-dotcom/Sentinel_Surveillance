@@ -2,12 +2,14 @@
 tests' simulate() with a scripted reading per frame, the records within their bounds, and the reading's per-gap
 evidence rules (absences only from complete evidence, the tracker's own costs, the seat followed box by box, the
 account's departure interval, no gap = not reproduced); F2's reading refuses such a run and this reading refuses an
-F2 run; the privacy profile accepts every line and refuses an undeclared key."""
+F2 run; the privacy profile accepts every line and refuses an undeclared key. Session 81: zero completed shadow passes
+fail the diagnostic's health (an empty pass is a completed one), and the short integration check's reading."""
 
 from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -406,3 +408,217 @@ def test_the_cli_reads_a_tracking_session_and_never_prints_an_f2_verdict(mods, t
     printed = capsys.readouterr().out
     assert printed.rstrip().endswith("face-tracking: execution complete (descriptive only; it validates nothing)")
     assert "face-f2" not in printed
+
+
+# ---------------------------------------------------------------- session 81: the diagnostic's health
+
+
+def failing_shadow(base, *, start: float = 0.0, end: float = 1e9):
+    """``base``'s readings with the shadow pass raising between ``start`` and ``end`` (s), as on the device run
+    trk-20261016T100149Z (shadow_failed on every frame; the candidates still counted, no limit flag)."""
+    def script(t: float, phase: str, track: int | None, tracker: Any) -> TrackerDiagnostics:
+        d = base(t, phase, track, tracker)
+        if not start <= t < end:
+            return d
+        return replace(d, shadow=(), shadow_high=0, shadow_agree=0, shadow_limited=None,
+                       problems=(*d.problems, "shadow_failed"))
+    return script
+
+
+def test_zero_completed_shadow_passes_fail_the_diagnostic_and_an_empty_pass_is_completed(mods, tmp_path,
+                                                                                          tracking_startup,
+                                                                                          f1_list) -> None:
+    out = simulate(tmp_path, tracking_startup, tracking=failing_shadow(make_script("filtered")))
+    finish(mods, out, account=account_v3(mods), cues=FORMAT3_CUES, cued_format=9, readiness=READINESS)
+    reading = mods.check.read_tracking(out, f1_list)
+    text = "\n".join(reading.lines)
+    health = line_for(text, "diagnostic health")
+    assert health.startswith("FAIL") and not reading.ok, health
+    value = json.loads(health[health.index(": {") + 2:])
+    assert value["completed"] == 0 and value["not_completed"] == 2400
+    assert value["not_completed_by_problem"] == {"shadow_failed": 2400}
+    g = gap(text)  # what was read in the hold stays unreadable for absences, never "nothing at the seat"
+    assert g["evidence"] == "INCOMPLETE" and g["at_seat_counts"]["shadow_unreadable"] == 20
+    assert g["consistent_with"] == ["nothing_read_(incomplete)"]
+    (tmp_path / "empty").mkdir()
+    empty = session(mods, tmp_path / "empty", tracking_startup, "missing")  # no shadow box anywhere in the run
+    reading = mods.check.read_tracking(empty, f1_list)
+    text = "\n".join(reading.lines)
+    assert reading.ok, text
+    health = line_for(text, "diagnostic health")
+    assert health.startswith("PASS")
+    counts = json.loads(health[health.index(": {") + 2:])
+    assert counts["completed"] == 2400 and counts["completed_without_shadow_boxes"] == 2400
+
+
+def test_some_failed_passes_keep_the_diagnostic_healthy_and_their_gap_incomplete(mods, tmp_path, tracking_startup,
+                                                                                 f1_list) -> None:
+    out = simulate(tmp_path, tracking_startup, tracking=failing_shadow(make_script("filtered"), start=262.0, end=267.0))
+    finish(mods, out, account=account_v3(mods), cues=FORMAT3_CUES, cued_format=9, readiness=READINESS)
+    reading = mods.check.read_tracking(out, f1_list)
+    text = "\n".join(reading.lines)
+    health = line_for(text, "diagnostic health")
+    assert health.startswith("PASS") and reading.ok, text
+    counts = json.loads(health[health.index(": {") + 2:])
+    assert counts["not_completed_by_problem"] == {"shadow_failed": 20} and counts["completed"] == 2380
+    g = gap(text)
+    assert g["evidence"] == "INCOMPLETE" and g["coverage"]["problems"] == {"shadow_failed": 20}
+    assert g["at_seat_counts"] == {"det_none": 20, "shadow_unreadable": 20}
+    assert described(text, "record coverage over the run")["complete"] is False
+
+
+def test_the_shadow_health_counts_by_frame(mods) -> None:
+    import tracking_check  # beside face_check, on the path the mods fixture prepends
+
+    def frame(problems=(), sh_lim=False, shadow=()):
+        return {"problems": list(problems), "sh_lim": sh_lim, "shadow": list(shadow)}
+
+    frames = [frame(), frame(shadow=[{"s": 0.2}]), frame(sh_lim=True), frame(["shadow_failed"], None),
+              frame(["raw_missing"], None), frame(["clone_failed"], None), frame(["layout_unknown"]),
+              frame(sh_lim=None)]
+    assert tracking_check.shadow_health(frames) == {
+        "frames": 8, "completed": 4, "completed_with_shadow_boxes": 1, "completed_without_shadow_boxes": 3,
+        "completed_limited": 1, "not_completed": 4,
+        "not_completed_by_problem": {"clone_failed": 1, "raw_missing": 1, "shadow_failed": 1},
+        "not_completed_without_a_problem_named": 1}
+    assert tracking_check.shadow_health([])["completed"] == 0
+
+
+# ---------------------------------------------------------------- session 81: the short integration check
+
+SEATED_RUN = ((0, 121, "facing", 1),)  # seated facing the camera throughout: no movement is asked
+INTEGRATION_CUES = {"t0": 0.0, "stop": 115.0}
+INTEGRATION_CAPTURES = ((60.0, "i1"), (110.0, "end"))
+LIMITS = {"pressure_stop_bytes": 4_800_000_000, "mem_free_floor_bytes": 1_073_741_824,
+          "mem_available_floor_bytes": 2_147_483_648, "swap_counters": "unchanged", "max_sample_gap_s": 0.5}
+GUARD = {"samples": 1100, "largest_gap_s": 0.21, "peak_pressure_bytes": 4_200_000_000,
+         "min_mem_free_bytes": 1_300_000_000, "min_mem_available_bytes": 3_500_000_000, "trigger": None,
+         "trigger_after_stop_request": False}
+
+
+def integration(mods, root: Path, tracking_startup, *, tracking=None, duration: float = 120.0,
+                cues=INTEGRATION_CUES, result: dict | None = None) -> Path:
+    """The short integration check's run as its launch block makes it: 120 s from readiness, the start and stop cues,
+    two status captures, the diagnostic on; no account; the counts by the real workflow."""
+    out = simulate(root, tracking_startup, script=SEATED_RUN, duration=duration, captures=INTEGRATION_CAPTURES,
+                   tracking=tracking or make_script())
+    parameters = {"duration_s": duration, "from_launch": False, "ready_timeout_s": 300.0, "stop_grace_s": 90.0,
+                  "step4_headroom": True,
+                  "status_at": [{"at_s": at, "name": name} for at, name in INTEGRATION_CAPTURES],
+                  "cues": [{"at_s": at, "name": name} for name, at in cues.items()],
+                  "require_ready": "tracking_diagnostic"}
+    finish(mods, out, account=None, cues=cues, duration_s=duration, captures=INTEGRATION_CAPTURES, readiness=READINESS,
+           result_update={"parameters": parameters, "limits": LIMITS, "guard": GUARD,
+                          "baseline": {"MemFree": 5_400_000_000, "MemAvailable": 6_600_000_000,
+                                       "pressure_bytes": 1_390_000_000, "t_mono": 0.5}, **(result or {})})
+    return out
+
+
+def test_the_integration_check_passes_and_describes_shadow_passes_coverage_timing_and_memory(
+        mods, tmp_path, tracking_startup, f1_list, capsys) -> None:
+    out = integration(mods, tmp_path, tracking_startup)
+    reading = mods.check.read_tracking_integration(out, f1_list)
+    text = "\n".join(reading.lines)
+    assert reading.ok, text
+    for item in ("supervision status", "readiness required before T0", "a tracking diagnostic run", "clean shutdown",
+                 "identity records", "tracking records", "diagnostic health", "T0:", "a short run",
+                 "memory policy selected", "THP scope", "THP disable verified", "post-load releases",
+                 "the scene model loaded", "the guard's memory limits as pinned",
+                 "camera userinfo counts", "passphrase, name and nonconforming counts"):
+        assert line_for(text, item).startswith("PASS"), item
+    passes = described(text, "shadow passes per frame")
+    assert passes["frames"]["frames"] == 480 and passes["frames"]["completed"] == 480
+    assert passes["frames"]["completed_without_shadow_boxes"] == 480  # an empty result is a completed pass
+    assert passes["summary"] == {"processed": 480, "kept": 480, "dropped": 0, "problem_counts": {}}
+    assert described(text, "record coverage over the run")["complete"] is True
+    timing = described(text, "timing")
+    assert timing["ready_after_launch_s"] == 70.0 and timing["backend_ns"]["n"] == 480
+    assert timing["processed_fps_over_the_records"] == 4.0 and len(timing["captures"]) == 2
+    memory = described(text, "memory")
+    assert memory["limits"] == LIMITS and memory["peak_pressure_bytes"] == 4_200_000_000
+    assert memory["margin_to_pressure_stop"] == 600_000_000
+    assert memory["margin_to_mem_free_floor"] == 1_300_000_000 - 1_073_741_824
+    assert memory["margin_to_mem_available_floor"] == 3_500_000_000 - 2_147_483_648
+    starting = json.loads((out / "run.jsonl").read_text().splitlines()[0])["startup"]
+    assert memory["before_loads"] == {k: starting.get(k, "missing") for k in (
+        "scene_memory_before", "detector_memory_before", "face_memory_before")}  # the runtime's own starting line
+    workload = described(text, "the workload at the last status capture")
+    assert sum(workload["face_results_by_outcome"].values()) > 0 and workload["scene_worker"] is not None
+    assert "scope: a short integration check" in text and "not ten-minute stability" in text
+    assert not any(line.startswith(("DESCRIPTIVE A gap", "DESCRIPTIVE per window")) for line in reading.lines)
+    assert mods.evidence.read(out / "result.json", "f2").nonconforming == []
+    assert mods.check.main(["tracking-integration", str(out), "--f1", str(f1_list)]) == 0
+    printed = capsys.readouterr().out
+    assert printed.rstrip().endswith(mods.check.INTEGRATION_VERDICT[True])
+    assert "face-f2" not in printed and "face-tracking:" not in printed
+
+
+def test_the_sealed_guard_stop_fails_the_integration_check_and_its_memory_is_described(mods, tmp_path,
+                                                                                       tracking_startup, f1_list,
+                                                                                       capsys) -> None:
+    """The device run's outcome on this check's shape: the guard's own trigger, status, stop and memory figures as
+    sealed in trk-20261016T100149Z's result.json; the stop cue never printed. Every count still 0 (the trigger's
+    numbers and labels are declared), the memory described, the verdict incomplete."""
+    sealed = json.loads((Path(__file__).resolve().parents[1] / "support/fixtures/"
+                         "trk-20261016T100149Z-tv-result.json").read_text())
+    cues = [{"name": "t0", "at_s": 0.0, "printed_after_launch_s": 70.1, "printed_mono_s": 1.1},
+            {"name": "stop", "at_s": 115.0, "printed_after_launch_s": None, "printed_mono_s": None}]
+    out = integration(mods, tmp_path, tracking_startup, duration=18.75, result={
+        "status": sealed["status"], "stop": sealed["stop"], "guard": sealed["guard"], "limits": sealed["limits"],
+        "cues": cues})
+    reading = mods.check.read_tracking_integration(out, f1_list)
+    text = "\n".join(reading.lines)
+    assert not reading.ok
+    assert line_for(text, "supervision status").startswith("FAIL")
+    guard = line_for(text, "no memory-guard stop")
+    assert guard.startswith("FAIL") and "free_or_available_stop" in guard
+    assert line_for(text, "a short run").startswith("FAIL")  # the stop cue never printed
+    assert line_for(text, "passphrase, name and nonconforming counts").startswith("PASS")
+    assert mods.evidence.read(out / "result.json", "f2").nonconforming == []
+    memory = described(text, "memory")
+    assert memory["min_mem_free_bytes"] == 1_071_239_168 and memory["margin_to_mem_free_floor"] == -2_502_656
+    assert mods.check.main(["tracking-integration", str(out), "--f1", str(f1_list)]) == 1
+    assert capsys.readouterr().out.rstrip().endswith(mods.check.INTEGRATION_VERDICT[False])
+
+
+def test_zero_completed_shadow_passes_fail_the_integration_check(mods, tmp_path, tracking_startup, f1_list) -> None:
+    out = integration(mods, tmp_path, tracking_startup, tracking=failing_shadow(make_script()))
+    reading = mods.check.read_tracking_integration(out, f1_list)
+    text = "\n".join(reading.lines)
+    assert not reading.ok and line_for(text, "diagnostic health").startswith("FAIL")
+    assert described(text, "shadow passes per frame")["frames"]["not_completed_by_problem"] == {"shadow_failed": 480}
+
+
+@pytest.mark.parametrize("change, item", [
+    (lambda start, result: start.update(scene_server={**start["scene_server"], "state": "failed"}),
+     "the scene model loaded"),
+    (lambda start, result: start.update(scene_problem="scene_server_failed"), "the scene model loaded"),
+    (lambda start, result: start.update(memory_policy={"thp": "system", "model_file_release": "none"}),
+     "memory policy selected"),
+    (lambda start, result: result["limits"].update(mem_free_floor_bytes=512 * 1024 * 1024),
+     "the guard's memory limits as pinned"),
+    (lambda start, result: result["parameters"].update(step4_headroom=False), "the guard's memory limits as pinned"),
+])
+def test_another_workload_or_other_limits_are_not_this_check(mods, tmp_path, tracking_startup, f1_list, change,
+                                                              item) -> None:
+    out = integration(mods, tmp_path, tracking_startup)
+    result = json.loads((out / "result.json").read_text())
+    change(result["run_output"]["starting"], result)
+    (out / "result.json").write_text(json.dumps(result))
+    reading = mods.check.read_tracking_integration(out, f1_list)
+    assert not reading.ok and line_for("\n".join(reading.lines), item).startswith("FAIL")
+
+
+@pytest.mark.parametrize("kind", ["longer", "movement_cue", "from_launch"])
+def test_a_longer_run_or_a_movement_cue_is_not_this_check(mods, tmp_path, tracking_startup, f1_list, kind) -> None:
+    if kind == "longer":
+        out = integration(mods, tmp_path, tracking_startup, duration=180.0)
+    elif kind == "movement_cue":
+        out = integration(mods, tmp_path, tracking_startup, cues={"t0": 0.0, "a": 60.0, "stop": 115.0})
+    else:
+        out = integration(mods, tmp_path, tracking_startup)
+        result = json.loads((out / "result.json").read_text())
+        result["parameters"]["from_launch"] = True
+        (out / "result.json").write_text(json.dumps(result))
+    reading = mods.check.read_tracking_integration(out, f1_list)
+    assert not reading.ok and line_for("\n".join(reading.lines), "a short run").startswith("FAIL")
