@@ -109,6 +109,10 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
    shadow pass completed on its 10 recorded frames. Same-boot observations showed far less anonymous memory resident
    once the development processes and the VNC desktop session were closed; a preparation supplement that closes them
    on request before launch (limits and criteria unchanged) is dry-run and pending.
+   Session 83: with that preparation the check completed (short-run integration only: two minutes, seated; the lowest
+   MemFree 503 MB above the guard's floor; every recorded frame's shadow pass completed). The ten-minute diagnostic
+   package (`tracking-diag-c530ff2`, the same code, the preparation built in) is dry-run and pending; ten-minute
+   stability, tracking behaviour and recognition are not established by the short check.
 2. Chat: its earlier runtime checks passed; admission (operator-run resource and interference checks; the maintainer's
    decision) and factual accuracy (the grounding check G is designed, not implemented) remain pending.
 3. Face and chat (the VLM) together: no combined run yet.
