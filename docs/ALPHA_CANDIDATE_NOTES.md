@@ -121,6 +121,10 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
    the frames were held is unknown). F2's retention reading was found to read FAIL on real timing even when the
    runtime follows its rule (a reading defect; a correction is proposed, not made). No F2 has passed, so face remains
    the experimental demonstration.
+   Session 85: that reading is corrected (`d754976`: the clear and the retained basis timed from the votes the runtime
+   actually held; the criterion, tolerances and every other F2 item unchanged; no earlier F2 verdict changes), and F2 is
+   re-pinned with the host preparation (`f2-normal-d754976`, dry-run, not yet run on the device). Face remains the
+   experimental demonstration until an F2 actually validates.
 2. Chat: its earlier runtime checks passed; admission (operator-run resource and interference checks; the maintainer's
    decision) and factual accuracy (the grounding check G is designed, not implemented) remain pending.
 3. Face and chat (the VLM) together: no combined run yet.
