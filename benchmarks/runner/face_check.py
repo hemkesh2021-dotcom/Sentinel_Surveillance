@@ -1287,7 +1287,14 @@ def _return(r: Reading, line: Timeline, windows: dict, bounds: dict, fmt: int) -
 def _retention(r: Reading, line: Timeline, windows: dict, enrolled: str, account: dict[str, str], bounds: dict,
                fmt: int) -> None:
     """Item 29. The turn is the interval [lo, hi] of turned_away (format 1: [t, t], the reading itself): exactly one
-    known interval of the enrolled identity may overlap it, and it must cover all of it."""
+    known interval of the enrolled identity may overlap it, and it must cover all of it.
+
+    The clear is timed from the votes the runtime held at the last step the records show the identity KNOWN (the
+    interval's latest transition into known): those applied by then whose frames were still within the vote expiry.
+    On the device the clear lands at the first loop step after the older vote's expiry, so at the clear that vote is
+    already gone (session 84). The retained basis is the first one at or after the newest of those votes was applied;
+    an earlier one is the gap before that vote arrived. Records with a vote applied after that last step and before
+    the clear, or whose supporting votes are not the enrolled identity's matches, contradict themselves and fail."""
     lo, hi = bounds["turned_away"]
     away = windows["A"]
     overlapping = [(key, interval) for key, intervals in line.known.items() for interval in intervals
@@ -1329,22 +1336,29 @@ def _retention(r: Reading, line: Timeline, windows: dict, enrolled: str, account
         else:  # no new evidence for 30 s, yet still known
             r.item(name, value, False)
         return
-    support = line.votes_known_by(key, interval["end"] - 1e-3)[-CONFIRMATIONS:]
+    last_known = max(t for t, _ in interval["basis_changes"])
+    support = line.votes_known_by(key, last_known)[-CONFIRMATIONS:]
+    after = [v for v in line.votes.get(key, ()) if last_known + 1e-6 < v["applied"] < interval["end"]]
+    consistent = (len(support) == CONFIRMATIONS and not after
+                  and all(v["vote"] == "match" and v["identity_id"] == interval["identity_id"] for v in support))
     older = support[0]["t"] if len(support) == CONFIRMATIONS else None
     expected = None if older is None else older + VOTE_TTL_S
-    newest = support[-1]["t"] if support else None
-    retained_at = next((t for t, basis in interval["basis_changes"] if basis == "retained"), None)
+    newest = support[-1] if support else None
+    retained_at = None if newest is None else next(
+        (t for t, basis in interval["basis_changes"] if basis == "retained" and t >= newest["applied"] - 1e-6), None)
     value = {"track": list(key), "continuity": round(continuity, 3), "older_vote_s": None if older is None
              else round(older, 1), "cleared_s": round(interval["end"], 1), "cleared_to": interval["end_to"],
              "expected_clear_s": None if expected is None else round(expected, 1),
-             "retained_from_s": None if retained_at is None else round(retained_at, 1)}
+             "retained_from_s": None if retained_at is None else round(retained_at, 1),
+             "votes_held_at_last_known_s": [round(last_known, 1), [v["vote"] for v in support]],
+             "votes_applied_after_it": len(after)}
     if interval["end_to"] == "uncertain":
         r.not_exercised(name, {**value, "why": "a contradicting vote ended it"})
         return
-    r.item(name, value, expected is not None and interval["end_to"] == "unresolved"
+    r.item(name, value, consistent and expected is not None and interval["end_to"] == "unresolved"
            and expected - EXACT_S <= interval["end"] <= expected + STATE_TOLERANCE_S
            and retained_at is not None and newest is not None
-           and newest + FRESH_S - EXACT_S <= retained_at <= newest + FRESH_S + STATE_TOLERANCE_S)
+           and newest["t"] + FRESH_S - EXACT_S <= retained_at <= newest["t"] + FRESH_S + STATE_TOLERANCE_S)
 
 
 COUNT_FILES = ("secret-counts-camera.txt", "secret-counts-identity.txt")

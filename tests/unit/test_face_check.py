@@ -1250,6 +1250,184 @@ def test_retention_needs_the_identity_known_throughout_the_turn_interval(mods) -
     assert item.startswith("PASS")
 
 
+# ---------------------------------------------------------------- item 29 on the device's own timing (session 85)
+
+# Track 3 of the sealed tracking diagnostic trk-20261017T103831Z (session 84), extracted read only: its applied votes
+# [frame ns, applied ns, vote] and transitions [ns, from, to, basis, reason, identity] after T0, the offered ticks
+# [frame ns, tracks] from 230 to 380 s and the guard's cue offsets, integers as recorded; the identity ID replaced by
+# ENROLLED, no similarity, box or image. That run is a diagnostic, never an F2 attempt (F2's reading refuses it, see
+# test_tracking_check); these tests use its timing only. On it, item 29 as pinned at c530ff2 read FAIL although the
+# runtime followed its rule.
+DEVICE_RETENTION = Path(__file__).resolve().parents[1] / "support/fixtures/trk-20261017T103831Z-track3-identity.json"
+OLDER_VOTE_S, OLDER_APPLIED_S = 239.428924329, 240.552054323
+NEWEST_VOTE_S, NEWEST_APPLIED_S = 241.527646403, 242.73518928
+CLEARED_S = 269.435607219  # the first loop step after the older vote's expiry (269.428924329): 6.683 ms later
+TRANSIENT_RETAINED_S, FRESH_AGAIN_S, RETAINED_S = 242.467080945, 242.738488651, 244.58755192
+
+
+def device_data() -> dict[str, Any]:
+    return json.loads(DEVICE_RETENTION.read_text())
+
+
+def at_ns(seconds: float) -> int:
+    """Seconds after T0 as the fixture's integer ns after T0."""
+    return round(seconds * 1e9)
+
+
+def device_line(mods, data: dict[str, Any]):
+    t0_ns = round(data["t0_printed_mono_s"] * 1_000_000_000)  # read_f2's own T0
+    records = {
+        "result": [{"frame_mono_ns": t0_ns + frame, "applied_mono_ns": t0_ns + applied, "outcome": "applied",
+                    "stream_epoch": 1, "persons": [{"track_id": 3, "vote": vote,
+                                                    "identity_id": ENROLLED if vote == "match" else None}]}
+                   for frame, applied, vote in data["votes"]],
+        "transition": [{"mono_ns": t0_ns + ns, "stream_epoch": 1, "track_id": 3, "from": before, "to": to,
+                        "identity_id": ENROLLED if identity else None, "basis": basis, "reason": reason}
+                       for ns, before, to, basis, reason, identity in data["transitions"]],
+        "tick": [{"frame_mono_ns": t0_ns + ns, "tick": "offered", "tracks": tracks} for ns, tracks in data["ticks"]]}
+    return mods.check.Timeline(records, t0_ns, 600.0)
+
+
+def device_item(mods, data: dict[str, Any], account: dict[str, str] | None = None) -> tuple[str, list[str]]:
+    account = account_v3(mods) if account is None else account
+    bounds = mods.check._bounds(account, 9, data["cue_offsets_s"])
+    r = mods.check.Reading()
+    mods.check._retention(r, device_line(mods, data), mods.check._windows(bounds, 600.0), ENROLLED, account, bounds, 9)
+    return next(x for x in r.lines if "A: a known identity is retained" in x), r.lines
+
+
+def item_value(item: str) -> dict[str, Any]:
+    return json.loads(item.split(": ", 2)[2])
+
+
+def moved(data: dict[str, Any], at: float, to: float | None = None, **fields: Any) -> dict[str, Any]:
+    """A copy whose transition at ``at`` (s after T0, within 1 ms) is moved to ``to`` and/or given ``fields`` (state,
+    basis, reason); with neither, the transition is removed."""
+    copy = json.loads(json.dumps(data))
+    index = next(n for n, t in enumerate(copy["transitions"]) if abs(t[0] - at_ns(at)) < 1_000_000)
+    if to is None and not fields:
+        del copy["transitions"][index]
+        return copy
+    ns, before, state, basis, reason, identity = copy["transitions"][index]
+    state, basis, reason = fields.get("state", state), fields.get("basis", basis), fields.get("reason", reason)
+    copy["transitions"][index] = [ns if to is None else at_ns(to), before, state, basis, reason, identity]
+    copy["transitions"].sort(key=lambda t: t[0])
+    return copy
+
+
+def test_item_29_reads_the_device_timing_it_failed_on_as_the_runtime_behaved(mods) -> None:
+    data = device_data()
+    line = device_line(mods, data)
+    interval = next(i for i in line.known[(1, 3)] if i["end_to"] == "unresolved" and i["end"] > 260)
+    assert interval["end"] == pytest.approx(CLEARED_S, abs=1e-9)
+    assert [round(t, 9) for t, _ in interval["basis_changes"][1:]] == [TRANSIENT_RETAINED_S, FRESH_AGAIN_S, RETAINED_S]
+    # the defect: one ms before the clear the older vote is already 30.0057 s old, so only one vote is held there, and
+    # the first retained basis came before the newest vote was applied (a result without a face lay between them)
+    assert len(line.votes_known_by((1, 3), interval["end"] - 1e-3)) == 1
+    assert TRANSIENT_RETAINED_S < NEWEST_APPLIED_S < FRESH_AGAIN_S
+    # at the last step the records show KNOWN (244.59 s) the runtime held exactly the two matches the clear is timed from
+    held = line.votes_known_by((1, 3), RETAINED_S)[-2:]
+    assert [(round(v["t"], 9), round(v["applied"], 9), v["vote"]) for v in held] == [
+        (OLDER_VOTE_S, OLDER_APPLIED_S, "match"), (NEWEST_VOTE_S, NEWEST_APPLIED_S, "match")]
+    item, lines = device_item(mods, data)
+    assert item.startswith("PASS"), lines
+    assert item_value(item) == {"track": [1, 3], "continuity": 1.0, "older_vote_s": 239.4, "cleared_s": 269.4,
+                                "cleared_to": "unresolved", "expected_clear_s": 269.4, "retained_from_s": 244.6,
+                                "votes_held_at_last_known_s": [244.6, ["match", "match"]], "votes_applied_after_it": 0}
+    assert "DESCRIPTIVE A: match votes on the retained track inside the turn interval: 1" in lines
+    assert "DESCRIPTIVE A: new matching evidence on the retained track after the latest possible turn time " \
+           "(match votes): 0" in lines
+
+
+@pytest.mark.parametrize("clear_at, label", [
+    (OLDER_VOTE_S + 30.0 + 1.99, "PASS"),  # within STATE_TOLERANCE_S (2.0) after the expiry: unchanged
+    (OLDER_VOTE_S + 30.0 + 2.01, "FAIL"),  # a late expiry
+    (OLDER_VOTE_S + 30.0 - 0.02, "FAIL"),  # cleared before the older vote expired (beyond EXACT_S)
+    (OLDER_VOTE_S + 30.0 - 2.0, "FAIL"),
+])
+def test_item_29_still_times_the_clear_from_the_older_votes_expiry(mods, clear_at, label) -> None:
+    item, lines = device_item(mods, moved(device_data(), CLEARED_S, clear_at))
+    assert item.startswith(label), lines
+
+
+@pytest.mark.parametrize("retained_at, label", [
+    (NEWEST_VOTE_S + 3.0 + 1.99, "PASS"),  # within STATE_TOLERANCE_S after newest + FRESH_S: unchanged
+    (NEWEST_VOTE_S + 3.0 + 2.01, "FAIL"),  # a late retained transition
+    (NEWEST_VOTE_S + 3.0 - 0.02, "FAIL"),  # retained before the newest vote was 3 s old
+])
+def test_item_29_still_times_the_retained_basis_from_the_newest_vote(mods, retained_at, label) -> None:
+    item, lines = device_item(mods, moved(device_data(), RETAINED_S, retained_at))
+    assert item.startswith(label), lines
+
+
+def test_item_29_never_passes_without_a_retained_basis_after_the_newest_vote(mods) -> None:
+    # the transient retained basis alone (the fresh and retained steps after the newest vote removed): the newest vote
+    # is then applied after the last step the records show KNOWN, which the runtime would have recorded
+    item, lines = device_item(mods, moved(moved(device_data(), RETAINED_S), FRESH_AGAIN_S))
+    assert item.startswith("FAIL") and item_value(item)["votes_applied_after_it"] == 1, lines
+    # no retained basis at all: fresh until the clear
+    item, lines = device_item(mods, moved(moved(device_data(), RETAINED_S), TRANSIENT_RETAINED_S))
+    assert item.startswith("FAIL") and item_value(item)["retained_from_s"] is None, lines
+
+
+def test_item_29_contradicting_votes_never_pass(mods) -> None:
+    # a non-matching vote during the hold ends KNOWN at once: not exercised, as before
+    data = device_data()
+    data["votes"].append([at_ns(250.0), at_ns(251.1), "unknown"])
+    ended = moved(data, CLEARED_S, 251.1, state="uncertain", basis=None, reason="contradictory face evidence")
+    item, lines = device_item(mods, ended)
+    assert item.startswith("NOT_EXERCISED") and "a contradicting vote ended it" in item, lines
+    # records whose newest supporting vote did not match, though the state stayed KNOWN, contradict themselves
+    data = device_data()
+    next(v for v in data["votes"] if v[0] == at_ns(NEWEST_VOTE_S))[2] = "unknown"
+    item, lines = device_item(mods, data)
+    assert item.startswith("FAIL") and item_value(item)["votes_held_at_last_known_s"][1] == ["match", "unknown"], lines
+    # a match applied after the last KNOWN step with no transition for it: the records are inconsistent
+    data = device_data()
+    data["votes"].append([at_ns(250.0), at_ns(251.1), "match"])
+    item, lines = device_item(mods, data)
+    assert item.startswith("FAIL") and item_value(item)["votes_applied_after_it"] == 1, lines
+
+
+@pytest.mark.parametrize("at", [CLEARED_S, 255.0])
+def test_item_29_a_track_that_stopped_being_current_is_not_retention(mods, at) -> None:
+    cleared = moved(device_data(), CLEARED_S, at, state="cleared", basis=None, reason="track no longer current")
+    item, lines = device_item(mods, cleared)
+    assert item.startswith("NOT_EXERCISED") and '"ended": "cleared"' in item, lines
+
+
+def test_item_29_missing_or_insufficient_evidence_never_passes(mods) -> None:
+    data = device_data()
+    data["votes"] = []  # no result records
+    item, lines = device_item(mods, data)
+    assert item.startswith("FAIL") and item_value(item)["expected_clear_s"] is None, lines
+    data = device_data()  # only the newest vote recorded: one vote held at the last KNOWN step
+    data["votes"] = [v for v in data["votes"] if v[0] >= at_ns(NEWEST_VOTE_S)]
+    item, lines = device_item(mods, data)
+    assert item.startswith("FAIL") and item_value(item)["older_vote_s"] is None, lines
+    data = device_data()  # no offered tick in A
+    data["ticks"] = []
+    item, lines = device_item(mods, data)
+    assert item.startswith("NOT_EXERCISED") and '"continuity": 0.0' in item, lines
+    data = device_data()  # ticks that do not list the track
+    data["ticks"] = [[ns, []] for ns, _ in data["ticks"]]
+    item, _ = device_item(mods, data)
+    assert item.startswith("NOT_EXERCISED")
+    # no clear recorded (no transition from the clear on): KNOWN to the records' end with no new match for 30 s
+    data = device_data()
+    data["transitions"] = [t for t in data["transitions"] if t[0] < at_ns(CLEARED_S) - 1_000_000]
+    item, lines = device_item(mods, data)
+    assert item.startswith("FAIL") and '"still_known_at_window_end": true' in item, lines
+    item, _ = device_item(mods, device_data(), account_v3(mods, face_hidden_while_turned="unknown"))
+    assert item.startswith("NOT_EXERCISED")
+    # not known at the turn: the interval's transitions before the hold replaced by one becoming known at 246 s
+    data = device_data()
+    data["transitions"] = [t for t in data["transitions"] if not at_ns(230.0) < t[0] < at_ns(245.0)]
+    data["transitions"].append([at_ns(246.0), "unresolved", "known", "fresh", "2 consistent matches", "ENROLLED"])
+    item, _ = device_item(mods, data)
+    assert item.startswith("NOT_EXERCISED") and '"known_throughout_it": 0' in item
+
+
 def departure(mods, account: dict[str, str], fmt: int, line) -> list[str]:
     bounds, windows = windows_of(mods, account, fmt)
     r = mods.check.Reading()
