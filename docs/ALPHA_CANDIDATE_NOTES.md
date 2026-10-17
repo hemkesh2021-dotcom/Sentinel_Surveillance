@@ -113,6 +113,14 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
    MemFree 503 MB above the guard's floor; every recorded frame's shadow pass completed). The ten-minute diagnostic
    package (`tracking-diag-c530ff2`, the same code, the preparation built in) is dry-run and pending; ten-minute
    stability, tracking behaviour and recognition are not established by the short check.
+   Session 84: that ten-minute diagnostic ran once and completed (`trk-20261017T103831Z`, daylight; a diagnostic, not
+   an F2 attempt; the lowest MemFree 176 MB above the guard's floor). In this one session the tracker kept one number
+   on the seated person through the face-hidden hold; the identity, KNOWN at the cue, was retained by its 30 s rule and
+   then unresolved (no face was found during the hold); departure cleared it about 1 s after the last detection; a
+   1.9 s stretch in which no frame reached the runtime cleared it once while the person sat (re-earned in 3 s; where
+   the frames were held is unknown). F2's retention reading was found to read FAIL on real timing even when the
+   runtime follows its rule (a reading defect; a correction is proposed, not made). No F2 has passed, so face remains
+   the experimental demonstration.
 2. Chat: its earlier runtime checks passed; admission (operator-run resource and interference checks; the maintainer's
    decision) and factual accuracy (the grounding check G is designed, not implemented) remain pending.
 3. Face and chat (the VLM) together: no combined run yet.
