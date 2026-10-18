@@ -280,6 +280,23 @@ def test_missing_or_invalid_observations_are_refused(lm, tmp_path, capsys, damag
     assert code == 2 and lines["FV_launch_check"] == f"refused:evidence:{reason}" and record["verdict"] == "refused"
 
 
+def test_a_refusal_still_records_every_record_that_is_there(lm, tmp_path, capsys) -> None:
+    """Without the record after the drop, the check refuses, yet the time since f-O is still recorded and shown."""
+    host = Host()
+    w = session(lm, tmp_path, host)
+    (w / "memory-after-drop.json").unlink()
+    capsys.readouterr()
+    assert lm.main(["check", "--session-dir", str(w), "--reference-result", str(REFERENCE), "--out",
+                    str(w / "memory-launch-check.json"), "--prefix", "FV_"], host=host) == 2
+    captured = capsys.readouterr()
+    assert "FV_launch_check=refused:evidence:after_drop_record_missing" in captured.out
+    assert "FV_launch_since_drop_s=none" in captured.out and "FV_launch_since_prepared_s=60.0" in captured.out
+    assert "since the drop unknown, since f-O's prepared record 60.0 s" in captured.err
+    record = json.loads((w / "memory-launch-check.json").read_text())
+    assert record["since_drop_s"] is None and record["since_prepared_s"] == 60.0
+    assert record["change_since_prepared"]["MemFree"] == 6_900_000_000 - 6_880_000_000
+
+
 def _edit(path: Path, change) -> None:
     record = json.loads(path.read_text())
     change(record)
@@ -302,9 +319,15 @@ def test_unreadable_memory_now_is_refused_and_recorded(lm, tmp_path, capsys) -> 
     host = Host()
     w = session(lm, tmp_path, host)
     del host.values["MemFree"]
-    code, lines, record = run_check(lm, w, host, capsys)
+    capsys.readouterr()
+    code = lm.main(["check", "--session-dir", str(w), "--reference-result", str(REFERENCE), "--out",
+                    str(w / "memory-launch-check.json"), "--prefix", "FV_"], host=host)
+    captured = capsys.readouterr()
+    lines = dict(line.split("=", 1) for line in captured.out.splitlines())
+    record = json.loads((w / "memory-launch-check.json").read_text())
     assert code == 2 and lines["FV_launch_check"] == "refused:evidence:meminfo_unreadable"
     assert lines["FV_launch_memfree"] == "none" and lines["FV_launch_margin"] == "none" and record["now"] is None
+    assert "MemFree now: unknown; refused:evidence:meminfo_unreadable" in captured.err
 
 
 def test_the_check_runs_once_and_never_overwrites_its_record(lm, tmp_path, capsys) -> None:

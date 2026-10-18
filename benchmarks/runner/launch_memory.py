@@ -239,11 +239,18 @@ def check(session: Path, reference: Path, out: Path, host: Any) -> tuple[list[tu
     names = dict(RECORD_NAMES)
     try:
         names["prepared"] = preparation(session / "provenance.txt")
-        for label in LABELS:
-            records[label] = load_record(session / names[label], label)
-        floor = load_reference(reference)
     except Refused as refused:
         problem = str(refused)
+    for label in LABELS:  # each record on its own, so a refusal's record keeps whatever else was there
+        if label in names:
+            try:
+                records[label] = load_record(session / names[label], label)
+            except Refused as refused:
+                problem = problem or str(refused)
+    try:
+        floor = load_reference(reference)
+    except Refused as refused:
+        problem = problem or str(refused)
     now = None
     try:
         now = reading(host)  # the memory last: immediately before the block launches the workload
@@ -467,11 +474,15 @@ def main(argv: list[str] | None = None, host: Any = None) -> int:
             print(f"{args.prefix}{key}={value}")
         print(derivation_text(record["floor"] if record and "guard_free_floor_bytes" in record["floor"] else None),
               file=sys.stderr)
-        values = dict(lines)
-        if values["launch_memfree"] != "none":
+        values = {key: value if value != "none" else None for key, value in lines}
+        drop, prepared = (f"{values[key]} s" if values[key] else "unknown"
+                          for key in ("launch_since_drop_s", "launch_since_prepared_s"))
+        if values["launch_memfree"]:
             print(f"MemFree now {_b(int(values['launch_memfree']))}: {_signed(int(values['launch_margin']))} against "
-                  f"the launch floor; since the drop {values['launch_since_drop_s']} s, since f-O's prepared record "
-                  f"{values['launch_since_prepared_s']} s; {values['launch_check']}", file=sys.stderr)
+                  f"the launch floor; since the drop {drop}, since f-O's prepared record {prepared}; "
+                  f"{values['launch_check']}", file=sys.stderr)
+        else:
+            print(f"MemFree now: unknown; {values['launch_check']}", file=sys.stderr)
         return code
     lines = report(args.session_dir, args.result)
     try:
