@@ -369,9 +369,12 @@ def _result(path: Path | None) -> dict | None:
 
 def report(session: Path, result_path: Path | None, block: str = "F") -> list[str]:
     """Descriptive lines: the condition, the floor's derivation and each recorded state, the guard's launch baseline
-    included; MISSING where a record or the result is absent or unreadable. Judges nothing."""
+    included; MISSING where a record or the result is absent or unreadable. Judges nothing. The block letter names the
+    package's blocks in the text (F: the F2 package's f-O and its F2 sessions, as before)."""
+    observed = f"{block.lower()}-O"
+    sessions = "every F2 session" if block == "F" else "every session"
     lines = [f"CONDITION {CONDITION} (D103): the operator ran sync and sudo sysctl -w vm.drop_caches=1 once in this "
-             "session before the launch; a changed test condition: report this session apart from every F2 session "
+             f"session before the launch; a changed test condition: report this session apart from {sessions} "
              "without it, never pooled", derivation_text()]
     named = None
     try:
@@ -385,17 +388,17 @@ def report(session: Path, result_path: Path | None, block: str = "F") -> list[st
     lines += [f"memory before the drop: {_memory(before)}", f"memory after the drop: {_memory(after)}"]
     if before and after:
         lines.append(f"change across the drop: {_changes(_change(after, before))}")
-    lines.append(f"memory at f-O's prepared record: {_memory(prepared)}")
+    lines.append(f"memory at {observed}'s prepared record: {_memory(prepared)}")
     now = launch["now"] if launch else None
     if launch:
         verdict = launch.get("verdict") if launch.get("verdict") in ("passed", "refused") else "unrecognized"
         reason = launch.get("reason") if isinstance(launch.get("reason"), str) else None
         lines.append(f"memory at the launch check: {_memory(now)}; {_signed(launch['margin_bytes'])} against the "
                      f"launch floor ({verdict}{':' + reason if reason else ''}); since the drop "
-                     f"{launch.get('since_drop_s')} s, since f-O {launch.get('since_prepared_s')} s")
+                     f"{launch.get('since_drop_s')} s, since {observed} {launch.get('since_prepared_s')} s")
         change = launch.get("change_since_prepared")
         if isinstance(change, dict) and all(type(change.get(key)) is int for key in CHANGED):
-            lines.append(f"change from f-O to the launch check: {_changes(change)}")
+            lines.append(f"change from {observed} to the launch check: {_changes(change)}")
     else:
         lines.append("memory at the launch check: MISSING")
     result = _result(result_path)

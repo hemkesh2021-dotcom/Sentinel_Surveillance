@@ -439,3 +439,22 @@ def test_the_tool_runs_no_command_and_writes_no_setting() -> None:
     assert not {name for name in called if name.startswith(("system", "exec", "spawn", "popen", "fork", "kill"))}
     texts = [node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)]
     assert not [text for text in texts if "/proc/sys/vm" in text or text.startswith("/etc/sysctl")]
+
+
+def test_another_packages_block_letter_reads_its_lines_and_names_its_blocks(lm, tmp_path, capsys) -> None:
+    """Session 90: the landmark diagnostic's package writes LF_, LM_ and LO_ lines (--block L); its check passes on
+    them, and its report names l-O and every session; the F2 package's default text is unchanged."""
+    host = Host(memfree=6_850_000_000)
+    lines = [line.replace("F", "L", 1) if line[:2] in ("FB", "FC", "FF", "FM", "FO") else line for line in GOOD]
+    w = session(lm, tmp_path, host, lines)
+    out = w / "memory-launch-check.json"
+    assert lm.main(["check", "--session-dir", str(w), "--reference-result", str(REFERENCE), "--out", str(out),
+                    "--prefix", "LV_", "--block", "L"], host=host) == 0
+    assert "LV_launch_check=passed" in capsys.readouterr().out
+    assert lm.main(["report", "--session-dir", str(w), "--out", str(w / "report.txt"), "--block", "L"]) == 0
+    text = (w / "report.txt").read_text()
+    assert "memory at l-O's prepared record: MemFree 6,880,000,000 B" in text and "since l-O" in text
+    assert "report this session apart from every session without it" in text and "f-O" not in text
+    assert lm.main(["report", "--session-dir", str(w), "--out", str(w / "report-f.txt")]) == 0  # the F2 letter
+    default = (w / "report-f.txt").read_text()
+    assert "apart from every F2 session without it" in default and "memory at f-O's prepared record: MISSING" in default
