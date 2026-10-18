@@ -1,0 +1,393 @@
+{
+  "schema_version": 1,
+  "mode": "step5_guard",
+  "status": "duration_stop",
+  "parameters": {
+    "duration_s": 600.0,
+    "from_launch": false,
+    "ready_timeout_s": 300.0,
+    "stop_grace_s": 90.0,
+    "step4_headroom": true,
+    "status_at": [
+      {
+        "at_s": 60.0,
+        "name": "e1"
+      },
+      {
+        "at_s": 180.0,
+        "name": "k1"
+      },
+      {
+        "at_s": 300.0,
+        "name": "a"
+      },
+      {
+        "at_s": 420.0,
+        "name": "e2"
+      },
+      {
+        "at_s": 540.0,
+        "name": "k2"
+      },
+      {
+        "at_s": 590.0,
+        "name": "end"
+      }
+    ],
+    "cues": [
+      {
+        "at_s": 0.0,
+        "name": "t0"
+      },
+      {
+        "at_s": 120.0,
+        "name": "k1"
+      },
+      {
+        "at_s": 240.0,
+        "name": "a"
+      },
+      {
+        "at_s": 360.0,
+        "name": "e2"
+      },
+      {
+        "at_s": 480.0,
+        "name": "k2"
+      },
+      {
+        "at_s": 595.0,
+        "name": "stop"
+      }
+    ],
+    "require_ready": "tracking_diagnostic"
+  },
+  "limits": {
+    "pressure_stop_bytes": 4800000000,
+    "mem_free_floor_bytes": 1073741824,
+    "mem_available_floor_bytes": 2147483648,
+    "swap_counters": "unchanged",
+    "max_sample_gap_s": 0.5
+  },
+  "baseline": {
+    "MemTotal": 7990001664,
+    "MemFree": 5745963008,
+    "MemAvailable": 7089917952,
+    "Cached": 1413201920,
+    "SwapTotal": 3994976256,
+    "SwapFree": 3994976256,
+    "Shmem": 13565952,
+    "Unevictable": 36249600,
+    "Mlocked": 0,
+    "SUnreclaim": 93958144,
+    "KReclaimable": 91910144,
+    "CmaFree": 227393536,
+    "AnonPages": 227291136,
+    "Mapped": 189943808,
+    "Active(file)": 563855360,
+    "Inactive(file)": 884420608,
+    "pswpin": 0,
+    "pswpout": 0,
+    "t_mono": 819.549768104,
+    "pressure_bytes": 900083712
+  },
+  "child": {
+    "launched_utc": "2026-10-17T10:48:17Z",
+    "ready_after_s": 78.705,
+    "ready_mono_s": 898.254744,
+    "returncode": 0,
+    "exited_utc": "2026-10-17T10:59:51Z",
+    "ran_s": 693.749
+  },
+  "readiness": {
+    "required": "tracking_diagnostic",
+    "met": true,
+    "reason": null,
+    "starting_after_s": 78.705
+  },
+  "stop": {
+    "requested_by": "duration_elapsed",
+    "requested_at_s": 678.869,
+    "exited_after_stop_s": 14.88,
+    "forced": false
+  },
+  "guard": {
+    "samples": 3448,
+    "largest_gap_s": 0.206,
+    "peak_pressure_bytes": 4274298880,
+    "min_mem_free_bytes": 1249869824,
+    "min_mem_available_bytes": 3715702784,
+    "trigger": null,
+    "trigger_after_stop_request": false
+  },
+  "captures": [
+    {
+      "name": "e1",
+      "at_s": 60.0,
+      "taken_after_launch_s": 138.711,
+      "status": "saved",
+      "bytes": 4205,
+      "listeners": [
+        {
+          "port": 18081,
+          "family": "tcp",
+          "scope": "loopback"
+        },
+        {
+          "port": 18090,
+          "family": "tcp",
+          "scope": "loopback"
+        }
+      ]
+    },
+    {
+      "name": "k1",
+      "at_s": 180.0,
+      "taken_after_launch_s": 258.879,
+      "status": "saved",
+      "bytes": 4628,
+      "listeners": [
+        {
+          "port": 18081,
+          "family": "tcp",
+          "scope": "loopback"
+        },
+        {
+          "port": 18090,
+          "family": "tcp",
+          "scope": "loopback"
+        }
+      ]
+    },
+    {
+      "name": "a",
+      "at_s": 300.0,
+      "taken_after_launch_s": 378.78,
+      "status": "saved",
+      "bytes": 4710,
+      "listeners": [
+        {
+          "port": 18081,
+          "family": "tcp",
+          "scope": "loopback"
+        },
+        {
+          "port": 18090,
+          "family": "tcp",
+          "scope": "loopback"
+        }
+      ]
+    },
+    {
+      "name": "e2",
+      "at_s": 420.0,
+      "taken_after_launch_s": 498.731,
+      "status": "saved",
+      "bytes": 4375,
+      "listeners": [
+        {
+          "port": 18081,
+          "family": "tcp",
+          "scope": "loopback"
+        },
+        {
+          "port": 18090,
+          "family": "tcp",
+          "scope": "loopback"
+        }
+      ]
+    },
+    {
+      "name": "k2",
+      "at_s": 540.0,
+      "taken_after_launch_s": 618.716,
+      "status": "saved",
+      "bytes": 4643,
+      "listeners": [
+        {
+          "port": 18081,
+          "family": "tcp",
+          "scope": "loopback"
+        },
+        {
+          "port": 18090,
+          "family": "tcp",
+          "scope": "loopback"
+        }
+      ]
+    },
+    {
+      "name": "end",
+      "at_s": 590.0,
+      "taken_after_launch_s": 668.809,
+      "status": "saved",
+      "bytes": 4644,
+      "listeners": [
+        {
+          "port": 18081,
+          "family": "tcp",
+          "scope": "loopback"
+        },
+        {
+          "port": 18090,
+          "family": "tcp",
+          "scope": "loopback"
+        }
+      ]
+    }
+  ],
+  "cues": [
+    {
+      "name": "t0",
+      "at_s": 0.0,
+      "printed_after_launch_s": 78.705,
+      "printed_mono_s": 898.254744
+    },
+    {
+      "name": "k1",
+      "at_s": 120.0,
+      "printed_after_launch_s": 198.727,
+      "printed_mono_s": 1018.277526
+    },
+    {
+      "name": "a",
+      "at_s": 240.0,
+      "printed_after_launch_s": 318.843,
+      "printed_mono_s": 1138.392984
+    },
+    {
+      "name": "e2",
+      "at_s": 360.0,
+      "printed_after_launch_s": 438.734,
+      "printed_mono_s": 1258.284501
+    },
+    {
+      "name": "k2",
+      "at_s": 480.0,
+      "printed_after_launch_s": 558.751,
+      "printed_mono_s": 1378.301625
+    },
+    {
+      "name": "stop",
+      "at_s": 595.0,
+      "printed_after_launch_s": 673.838,
+      "printed_mono_s": 1493.388544
+    }
+  ],
+  "run_output": {
+    "lines": 9197,
+    "json_lines": 9197,
+    "non_json_lines": 0,
+    "starting": {
+      "memory_policy": {
+        "thp": "workload_disabled",
+        "model_file_release": "post_load"
+      },
+      "thp_scope": {
+        "before_launch": {
+          "runtime": 1
+        },
+        "llama_ready": {
+          "runtime": 1,
+          "scene_server": 1
+        },
+        "workload_verified": {
+          "runtime": 0,
+          "scene_server": 1
+        }
+      },
+      "thp_disable": {
+        "verified": true,
+        "reason": null,
+        "set_rc": 0,
+        "thp_enabled": 0
+      },
+      "releases": {
+        "scene": {
+          "llm": "returned_0",
+          "mmproj": "returned_0"
+        },
+        "detector": {
+          "engine": "returned_0"
+        },
+        "face": {
+          "facenet512_weights.h5": "returned_0",
+          "face_detection_yunet_2023mar.onnx": "returned_0"
+        }
+      },
+      "scene_server": {
+        "state": "ready",
+        "problem": null,
+        "layers": "17/17",
+        "vision_on_gpu": true
+      },
+      "scene_problem": null,
+      "detector_problem": null,
+      "face": {
+        "validation_run": true,
+        "identities_enrolled": 1,
+        "tracking_diagnostic": {
+          "shadow_conf": 0.1,
+          "max_records": 20000,
+          "max_bytes": 32000000,
+          "max_line_bytes": 4096,
+          "max_det": 16,
+          "max_shadow": 12,
+          "max_lost": 8,
+          "max_assign_tracks": 8,
+          "max_assign_dets": 16,
+          "tracker": {
+            "conf": 0.4,
+            "match_thresh": 0.8,
+            "track_high_thresh": 0.25,
+            "track_low_thresh": 0.1,
+            "new_track_thresh": 0.25,
+            "track_buffer": 30,
+            "max_time_lost": 30,
+            "fuse_score": true,
+            "unconfirmed_thresh": 0.7,
+            "shadow_conf": 0.1,
+            "shadow_max_nms": 30000,
+            "max_det": 300,
+            "iou": 0.7
+          }
+        }
+      },
+      "face_problem": null,
+      "face_memory_before": {
+        "MemFree": 2676232192,
+        "MemAvailable": 4600045568
+      },
+      "notifier_problems": {},
+      "scene_memory_before": {
+        "MemFree": 5700296704,
+        "MemAvailable": 7069175808
+      },
+      "detector_memory_before": {
+        "MemFree": 3797516288,
+        "MemAvailable": 5367271424
+      }
+    },
+    "stopped": {
+      "all_stopped": true,
+      "stopped": {
+        "capture": true,
+        "face_worker": true,
+        "scene_server": true,
+        "scene_worker": true,
+        "outbox": true,
+        "status_page": true
+      },
+      "database_closed": true,
+      "signals_not_recorded": 0
+    }
+  },
+  "run_error_label": null,
+  "leftovers": {
+    "llama_server_after_exit": 0,
+    "llama_server_left": 0,
+    "runtime_group_left": false,
+    "listeners_after": []
+  },
+  "cleanup_clear": true
+}
