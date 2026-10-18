@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import time
 from collections import Counter, OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ from .contracts import Evidence, FrameRef, StreamIdentity, TrackKey, TrackObserv
 from .identity.association import AssociationGeometry, FaceObservation, Ownership, associate
 from .identity.comparison import ComparisonOutcome, Disposition
 from .identity.continuity import Break, ContinuityMonitor, ContinuityPolicy
+from .identity.landmarks import landmark_records
 from .identity.matching import Enrollment
 from .identity.state import UNKNOWN_VOTE, IdentityPolicy, IdentityResolver, IdentityState, TrackIdentity, VoteRecord
 from .jobs import WorkerOutcome
@@ -63,6 +65,10 @@ IDENTITY_CANDIDATE_SCHEMA = 5
 # the position of the prototype that gave the vote's similarity, the assigned face's geometry (face_geometry_numbers)
 # and "shadow", the similarity to an experiment's separate working gallery (D91; null without one).
 IDENTITY_GEOMETRY_SCHEMA = 6
+# Schema 7 (session 90), what face validation runs with --face-landmark-diagnostic write: schema 3, plus on each result
+# person "landmarks" (identity.landmarks.landmark_records: an explicit status and, when measured, the derived landmark
+# numbers of the native-scale candidate associated with that person) and the result's "landmark_ms".
+IDENTITY_LANDMARK_SCHEMA = 7
 DIAGNOSTIC_DECIMALS = 3
 # D90: what a recorded raw detection may span, in frame widths and heights from the frame's top left corner; a value
 # outside is recorded as unavailable (null), never clipped into range.
@@ -76,7 +82,8 @@ FULL_SCALE_COUNTED = 0.9
 
 def _schema(schema: int) -> int:
     if schema not in (IDENTITY_RECORD_SCHEMA, IDENTITY_DIAGNOSTIC_SCHEMA, IDENTITY_FULL_SCALE_SCHEMA,
-                      IDENTITY_COMPARISON_SCHEMA, IDENTITY_CANDIDATE_SCHEMA, IDENTITY_GEOMETRY_SCHEMA):
+                      IDENTITY_COMPARISON_SCHEMA, IDENTITY_CANDIDATE_SCHEMA, IDENTITY_GEOMETRY_SCHEMA,
+                      IDENTITY_LANDMARK_SCHEMA):
         raise ValueError(f"unknown identity record schema {schema!r}")
     return schema
 
@@ -103,6 +110,7 @@ class FaceDiagnostics:
     prototype: int | None = None  # D90: that similarity's prototype position in the enrollment (an opaque index)
     geometry: dict[str, Any] | None = None  # D90: face_geometry_numbers for the assigned face (candidate runs)
     shadow: dict[str, Any] | None = None  # D91: similarity to an experiment's working gallery and its prototype
+    landmarks: dict[str, Any] | None = None  # session 90: landmarks.landmark_records' record for this person
 
     def fields(self, schema: int = IDENTITY_DIAGNOSTIC_SCHEMA) -> dict[str, object]:
         def r(value: float | None) -> float | None:
@@ -112,8 +120,10 @@ class FaceDiagnostics:
                "face": None if self.face_px is None else {"w_px": self.face_px[0], "h_px": self.face_px[1],
                                                           "score": r(self.face_score)},
                "similarity": r(self.similarity)}
-        if schema >= IDENTITY_GEOMETRY_SCHEMA:
+        if schema == IDENTITY_GEOMETRY_SCHEMA:
             out.update(prototype=self.prototype, geometry=self.geometry, shadow=self.shadow)
+        elif schema == IDENTITY_LANDMARK_SCHEMA:
+            out["landmarks"] = self.landmarks
         return out
 
 
@@ -133,6 +143,7 @@ class FaceResultRecord:
     diagnostics: tuple[FaceDiagnostics, ...] = ()  # one per entry of ``persons``; written with schema 2 and later
     full_scale: dict[str, Any] | None = None  # full_scale_numbers; written with schemas 3 and 4
     detection: dict[str, Any] | None = None  # detection_numbers; written with schemas 5 and 6
+    landmark_ms: float | None = None  # session 90: the landmark records' time on an applied result; schema 7
 
     def record(self, schema: int = IDENTITY_RECORD_SCHEMA) -> dict[str, object]:
         persons = [{"track_id": track, "ownership": ownership, "vote": vote, "identity_id": identity, "label": label}
@@ -146,10 +157,12 @@ class FaceResultRecord:
                   "applied_mono_ns": self.applied_mono_ns, "outcome": self.outcome, "faces": self.faces,
                   "processing_ms": None if self.processing_ms is None else round(self.processing_ms, 1),
                   "error": self.error, "persons": persons}
-        if schema in (IDENTITY_FULL_SCALE_SCHEMA, IDENTITY_COMPARISON_SCHEMA):
+        if schema in (IDENTITY_FULL_SCALE_SCHEMA, IDENTITY_COMPARISON_SCHEMA, IDENTITY_LANDMARK_SCHEMA):
             record["full_scale"] = self.full_scale
         elif schema in (IDENTITY_CANDIDATE_SCHEMA, IDENTITY_GEOMETRY_SCHEMA):
             record["detection"] = self.detection
+        if schema == IDENTITY_LANDMARK_SCHEMA:
+            record["landmark_ms"] = None if self.landmark_ms is None else round(self.landmark_ms, 3)
         return record
 
 
@@ -392,6 +405,7 @@ class EdgeCore:
         full_scale: Any = None,
         detection: Any = None,
         geometry: Sequence[Any] = (),
+        landmarks: bool = False,
     ) -> CoreOutput:
         """A face result for an earlier sampled frame, with the tracker's people on that same frame.
 
@@ -399,12 +413,14 @@ class EdgeCore:
         rejected, and counted, when face recognition is not available, the analysis failed, the frame's
         stream (camera, boot, run, epoch) is not the live one, or the frame is older than
         ``identity.face_result_max_age_s``. Votes for tracks that are no longer current are dropped by
-        the next ``_finish``.
+        the next ``_finish``. With ``landmarks`` (session 90, the landmark diagnostic) each person on an applied
+        result also gets its landmark record from the native pass (``full_scale``), associated by the same rule.
         """
         freshness = self._freshness.assess(connected)
         now = self._clock.mono()
         votes: list = []
         diagnostics: tuple[FaceDiagnostics, ...] = ()
+        landmark_ms = None
         if self._face_recognition is not Capability.AVAILABLE:
             outcome = "ignored_face_unavailable"
         elif faces is None:
@@ -422,6 +438,12 @@ class EdgeCore:
                 self.face_counters[f"faces_{ownership.value}"] += 1
             votes = self._identities.observe(persons, faces, association)
             diagnostics = _diagnostics(frame, persons, faces, association.face_of, votes, geometry, self._shadow)
+            if landmarks:  # session 90: diagnostic numbers only; nothing above changes
+                started = time.perf_counter()
+                records = landmark_records(frame, persons, faces, association.face_of, full_scale, self._geometry)
+                diagnostics = tuple(dataclasses.replace(d, landmarks=records[v.key])
+                                    for d, v in zip(diagnostics, votes, strict=True))
+                landmark_ms = (time.perf_counter() - started) * 1000
             if self._capture is not None and len(persons) == 1 and len(votes) == 1 \
                     and votes[0].similarity is not None:  # D91: the only person's face, as the vote compared it
                 self._capture.offer(frame.ingest_mono_ns, faces[association.face_of[votes[0].key]].embedding)
@@ -436,7 +458,7 @@ class EdgeCore:
                    "none" if v.vote is None else "unknown" if v.vote == UNKNOWN_VOTE else "match",
                    v.vote if v.vote else None, v.label) for v in votes),
             processing_ms, error, diagnostics, full_scale_numbers(full_scale, frame, persons, self._geometry),
-            detection_numbers(detection, frame))
+            detection_numbers(detection, frame), landmark_ms)
         return dataclasses.replace(self._finish(freshness, []), face_result=record)
 
     def on_face_comparison(self, outcome: ComparisonOutcome) -> ComparisonRecord:

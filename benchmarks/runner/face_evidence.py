@@ -208,7 +208,7 @@ CHANNELS = vocab("telegram")
 GUARD_STATUS = Either((vocab("duration_stop", "child_exited", "cleanup_failed", "forced_stop", "guard_stop",
                              "ready_timeout", "operator_interrupt", "readiness_refused"), template(r"refused:(.+)")))
 STOP_BY = maybe(vocab("duration_elapsed", "guard_stop", "ready_timeout", "operator_interrupt", "readiness_refused"))
-READINESS = vocab("tracking_diagnostic")  # step5_guard.READINESS (--require-ready; session 80)
+READINESS = vocab("tracking_diagnostic", "landmark_diagnostic")  # step5_guard.READINESS (sessions 80 and 90)
 CAPTURE_RESULT = Either((vocab("saved", "too_large", "not_json", "not_reached"), template(r"unavailable:(.+)")))
 LISTENER = {"port": INT, "family": vocab("tcp", "tcp6"), "scope": vocab("loopback", "any", "other")}
 
@@ -341,6 +341,13 @@ TRACKING_STARTUP = {
     **{f"face.tracking_diagnostic.tracker.{k}": NUM for k in TRACKER_SETTINGS},
     "face.tracking_diagnostic.tracker.fuse_score": BOOL,
 }
+LANDMARK_MARKER = ("version", "score", "min_eye_spacing_px", "persons_max")  # identity.landmarks.marker (session 90)
+LANDMARK_STARTUP = {"face.landmark_diagnostic": NULL, **{f"face.landmark_diagnostic.{k}": NUM for k in LANDMARK_MARKER}}
+LANDMARK_STATUSES = ("measured", "invalid", "no_candidate", "ambiguous", "unavailable", "not_recorded")  # landmarks
+LANDMARK_REASONS = ("malformed_row", "landmark_outside_frame", "eye_spacing_too_small", "eyes_not_left_to_right",
+                    "mouth_not_below_eyes", "pass_failed", "persons_bound")  # landmarks.INVALID/OTHER_REASONS
+LANDMARK_MEASURES = ("nose_lateral", "nose_vertical", "mouth_vertical", "nose_position", "mouth_lateral",
+                     "eye_line_deg", "eye_spacing_px", "eye_spacing_ratio")  # landmarks.MEASURES
 OPTIONAL_STARTUP = {  # assemble's startup fields for the live view, snapshots and chat
     **{f"live_preview.{k}": v for k, v in PREVIEW_BOUNDS.items()},
     **{f"snapshots.{k}": INT for k in ("removed_temporary", "removed_unrecorded", "unexpected_files", "pruned")},
@@ -429,7 +436,7 @@ class KeyValueProfile:
 @dataclass(frozen=True)
 class AccountProfile:
     """F2's account.txt, as face_account renders it: its header, then ``key=value   # comment`` per field. The
-    header names the format (1 to 8, as face_account.FORMATS lists them), and each value is checked against that
+    header names the format (1 to 10, as face_account.FORMATS lists them), and each value is checked against that
     format's field."""
 
 
@@ -490,6 +497,7 @@ STARTUP = {  # the runtime's ``starting`` line (demo_runtime.assemble and cli)
     "face.shadow": BOOL, "face.capture": BOOL,  # D91, only in the enrollment experiment's runs
     **{f"face.continuity.{k}": NUM for k in CONTINUITY_POLICY},  # D97, only in --face-continuity runs
     **TRACKING_STARTUP,  # session 79, only in --tracking-diagnostic runs
+    **LANDMARK_STARTUP,  # session 90, only in --face-landmark-diagnostic runs
     "status_page": maybe(LOOPBACK_URL),
     **OPTIONAL_STARTUP,
 }
@@ -530,6 +538,11 @@ IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransitio
     "persons[].geometry.eyes": NULL, "persons[].geometry.eyes.roll_deg": NUM,
     "persons[].geometry.eyes.spacing_px": NUM,
     "persons[].shadow": NULL, "persons[].shadow.similarity": NUM, "persons[].shadow.prototype": INT,
+    # schema 7 (session 90, landmarks.landmark_records and FaceResultRecord.landmark_ms): fixed labels and numbers only
+    "landmark_ms": maybe(NUM), "persons[].landmarks": NULL,
+    "persons[].landmarks.status": vocab(*LANDMARK_STATUSES), "persons[].landmarks.reason": maybe(vocab(*LANDMARK_REASONS)),
+    "persons[].landmarks.score": maybe(NUM), "persons[].landmarks.face_iou": maybe(NUM),
+    **{f"persons[].landmarks.{k}": maybe(NUM) for k in LANDMARK_MEASURES},
     # D91, the capture's record at the stop (identity.experiment.Capture.finish): fixed labels and numbers only
     "written": BOOL, "refused": maybe(vocab(*CAPTURE_REFUSALS)), "faces_kept": INT, "faces_dropped_over_cap": INT,
     "faces_in_span": INT, "prototypes": INT, "min_best_to_others": maybe(NUM), "similarity_to_original[]": NUM,
@@ -594,6 +607,7 @@ STARTING_SUMMARY = {  # step5_guard._starting_summary
     "face.shadow": BOOL, "face.capture": BOOL,  # D91
     **{f"face.continuity.{k}": NUM for k in CONTINUITY_POLICY},  # D97: the guard keeps the startup's face entry
     **TRACKING_STARTUP,  # session 79: likewise
+    **LANDMARK_STARTUP,  # session 90: likewise
 }
 STARTING_SUMMARY_KEYS = {"releases": RELEASE_COMPONENTS, "releases.*": RELEASE_ROLES, "notifier_problems": CHANNELS,
                          "scene_memory_before": MEMFREE_KEYS, "detector_memory_before": MEMFREE_KEYS,

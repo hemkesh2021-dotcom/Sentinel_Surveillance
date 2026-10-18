@@ -1122,3 +1122,60 @@ def test_the_tracking_diagnostic_flag_needs_validation_and_the_plain_rules(tmp_p
         assert main(_cli(tmp_path, "--face", "--face-validation", "--tracking-diagnostic", *extra),
                     devices=_refusing_devices()) == 1
         assert "plain identity rules" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------- session 90: the landmark diagnostic
+
+
+class LandmarkBackend(FaceBackend):
+    """A face backend with D86's pass and the landmark diagnostic's opt-in (each call recorded)."""
+
+    def enable_full_scale(self) -> None:
+        self.calls.append("enable_full_scale")
+
+    def enable_landmarks(self) -> None:
+        self.calls.append("enable_landmarks")
+
+
+def test_the_landmark_diagnostic_is_enabled_after_the_full_scale_pass_and_marked_at_startup(face_setup) -> None:
+    from sentinel.identity.landmarks import marker
+    from sentinel.runtime import IDENTITY_FULL_SCALE_SCHEMA, IDENTITY_LANDMARK_SCHEMA
+
+    assembly, calls = start(face_setup, backend_class=LandmarkBackend, face_extra={"landmark_diagnostic": True})
+    assert calls == ["tracker_load", "enable_full_scale", "enable_landmarks", "face_load"]
+    assert assembly.startup["face"] == {"validation_run": True, "identities_enrolled": 1, "landmark_diagnostic": marker()}
+    assert assembly.runtime._identity_schema == IDENTITY_LANDMARK_SCHEMA
+    assembly.database.close()
+    plain, calls = start(face_setup, backend_class=LandmarkBackend)  # without it: D86's pass alone, as before
+    assert calls == ["tracker_load", "enable_full_scale", "face_load"]
+    assert plain.startup["face"] == {"validation_run": True, "identities_enrolled": 1}
+    assert plain.runtime._identity_schema == IDENTITY_FULL_SCALE_SCHEMA
+    plain.database.close()
+
+
+@pytest.mark.parametrize(("extra", "label"), [
+    ({"validation": False}, "landmark_diagnostic_needs_validation"),
+    ({"comparison": True}, "landmark_diagnostic_plain_only"),
+    ({"detection": "full_scale"}, "landmark_diagnostic_plain_only"),
+    ({"face_extra": {"continuity": True}}, "landmark_diagnostic_plain_only"),
+    ({"face_extra": {"tracking_diagnostic": True}}, "landmark_diagnostic_plain_only"),
+    ({"backend_class": FaceBackend}, "landmark_diagnostic_unavailable"),
+])
+def test_the_landmark_diagnostic_is_refused_outside_plain_validation_runs_and_without_support(face_setup, extra,
+                                                                                              label) -> None:
+    options = {"backend_class": LandmarkBackend, **extra}
+    options["face_extra"] = {"landmark_diagnostic": True, **options.get("face_extra", {})}
+    with pytest.raises(StartupRefused, match=label):
+        start(face_setup, **options)
+
+
+def test_the_landmark_diagnostic_flag_needs_validation_and_the_plain_rules(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
+    assert main(_cli(tmp_path, "--face", "--face-landmark-diagnostic"), devices=_refusing_devices()) == 1
+    assert "--face-landmark-diagnostic needs --face-validation" in capsys.readouterr().err
+    for extra in (("--face-continuity",), ("--face-full-scale-detection",), ("--face-comparison",),
+                  ("--tracking-diagnostic",)):
+        monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
+        assert main(_cli(tmp_path, "--face", "--face-validation", "--face-landmark-diagnostic", *extra),
+                    devices=_refusing_devices()) == 1
+        assert "plain identity rules" in capsys.readouterr().err

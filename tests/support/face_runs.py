@@ -73,11 +73,12 @@ def bash_counts(function: str, *args: str, env: dict[str, str] | None = None, ph
 
 def real_face_startup(root: Path, accepted_scene, *, comparison: bool = False,
                       candidate: bool = False, experiment: str | None = None,
-                      continuity: bool = False, tracking: bool = False) -> dict[str, Any]:
+                      continuity: bool = False, tracking: bool = False, landmarks: bool = False) -> dict[str, Any]:
     """assemble()'s face fields and post_load_release()'s face record, as `sentinel run --face` writes them (with
     ``comparison``, as `--face-validation --face-comparison` writes them, D87; with ``candidate``, as
     `--face-validation --face-full-scale-detection` writes them, D88; with ``continuity``, as `--face-validation
-    --face-continuity` writes them, D97)."""
+    --face-continuity` writes them, D97; with ``landmarks``, as `--face-validation --face-landmark-diagnostic` writes
+    them, session 90)."""
     scene = accepted_scene()
     weights = root / "weights"
     weights.mkdir()
@@ -92,7 +93,9 @@ def real_face_startup(root: Path, accepted_scene, *, comparison: bool = False,
                               compatibility=lambda: COMPAT, faces=lambda *a: FaceRun((), 0, 0),
                               **({"enable_full_scale": lambda: None, "enable_comparison": lambda: None,
                                   "embed_full_scale": lambda *a: FACE} if comparison else {}),
-                              **({"select_full_scale_detection": lambda: None} if candidate else {}))
+                              **({"select_full_scale_detection": lambda: None} if candidate else {}),
+                              **({"enable_full_scale": lambda: None, "enable_landmarks": lambda: None}
+                                 if landmarks else {}))
     config = parse_config({"config_version": 1, "camera": {"id": "cam-1"}, "adapters": [{
         "adapter_id": FACE_ADAPTER_ID, "contract_version": 1, "implementation_revision": "1", "enabled": True,
         "input_kinds": ["frame"], "output_kinds": ["face.observation"], "model_revision": "facenet512-yunet",
@@ -112,7 +115,8 @@ def real_face_startup(root: Path, accepted_scene, *, comparison: bool = False,
              if experiment == "capture" else {})
     assembly = assemble(config, RunOptions(root / "data", root / "x.engine", face=FaceOptions(
         root / "identity", Secret("a long synthetic passphrase"), validation_run=True, comparison=comparison,
-        continuity=continuity, tracking_diagnostic=tracking, **({"detection": "full_scale"} if candidate else {}),
+        continuity=continuity, tracking_diagnostic=tracking, landmark_diagnostic=landmarks,
+        **({"detection": "full_scale"} if candidate else {}),
         **extra)),
         devices, FakeClock(),
         profiles=scene.profiles, face_admissions={admission.profile_id: admission})

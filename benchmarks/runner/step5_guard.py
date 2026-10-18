@@ -31,6 +31,8 @@ detector loaded with the diagnostic's hooks). Otherwise the runtime is stopped a
 reason, a fixed label, under ``readiness`` in ``result.json``), nothing counts from readiness, no cue is printed and
 no status is saved; a runtime that exits before its ``starting`` line leaves the requirement unmet
 (``no_starting_line``). The exit status is then 1: a clean process exit alone never implies the diagnostic was ready.
+``--require-ready landmark_diagnostic`` (session 90) works the same way for the landmark diagnostic: no detector
+problem, no face problem, and the marker ``face.landmark_diagnostic`` holding exactly the pinned values below.
 
 At each ``--status-at SECONDS:NAME`` offset it saves ``status-NAME.json`` from the loopback status page, and it
 classifies the listeners on 18090 and 18081 as loopback, any or other. ``result.json`` holds numbers and fixed labels
@@ -72,7 +74,10 @@ MAX_DURATION_S = 900.0
 STOP_GRACE_S = 90.0
 KILL_GRACE_S = 5.0
 READY_TIMEOUT_S = 300.0
-READINESS = ("tracking_diagnostic",)  # --require-ready values
+READINESS = ("tracking_diagnostic", "landmark_diagnostic")  # --require-ready values
+# What the landmark diagnostic's startup marker must be before T0 (sentinel.identity.landmarks.marker(); kept equal by a
+# test; this script imports nothing from the runtime).
+LANDMARK_MARKER = {"version": 1, "score": 0.9, "min_eye_spacing_px": 4.0, "persons_max": 4}
 # What the tracking diagnostic's startup marker must hold before T0: the tracker's settings as the runtime records
 # them under face.tracking_diagnostic.tracker (legacy_ultralytics.diagnostic_settings; equal to
 # sentinel.tracking.diagnostic.SETTING_KEYS, kept so by a test; this script imports nothing from the runtime).
@@ -274,6 +279,13 @@ def readiness_problem(required: str | None, startup: Any) -> str | None:
     if problem is not None:
         return f"detector_problem:{problem}"
     face = startup.get("face")
+    if required == "landmark_diagnostic":  # session 90: the face loaded, and the marker exactly as pinned
+        if startup.get("face_problem") is not None:
+            return f"face_problem:{startup.get('face_problem')}"
+        marker = face.get("landmark_diagnostic") if isinstance(face, dict) else None
+        if not isinstance(marker, dict):
+            return "marker_missing"
+        return None if marker == LANDMARK_MARKER else "marker_not_pinned"
     marker = face.get("tracking_diagnostic") if isinstance(face, dict) else None
     if not isinstance(marker, dict):
         return "marker_missing"
@@ -580,7 +592,8 @@ def main(argv: list[str] | None = None) -> int:
                              "pressure below 2.0 GB, MemFree at least 3.5 GB, MemAvailable at least 4.0 GB)")
     parser.add_argument("--require-ready", choices=READINESS, default=None, metavar="REQUIREMENT",
                         help="readiness needs more than the starting line: tracking_diagnostic = no detector problem "
-                             "and the diagnostic's marker with the tracker's settings; otherwise the runtime is "
+                             "and the diagnostic's marker with the tracker's settings; landmark_diagnostic = no "
+                             "detector or face problem and the landmark marker as pinned; otherwise the runtime is "
                              "stopped at once, no cue is printed and the exit status is 1")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="-- then the sentinel run command")
     args = parser.parse_args(argv)

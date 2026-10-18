@@ -405,6 +405,14 @@ def main(
         "the tracks this runtime held current; numbers only, bounded; detection, tracking and identity unchanged. "
         "Such a run is never an F2 attempt (its startup marker makes the F2 reading refuse it)",
     )
+    run.add_argument(
+        "--face-landmark-diagnostic", action="store_true",
+        help="with --face-validation (session 90, a diagnostic; production detection and the plain identity rules "
+        "only): the native-scale face pass also keeps YuNet's five landmarks, and each result person's record carries "
+        "derived landmark numbers (proxies, never head angles) with an explicit association status; no image, crop, "
+        "embedding or coordinate is kept, and detection, embeddings and votes are unchanged. Such a run is never an F2 "
+        "attempt (its startup marker makes the F2 reading refuse it)",
+    )
     run.add_argument("--identity-dir", type=Path, default=DEFAULT_IDENTITY_DIR,
                      help=f"the private (0700) identity directory (default {DEFAULT_IDENTITY_DIR})")
     run.add_argument(
@@ -766,6 +774,14 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
         print("run: --tracking-diagnostic runs with production detection and the plain identity rules: no candidate, "
               "comparison, experiment or continuity rule", file=sys.stderr)
         return 1
+    if args.face_landmark_diagnostic and not args.face_validation:
+        print("run: --face-landmark-diagnostic needs --face-validation", file=sys.stderr)
+        return 1
+    if args.face_landmark_diagnostic and (args.face_full_scale_detection or args.face_comparison or experiment
+                                          or args.face_continuity or args.tracking_diagnostic):
+        print("run: --face-landmark-diagnostic runs with production detection and the plain identity rules: no "
+              "candidate, comparison, experiment, continuity rule or tracking diagnostic", file=sys.stderr)
+        return 1
     if args.live_preview and not args.status_port:
         print("run: --live-preview needs the status page (--status-port other than 0)", file=sys.stderr)
         return 1
@@ -790,7 +806,8 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
                            capture_dir=(None if args.face_capture_gallery is None
                                         else args.face_capture_gallery.expanduser()),
                            capture_consent_date=args.face_capture_consent_date, continuity=args.face_continuity,
-                           tracking_diagnostic=args.tracking_diagnostic)
+                           tracking_diagnostic=args.tracking_diagnostic,
+                           landmark_diagnostic=args.face_landmark_diagnostic)
     del secret
     scene = None
     if args.scene:

@@ -139,7 +139,9 @@ FULL_SCALE_SCHEMA = 3  # runtime.IDENTITY_FULL_SCALE_SCHEMA: schema 2 plus each 
 COMPARISON_SCHEMA = 4  # runtime.IDENTITY_COMPARISON_SCHEMA: schema 3 plus comparison records (D87)
 CANDIDATE_SCHEMA = 5  # runtime.IDENTITY_CANDIDATE_SCHEMA: schema 2 plus the detection candidate's numbers (D88)
 GEOMETRY_SCHEMA = 6  # runtime.IDENTITY_GEOMETRY_SCHEMA: schema 5 plus each person's prototype, geometry, shadow (D90)
-SCHEMAS = (SCHEMA, DIAGNOSTIC_SCHEMA, FULL_SCALE_SCHEMA, COMPARISON_SCHEMA, CANDIDATE_SCHEMA, GEOMETRY_SCHEMA)
+LANDMARK_SCHEMA = 7  # runtime.IDENTITY_LANDMARK_SCHEMA: schema 3 plus each person's landmark record (session 90)
+SCHEMAS = (SCHEMA, DIAGNOSTIC_SCHEMA, FULL_SCALE_SCHEMA, COMPARISON_SCHEMA, CANDIDATE_SCHEMA, GEOMETRY_SCHEMA,
+           LANDMARK_SCHEMA)
 CANDIDATE_SCHEMAS = (CANDIDATE_SCHEMA, GEOMETRY_SCHEMA)  # what runs of the candidate write (D88; D90 from 6)
 F2_FACE = {"validation_run": True, "identities_enrolled": 1}  # the startup's face entry of a production F2 run
 OCCLUSION_SCOPE = ("scope of A (account format 9, D101): retention while the face was hidden in the still posture the "
@@ -188,6 +190,15 @@ RESULT_KEYS = {"identity", "schema", "stream_epoch", "frame_seq", "frame_mono_ns
 PERSON_KEYS = {"track_id", "ownership", "vote", "identity_id", "label"}
 DIAGNOSTIC_PERSON_KEYS = PERSON_KEYS | {"box", "confidence", "face", "similarity"}  # schema 2
 GEOMETRY_PERSON_KEYS = DIAGNOSTIC_PERSON_KEYS | {"prototype", "geometry", "shadow"}  # schema 6 (D90)
+LANDMARK_PERSON_KEYS = DIAGNOSTIC_PERSON_KEYS | {"landmarks"}  # schema 7 (session 90)
+# identity.landmarks' record (test-tied): its keys, statuses, reasons and the measured numbers
+LANDMARK_MEASURES = ("nose_lateral", "nose_vertical", "mouth_vertical", "nose_position", "mouth_lateral",
+                     "eye_line_deg", "eye_spacing_px", "eye_spacing_ratio")
+LANDMARK_RECORD_KEYS = {"status", "reason", "score", "face_iou", *LANDMARK_MEASURES}
+LANDMARK_INVALID = ("malformed_row", "landmark_outside_frame", "eye_spacing_too_small", "eyes_not_left_to_right",
+                    "mouth_not_below_eyes")
+LANDMARK_FIXED = {"no_candidate": None, "ambiguous": None, "unavailable": "pass_failed", "not_recorded": "persons_bound"}
+LANDMARK_MIN_EYE_SPACING_PX = 4.0
 GEOMETRY_KEYS = {"box", "raw_box", "overhang_px", "eyes"}  # runtime.face_geometry_numbers
 EYES_KEYS = {"roll_deg", "spacing_px"}
 SHADOW_KEYS = {"similarity", "prototype"}  # D91: the similarity to an experiment's working gallery
@@ -275,6 +286,8 @@ def _record_problem(kind: Any, item: dict) -> str | None:
         return _capture_problem(item)
     if kind == "result" and schema in (FULL_SCALE_SCHEMA, COMPARISON_SCHEMA):
         keys = keys | {"full_scale"}
+    elif kind == "result" and schema == LANDMARK_SCHEMA:
+        keys = keys | {"full_scale", "landmark_ms"}
     elif kind == "result" and schema in CANDIDATE_SCHEMAS:
         keys = keys | {"detection"}
     if set(item) != keys:
@@ -287,12 +300,16 @@ def _record_problem(kind: Any, item: dict) -> str | None:
         if not (_int(item["frame_mono_ns"]) and _int(item["applied_mono_ns"]) and item["outcome"] in OUTCOMES
                 and isinstance(item["persons"], list)):
             return "result: a field has the wrong type or value"
-        if schema in (FULL_SCALE_SCHEMA, COMPARISON_SCHEMA) and not _full_scale_fits(item["full_scale"]):
+        if schema in (FULL_SCALE_SCHEMA, COMPARISON_SCHEMA, LANDMARK_SCHEMA) \
+                and not _full_scale_fits(item["full_scale"]):
             return "result: its full-scale numbers are malformed"
+        if schema == LANDMARK_SCHEMA and not ((item["outcome"] == "applied") == _number(item["landmark_ms"], 0.0, math.inf)
+                                              and (item["outcome"] == "applied" or item["landmark_ms"] is None)):
+            return "result: its landmark time is missing or present where no landmark record was made"
         if schema in CANDIDATE_SCHEMAS and not _detection_fits(item["detection"], item["faces"], item["outcome"]):
             return "result: its detection numbers are malformed"
         person_keys = (PERSON_KEYS if schema == SCHEMA else GEOMETRY_PERSON_KEYS if schema == GEOMETRY_SCHEMA
-                       else DIAGNOSTIC_PERSON_KEYS)
+                       else LANDMARK_PERSON_KEYS if schema == LANDMARK_SCHEMA else DIAGNOSTIC_PERSON_KEYS)
         for person in item["persons"]:
             if not isinstance(person, dict) or set(person) != person_keys or not _int(person["track_id"]) \
                     or person["vote"] not in ("match", "unknown", "none") \
@@ -303,6 +320,8 @@ def _record_problem(kind: Any, item: dict) -> str | None:
                 return "result: a person entry's diagnostic numbers do not fit its labels"
             if schema == GEOMETRY_SCHEMA and not _geometry_fits(person):
                 return "result: a person entry's geometry, prototype or shadow numbers do not fit"
+            if schema == LANDMARK_SCHEMA and not _landmarks_fit(person, item["full_scale"] is not None):
+                return "result: a person entry's landmark record does not fit its status"
     else:
         if not (_int(item["mono_ns"]) and _int(item["track_id"]) and item["from"] in STATES and item["to"] in STATES
                 and (item["identity_id"] is None or ID.match(str(item["identity_id"])))
@@ -424,6 +443,32 @@ def _geometry_fits(person: dict) -> bool:
 def _box_fits(box: Any, low: float, high: float) -> bool:
     return (isinstance(box, list) and len(box) == 4 and all(_number(v, low, high) for v in box)
             and box[0] < box[2] and box[1] < box[3])
+
+
+def _landmarks_fit(person: dict, pass_ran: bool) -> bool:
+    """Schema 7 (session 90): one person's landmark record fits its status. Measured: the candidate's score at 0.9 or
+    above, every number present and finite, the eye spacing at least the guard, the mouth below the eye line; invalid:
+    a fixed reason and the score, no number; the other statuses: their fixed reason and nothing else. The overlap with
+    production's face is present exactly when production assigned this person a face and a candidate was associated.
+    A result whose native pass gave nothing (full_scale null) has only unavailable or not_recorded people."""
+    record = person["landmarks"]
+    if not isinstance(record, dict) or set(record) != LANDMARK_RECORD_KEYS:
+        return False
+    status, reason, score, overlap = record["status"], record["reason"], record["score"], record["face_iou"]
+    numbers = [record[k] for k in LANDMARK_MEASURES]
+    if not pass_ran and status not in ("unavailable", "not_recorded"):
+        return False
+    if status in LANDMARK_FIXED:
+        return reason == LANDMARK_FIXED[status] and score is None and overlap is None and all(v is None for v in numbers)
+    if status not in ("measured", "invalid") or not _number(score, 0.9, 1.0):
+        return False
+    if (person["face"] is None) != (overlap is None) or (overlap is not None and not _number(overlap, 0.0, 1.0)):
+        return False
+    if status == "invalid":
+        return reason in LANDMARK_INVALID and all(v is None for v in numbers)
+    return (reason is None and all(_number(v, -math.inf, math.inf) for v in numbers)
+            and record["eye_spacing_px"] >= LANDMARK_MIN_EYE_SPACING_PX and record["mouth_vertical"] > 0
+            and record["eye_spacing_ratio"] > 0 and -90.0 < record["eye_line_deg"] < 90.0)
 
 
 def _diagnostics_fit(person: dict) -> bool:
@@ -2403,6 +2448,13 @@ def read_tracking(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None
     return tracking_check.read_tracking(directory, f1, gate)
 
 
+def read_landmarks(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | None = None) -> Reading:
+    """Session 90: the landmark diagnostic's reading (landmark_check.py, beside this file; imported when asked for)."""
+    import landmark_check
+
+    return landmark_check.read_landmarks(directory, f1, gate)
+
+
 def read_tracking_integration(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | None = None) -> Reading:
     """Session 81: the short integration check of the tracking diagnostic (tracking_check.read_integration)."""
     import tracking_check
@@ -2459,6 +2511,10 @@ def main(argv: list[str] | None = None) -> int:
                        ("tracking", "read a tracking diagnostic session (session 79, descriptive; format 9): the "
                                     "detections, published tracks, association costs and shadow boxes described per "
                                     "window and per gap; never an F2 reading, and F2's reading refuses such a run"),
+                       ("landmarks", "read the landmark diagnostic's ordinary-use session (session 90, descriptive; "
+                                     "format 10): execution and privacy judged; the landmark proxies and the misses "
+                                     "described with predeclared blocks and intervals; associations only, never a "
+                                     "cause, never an F2 reading"),
                        ("tracking-integration", "read the tracking diagnostic's short integration check (session 81; "
                                                 "no account): execution, readiness, the diagnostic's health and "
                                                 "privacy judged; shadow passes, coverage, timing and memory "
@@ -2500,11 +2556,11 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"{args.part}: --run and --identity-dir go together")
         gate_args = None if args.run is None else (args.run, args.identity_dir, args.recheck_root)
         if args.part in ("natural", "comparison", "candidate", "experiment", "dashboard", "non-enrolled", "tracking",
-                         "tracking-integration"):
+                         "tracking-integration", "landmarks"):
             read = {"natural": read_natural, "comparison": read_comparison, "candidate": read_candidate,
                     "experiment": read_experiment, "dashboard": read_dashboard,
                     "non-enrolled": read_non_enrolled, "tracking": read_tracking,
-                    "tracking-integration": read_tracking_integration}[args.part]
+                    "tracking-integration": read_tracking_integration, "landmarks": read_landmarks}[args.part]
             reading = read(args.directory, args.f1, gate_args)
             for line in reading.lines:
                 print(line)

@@ -9,8 +9,8 @@ sysctl and never drops a cache: the operator's block does that (D37).
 
     launch_memory.py derive --reference-result RESULT.json
     launch_memory.py snapshot --label before_drop|after_drop|prepared --out FILE [--since FILE]
-    launch_memory.py check --session-dir DIR --reference-result RESULT.json --out FILE [--prefix XX_]
-    launch_memory.py report --session-dir DIR --out FILE [--result RESULT.json]
+    launch_memory.py check --session-dir DIR --reference-result RESULT.json --out FILE [--prefix XX_] [--block F]
+    launch_memory.py report --session-dir DIR --out FILE [--result RESULT.json] [--block F]
 
 The launch floor is 5,569,835,008 B of MemFree: the guard's MemFree floor (1,073,741,824 B; operator_check.FREE_FLOOR)
 plus the largest MemFree consumption from launch that the successful ten-minute diagnostic trk-20261017T103831Z
@@ -28,6 +28,10 @@ session's provenance), explains on stderr, writes its record to FILE (never over
 (passed), 1 (MemFree below the floor) or 2 (evidence or telemetry missing or invalid; FILE exists; usage). The
 elapsed times and the changes since the drop and since f-O are recorded, never judged. ``report`` describes the
 records and the guard's result after a launch; it judges nothing.
+
+``--block`` (session 90) names the package's block letter: the F2 package's blocks are f-F, f-M and f-O and write
+``FF_``, ``FM_`` and ``FO_`` lines (the default, unchanged); the landmark diagnostic's package's are l-F, l-M and l-O
+and write ``LF_``, ``LM_`` and ``LO_`` lines (``--block L``). Nothing else depends on it.
 """
 
 from __future__ import annotations
@@ -65,6 +69,7 @@ REQUIRED = ("MemTotal", "MemFree", "MemAvailable", "Cached")
 CHANGED = ("MemFree", "MemAvailable", "Cached")
 BOOT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 PREFIX = re.compile(r"[A-Z]{1,4}_")
+BLOCK = re.compile(r"[A-Z]")  # --block: the package's block letter (F: f-F, f-M, f-O and FF_, FM_, FO_ lines)
 
 
 class Refused(Exception):
@@ -184,36 +189,38 @@ def _last(lines: list[str], pattern: str) -> int:
     return found[-1] if found else -1
 
 
-def preparation(provenance: Path) -> str:
+def preparation(provenance: Path, block: str = "F") -> str:
     """The prepared record's file name, when the provenance shows f-F's pass, then exactly one drop attempt whose sync
-    and drop exited 0 and whose block passed, then f-O's pass naming that record; Refused with the first gap."""
+    and drop exited 0 and whose block passed, then f-O's pass naming that record; Refused with the first gap.
+    ``block`` is the package's block letter (F: FF_, FM_ and FO_ lines; L: LF_, LM_ and LO_)."""
+    f, m, o = (f"{block}{letter}_" for letter in "FMO")
     try:
         lines = provenance.read_text().splitlines()
     except (OSError, UnicodeDecodeError):
         raise Refused("provenance_unreadable") from None
-    attempts = [i for i, line in enumerate(lines) if line.startswith("FM_attempt=")]
+    attempts = [i for i, line in enumerate(lines) if line.startswith(f"{m}attempt=")]
     if not attempts:
         raise Refused("drop_not_attempted")
     if len(attempts) > 1:
         raise Refused("drop_attempted_more_than_once")
     attempt = attempts[0]
-    passed_f = _last(lines, r"FF_exit=0")
-    if passed_f < 0 or passed_f > attempt or _last(lines, r"FF_exit=.*") > attempt:
+    passed_f = _last(lines, f"{f}exit=0")
+    if passed_f < 0 or passed_f > attempt or _last(lines, f"{f}exit=.*") > attempt:
         raise Refused("ff_not_passed_before_drop")
     after = lines[attempt + 1:]
-    sync = next((line for line in after if line.startswith("FM_sync_exit=")), None)
-    if sync != "FM_sync_exit=0":
+    sync = next((line for line in after if line.startswith(f"{m}sync_exit=")), None)
+    if sync != f"{m}sync_exit=0":
         raise Refused("sync_failed")
-    drop = next((line for line in after if line.startswith("FM_drop_exit=")), None)
-    if drop != "FM_drop_exit=0":
+    drop = next((line for line in after if line.startswith(f"{m}drop_exit=")), None)
+    if drop != f"{m}drop_exit=0":
         raise Refused("drop_failed")
-    passed_m = _last(lines, r"FM_exit=.*")
-    if passed_m < attempt or lines[passed_m] != "FM_exit=0":
+    passed_m = _last(lines, f"{m}exit=.*")
+    if passed_m < attempt or lines[passed_m] != f"{m}exit=0":
         raise Refused("drop_block_failed")
-    passed_o = _last(lines, r"FO_exit=.*")
-    if passed_o < passed_m or lines[passed_o] != "FO_exit=0":
+    passed_o = _last(lines, f"{o}exit=.*")
+    if passed_o < passed_m or lines[passed_o] != f"{o}exit=0":
         raise Refused("fo_not_passed_after_drop")
-    named = _last(lines, r"FO_memory_record=.*")
+    named = _last(lines, f"{o}memory_record=.*")
     if not passed_m < named < passed_o or not PREPARED_NAME.fullmatch(lines[named].partition("=")[2]):
         raise Refused("prepared_record_not_named")
     return lines[named].partition("=")[2]
@@ -227,7 +234,8 @@ def _round(value: float) -> float:
     return round(value, 3)
 
 
-def check(session: Path, reference: Path, out: Path, host: Any) -> tuple[list[tuple[str, str]], int, dict | None]:
+def check(session: Path, reference: Path, out: Path, host: Any,
+          block: str = "F") -> tuple[list[tuple[str, str]], int, dict | None]:
     """The (key, value) lines, the exit status and the record written (None when FILE exists already)."""
     if out.exists() or out.is_symlink():
         lines = [("launch_check", "refused:evidence:launch_record_exists"), ("launch_memfree", "none"),
@@ -238,7 +246,7 @@ def check(session: Path, reference: Path, out: Path, host: Any) -> tuple[list[tu
     records: dict[str, dict] = {}
     names = dict(RECORD_NAMES)
     try:
-        names["prepared"] = preparation(session / "provenance.txt")
+        names["prepared"] = preparation(session / "provenance.txt", block)
     except Refused as refused:
         problem = str(refused)
     for label in LABELS:  # each record on its own, so a refusal's record keeps whatever else was there
@@ -359,7 +367,7 @@ def _result(path: Path | None) -> dict | None:
     return result if isinstance(result, dict) and isinstance(result.get("baseline"), dict) else None
 
 
-def report(session: Path, result_path: Path | None) -> list[str]:
+def report(session: Path, result_path: Path | None, block: str = "F") -> list[str]:
     """Descriptive lines: the condition, the floor's derivation and each recorded state, the guard's launch baseline
     included; MISSING where a record or the result is absent or unreadable. Judges nothing."""
     lines = [f"CONDITION {CONDITION} (D103): the operator ran sync and sudo sysctl -w vm.drop_caches=1 once in this "
@@ -367,7 +375,7 @@ def report(session: Path, result_path: Path | None) -> list[str]:
              "without it, never pooled", derivation_text()]
     named = None
     try:
-        named = preparation(session / "provenance.txt")
+        named = preparation(session / "provenance.txt", block)
     except Refused:
         pass
     before = _try(lambda: load_record(session / RECORD_NAMES["before_drop"], "before_drop"))
@@ -412,6 +420,12 @@ def report(session: Path, result_path: Path | None) -> list[str]:
     return lines
 
 
+def _block(text: str) -> str:
+    if not BLOCK.fullmatch(text):
+        raise argparse.ArgumentTypeError("a block letter is one capital letter")
+    return text
+
+
 def _prefix(text: str) -> str:
     if text and not PREFIX.fullmatch(text):
         raise argparse.ArgumentTypeError("a prefix is 1-4 capital letters and an underscore")
@@ -432,10 +446,12 @@ def main(argv: list[str] | None = None, host: Any = None) -> int:
     chk.add_argument("--reference-result", type=Path, required=True)
     chk.add_argument("--out", type=Path, required=True)
     chk.add_argument("--prefix", type=_prefix, default="")
+    chk.add_argument("--block", type=_block, default="F", help="the package's block letter (F: f-F, f-M, f-O)")
     rep = commands.add_parser("report", help="describe the records and the guard's launch baseline")
     rep.add_argument("--session-dir", type=Path, required=True)
     rep.add_argument("--out", type=Path, required=True)
     rep.add_argument("--result", type=Path, default=None)
+    rep.add_argument("--block", type=_block, default="F", help="the package's block letter (F: f-F, f-M, f-O)")
     args = parser.parse_args(argv)
     host = host or SystemHost()
     if args.command == "derive":
@@ -463,7 +479,7 @@ def main(argv: list[str] | None = None, host: Any = None) -> int:
             print(f"change since {args.since.name}: {_changes(_change(record, earlier)) if earlier else 'unavailable'}")
         return 0
     if args.command == "check":
-        lines, code, record = check(args.session_dir, args.reference_result, args.out, host)
+        lines, code, record = check(args.session_dir, args.reference_result, args.out, host, args.block)
         if record is not None:
             try:
                 write_new(args.out, json.dumps(record, indent=1, sort_keys=True) + "\n")
@@ -479,12 +495,12 @@ def main(argv: list[str] | None = None, host: Any = None) -> int:
                           for key in ("launch_since_drop_s", "launch_since_prepared_s"))
         if values["launch_memfree"]:
             print(f"MemFree now {_b(int(values['launch_memfree']))}: {_signed(int(values['launch_margin']))} against "
-                  f"the launch floor; since the drop {drop}, since f-O's prepared record {prepared}; "
+                  f"the launch floor; since the drop {drop}, since {args.block.lower()}-O's prepared record {prepared}; "
                   f"{values['launch_check']}", file=sys.stderr)
         else:
             print(f"MemFree now: unknown; {values['launch_check']}", file=sys.stderr)
         return code
-    lines = report(args.session_dir, args.result)
+    lines = report(args.session_dir, args.result, args.block)
     try:
         write_new(args.out, "\n".join(lines) + "\n")
     except OSError as error:

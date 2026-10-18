@@ -58,6 +58,11 @@ production's whole-frame stand-in with confidence 0, which the adapter drops, do
 association, ownership, retention, expiry and ambiguity are downstream and unchanged, and so is ``compatibility()``:
 the enrollment's model, alignment and normalization are this path's too. Failures are FaceBackendError labels, never a
 partial result. D86's diagnostic pass and D87's comparison would repeat this detection and are refused with it.
+
+**Landmark diagnostic (session 90, validation runs only, diagnostic).** ``enable_landmarks()`` (after
+``enable_full_scale()``) makes D86's pass also keep each kept candidate's box and five landmarks from the same YuNet row
+(``landmarks.from_row``). There is no extra inference and nothing reaches production's detection, embedding or vote;
+``identity/landmarks.py`` derives and associates the numbers the records keep.
 """
 
 from __future__ import annotations
@@ -77,6 +82,7 @@ from typing import Any
 from ..contracts import FrameKey, NormalizedBox
 from .association import FaceObservation
 from .gallery import FaceCompatibility
+from .landmarks import Landmarks, from_row
 
 DEEPFACE_VERSION = "0.0.99"
 MODEL_NAME = "Facenet512"
@@ -145,6 +151,9 @@ class FullScale:
     candidates: tuple[tuple[float, NormalizedBox], ...]
     ms: float
     rows: tuple[FullScaleRow | None, ...] = ()
+    # Session 90 (the landmark diagnostic): each kept candidate's box and five landmarks in the same order (None where
+    # its row was malformed); None when not recorded
+    landmarks: tuple[Landmarks | None, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -331,6 +340,7 @@ class LegacyDeepFaceBackend:
         self._full_scale_wanted = False
         self._full_scale: Any = None  # cv2.FaceDetectorYN on the pinned detector weights, when enabled
         self._comparison_wanted = False
+        self._landmarks_wanted = False  # session 90: the landmark diagnostic (D86's pass keeps each row's landmarks)
         self._recognition_model: Any = None  # D87: the cached Facenet512 the warm-up built, when comparing
         self._detection = DETECTION_DEEPFACE
         self._candidate: tuple[Any, Any] | None = None  # D88: DeepFace's cached YuNet and Facenet512, when selected
@@ -372,6 +382,19 @@ class LegacyDeepFaceBackend:
         if not self._full_scale_wanted:
             raise FaceBackendError("comparison_needs_full_scale")
         self._comparison_wanted = True
+
+    def enable_landmarks(self) -> None:
+        """Session 90: the D86 pass also keeps each candidate's five landmarks (call after enable_full_scale() and before
+        load(); validation runs only). Nothing else changes: no extra inference, production untouched."""
+        if self._runtime is not None:
+            raise FaceBackendError("already_loaded")
+        if not self._full_scale_wanted:
+            raise FaceBackendError("landmarks_need_full_scale")
+        self._landmarks_wanted = True
+
+    @property
+    def landmarks_enabled(self) -> bool:
+        return self._landmarks_wanted and self._full_scale is not None
 
     @property
     def comparison_enabled(self) -> bool:
@@ -433,7 +456,8 @@ class LegacyDeepFaceBackend:
         if self._full_scale is None:
             return run
         return dataclasses.replace(run, full_scale=full_scale_pass(self._full_scale, width, height, image,
-                                                                   rows=self._recognition_model is not None))
+                                                                   rows=self._recognition_model is not None,
+                                                                   landmarks=self._landmarks_wanted))
 
     def embed_full_scale(self, width: int, height: int, image: Any, row: FullScaleRow) -> tuple[float, ...]:
         """D87: the unit-length Facenet512 embedding of one full-scale candidate, cut, aligned, normalized and embedded
@@ -667,10 +691,13 @@ def _row_box(row: FullScaleRow, width: int, height: int) -> NormalizedBox | None
     return NormalizedBox(x1=x1, y1=y1, x2=x2, y2=y2) if x1 < x2 and y1 < y2 else None
 
 
-def full_scale_pass(detector: Any, width: int, height: int, image: Any, *, rows: bool = False) -> FullScale | None:
+def full_scale_pass(detector: Any, width: int, height: int, image: Any, *, rows: bool = False,
+                    landmarks: bool = False) -> FullScale | None:
     """D86: one YuNet detection on the frame at native scale; None when the frame is larger than YuNet's 640-pixel
     limit (it would be scaled again) or the pass fails: a diagnostic never changes the production result. With
-    ``rows`` (D87, comparison runs) each kept candidate's raw geometry is kept beside it, in memory only."""
+    ``rows`` (D87, comparison runs) each kept candidate's raw geometry is kept beside it, in memory only. With
+    ``landmarks`` (session 90) each kept candidate's box and five landmarks (landmarks.from_row; None for a malformed
+    row) are kept beside it, for the landmark diagnostic's numbers."""
     if width > YUNET_MAX_SIDE or height > YUNET_MAX_SIDE:
         return None
     started = time.perf_counter()
@@ -690,11 +717,13 @@ def full_scale_pass(detector: Any, width: int, height: int, image: Any, *, rows:
         x2, y2 = min(1.0, (x + w) / width), min(1.0, (y + h) / height)
         if math.isfinite(score) and x1 < x2 and y1 < y2:
             candidates.append((min(1.0, max(0.0, score)), NormalizedBox(x1=x1, y1=y1, x2=x2, y2=y2),
-                               _row_geometry(row, x, y, w, h, score) if rows else None))
+                               _row_geometry(row, x, y, w, h, score) if rows else None,
+                               from_row(row) if landmarks else None))
     candidates.sort(key=lambda c: -c[0])
     kept = candidates[:FULL_SCALE_KEPT]
-    return FullScale(tuple((score, box) for score, box, _ in kept), (time.perf_counter() - started) * 1000,
-                     tuple(geometry for _, _, geometry in kept) if rows else ())
+    return FullScale(tuple((score, box) for score, box, _, _ in kept), (time.perf_counter() - started) * 1000,
+                     tuple(geometry for _, _, geometry, _ in kept) if rows else (),
+                     tuple(points for *_, points in kept) if landmarks else None)
 
 
 def _row_geometry(row: Any, x: float, y: float, w: float, h: float, score: float) -> FullScaleRow | None:

@@ -132,14 +132,16 @@ def mods(monkeypatch):
 def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: float = 4.0,
              duration: float = 600.0, combined: bool = False, analyze=None, comparator=None,
              captures=CAPTURES, detection: str = "deepface", shadow=None, experiment_capture=None,
-             preview: bool = False, tracking=None, tracking_bounds=None) -> Path:
+             preview: bool = False, tracking=None, tracking_bounds=None, landmarks: bool = False) -> Path:
     """Run the real runtime through ``script`` and write the F2 directory as the package's blocks would.
 
     ``combined`` (D78): with the live view, incident snapshots and chat in a validation run as well, each used during
     the run (pictures made, a question asked now and then), and the status captures as the plain /status.json serves
     them (the live view's state included). ``preview`` (D95's dashboard check): the live view alone, likewise.
     ``tracking`` (session 79): a function (t, state, track) -> TrackerDiagnostics that scripts what the diagnostic
-    backend reads on each frame; the run then carries the tracking records within ``tracking_bounds``."""
+    backend reads on each frame; the run then carries the tracking records within ``tracking_bounds``.
+    ``landmarks`` (session 90): the landmark diagnostic is on, so the records are schema 7 (``analyze`` gives each
+    frame's FullScale with its landmarks)."""
     out = root / "f2"
     out.mkdir()
     clock = FakeClock(utc=NOW)
@@ -187,7 +189,7 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
                                                     notifications=config.notifications),
                           tracker=PersonTracker(tracker, diagnostics=tracking is not None), scene=scene,
                           face=FaceRuntime(worker, 1, True, comparator is not None, detection, shadow,
-                                           experiment_capture),
+                                           experiment_capture, landmarks=landmarks),
                           enrollment=GALLERY.enrollment(), status_refresh_s=0.0,
                           tracking_diagnostic=((tracking_bounds or DiagnosticBounds()) if tracking is not None
                                                else None), **extra)
@@ -289,9 +291,9 @@ def save_account(mods, out: Path, account: dict[str, str], cued_format: int = 3)
     """A format-1 account (the face-0f7855e package's) as that helper saved and locked it; a format-2 account through
     the current helper's prompts (an unknown reading's uncertainty is not asked); a cued account (format 3, or 4 when
     asked: the same keys) through the helper's prompts."""
-    if cued_format in (5, 6, 7, 8):  # the natural check's (D86), the comparison's (D87) or D91's, by prompts
+    if cued_format in (5, 6, 7, 8, 10):  # the natural check's (D86), the comparison's (D87), D91's or session 90's
         fields = {5: mods.account.FIELDS_V5, 6: mods.account.FIELDS_V6, 7: mods.account.FIELDS_V7,
-                  8: mods.account.FIELDS_V8}[cued_format]
+                  8: mods.account.FIELDS_V8, 10: mods.account.FIELDS_V10}[cued_format]
         answers = iter([account[f.key] for f in fields] + ["SAVE"])
         assert mods.account.enter(out, ask=lambda prompt: next(answers), say=lambda text: None,
                                   account_format_number=cued_format) == 0
@@ -565,7 +567,7 @@ def test_the_checker_matches_the_runtimes_schema_and_values(mods) -> None:
     numbers = FaceDiagnostics((0.1, 0.2, 0.3, 0.9), 0.8, (40, 50), 0.95, 0.75)
     diagnostic = FaceResultRecord(0, 1, 5, 6, "applied", 1, ((1, "assigned", "match", ENROLLED, "match"),),
                                   diagnostics=(numbers,)).record(IDENTITY_DIAGNOSTIC_SCHEMA)
-    assert (check.DIAGNOSTIC_SCHEMA, check.SCHEMAS) == (IDENTITY_DIAGNOSTIC_SCHEMA, (1, 2, 3, 4, 5, 6))
+    assert (check.DIAGNOSTIC_SCHEMA, check.SCHEMAS) == (IDENTITY_DIAGNOSTIC_SCHEMA, (1, 2, 3, 4, 5, 6, 7))  # 7: session 90
     # D88: schema 5, the candidate's records, and its constants
     from sentinel.identity.legacy_deepface import DETECTION_FULL_SCALE, FULL_SCALE_FLOOR, CandidateDetection
     from sentinel.runtime import IDENTITY_CANDIDATE_SCHEMA, detection_numbers
@@ -1096,7 +1098,8 @@ def test_a_format_4_account_is_schema_text_and_the_helper_offers_it(mods, tmp_pa
     assert read.nonconforming == [] and read.content == [(f"line {len(mods.account.FIELDS_V4) + 1}: notes",
                                                           "a note that is never printed")]
     with pytest.raises(SystemExit):
-        mods.account.main(["enter", str(run), "--format", "10"])  # 6 the comparison's (D87), 7, 8 D91's, 9 D101's
+        mods.account.main(["enter", str(run), "--format", "11"])  # 6 the comparison's (D87), 7, 8 D91's, 9 D101's,
+        # 10 session 90's (the landmark diagnostic)
 
 
 # ---------------------------------------------------------------- D101: format 9, the away posture named by the cue

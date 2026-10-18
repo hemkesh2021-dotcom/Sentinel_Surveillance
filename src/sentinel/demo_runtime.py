@@ -127,6 +127,7 @@ from .identity.association import AssociationGeometry
 from .identity.comparison import ComparisonPolicy, FullScaleComparator
 from .identity.experiment import Capture as ExperimentCapture
 from .identity.experiment import ExperimentRefused, Shadow, open_shadow, same_directory
+from .identity.landmarks import marker as landmark_marker
 from .identity.legacy_deepface import DETECTION_DEEPFACE, DETECTION_FULL_SCALE, FaceBackendError, static_difference
 from .identity.vault import Secret, VaultError
 from .identity.worker import FaceWorker
@@ -168,6 +169,7 @@ from .runtime import (
     IDENTITY_COMPARISON_SCHEMA,
     IDENTITY_FULL_SCALE_SCHEMA,
     IDENTITY_GEOMETRY_SCHEMA,
+    IDENTITY_LANDMARK_SCHEMA,
     IDENTITY_RECORD_SCHEMA,
     CoreOutput,
     EdgeCore,
@@ -252,6 +254,7 @@ class FaceRuntime:
     shadow: Any = None  # D91: a working gallery compared read only (identity.experiment.Shadow)
     capture: Any = None  # D91: the capture of a working gallery, written at shutdown (identity.experiment.Capture)
     continuity: ContinuityPolicy | None = None  # D97: the continuity rule (--face-continuity, validation runs only)
+    landmarks: bool = False  # session 90: the landmark diagnostic (--face-landmark-diagnostic, validation runs only)
 
     @property
     def experiment(self) -> str | None:
@@ -387,11 +390,12 @@ class DemoRuntime:
         # A face validation run's records carry the diagnostic numbers (schema 3, D84 and D86), with the full-scale
         # comparison its records too (schema 4, D87), and with the full-scale detection candidate its own numbers
         # instead of D86's and, from D90, each face's geometry and prototype position (schema 6; D88's schema 5 is
-        # read, never written); other runs, schema 1.
+        # read, never written); with the landmark diagnostic, schema 7 (session 90); other runs, schema 1.
         self._identity_schema = (
             IDENTITY_RECORD_SCHEMA if face is None or not face.validation_run
             else IDENTITY_GEOMETRY_SCHEMA if face.detection == DETECTION_FULL_SCALE
-            else IDENTITY_COMPARISON_SCHEMA if face.comparison else IDENTITY_FULL_SCALE_SCHEMA)
+            else IDENTITY_COMPARISON_SCHEMA if face.comparison
+            else IDENTITY_LANDMARK_SCHEMA if face.landmarks else IDENTITY_FULL_SCALE_SCHEMA)
         self._snapshots = snapshots
         # D74: chat reads frames only when it can be used (admitted, with the scene model); otherwise it keeps none.
         chat_allowed = chat_admission.admitted or (chat_validation and chat_admission.validation_allowed)
@@ -555,7 +559,8 @@ class DemoRuntime:
                 self._handle(self._core.on_face_outcome(result.frame, result.persons, result.faces,
                                                         self._capture.connected, processing_ms=result.processing_ms,
                                                         error=result.error, full_scale=result.full_scale,
-                                                        detection=result.detection, geometry=result.geometry))
+                                                        detection=result.detection, geometry=result.geometry,
+                                                        landmarks=self._identity_schema == IDENTITY_LANDMARK_SCHEMA))
             for comparison in self._face.worker.drain_comparisons():  # D87: after their frames' production results
                 self._keep_record(self._core.on_face_comparison(comparison).record(self._identity_schema))
         if self._pending:
@@ -1158,6 +1163,9 @@ class FaceOptions:
     # --tracking-diagnostic (session 79): the detector backend's per-frame reading, recorded; validation runs with
     # production detection and the plain identity rules only; nothing it reads changes
     tracking_diagnostic: bool = False
+    # --face-landmark-diagnostic (session 90): D86's native pass keeps each candidate's landmarks and the records carry
+    # derived numbers per person (schema 7); validation runs with production detection and the plain rules only
+    landmark_diagnostic: bool = False
     weights_dir: Path | None = None  # DeepFace's weights; None: ~/.deepface/weights
     min_free_bytes: int = 1_500_000_000  # the detector's provisional precheck, reused (U18 open)
 
@@ -1548,12 +1556,25 @@ def assemble(
             raise StartupRefused("tracking_diagnostic_plain_only: the tracking diagnostic runs with production "
                                  "detection and the plain identity rules: no candidate, comparison, experiment or "
                                  "continuity rule")
+        if options.face.landmark_diagnostic and not options.face.validation_run:
+            raise StartupRefused("landmark_diagnostic_needs_validation: the landmark diagnostic is for "
+                                 "--face-validation runs")
+        if options.face.landmark_diagnostic and (candidate or options.face.comparison or options.face.continuity
+                                                 or options.face.tracking_diagnostic
+                                                 or options.face.shadow_dir is not None
+                                                 or options.face.capture_dir is not None):
+            raise StartupRefused("landmark_diagnostic_plain_only: the landmark diagnostic runs with production "
+                                 "detection and the plain identity rules: no candidate, comparison, experiment, "
+                                 "continuity rule or tracking diagnostic")
         _experiment_options(options.face)  # D91: before anything loads
         face_backend = devices.face_backend(options.face.weights_dir)
         if options.face.comparison and not hasattr(face_backend, "enable_comparison"):
             raise StartupRefused("face_comparison_unavailable: this face backend has no full-scale comparison")
         if candidate and not hasattr(face_backend, "select_full_scale_detection"):
             raise StartupRefused("face_detection_unavailable: this face backend has no full-scale detection candidate")
+        if options.face.landmark_diagnostic and not (hasattr(face_backend, "enable_full_scale")
+                                                     and hasattr(face_backend, "enable_landmarks")):
+            raise StartupRefused("landmark_diagnostic_unavailable: this face backend has no native-scale landmark pass")
         face_weights = _weights_dir(face_backend, options.face.weights_dir)
         problem = face_admission(config, options.face, profiles=profiles, admissions=face_admissions, policy=policy,
                                  weights_dir=face_weights)
@@ -1676,7 +1697,10 @@ def assemble(
                                # session 79: the marker that keeps such a run out of F2's reading, with the bounds
                                # and the tracker's settings as the loaded objects hold them
                                **({"tracking_diagnostic": {**tracking.numbers(), "tracker": tracking_settings}}
-                                  if tracking is not None else {})}
+                                  if tracking is not None else {}),
+                               # session 90: the marker that keeps such a run out of F2's reading, with its pinned values
+                               **({"landmark_diagnostic": landmark_marker()}
+                                  if options.face.landmark_diagnostic else {})}
             if face_problem is None and gallery is not None:
                 face_problem, memory = memfree_problem(devices.meminfo, options.face.min_free_bytes)
                 startup["face_memory_before"] = memory
@@ -1685,6 +1709,8 @@ def assemble(
                     face_backend.select_full_scale_detection()  # replaces the detection; no D86 pass repeats it
                 elif options.face.validation_run and hasattr(face_backend, "enable_full_scale"):
                     face_backend.enable_full_scale()  # D86: the diagnostic full-scale pass, validation runs only
+                    if options.face.landmark_diagnostic:  # session 90: assemble() refused it anywhere else
+                        face_backend.enable_landmarks()
                 if options.face.comparison:  # D87: assemble() refuses it outside a validation run
                     face_backend.enable_comparison()
                 try:
@@ -1713,7 +1739,8 @@ def assemble(
                     pending_max_age_ns=config.identity.face_pending_max_age_ns, comparator=comparator)
                 face = FaceRuntime(worker, len(gallery.identities), options.face.validation_run,
                                    comparator is not None, options.face.detection, shadow, experiment_capture,
-                                   config.identity.continuity_policy() if options.face.continuity else None)
+                                   config.identity.continuity_policy() if options.face.continuity else None,
+                                   options.face.landmark_diagnostic)
             startup["face_problem"] = face_problem
 
         slot = LatestFrame()
