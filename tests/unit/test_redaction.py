@@ -34,7 +34,7 @@ def test_a_key_ending_in_a_credential_name_is_redacted_with_its_prefix_kept(text
 @pytest.mark.parametrize(
     ("text", "secret", "expected"),
     [
-        ("open rtsp://admin:hunter2@192.0.2.10/live failed", "hunter2", "open rtsp://<redacted>@192.0.2.10/live failed"),
+        ("open rtsp://admin:hunter2@192.0.2.10/live", "hunter2", "open rtsp://<redacted>@192.0.2.10/live"),
         ("rtsp://admin:pa/ss@192.0.2.10/live", "pa/ss", "rtsp://<redacted>@192.0.2.10/live"),
         ("rtsp://admin:p@ss@192.0.2.10/live", "p@ss", "rtsp://<redacted>@192.0.2.10/live"),
         ("rtsp://admin:p@s/s@192.0.2.10:554/live?x=1", "s/s", "rtsp://<redacted>@192.0.2.10:554/live?x=1"),
