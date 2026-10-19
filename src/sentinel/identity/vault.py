@@ -224,7 +224,7 @@ def write_private_atomic(
         if isinstance(exc, Exception):
             raise VaultError(f"save_failed:{type(exc).__name__}") from None
         raise
-    _fsync_directory(directory, fsync)
+    fsync_directory(directory, fsync)
 
 
 def replace_private(
@@ -240,10 +240,11 @@ def replace_private(
         replace(source, path)
     except OSError as exc:
         raise VaultError(f"save_failed:{type(exc).__name__}") from None
-    _fsync_directory(path.parent, fsync)
+    fsync_directory(path.parent, fsync)
 
 
-def _fsync_directory(directory: Path, fsync: Callable[[int], None]) -> None:
+def fsync_directory(directory: Path, fsync: Callable[[int], None] = os.fsync) -> None:
+    """fsync ``directory`` so that a rename or unlink in it lasts; best effort (a failure is ignored)."""
     try:
         dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
     except OSError:

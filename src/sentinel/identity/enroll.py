@@ -16,17 +16,20 @@ Checks, all before anything is written:
 
 The photos are copies the operator put into one dedicated folder directly inside the inbox; a folder holding
 anything but regular, non-hidden files (a link, a subfolder) is refused before any model loads. ``--dry-run``
-reports the result per photo and writes and deletes nothing. Otherwise the new gallery is sealed into a staging file
-and reloaded, and the reloaded gallery must equal exactly what was saved; only then is the event audited (counts and
-the opaque ID only) and the staging file renamed over the gallery (``IdentityStore.commit``). A failure at any of
-these steps leaves the gallery and the audit log as they were and deletes nothing, so the same photos can be enrolled
-again. Then exactly the listed copies are deleted, each only if it is still the same file (inode, size, mtime). The
-folder is removed only if it is then empty. Nothing outside it is ever touched. Reports name photos by index only (file
-names can contain names) and never contain embeddings.
+reports the result per photo and writes and deletes nothing. Otherwise, under the identity directory's change lock
+from reading the gallery to the end (``IdentityStore.locked``; another change waits or is refused, ``gallery_busy``),
+the new gallery is sealed into a staging file and reloaded, and the reloaded gallery must equal exactly what was
+saved; then ``enroll_started`` is audited (counts and the opaque ID only), the staging file renamed over the gallery
+and ``enroll`` audited (``IdentityStore.commit``). A failure at any of these steps leaves the gallery as it was (the
+audit log at most with a started and an aborted line) and deletes nothing, so the same photos can be enrolled again.
+Then exactly the listed copies are deleted, each only if it is still the same file (inode, size, mtime). The folder is
+removed only if it is then empty. Nothing outside it is ever touched. Reports name photos by index only (file names
+can contain names) and never contain embeddings.
 """
 
 from __future__ import annotations
 
+import contextlib
 import math
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -102,26 +105,27 @@ def enroll(
         report["inconsistent_photos"] = inconsistent
         raise EnrollmentRefused("inconsistent_photos", report)
     compatibility = backend.compatibility()
-    if store.exists():
-        document = store.load(secret)
-        difference = document.compatibility.first_difference(compatibility)
-        if difference is not None:
-            raise EnrollmentRefused(f"gallery_incompatible:{difference}", report)
-    else:
-        document = GalleryDocument(compatibility=compatibility)
-    for identity in document.identities:
-        best = max(_cosine(e, p) for _, e in accepted for p in identity.prototypes)
-        if best >= match_threshold:
-            raise EnrollmentRefused("close_to_enrolled_identity", report)
-    if dry_run:
-        return report
-    identity_id = new_id({i.identity_id for i in document.identities})
-    identity = GalleryIdentity(identity_id=identity_id, enrolled_utc=utc_now(), consent_date=consent_date,
-                               consent_scope=CONSENT_SCOPE, prototypes=tuple(e for _, e in accepted))
-    try:  # decrypts what it sealed and compares everything, not just the ID, before it audits and replaces
-        store.commit(document.with_identity(identity), secret, "enroll", identity_id, photos_used=len(accepted),
-                     photos_rejected=len(photos) - len(accepted))
-    except GalleryNotVerified:
-        raise VaultError("enrollment_not_verified") from None
-    report.update(identity_id=identity_id, verified=True, **store.delete_supplied_copies(folder, entries))
+    # From reading the gallery to writing it (and deleting the copies), no other change: a dry run only reads
+    with contextlib.nullcontext() if dry_run else store.locked():
+        current, base = store.read_for_update(secret)
+        if current is not None:
+            difference = current.compatibility.first_difference(compatibility)
+            if difference is not None:
+                raise EnrollmentRefused(f"gallery_incompatible:{difference}", report)
+        document = current if current is not None else GalleryDocument(compatibility=compatibility)
+        for identity in document.identities:
+            best = max(_cosine(e, p) for _, e in accepted for p in identity.prototypes)
+            if best >= match_threshold:
+                raise EnrollmentRefused("close_to_enrolled_identity", report)
+        if dry_run:
+            return report
+        identity_id = new_id({i.identity_id for i in document.identities})
+        identity = GalleryIdentity(identity_id=identity_id, enrolled_utc=utc_now(), consent_date=consent_date,
+                                   consent_scope=CONSENT_SCOPE, prototypes=tuple(e for _, e in accepted))
+        try:  # decrypts what it sealed and compares everything, not just the ID, before it audits and replaces
+            store.commit(document.with_identity(identity), secret, "enroll", identity_id, base=base,
+                         photos_used=len(accepted), photos_rejected=len(photos) - len(accepted))
+        except GalleryNotVerified:
+            raise VaultError("enrollment_not_verified") from None
+        report.update(identity_id=identity_id, verified=True, **store.delete_supplied_copies(folder, entries))
     return report

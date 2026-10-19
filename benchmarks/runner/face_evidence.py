@@ -465,8 +465,9 @@ LISTING = JsonProfile({
     "identity": vocab("list"), "identities[].identity_id": IDN, "identities[].prototypes": INT,
     "identities[].consent_date": DATE, "identities[].enrolled_utc": ISO,
 })
-AUDIT = JsonProfile({
-    "utc": ISO, "action": vocab("enroll", "revoke", "purge"), "identity_id": maybe(IDN), "photos_used": INT,
+AUDIT = JsonProfile({  # identity.gallery: a change's started line, then its completed (or aborted) one
+    "utc": ISO, "action": vocab("enroll", "revoke", "purge", "enroll_started", "enroll_aborted", "revoke_started",
+                                "revoke_aborted", "purge_started"), "identity_id": maybe(IDN), "photos_used": INT,
     "photos_rejected": INT, "identities_left": INT, "gallery": INT, "inbox_files": INT,
 }, lines=True)
 F1_PROVENANCE = KeyValueProfile({

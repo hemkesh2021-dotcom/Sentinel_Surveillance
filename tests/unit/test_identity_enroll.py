@@ -3,13 +3,17 @@ the gallery is sealed with the real helper (skipped where it is unusable). No ph
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+import subprocess
+import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from sealer_faults import Tampering, timing_out
+from sealer_faults import Pausing, Tampering, timing_out
 
 from sentinel.cli import main
 from sentinel.identity.enroll import EnrollmentRefused, enroll
@@ -28,8 +32,8 @@ def vec(*head: float) -> tuple[float, ...]:
 
 
 class Pipeline:
-    """A photo's content selects the synthetic result: ``a:<n>`` person A, ``b:<n>`` person B, ``none``, ``two``,
-    ``low``, ``other`` (a face unlike the rest)."""
+    """A photo's content selects the synthetic result: ``a:<n>`` person A, ``b:<n>`` person B, ``c:<n>`` person C,
+    ``none``, ``two``, ``low``, ``other`` (a face unlike the rest)."""
 
     def __init__(self, compatibility: FaceCompatibility = COMPAT) -> None:
         self.loads = 0
@@ -52,7 +56,8 @@ class Pipeline:
         if kind == "other":
             return EnrollmentFace(vec(0.0, 0.0, 1.0), 0.9, 120), "face_found"
         person, n = kind.split(":")
-        base = (1.0, 0.05 * int(n)) if person == "a" else (0.0, 1.0, 0.05 * int(n))
+        base = {"a": (1.0, 0.05 * int(n)), "b": (0.0, 1.0, 0.05 * int(n)),
+                "c": (0.0, 0.0, 0.0, 1.0, 0.05 * int(n))}[person]
         return EnrollmentFace(vec(*base), 0.9, 120), "face_found"
 
 
@@ -93,9 +98,9 @@ def test_a_consistent_set_enrolls_one_opaque_identity_and_deletes_the_photos(sto
     assert identity.consent_date == "2026-10-07"
     text = json.dumps(report)
     assert "Alice" not in text and "jpg" not in text and "prototypes" not in text
-    (line,) = [json.loads(x) for x in store.audit_path.read_text().splitlines()]
-    assert (line["action"], line["identity_id"], line["photos_used"], line["photos_rejected"]) == (
-        "enroll", identity.identity_id, 3, 0)
+    lines = [json.loads(x) for x in store.audit_path.read_text().splitlines()]  # started before the rename, then done
+    assert [(line["action"], line["identity_id"], line["photos_used"], line["photos_rejected"]) for line in lines] == [
+        ("enroll_started", identity.identity_id, 3, 0), ("enroll", identity.identity_id, 3, 0)]
 
 
 def test_a_dry_run_writes_and_deletes_nothing(store) -> None:
@@ -249,9 +254,9 @@ def test_photos_in_a_nested_folder_or_with_extras_are_refused_before_the_model_l
 
 
 def files(store: IdentityStore) -> dict[str, bytes | str]:
-    """The identity directory's own entries (not the inbox): file bytes, or a link's target."""
+    """The identity directory's own entries (not the inbox, nor the empty lock file): bytes, or a link's target."""
     return {p.name: os.readlink(p) if p.is_symlink() else p.read_bytes()
-            for p in store.directory.iterdir() if p.is_symlink() or p.is_file()}
+            for p in store.directory.iterdir() if (p.is_symlink() or p.is_file()) and p.name != ".gallery.lock"}
 
 
 FAILURE_LABELS = {
@@ -312,9 +317,9 @@ def test_the_command_reports_an_audit_failure_as_one_label_and_enrolls_nobody(
     assert not store.exists() and len(list(folder.iterdir())) == 2
 
 
-def test_a_failed_final_rename_can_leave_only_an_audit_line_never_an_unaudited_identity(store, monkeypatch) -> None:
-    # The one inconsistency two files allow, kept on the safe side: an audit line for an enrollment that did not
-    # take effect (the rename after the audit failed), never an identity in the gallery without its line.
+def test_a_failed_final_rename_leaves_a_started_and_an_aborted_line_never_a_completed_one(store, monkeypatch) -> None:
+    # Session 96's gap 3: the enroll line was written before the rename, so a failed rename left an audit line for
+    # an enrollment that never took effect. The completed line now follows the rename.
     import sentinel.identity.gallery as gallery
 
     def fail(source, path):
@@ -325,8 +330,8 @@ def test_a_failed_final_rename_can_leave_only_an_audit_line_never_an_unaudited_i
     with pytest.raises(VaultError, match="save_failed:OSError"):
         run(store, folder)
     assert not store.exists() and not store.staged_path.exists() and len(list(folder.iterdir())) == 2
-    (line,) = [json.loads(x) for x in store.audit_path.read_text().splitlines()]
-    assert line["action"] == "enroll"
+    assert [line["action"] for line in audit_lines(store)] == ["enroll_started", "enroll_aborted"]
+    assert audited(store) == enrolled(store) == set()
 
 
 def test_purge_also_removes_a_staged_gallery_left_by_a_stop_before_the_rename(store) -> None:
@@ -351,3 +356,294 @@ def test_a_file_added_during_enrollment_is_kept_with_its_folder(store, monkeypat
     report = run(store, folder, pipeline=pipeline)
     assert (report["photos_deleted"], report["folder_entries_left"]) == (2, 1)
     assert [p.name for p in folder.iterdir()] == ["late.jpg"]
+
+
+# ---------------------------------------------------------------- one change at a time, audited before and after
+
+
+def audit_lines(store: IdentityStore) -> list[dict]:
+    """Every audit line; a torn last line fails here."""
+    if not store.audit_path.exists():
+        return []
+    text = store.audit_path.read_text()
+    assert text == "" or text.endswith("\n"), "the audit log ends in a torn line"
+    return [json.loads(line) for line in text.splitlines()]
+
+
+def enrolled(store: IdentityStore) -> set[str]:
+    return {i.identity_id for i in store.load(SECRET).identities} if store.exists() else set()
+
+
+def audited(store: IdentityStore) -> set[str]:
+    """Who the completed audit lines say is enrolled: enroll adds, revoke removes, purge clears."""
+    ids: set[str] = set()
+    for line in audit_lines(store):
+        if line["action"] == "enroll":
+            ids.add(line["identity_id"])
+        elif line["action"] == "revoke":
+            ids.discard(line["identity_id"])
+        elif line["action"] == "purge":
+            ids.clear()
+    return ids
+
+
+def under_way(store: IdentityStore, folder: Path, paused: str):
+    """An enrollment of ``folder`` in a thread, through its own store on the same directory (as another process
+    would), held after it has read the gallery or just before its first audit line; returns (thread, go, outcome)."""
+    outcome: dict = {}
+    if paused == "after_reading":
+        sealer = Pausing()
+        other = IdentityStore(store.directory, sealer, utc_now=lambda: NOW)
+        reached, go = sealer.read, sealer.go
+    else:
+        other = IdentityStore(store.directory, Sealer(kdf_n=2**14), utc_now=lambda: NOW)
+        reached, go = threading.Event(), threading.Event()
+        audit = other.audit
+
+        def held(*args, **kwargs):
+            if not reached.is_set():
+                reached.set()
+                assert go.wait(60)
+            return audit(*args, **kwargs)
+
+        other.audit = held  # type: ignore[method-assign]
+
+    def enrol() -> None:
+        try:
+            outcome["report"] = run(other, folder)
+        except (VaultError, EnrollmentRefused) as exc:
+            outcome["error"] = exc.label
+
+    thread = threading.Thread(target=enrol)
+    thread.start()
+    assert reached.wait(60)
+    return thread, go, outcome
+
+
+@pytest.mark.parametrize("paused", ["after_reading", "before_writing"])
+@pytest.mark.parametrize("change", ["enroll", "revoke", "purge"])
+def test_a_change_made_while_an_enrollment_is_under_way_is_neither_lost_nor_undone(store, change, paused) -> None:
+    # Session 96's gaps 2 and 3: each change reads the gallery, changes it and writes it (through one staging file).
+    # Interleaved, the later write lost the earlier change, brought back a revoked or purged identity, or wrote an
+    # enroll line for an identity whose gallery write then failed.
+    run(store, photos(store, "b:1", "b:2", folder="earlier"))
+    (x,) = enrolled(store)
+    third = photos(store, "c:1", "c:2", folder="third")
+
+    def other_change() -> None:
+        if change == "enroll":
+            run(store, third)
+        elif change == "revoke":
+            assert store.revoke(x, SECRET) is True
+        else:
+            store.purge()
+
+    thread, go, outcome = under_way(store, photos(store, "a:1", "a:2", folder="second"), paused)
+    store.lock_wait_s = 0.2  # the other change does not wait long for the enrollment under way
+    try:
+        other_change()
+        first = "done"
+    except VaultError as exc:
+        first = exc.label
+    go.set()
+    thread.join(60)
+    assert not thread.is_alive()
+    if first == "gallery_busy":
+        other_change()  # again, now that nothing else is under way
+    assert enrolled(store) == audited(store), (first, outcome)  # no audited change lost, none unaudited
+    assert first == "gallery_busy" and "report" in outcome  # one change at a time; the enrollment completed
+    assert len(enrolled(store)) == {"enroll": 3, "revoke": 1, "purge": 0}[change]
+    assert change != "revoke" or x not in enrolled(store)
+
+
+def test_a_change_waits_for_the_one_under_way_and_then_reads_what_it_left(store) -> None:
+    run(store, photos(store, "b:1", "b:2", folder="earlier"))
+    holder = IdentityStore(store.directory, Sealer(kdf_n=2**14))
+    folder = photos(store, "a:1", "a:2", folder="second")
+    outcome: dict = {}
+    with holder.locked():  # another change under way
+        thread = threading.Thread(target=lambda: outcome.update(report=run(store, folder)))
+        thread.start()
+        thread.join(0.5)
+        assert thread.is_alive() and not outcome and len(enrolled(store)) == 1  # waiting; nothing written
+    thread.join(60)
+    assert outcome["report"]["verified"] is True and len(enrolled(store)) == 2 == len(audited(store))
+
+
+def test_a_change_is_refused_while_another_process_holds_the_lock(store, tmp_path, monkeypatch, capsys) -> None:
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import fcntl, os, sys; fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600); "
+         "fcntl.flock(fd, fcntl.LOCK_EX); print('locked', flush=True); sys.stdin.readline()",
+         str(store.directory / ".gallery.lock")], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    folder = photos(store, "a:1", "a:2")
+    try:
+        assert holder.stdout is not None and holder.stdout.readline().strip() == "locked"
+        store.lock_wait_s = 0.2
+        assert call(store, tmp_path, monkeypatch, "enroll", str(folder), "--consent-confirmed",
+                    "--consent-date", "2026-10-07") == 1
+        assert capsys.readouterr().err.strip() == "identity: gallery_busy"
+        assert not store.exists() and audit_lines(store) == [] and len(list(folder.iterdir())) == 2
+    finally:
+        holder.communicate("\n", timeout=30)
+    run(store, folder)  # the holder has exited: its lock went with it
+    assert len(enrolled(store)) == 1 == len(audited(store))
+
+
+@pytest.mark.parametrize("failure", ["audit-file-not-private", "audit-write-fails"])
+def test_a_revoke_whose_audit_line_cannot_be_written_changes_nothing(store, failure) -> None:
+    # Session 96's gap 1: revoke wrote the gallery, then audited.
+    run(store, photos(store, "a:1", "a:2"))
+    (x,) = enrolled(store)
+    if failure == "audit-file-not-private":
+        store.audit_path.chmod(0o644)
+    else:
+        store.audit_path.unlink()
+        store.audit_path.symlink_to(store.directory / "elsewhere")
+    before = files(store)
+    with pytest.raises(VaultError):
+        store.revoke(x, SECRET)
+    assert files(store) == before and enrolled(store) == {x}
+
+
+class ShortWrites:
+    """``os`` as gallery.py sees it, with its writes (only the audit's) scripted per call: "ok", "half" (writes half
+    the bytes, as a full disk or a size limit can) or "fail" (ENOSPC); later calls are plain. ``fsync_fails``: that
+    many fsync calls fail first (EIO)."""
+
+    def __init__(self, *script: str, fsync_fails: int = 0) -> None:
+        self._script = list(script)
+        self._fsync_fails = fsync_fails
+
+    def __getattr__(self, name: str):
+        return getattr(os, name)
+
+    def fsync(self, fd: int) -> None:
+        if self._fsync_fails:
+            self._fsync_fails -= 1
+            raise OSError(errno.EIO, "Input/output error")
+        os.fsync(fd)
+
+    def write(self, fd: int, data) -> int:
+        step = self._script.pop(0) if self._script else "ok"
+        if step == "fail":
+            raise OSError(errno.ENOSPC, "No space left on device")
+        data = bytes(data)
+        return os.write(fd, data[: len(data) // 2] if step == "half" else data)
+
+
+def test_an_audit_line_cut_short_is_removed_and_nothing_changes(store, monkeypatch) -> None:
+    import sentinel.identity.gallery as gallery
+
+    run(store, photos(store, "b:1", "b:2", folder="earlier"))
+    before = files(store)
+    monkeypatch.setattr(gallery, "os", ShortWrites("half", "fail"))
+    folder = photos(store, "a:1", "a:2")
+    with pytest.raises(VaultError, match="audit_failed:OSError"):
+        run(store, folder)
+    assert files(store) == before and len(list(folder.iterdir())) == 2  # no torn line, no change
+
+
+def test_an_audit_line_that_cannot_be_flushed_is_removed_and_nothing_changes(store, monkeypatch) -> None:
+    import sentinel.identity.gallery as gallery
+
+    run(store, photos(store, "b:1", "b:2", folder="earlier"))
+    before = files(store)
+    monkeypatch.setattr(gallery, "os", ShortWrites(fsync_fails=1))  # written whole, but not durably
+    folder = photos(store, "a:1", "a:2")
+    with pytest.raises(VaultError, match="audit_failed:OSError"):
+        run(store, folder)
+    assert files(store) == before and len(list(folder.iterdir())) == 2
+
+
+def test_the_lock_is_not_shared_by_two_threads_using_one_store(store) -> None:
+    store.ensure_directory()
+    store.lock_wait_s = 0.2
+    held, release, outcome = threading.Event(), threading.Event(), {}
+
+    def hold() -> None:
+        with store.locked():
+            held.set()
+            assert release.wait(30)
+
+    def change() -> None:
+        try:
+            store.purge()
+            outcome["purge"] = "done"
+        except VaultError as exc:
+            outcome["purge"] = exc.label
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    assert held.wait(30)
+    other = threading.Thread(target=change)
+    other.start()
+    other.join(30)
+    release.set()
+    holder.join(30)
+    assert outcome == {"purge": "gallery_busy"} and audit_lines(store) == []
+
+
+@pytest.mark.parametrize("enrolled_before", [0, 1], ids=["first-person", "second-person"])
+def test_a_completion_line_that_cannot_be_written_undoes_the_change(store, monkeypatch, enrolled_before) -> None:
+    import sentinel.identity.gallery as gallery
+
+    if enrolled_before:
+        run(store, photos(store, "b:1", "b:2", folder="earlier"))
+    gallery_before = store.gallery_path.read_bytes() if store.exists() else None
+    lines_before = audit_lines(store)
+    monkeypatch.setattr(gallery, "os", ShortWrites("ok", "half", "fail"))  # started; completion cut short; aborted
+    folder = photos(store, "a:1", "a:2")
+    with pytest.raises(VaultError, match="audit_failed:OSError"):
+        run(store, folder)
+    assert (store.gallery_path.read_bytes() if store.exists() else None) == gallery_before  # undone
+    assert [line["action"] for line in audit_lines(store)[len(lines_before):]] == ["enroll_started", "enroll_aborted"]
+    assert enrolled(store) == audited(store) and len(list(folder.iterdir())) == 2
+    assert {p.name for p in store.directory.iterdir()} <= {"gallery.sealed", "audit.jsonl", "inbox", ".gallery.lock"}
+
+
+def test_a_change_that_cannot_be_undone_either_says_it_took_effect(store, monkeypatch) -> None:
+    import sentinel.identity.gallery as gallery
+
+    run(store, photos(store, "b:1", "b:2", folder="earlier"))
+    real = gallery.replace_private
+    calls = []
+
+    def replace(source, path):
+        calls.append(source)
+        if len(calls) == 2:  # the undo
+            raise VaultError("save_failed:OSError")
+        return real(source, path)
+
+    monkeypatch.setattr(gallery, "replace_private", replace)
+    monkeypatch.setattr(gallery, "os", ShortWrites("ok", "half", "fail"))
+    with pytest.raises(VaultError, match="committed_audit_incomplete"):
+        run(store, photos(store, "a:1", "a:2"))
+    lines = audit_lines(store)
+    assert len(enrolled(store)) == 2 and lines[-1]["action"] == "enroll_started"  # in effect; started, not completed
+    assert lines[-1]["identity_id"] in enrolled(store) - audited(store)
+
+
+def test_a_torn_last_audit_line_stops_every_change_until_it_is_dealt_with(store) -> None:
+    run(store, photos(store, "b:1", "b:2", folder="earlier"))
+    (x,) = enrolled(store)
+    with store.audit_path.open("ab") as log:
+        log.write(b'{"utc":"2026-10-07T12:00:00+00:00","act')  # as a stop in the middle of an append leaves it
+    before = files(store)
+    folder = photos(store, "a:1", "a:2")
+    for change in (lambda: run(store, folder), lambda: store.revoke(x, SECRET), store.purge):
+        with pytest.raises(VaultError, match="audit_log_torn"):
+            change()
+    assert files(store) == before and len(list(folder.iterdir())) == 2
+
+
+def test_a_commit_finds_the_gallery_as_it_was_read_or_changes_nothing(store) -> None:
+    from sentinel.identity.gallery import GalleryChanged
+
+    run(store, photos(store, "b:1", "b:2", folder="earlier"))
+    document, base = store.read_for_update(SECRET)
+    before = files(store)
+    for stale in (None, "0" * 64):  # read as absent, or as another file
+        with pytest.raises(GalleryChanged):
+            store.commit(document, SECRET, "revoke", document.identities[0].identity_id, base=stale,
+                         identities_left=0)
+    assert files(store) == before

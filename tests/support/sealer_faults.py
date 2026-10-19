@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 
 from sentinel.identity.vault import Sealer
 
@@ -30,6 +31,25 @@ class Tampering(Sealer):
             document["identities"] = document["identities"][:-1]
             plaintext = json.dumps(document).encode("ascii")
         return associated, plaintext
+
+
+class Pausing(Sealer):
+    """The real helper; its first open (an enrollment reading the gallery) returns only after ``go`` is set, and
+    ``read`` is set once it has read. Lets a test change the gallery while that enrollment is under way."""
+
+    def __init__(self) -> None:
+        super().__init__(kdf_n=KDF_N)
+        self.read = threading.Event()
+        self.go = threading.Event()
+        self._first = True
+
+    def open(self, sealed, secret):
+        opened = super().open(sealed, secret)
+        if self._first:
+            self._first = False
+            self.read.set()
+            assert self.go.wait(60)
+        return opened
 
 
 def timing_out(nth: int) -> Sealer:

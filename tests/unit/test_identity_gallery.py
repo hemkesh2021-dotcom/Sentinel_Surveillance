@@ -145,8 +145,9 @@ def test_revoke_removes_one_identity_and_purge_removes_everything(store) -> None
     assert store.purge() == {"gallery": 1, "inbox_files": 1}
     assert not store.gallery_path.exists() and list(store.inbox.iterdir()) == []
     lines = [json.loads(line) for line in store.audit_path.read_text().splitlines()]
-    assert [(line["action"], line["identity_id"]) for line in lines] == [
-        ("revoke", "idn-000000000001"), ("purge", None)]
+    assert [(line["action"], line["identity_id"]) for line in lines] == [  # each change started, then completed
+        ("revoke_started", "idn-000000000001"), ("revoke", "idn-000000000001"), ("purge_started", None),
+        ("purge", None)]
     assert stat.S_IMODE(store.audit_path.stat().st_mode) == 0o600
     assert all(set(line) <= {"utc", "action", "identity_id", "identities_left", "gallery", "inbox_files"}
                for line in lines)

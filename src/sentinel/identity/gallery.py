@@ -17,18 +17,30 @@ The identity directory (default ``~/sentinel-data/identity``, on the second driv
 successful enrollment. ``audit.jsonl`` records enroll, revoke and purge events with the opaque ID, a UTC time and
 counts: no embeddings, names or file names.
 
-Enrollment and capture change the gallery through ``commit``: sealed into a staging file beside it, read back and
-compared in full, audited, and only then renamed over it. So the gallery never holds an identity whose event was not
-audited; any failure before the rename leaves the gallery and the audit log as they were.
+**One change at a time.** Enrollment, revoke, purge and capture each hold the directory's change lock (``locked``, an
+exclusive ``flock``) from reading the gallery to writing it, so concurrent changes from any process wait their turn
+(or are refused, ``gallery_busy``) and none is lost or undone by another.
 
-Removal: ``revoke`` rewrites the gallery without the identity; ``purge`` deletes the gallery, any staging file left
-by a stop before its rename, and the inbox. The runtime reads the gallery once at startup, so either takes effect at
-the next start. Deleting files on an SSD is not secure erasure.
+**Audited before and after.** A change goes through ``commit``: sealed into a staging file beside the gallery, read
+back and compared in full, checked against the gallery it was based on, recorded as ``<action>_started``, renamed
+over the gallery, then recorded as ``<action>`` (completed). A failed rename adds ``<action>_aborted``; a completed
+line that cannot be written undoes the change. A completed line is only ever written for a change in effect, and the
+gallery never changes without a started line before it. Readers that count completed events (F1 counts ``enroll``)
+are unaffected by the started and aborted lines. Purge records ``purge_started`` and ``purge``.
+
+**Not atomic across a stop.** A crash or power loss between a started line and its outcome leaves the started line
+alone, with the gallery either unchanged or changed; only the gallery says which. A torn last line (a stop during an
+append) stops every change until an operator deals with it (``audit_log_torn``).
+
+Removal: ``revoke`` rewrites the gallery without the identity; ``purge`` deletes the gallery, any staging or previous
+file left by a stop, and the inbox. The runtime reads the gallery once at startup, so either takes effect at the next
+start. Deleting files on an SSD is not secure erasure.
 """
 
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import hashlib
 import json
 import math
@@ -36,7 +48,9 @@ import os
 import re
 import secrets
 import stat
-from collections.abc import Callable
+import threading
+import time
+from collections.abc import Callable, Iterator
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -51,6 +65,7 @@ from .vault import (
     Sealer,
     Secret,
     VaultError,
+    fsync_directory,
     private_directory_problem,
     private_file_problem,
     read_private,
@@ -62,6 +77,10 @@ SCHEMA = "sentinel-identity-gallery"
 SCHEMA_VERSION = 1
 GALLERY_FILE = "gallery.sealed"
 STAGED_FILE = ".gallery.sealed.staged"  # sealed, not yet verified, audited and renamed over the gallery
+PREVIOUS_FILE = ".gallery.sealed.previous"  # the gallery as it was, kept during a commit to undo it
+LOCK_FILE = ".gallery.lock"  # empty; flock()ed while a change is under way
+LOCK_WAIT_S = 60.0  # a change waits this long for one under way (a commit's sealing is a few seconds), then refuses
+LOCK_POLL_S = 0.05
 AUDIT_FILE = "audit.jsonl"
 INBOX_DIR = "inbox"
 DEFAULT_IDENTITY_DIR = Path.home() / "sentinel-data" / "identity"
@@ -195,14 +214,32 @@ class GalleryNotVerified(VaultError):
         super().__init__("gallery_not_verified")
 
 
+class GalleryChanged(VaultError):
+    """The gallery is no longer the one the change was based on (it appeared, went or was replaced since)."""
+
+    def __init__(self) -> None:
+        super().__init__("gallery_changed")
+
+
+class AuditIncomplete(VaultError):
+    """The change took effect, its started line is in the audit log, but its completed line could not be written and
+    the change could not be undone either."""
+
+    def __init__(self) -> None:
+        super().__init__("committed_audit_incomplete")
+
+
 class IdentityStore:
     """The identity directory: the sealed gallery, the inbox and the audit log."""
 
     def __init__(self, directory: Path, sealer: Sealer, *,
-                 utc_now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> None:
+                 utc_now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+                 lock_wait_s: float = LOCK_WAIT_S) -> None:
         self.directory = Path(directory)
         self._sealer = sealer
         self._utc_now = utc_now
+        self.lock_wait_s = lock_wait_s  # how long a change waits for another one under way (then gallery_busy)
+        self._held = threading.local()  # this thread's depth in locked(): re-entrant per thread, never across
 
     @property
     def gallery_path(self) -> Path:
@@ -211,6 +248,54 @@ class IdentityStore:
     @property
     def staged_path(self) -> Path:
         return self.directory / STAGED_FILE
+
+    @property
+    def previous_path(self) -> Path:
+        return self.directory / PREVIOUS_FILE
+
+    @property
+    def lock_path(self) -> Path:
+        return self.directory / LOCK_FILE
+
+    @contextlib.contextmanager
+    def locked(self) -> Iterator[None]:
+        """Hold the directory's change lock: an exclusive ``flock`` on LOCK_FILE, so that one enrollment, revoke,
+        purge or capture at a time reads, changes and writes the gallery and the audit log, in any process. Waits up
+        to ``lock_wait_s`` for a change under way, then refuses (``gallery_busy``) having changed nothing. The lock
+        goes with the process (no stale lock after a stop). Re-entrant within the same thread; another thread, even
+        with this store, waits like another process (its own open file description)."""
+        depth = getattr(self._held, "depth", 0)
+        if depth:
+            self._held.depth = depth + 1
+            try:
+                yield
+            finally:
+                self._held.depth = depth
+            return
+        problem = self.directory_problem()
+        if problem is not None:
+            raise VaultError(problem)
+        try:
+            fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, PRIVATE_FILE_MODE)
+        except OSError as exc:
+            raise VaultError(f"lock_failed:{type(exc).__name__}") from None
+        try:
+            deadline = time.monotonic() + self.lock_wait_s
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise VaultError("gallery_busy") from None
+                    time.sleep(LOCK_POLL_S)
+            self._held.depth = 1
+            try:
+                yield
+            finally:
+                self._held.depth = 0
+        finally:
+            os.close(fd)  # releases the lock
 
     @property
     def audit_path(self) -> Path:
@@ -237,13 +322,24 @@ class IdentityStore:
         return self.gallery_path.exists()
 
     def load(self, secret: Secret) -> GalleryDocument:
-        return self._open(self.gallery_path, secret)
+        return self._decode(self._read(self.gallery_path), secret)
 
-    def _open(self, path: Path, secret: Secret) -> GalleryDocument:
-        problem = self.directory_problem()
+    def read_for_update(self, secret: Secret) -> tuple[GalleryDocument | None, str | None]:
+        """The gallery and the SHA-256 of its sealed file, (None, None) when there is none: what a change is based on.
+        Read it while holding ``locked()``, and pass the digest to ``commit`` as ``base``."""
+        if not self.exists():
+            return None, None
+        sealed = self._read(self.gallery_path)
+        return self._decode(sealed, secret), hashlib.sha256(sealed).hexdigest()
+
+    def _read(self, path: Path) -> bytes:
+        problem = self.directory_problem()  # the directory first, then the file
         if problem is not None:
             raise VaultError(problem)
-        associated, plaintext = self._sealer.open(read_private(path), secret)
+        return read_private(path)
+
+    def _decode(self, sealed: bytes, secret: Secret) -> GalleryDocument:
+        associated, plaintext = self._sealer.open(sealed, secret)
         try:
             document = GalleryDocument.model_validate_json(plaintext)
         except ValidationError:
@@ -252,7 +348,12 @@ class IdentityStore:
             raise VaultError("gallery_inconsistent")  # the authenticated header and the sealed record disagree
         return document
 
+    def _fingerprint(self) -> str | None:
+        return hashlib.sha256(read_private(self.gallery_path)).hexdigest() if self.exists() else None
+
     def save(self, document: GalleryDocument, secret: Secret) -> None:
+        """Write ``document`` as the gallery directly: no lock, no audit (to set one up, as tests do). Enrollment,
+        revoke and capture change the gallery through ``commit``."""
         self._write(self.gallery_path, document, secret)
 
     def _write(self, path: Path, document: GalleryDocument, secret: Secret) -> None:
@@ -260,74 +361,150 @@ class IdentityStore:
                                    _associated(document.compatibility))
         write_private_atomic(path, sealed)
 
-    def commit(self, document: GalleryDocument, secret: Secret, action: str, identity_id: str, **counts: int) -> None:
-        """Make ``document`` the gallery only once it is verified and its event audited.
+    def commit(self, document: GalleryDocument, secret: Secret, action: str, identity_id: str, *, base: str | None,
+               **counts: int) -> None:
+        """Make ``document`` the gallery, under the change lock, with the change audited before and after it.
 
-        It is sealed into the staging file, decrypted from there and compared in full (GalleryNotVerified), the event
-        is audited, and only then is the staging file renamed over the gallery. Any failure before the rename removes
-        the staging file and leaves the gallery (or its absence) and the audit log as they were. Only a failed rename,
-        or a stop between the audit and the rename, can leave an audit line for a change that did not take effect;
-        never a change without its audit line."""
+        1. Seal it into the staging file, decrypt it from there and compare it in full (``GalleryNotVerified``).
+        2. Check that the gallery is still the one the change was based on: ``base``, the digest ``read_for_update``
+           gave, None for none (``GalleryChanged``).
+        3. Keep the current gallery as the previous file (a hard link), then append ``<action>_started`` with the
+           identity and counts, and fsync it.
+        4. Rename the staging file over the gallery (the directory fsynced).
+        5. Append ``<action>``, the completed line.
+
+        A failure in 1-3 leaves the gallery and the audit log as they were. A failed rename (4) adds
+        ``<action>_aborted``. A completed line that cannot be written (5) undoes the change from the previous file
+        and adds ``<action>_aborted``, both best effort. So a completed line is only ever written for a change in
+        effect, and a change never takes effect without its started line before it; only if the undo also fails does
+        the change stay with its started line alone (``AuditIncomplete``).
+
+        Not atomic across a stop (a crash or power loss): a stop after 3 leaves a started line with no outcome, the
+        gallery either unchanged (before 4) or changed (after 4), and the staging or previous file until the next
+        change or purge removes it. The log alone cannot tell which; the gallery can."""
+        with self.locked():
+            try:
+                self._write(self.staged_path, document, secret)
+                if self._decode(read_private(self.staged_path), secret) != document:
+                    raise GalleryNotVerified()
+                if self._fingerprint() != base:
+                    raise GalleryChanged()
+                self._remove(self.previous_path)
+                if base is not None:
+                    try:
+                        os.link(self.gallery_path, self.previous_path)
+                    except OSError as exc:
+                        raise VaultError(f"save_failed:{type(exc).__name__}") from None
+                self.audit(f"{action}_started", identity_id, **counts)
+            except BaseException:
+                self._remove(self.staged_path)
+                self._remove(self.previous_path)
+                raise
+            try:
+                try:
+                    replace_private(self.staged_path, self.gallery_path)
+                except VaultError:  # not renamed: the gallery is as it was
+                    self._remove(self.staged_path)
+                    self._audit_best_effort(f"{action}_aborted", identity_id)
+                    raise
+                try:
+                    self.audit(action, identity_id, **counts)
+                except VaultError:
+                    self._undo(had_gallery=base is not None)
+                    self._audit_best_effort(f"{action}_aborted", identity_id)
+                    raise
+            finally:
+                self._remove(self.previous_path)
+
+    def _undo(self, *, had_gallery: bool) -> None:
+        """Put the gallery back as it was before the rename: the previous file, or no gallery."""
         try:
-            self._write(self.staged_path, document, secret)
-            if self._open(self.staged_path, secret) != document:
-                raise GalleryNotVerified()
-            self.audit(action, identity_id, **counts)
-            replace_private(self.staged_path, self.gallery_path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                self.staged_path.unlink()
-            raise
+            if had_gallery:
+                replace_private(self.previous_path, self.gallery_path)
+            else:
+                self.gallery_path.unlink()
+                fsync_directory(self.directory)
+        except (VaultError, OSError):
+            raise AuditIncomplete() from None
+
+    def _audit_best_effort(self, action: str, identity_id: str | None) -> None:
+        with contextlib.suppress(VaultError):
+            self.audit(action, identity_id)
+
+    @staticmethod
+    def _remove(path: Path) -> None:
+        with contextlib.suppress(OSError):
+            path.unlink()
 
     def audit(self, action: str, identity_id: str | None = None, **counts: int) -> None:
-        """Append one numbers-only line; the identity ID is opaque and nothing else identifies anyone."""
+        """Append one complete numbers-only line, or nothing; the identity ID is opaque and nothing else identifies
+        anyone. A short or failed write is cut back to the log's previous length (``audit_failed:<class>``). A log
+        whose last line is torn (only a stop in the middle of an append leaves one) is refused (``audit_log_torn``):
+        nothing is appended to it until an operator has dealt with it."""
         if not all(isinstance(value, int) and not isinstance(value, bool) for value in counts.values()):
             raise ValueError("audit details are counts only")
         line = _canonical({"utc": self._utc_now().isoformat(timespec="seconds"), "action": action,
                            "identity_id": identity_id, **counts}) + b"\n"
-        if self.audit_path.exists():
-            problem = private_file_problem(self.audit_path)
-            if problem is not None:
-                raise VaultError(f"audit_{problem}")
-        try:
-            fd = os.open(self.audit_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, PRIVATE_FILE_MODE)
+        with self.locked():
+            if self.audit_path.exists():
+                problem = private_file_problem(self.audit_path)
+                if problem is not None:
+                    raise VaultError(f"audit_{problem}")
             try:
-                os.write(fd, line)
-                os.fsync(fd)
+                fd = os.open(self.audit_path, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, PRIVATE_FILE_MODE)
+            except OSError as exc:
+                raise VaultError(f"audit_failed:{type(exc).__name__}") from None
+            try:
+                length = os.fstat(fd).st_size
+                if length and os.pread(fd, 1, length - 1) != b"\n":
+                    raise VaultError("audit_log_torn")
+                try:
+                    view = memoryview(line)
+                    while view:
+                        view = view[os.write(fd, view):]
+                    os.fsync(fd)
+                except OSError as exc:
+                    with contextlib.suppress(OSError):
+                        os.ftruncate(fd, length)
+                        os.fsync(fd)
+                    raise VaultError(f"audit_failed:{type(exc).__name__}") from None
             finally:
                 os.close(fd)
-        except OSError as exc:
-            raise VaultError(f"audit_failed:{type(exc).__name__}") from None
 
     def revoke(self, identity_id: str, secret: Secret) -> bool:
-        """Rewrite the gallery without ``identity_id``; False if it was not enrolled."""
-        document = self.load(secret)
-        if identity_id not in {i.identity_id for i in document.identities}:
-            return False
-        self.save(document.without(identity_id), secret)
-        self.audit("revoke", identity_id, identities_left=len(document.identities) - 1)
-        return True
+        """Rewrite the gallery without ``identity_id`` through ``commit`` (under the lock, audited before and after);
+        False if it was not enrolled."""
+        with self.locked():
+            document, base = self.read_for_update(secret)
+            if document is None:
+                raise VaultError("file_missing")
+            if identity_id not in {i.identity_id for i in document.identities}:
+                return False
+            self.commit(document.without(identity_id), secret, "revoke", identity_id, base=base,
+                        identities_left=len(document.identities) - 1)
+            return True
 
     def purge(self) -> dict[str, int]:
-        """Delete the gallery, a staging file left behind and everything in the inbox; the audit log keeps a purge
-        line."""
-        problem = self.directory_problem()
-        if problem is not None:
-            raise VaultError(problem)
+        """Delete the gallery, any staging or previous file left behind and everything in the inbox, under the lock,
+        between a ``purge_started`` and a ``purge`` line. Deleting cannot be undone: a failure part way leaves the
+        started line without its completed one."""
         removed = {"gallery": 0, "inbox_files": 0}
-        if self.gallery_path.exists():
-            self.gallery_path.unlink()
-            removed["gallery"] = 1
-        self.staged_path.unlink(missing_ok=True)  # not counted: the purge line's fields stay as they were
-        if self.inbox.is_dir():
-            for path in sorted(self.inbox.rglob("*"), reverse=True):
-                if path.is_dir() and not path.is_symlink():
-                    with contextlib.suppress(OSError):
-                        path.rmdir()
-                else:
-                    path.unlink()
-                    removed["inbox_files"] += 1
-        self.audit("purge", None, **removed)
+        with self.locked():
+            self.audit("purge_started")
+            if self.gallery_path.exists():
+                self.gallery_path.unlink()
+                removed["gallery"] = 1
+            for leftover in (self.staged_path, self.previous_path):  # not counted: the purge line's fields stay
+                leftover.unlink(missing_ok=True)
+            if self.inbox.is_dir():
+                for path in sorted(self.inbox.rglob("*"), reverse=True):
+                    if path.is_dir() and not path.is_symlink():
+                        with contextlib.suppress(OSError):
+                            path.rmdir()
+                    else:
+                        path.unlink()
+                        removed["inbox_files"] += 1
+            self.audit("purge", None, **removed)
         return removed
 
     def enrollment_folder(self, folder: Path) -> list[tuple[Path, tuple[int, int, int]]]:

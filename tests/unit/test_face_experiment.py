@@ -122,9 +122,10 @@ def test_a_capture_writes_a_sealed_working_gallery_that_reads_back_and_audits_co
     expected = [near(times[i]) for i in chosen]  # the predeclared faces, nothing else (re-normalized: last bits only)
     assert len(identity.prototypes) == len(expected) and all(
         math.isclose(a, b, abs_tol=1e-12) for p, q in zip(identity.prototypes, expected) for a, b in zip(p, q))
-    (line,) = made.store.audit_path.read_text().splitlines()
+    started, line = made.store.audit_path.read_text().splitlines()  # started before the rename, then completed
     assert json.loads(line) == {"utc": NOW.isoformat(), "action": "capture", "identity_id": ENROLLED,
                                 "prototypes_used": CAPTURE_SEGMENTS, "faces_in_span": 270}
+    assert json.loads(started) == {**json.loads(line), "action": "capture_started"}
     assert made.kept == 0  # the embeddings are discarded once written
     assert made.finish() is report  # written once
     assert set(report) == {"identity", "written", "refused", "faces_kept", "faces_dropped_over_cap", "faces_in_span",
@@ -176,6 +177,21 @@ def test_a_capture_never_overwrites_a_gallery_and_needs_one_identity_and_a_date(
     assert late.finish()["refused"] == "capture_target_has_gallery" and other.load(SECRET) == ORIGINAL
 
 
+def test_a_gallery_that_appears_after_the_captures_last_check_is_never_overwritten(tmp_path, sealer,
+                                                                                  monkeypatch) -> None:
+    # The commit checks again, under the lock, that there is still no working gallery (its base is None).
+    made = capture(tmp_path, sealer)
+    feed(made)
+    other = IdentityStore(made.store.directory, sealer, utc_now=lambda: NOW)
+    other.ensure_directory()
+    other.save(ORIGINAL, SECRET)  # it appears just after finish()'s own check, which still saw none
+    answers, real = [False], made.store.exists
+    monkeypatch.setattr(made.store, "exists", lambda: answers.pop() if answers else real())
+    report = made.finish()
+    assert (report["written"], report["refused"]) == (False, "capture_target_has_gallery")
+    assert other.load(SECRET) == ORIGINAL and not made.store.audit_path.exists()
+
+
 def test_a_capture_keeps_at_most_its_cap_and_counts_the_rest(tmp_path, sealer) -> None:
     made = capture(tmp_path, sealer)
     for t in range(CAPTURE_MAX + 25):
@@ -202,7 +218,8 @@ def test_a_capture_whose_write_fails_after_sealing_leaves_no_gallery_to_open(tmp
     feed(made)
     report = made.finish()
     assert (report["written"], report["refused"], report["verified"]) == (False, refused, False)
-    assert {p.name for p in directory.iterdir()} <= {"inbox", "audit.jsonl"}  # no gallery, nothing staged
+    # no gallery, nothing staged (the lock file is empty)
+    assert {p.name for p in directory.iterdir()} <= {"inbox", "audit.jsonl", ".gallery.lock"}
     assert not (directory / "audit.jsonl").exists() or (directory / "audit.jsonl").read_bytes() == b""
     with pytest.raises(ExperimentRefused, match="face_shadow_missing"):  # a later --face-shadow-gallery run
         open_shadow(IdentityStore(directory, sealer), SECRET, ORIGINAL)

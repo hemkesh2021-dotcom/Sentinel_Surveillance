@@ -37,6 +37,7 @@ from typing import Any
 
 from .gallery import (
     CONSENT_SCOPE,
+    GalleryChanged,
     GalleryDocument,
     GalleryIdentity,
     GalleryNotVerified,
@@ -207,12 +208,16 @@ class Capture:
             document = GalleryDocument(compatibility=self.original.compatibility, identities=(GalleryIdentity(
                 identity_id=identity.identity_id, enrolled_utc=self.utc_now(), consent_date=self.consent_date,
                 consent_scope=CONSENT_SCOPE, prototypes=tuple(prototypes)),))
-            try:  # read back, audited, and only then in place: a failure leaves no gallery to open as a shadow
+            try:  # read back, audited, and only then in place: a failure leaves no gallery to open as a shadow (only a
+                # completed line that cannot be written and then an undo that fails too leave it, AuditIncomplete)
                 self.store.ensure_directory()
-                self.store.commit(document, self.secret, "capture", identity.identity_id,
+                self.store.commit(document, self.secret, "capture", identity.identity_id, base=None,
                                   prototypes_used=len(prototypes), faces_in_span=in_span)
             except GalleryNotVerified:
                 report["refused"] = "capture_not_verified"
+                return self._end(report)
+            except GalleryChanged:  # a gallery appeared in the directory after the check above
+                report["refused"] = "capture_target_has_gallery"
                 return self._end(report)
             except (VaultError, OSError):
                 report["refused"] = "capture_write_failed"
