@@ -17,7 +17,12 @@ The identity directory (default ``~/sentinel-data/identity``, on the second driv
 successful enrollment. ``audit.jsonl`` records enroll, revoke and purge events with the opaque ID, a UTC time and
 counts: no embeddings, names or file names.
 
-Removal: ``revoke`` rewrites the gallery without the identity; ``purge`` deletes the gallery and the inbox. The
+Enrollment and capture change the gallery through ``commit``: sealed into a staging file beside it, read back and
+compared in full, audited, and only then renamed over it. So the gallery never holds an identity whose event was not
+audited; any failure before the rename leaves the gallery and the audit log as they were.
+
+Removal: ``revoke`` rewrites the gallery without the identity; ``purge`` deletes the gallery, any staging file left
+by a stop before its rename, and the inbox. The
 runtime reads the gallery once at startup, so either takes effect at the next start. Deleting files on an SSD is not
 secure erasure.
 """
@@ -49,12 +54,14 @@ from .vault import (
     private_directory_problem,
     private_file_problem,
     read_private,
+    replace_private,
     write_private_atomic,
 )
 
 SCHEMA = "sentinel-identity-gallery"
 SCHEMA_VERSION = 1
 GALLERY_FILE = "gallery.sealed"
+STAGED_FILE = ".gallery.sealed.staged"  # sealed, not yet verified, audited and renamed over the gallery
 AUDIT_FILE = "audit.jsonl"
 INBOX_DIR = "inbox"
 DEFAULT_IDENTITY_DIR = Path.home() / "sentinel-data" / "identity"
@@ -169,6 +176,13 @@ def _associated(compatibility: FaceCompatibility) -> dict[str, Any]:
     return {"schema": SCHEMA, "schema_version": SCHEMA_VERSION, "compatibility": compatibility.model_dump(mode="json")}
 
 
+class GalleryNotVerified(VaultError):
+    """The sealed gallery, decrypted again, is not exactly what was sealed."""
+
+    def __init__(self) -> None:
+        super().__init__("gallery_not_verified")
+
+
 class IdentityStore:
     """The identity directory: the sealed gallery, the inbox and the audit log."""
 
@@ -181,6 +195,10 @@ class IdentityStore:
     @property
     def gallery_path(self) -> Path:
         return self.directory / GALLERY_FILE
+
+    @property
+    def staged_path(self) -> Path:
+        return self.directory / STAGED_FILE
 
     @property
     def audit_path(self) -> Path:
@@ -207,10 +225,13 @@ class IdentityStore:
         return self.gallery_path.exists()
 
     def load(self, secret: Secret) -> GalleryDocument:
+        return self._open(self.gallery_path, secret)
+
+    def _open(self, path: Path, secret: Secret) -> GalleryDocument:
         problem = self.directory_problem()
         if problem is not None:
             raise VaultError(problem)
-        associated, plaintext = self._sealer.open(read_private(self.gallery_path), secret)
+        associated, plaintext = self._sealer.open(read_private(path), secret)
         try:
             document = GalleryDocument.model_validate_json(plaintext)
         except ValidationError:
@@ -220,9 +241,31 @@ class IdentityStore:
         return document
 
     def save(self, document: GalleryDocument, secret: Secret) -> None:
+        self._write(self.gallery_path, document, secret)
+
+    def _write(self, path: Path, document: GalleryDocument, secret: Secret) -> None:
         sealed = self._sealer.seal(_canonical(document.model_dump(mode="json")), secret,
                                    _associated(document.compatibility))
-        write_private_atomic(self.gallery_path, sealed)
+        write_private_atomic(path, sealed)
+
+    def commit(self, document: GalleryDocument, secret: Secret, action: str, identity_id: str, **counts: int) -> None:
+        """Make ``document`` the gallery only once it is verified and its event audited.
+
+        It is sealed into the staging file, decrypted from there and compared in full (GalleryNotVerified), the event
+        is audited, and only then is the staging file renamed over the gallery. Any failure before the rename removes
+        the staging file and leaves the gallery (or its absence) and the audit log as they were. Only a failed rename,
+        or a stop between the audit and the rename, can leave an audit line for a change that did not take effect;
+        never a change without its audit line."""
+        try:
+            self._write(self.staged_path, document, secret)
+            if self._open(self.staged_path, secret) != document:
+                raise GalleryNotVerified()
+            self.audit(action, identity_id, **counts)
+            replace_private(self.staged_path, self.gallery_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                self.staged_path.unlink()
+            raise
 
     def audit(self, action: str, identity_id: str | None = None, **counts: int) -> None:
         """Append one numbers-only line; the identity ID is opaque and nothing else identifies anyone."""
@@ -234,12 +277,15 @@ class IdentityStore:
             problem = private_file_problem(self.audit_path)
             if problem is not None:
                 raise VaultError(f"audit_{problem}")
-        fd = os.open(self.audit_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, PRIVATE_FILE_MODE)
         try:
-            os.write(fd, line)
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+            fd = os.open(self.audit_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, PRIVATE_FILE_MODE)
+            try:
+                os.write(fd, line)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError as exc:
+            raise VaultError(f"audit_failed:{type(exc).__name__}") from None
 
     def revoke(self, identity_id: str, secret: Secret) -> bool:
         """Rewrite the gallery without ``identity_id``; False if it was not enrolled."""
@@ -251,7 +297,8 @@ class IdentityStore:
         return True
 
     def purge(self) -> dict[str, int]:
-        """Delete the gallery and everything in the inbox; the audit log keeps a purge line."""
+        """Delete the gallery, a staging file left behind and everything in the inbox; the audit log keeps a purge
+        line."""
         problem = self.directory_problem()
         if problem is not None:
             raise VaultError(problem)
@@ -259,6 +306,7 @@ class IdentityStore:
         if self.gallery_path.exists():
             self.gallery_path.unlink()
             removed["gallery"] = 1
+        self.staged_path.unlink(missing_ok=True)  # not counted: the purge line's fields stay as they were
         if self.inbox.is_dir():
             for path in sorted(self.inbox.rglob("*"), reverse=True):
                 if path.is_dir() and not path.is_symlink():

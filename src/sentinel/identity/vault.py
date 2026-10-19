@@ -224,6 +224,26 @@ def write_private_atomic(
         if isinstance(exc, Exception):
             raise VaultError(f"save_failed:{type(exc).__name__}") from None
         raise
+    _fsync_directory(directory, fsync)
+
+
+def replace_private(
+    source: Path,
+    path: Path,
+    *,
+    fsync: Callable[[int], None] = os.fsync,
+    replace: Callable[[Path, Path], None] = os.replace,
+) -> None:
+    """Rename ``source`` over ``path`` in the same private directory (a file already written with
+    ``write_private_atomic``), then fsync the directory; on failure ``path`` stays as it was."""
+    try:
+        replace(source, path)
+    except OSError as exc:
+        raise VaultError(f"save_failed:{type(exc).__name__}") from None
+    _fsync_directory(path.parent, fsync)
+
+
+def _fsync_directory(directory: Path, fsync: Callable[[int], None]) -> None:
     try:
         dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
     except OSError:

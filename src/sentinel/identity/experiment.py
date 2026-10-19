@@ -35,7 +35,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .gallery import CONSENT_SCOPE, GalleryDocument, GalleryIdentity, IdentityStore
+from .gallery import CONSENT_SCOPE, GalleryDocument, GalleryIdentity, GalleryNotVerified, IdentityStore
 from .matching import MAX_PROTOTYPES, Enrollment, best_match
 from .vault import Secret, VaultError
 
@@ -199,14 +199,13 @@ class Capture:
             document = GalleryDocument(compatibility=self.original.compatibility, identities=(GalleryIdentity(
                 identity_id=identity.identity_id, enrolled_utc=self.utc_now(), consent_date=self.consent_date,
                 consent_scope=CONSENT_SCOPE, prototypes=tuple(prototypes)),))
-            try:
+            try:  # read back, audited, and only then in place: a failure leaves no gallery to open as a shadow
                 self.store.ensure_directory()
-                self.store.save(document, self.secret)
-                if self.store.load(self.secret) != document:
-                    report["refused"] = "capture_not_verified"
-                    return self._end(report)
-                self.store.audit("capture", identity.identity_id, prototypes_used=len(prototypes),
-                                 faces_in_span=in_span)
+                self.store.commit(document, self.secret, "capture", identity.identity_id,
+                                  prototypes_used=len(prototypes), faces_in_span=in_span)
+            except GalleryNotVerified:
+                report["refused"] = "capture_not_verified"
+                return self._end(report)
             except (VaultError, OSError):
                 report["refused"] = "capture_write_failed"
                 return self._end(report)

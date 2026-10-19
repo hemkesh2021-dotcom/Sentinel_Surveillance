@@ -16,10 +16,12 @@ Checks, all before anything is written:
 
 The photos are copies the operator put into one dedicated folder directly inside the inbox; a folder holding
 anything but regular, non-hidden files (a link, a subfolder) is refused before any model loads. ``--dry-run``
-reports the result per photo and writes and deletes nothing. Otherwise the gallery is saved and reloaded, and the
-reloaded gallery must equal exactly what was saved; only then is the event audited (counts and the opaque ID only)
-and are exactly the listed copies deleted, each only if it is still the same file (inode, size, mtime). The folder
-is removed only if it is then empty. Nothing outside it is ever touched. Reports name photos by index only (file
+reports the result per photo and writes and deletes nothing. Otherwise the new gallery is sealed into a staging file
+and reloaded, and the reloaded gallery must equal exactly what was saved; only then is the event audited (counts and
+the opaque ID only) and the staging file renamed over the gallery (``IdentityStore.commit``). A failure at any of
+these steps leaves the gallery and the audit log as they were and deletes nothing, so the same photos can be enrolled
+again. Then exactly the listed copies are deleted, each only if it is still the same file (inode, size, mtime). The
+folder is removed only if it is then empty. Nothing outside it is ever touched. Reports name photos by index only (file
 names can contain names) and never contain embeddings.
 """
 
@@ -31,7 +33,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .gallery import CONSENT_SCOPE, GalleryDocument, GalleryIdentity, IdentityStore, new_identity_id
+from .gallery import CONSENT_SCOPE, GalleryDocument, GalleryIdentity, GalleryNotVerified, IdentityStore, new_identity_id
 from .matching import MAX_PROTOTYPES
 from .vault import Secret, VaultError
 
@@ -108,10 +110,10 @@ def enroll(
     identity_id = new_id({i.identity_id for i in document.identities})
     identity = GalleryIdentity(identity_id=identity_id, enrolled_utc=utc_now(), consent_date=consent_date,
                                consent_scope=CONSENT_SCOPE, prototypes=tuple(e for _, e in accepted))
-    saved = document.with_identity(identity)
-    store.save(saved, secret)
-    if store.load(secret) != saved:  # decrypt the file just written and compare everything, not just the ID
-        raise VaultError("enrollment_not_verified")
-    store.audit("enroll", identity_id, photos_used=len(accepted), photos_rejected=len(photos) - len(accepted))
+    try:  # decrypts what it sealed and compares everything, not just the ID, before it audits and replaces
+        store.commit(document.with_identity(identity), secret, "enroll", identity_id, photos_used=len(accepted),
+                     photos_rejected=len(photos) - len(accepted))
+    except GalleryNotVerified:
+        raise VaultError("enrollment_not_verified") from None
     report.update(identity_id=identity_id, verified=True, **store.delete_supplied_copies(folder, entries))
     return report

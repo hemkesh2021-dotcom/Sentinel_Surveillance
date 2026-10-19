@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from sealer_faults import Tampering, timing_out
 
 from sentinel.identity.experiment import (
     CAPTURE_MAX,
@@ -181,6 +182,30 @@ def test_a_capture_keeps_at_most_its_cap_and_counts_the_rest(tmp_path, sealer) -
         made.offer(t * NS // 2, near(t))
     assert made.kept == CAPTURE_MAX and made.dropped_over_cap == 25
     assert made.finish()["faces_dropped_over_cap"] == 25
+
+
+@pytest.mark.parametrize(("failure", "refused"), [
+    ("read-back-differs", "capture_not_verified"),
+    ("read-back-times-out", "capture_write_failed"),
+    ("audit-file-not-private", "capture_write_failed"),
+])
+def test_a_capture_whose_write_fails_after_sealing_leaves_no_gallery_to_open(tmp_path, sealer, failure,
+                                                                             refused) -> None:
+    directory = tmp_path / "experiment"
+    if failure == "audit-file-not-private":
+        IdentityStore(directory, sealer).ensure_directory()
+        (directory / "audit.jsonl").touch()
+        (directory / "audit.jsonl").chmod(0o644)
+    # The sealer's calls: the working gallery is sealed, then read back.
+    made = capture(tmp_path, {"read-back-differs": Tampering(nth=1),
+                              "read-back-times-out": timing_out(nth=2)}.get(failure, sealer))
+    feed(made)
+    report = made.finish()
+    assert (report["written"], report["refused"], report["verified"]) == (False, refused, False)
+    assert {p.name for p in directory.iterdir()} <= {"inbox", "audit.jsonl"}  # no gallery, nothing staged
+    assert not (directory / "audit.jsonl").exists() or (directory / "audit.jsonl").read_bytes() == b""
+    with pytest.raises(ExperimentRefused, match="face_shadow_missing"):  # a later --face-shadow-gallery run
+        open_shadow(IdentityStore(directory, sealer), SECRET, ORIGINAL)
 
 
 # ---------------------------------------------------------------- the working gallery, compared read only

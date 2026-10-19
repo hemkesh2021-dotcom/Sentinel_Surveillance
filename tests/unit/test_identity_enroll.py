@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from sealer_faults import Tampering, timing_out
 
 from sentinel.cli import main
 from sentinel.identity.enroll import EnrollmentRefused, enroll
@@ -233,14 +234,93 @@ def test_photos_in_a_nested_folder_or_with_extras_are_refused_before_the_model_l
     assert pipeline.loads == 0 and len(list(folder.iterdir())) == 3
 
 
-def test_nothing_is_deleted_unless_the_reloaded_gallery_equals_what_was_saved(store, monkeypatch) -> None:
+def files(store: IdentityStore) -> dict[str, bytes | str]:
+    """The identity directory's own entries (not the inbox): file bytes, or a link's target."""
+    return {p.name: os.readlink(p) if p.is_symlink() else p.read_bytes()
+            for p in store.directory.iterdir() if p.is_symlink() or p.is_file()}
+
+
+FAILURE_LABELS = {
+    "read-back-differs": "enrollment_not_verified",
+    "read-back-times-out": "sealer_timeout",
+    "audit-file-not-private": "audit_file_not_private",  # e.g. a copy restored with the wrong mode
+    "audit-write-fails": "audit_failed:OSError",  # here the log's name is a link, which O_NOFOLLOW refuses
+}
+
+
+@pytest.mark.parametrize("failure", FAILURE_LABELS)
+@pytest.mark.parametrize("enrolled_before", [0, 1], ids=["first-person", "second-person"])
+def test_a_failure_after_sealing_leaves_gallery_and_audit_unchanged_and_a_retry_enrolls(
+        store, enrolled_before, failure) -> None:
+    if enrolled_before:
+        run(store, photos(store, "b:1", "b:2", folder="earlier"))
+    kept_audit = store.audit_path.read_bytes() if store.audit_path.exists() else None
+    if failure == "audit-file-not-private":
+        store.audit_path.touch()
+        store.audit_path.chmod(0o644)
+    elif failure == "audit-write-fails":
+        store.audit_path.unlink(missing_ok=True)
+        store.audit_path.symlink_to(store.directory / "elsewhere")
+    # The sealer's calls: an existing gallery is opened first, then the new one is sealed and read back.
+    sealer = {"read-back-differs": Tampering(nth=1 + enrolled_before),
+              "read-back-times-out": timing_out(nth=2 + enrolled_before)}.get(failure)
+    failing = IdentityStore(store.directory, sealer, utc_now=lambda: NOW) if sealer else store
     folder = photos(store, "a:1", "a:2")
-    real_load = store.load
-    monkeypatch.setattr(store, "load", lambda secret: real_load(secret).without(
-        next(iter(i.identity_id for i in real_load(secret).identities))))
-    with pytest.raises(VaultError, match="enrollment_not_verified"):
+    before = files(store)
+    with pytest.raises(VaultError) as failed:
+        run(failing, folder)
+    assert failed.value.label == FAILURE_LABELS[failure]
+    assert files(store) == before  # the gallery as it was (or still absent), no audit line, nothing staged
+    assert len(list(folder.iterdir())) == 2  # no photo deleted
+    # With the cause gone the same photos enroll: no ``close_to_enrolled_identity`` from a half-done attempt.
+    if failure == "audit-file-not-private":
+        store.audit_path.chmod(0o600)
+    elif failure == "audit-write-fails":
+        store.audit_path.unlink()
+        if kept_audit is not None:
+            store.audit_path.write_bytes(kept_audit)
+            store.audit_path.chmod(0o600)
+    report = run(store, folder)
+    enrolled = {identity.identity_id for identity in store.load(SECRET).identities}
+    assert report["verified"] is True and len(enrolled) == enrolled_before + 1 and not folder.exists()
+    lines = [json.loads(x) for x in store.audit_path.read_text().splitlines()]
+    assert sorted(line["identity_id"] for line in lines if line["action"] == "enroll") == sorted(enrolled)
+
+
+def test_the_command_reports_an_audit_failure_as_one_label_and_enrolls_nobody(
+        store, tmp_path, monkeypatch, capsys) -> None:
+    folder = photos(store, "a:1", "a:2")
+    store.audit_path.symlink_to(store.directory / "elsewhere")
+    assert call(store, tmp_path, monkeypatch, "enroll", str(folder), "--consent-confirmed",
+                "--consent-date", "2026-10-07") == 1
+    captured = capsys.readouterr()
+    assert captured.err.strip() == "identity: audit_failed:OSError" and captured.out == ""
+    assert not store.exists() and len(list(folder.iterdir())) == 2
+
+
+def test_a_failed_final_rename_can_leave_only_an_audit_line_never_an_unaudited_identity(store, monkeypatch) -> None:
+    # The one inconsistency two files allow, kept on the safe side: an audit line for an enrollment that did not
+    # take effect (the rename after the audit failed), never an identity in the gallery without its line.
+    import sentinel.identity.gallery as gallery
+
+    def fail(source, path):
+        raise VaultError("save_failed:OSError")
+
+    monkeypatch.setattr(gallery, "replace_private", fail)
+    folder = photos(store, "a:1", "a:2")
+    with pytest.raises(VaultError, match="save_failed:OSError"):
         run(store, folder)
-    assert len(list(folder.iterdir())) == 2 and not store.audit_path.exists()
+    assert not store.exists() and not store.staged_path.exists() and len(list(folder.iterdir())) == 2
+    (line,) = [json.loads(x) for x in store.audit_path.read_text().splitlines()]
+    assert line["action"] == "enroll"
+
+
+def test_purge_also_removes_a_staged_gallery_left_by_a_stop_before_the_rename(store) -> None:
+    run(store, photos(store, "a:1", "a:2"))
+    store.staged_path.write_bytes(store.gallery_path.read_bytes())  # as a stop between the audit and the rename leaves
+    store.staged_path.chmod(0o600)
+    assert store.purge() == {"gallery": 1, "inbox_files": 0}
+    assert not store.exists() and not store.staged_path.exists()
 
 
 def test_a_file_added_during_enrollment_is_kept_with_its_folder(store, monkeypatch) -> None:
