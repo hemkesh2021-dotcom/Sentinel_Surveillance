@@ -1,171 +1,171 @@
 {
-  "collected_at": "2026-10-19T19:25:26.344449Z",
+  "collected_at": "2026-10-19T19:58:19.398627Z",
   "days": {
     "2026-10-05": {
       "clones": {
         "count": 1,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 1
       },
       "views": {
         "count": 19,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 2
       }
     },
     "2026-10-06": {
       "clones": {
         "count": 0,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 0
       },
       "views": {
         "count": 0,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 0
       }
     },
     "2026-10-07": {
       "clones": {
         "count": 0,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 0
       },
       "views": {
         "count": 0,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 0
       }
     },
     "2026-10-08": {
       "clones": {
         "count": 12,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 7
       },
       "views": {
         "count": 0,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 0
       }
     },
     "2026-10-09": {
       "clones": {
         "count": 0,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 0
       },
       "views": {
         "count": 2,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 2
       }
     },
     "2026-10-10": {
       "clones": {
         "count": 1,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 1
       },
       "views": {
         "count": 0,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 0
       }
     },
     "2026-10-11": {
       "clones": {
         "count": 2,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 2
       },
       "views": {
         "count": 0,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 0
       }
     },
     "2026-10-12": {
       "clones": {
         "count": 1,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 1
       },
       "views": {
         "count": 0,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 0
       }
     },
     "2026-10-13": {
       "clones": {
         "count": 0,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 0
       },
       "views": {
         "count": 14,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 2
       }
     },
     "2026-10-14": {
       "clones": {
         "count": 54,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 22
       },
       "views": {
         "count": 5,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 1
       }
     },
     "2026-10-15": {
       "clones": {
         "count": 16,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 14
       },
       "views": {
         "count": 14,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 3
       }
     },
     "2026-10-16": {
       "clones": {
         "count": 1,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 1
       },
       "views": {
         "count": 4,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 2
       }
     },
     "2026-10-17": {
       "clones": {
         "count": 1,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 1
       },
       "views": {
         "count": 0,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 0
       }
     },
     "2026-10-18": {
       "clones": {
         "count": 3,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 2
       },
       "views": {
         "count": 3,
-        "observed_at": "2026-10-19T19:25:26.344449Z",
+        "observed_at": "2026-10-19T19:58:19.398627Z",
         "uniques": 2
       }
     }
@@ -405,17 +405,17 @@
   },
   "referrers_peak": {
     "Google": {
-      "last_seen": "2026-10-19T19:25:26.344449Z",
+      "last_seen": "2026-10-19T19:58:19.398627Z",
       "peak_14d_uniques": 2,
       "peak_14d_views": 3
     },
     "forums.developer.nvidia.com": {
-      "last_seen": "2026-10-19T19:25:26.344449Z",
+      "last_seen": "2026-10-19T19:58:19.398627Z",
       "peak_14d_uniques": 1,
       "peak_14d_views": 1
     },
     "github.com": {
-      "last_seen": "2026-10-19T19:25:26.344449Z",
+      "last_seen": "2026-10-19T19:58:19.398627Z",
       "peak_14d_uniques": 3,
       "peak_14d_views": 6
     }
