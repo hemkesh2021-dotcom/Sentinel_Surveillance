@@ -102,6 +102,33 @@ def analyze_with(embedding):
     return analyze
 
 
+class Held:
+    """A matching analysis whose first call waits for ``deliver``: that result reaches the loop exactly when the test
+    says, while the loop goes on (Loop.frame with settle=False). Later calls return at once."""
+
+    def __init__(self) -> None:
+        self._release = threading.Event()
+        self._started = threading.Event()
+        self._analyze = analyze_with(vec(0.97, 0.1, 0.0, 0.05))
+        self._first = True
+
+    def __call__(self, frame, image):
+        if self._first:
+            self._first = False
+            self._started.set()
+            assert self._release.wait(5)
+        return self._analyze(frame, image)
+
+    def running(self) -> None:
+        """Wait until the held analysis has started (a waiting job could still be discarded)."""
+        assert self._started.wait(5)
+
+    def deliver(self, loop: "Loop") -> None:
+        """The held result reaches the worker's outbox (the loop takes it at its next step)."""
+        self._release.set()
+        loop.settle()
+
+
 # ---------------------------------------------------------------- the loop
 
 
@@ -148,17 +175,23 @@ class Loop:
             enrollment=GALLERY.enrollment(), status_refresh_s=0.0, feature_controls=feature_controls)
         self.runtime.start()
 
-    def frame(self, persons=PERSON) -> None:
+    def frame(self, persons=PERSON, *, settle: bool = True) -> None:
+        """One processed frame. ``settle``: wait for the face worker and apply its result before returning; without
+        it, a held analysis (Held) keeps running while the loop goes on."""
         self.tracker.script.append(list(persons))
         self.clock.advance(1 / 15)
         frame = self.capture.stamper.stamp(native_width=640, native_height=480, pixel_format=PixelFormat.BGR)
         self.slot.publish(CapturedFrame(frame, Image()))
         self.runtime.step(timeout_s=0)
+        if settle:
+            self.settle()
+            self.runtime.step(timeout_s=0)  # takes the face result, if any
+
+    def settle(self) -> None:
         deadline = time.monotonic() + 5
         while self.worker.status()["busy"] or self.worker.status()["waiting"]:
             assert time.monotonic() < deadline
             time.sleep(0.002)
-        self.runtime.step(timeout_s=0)  # takes the face result, if any
 
     def close(self) -> dict:
         result = self.runtime.shutdown()
@@ -1040,6 +1073,94 @@ def test_a_face_result_in_flight_when_face_is_turned_off_is_ignored() -> None:
     core.set_face_recognition(Capability.AVAILABLE)
     clock.advance(0.1)
     assert core.tick(stream).state.people[0].identity.value == "unresolved"
+
+
+def _state(loop: Loop, track_id: int = 1) -> str | None:
+    """Track ``track_id``'s identity state on the status page now, or None while it is not a current track."""
+    rows = [row for row in loop.runtime.snapshot()["live"].get("faces", []) if row["track_id"] == track_id]
+    return rows[0]["state"] if rows else None
+
+
+def _until_analysed(loop: Loop, completed: int) -> None:
+    """Frames with track 1 until the worker has completed ``completed`` analyses, each result applied."""
+    for _ in range(40):
+        if loop.worker.status()["counters"].get("completed", 0) >= completed:
+            return
+        loop.frame()
+    raise AssertionError("no face tick")
+
+
+def test_a_result_from_before_face_was_turned_off_never_votes_once_it_is_on_again_while_new_ones_do(tmp_path) -> None:
+    # Review A, finding 7 (D99): turning face off and on forgets every vote and every track starts unresolved. A
+    # running analysis cannot be interrupted; its frame is from before the switch, so its result must not vote,
+    # whether it arrives after face is on again or waits in the worker's outbox until the step that turns it on.
+    for arrives in ("after_on", "while_off"):
+        held = Held()
+        loop = Loop(tmp_path / arrives, analyze=held, feature_controls=True)
+        loop.frame(settle=False)  # the first face tick: track 1's frame, its analysis held
+        held.running()
+        loop.frame(settle=False)
+        assert loop.runtime.controls.request("face", "off")[0] == 202
+        loop.frame(settle=False)  # applied: every vote forgotten; the running analysis goes on
+        if arrives == "while_off":
+            held.deliver(loop)  # waits in the outbox; no step takes it while face is off
+        assert loop.runtime.controls.request("face", "on")[0] == 202
+        loop.frame(settle=False)  # applied first; then this step takes a waiting result
+        if arrives == "after_on":
+            held.deliver(loop)
+            loop.runtime.step(timeout_s=0)
+        (late,) = [r for r in loop.runtime.drain_identity_records() if r["identity"] == "result"]
+        assert (late["outcome"], late["persons"]) == ("ignored_face_unavailable", []), arrives
+        assert _state(loop) == "unresolved"
+        _until_analysed(loop, 2)  # the first analysis after face is on again: one match
+        assert _state(loop) == "unresolved", arrives  # one vote; the one from before the switch never counts
+        _until_analysed(loop, 3)
+        assert _state(loop) == "known", arrives  # earned from new matches only
+        loop.close()
+
+
+def test_a_late_result_for_an_expired_track_never_votes_for_the_track_that_returns_with_its_number(
+        tmp_path, monkeypatch) -> None:
+    # Review A, finding 6 (identity.state): a track no longer current loses its votes, even if the tracker later
+    # reuses its ID. ByteTrack gives a lost track its number back for 30 frames (2 s at 15 fps); a track here expires
+    # 1 s after its last detection. A result for a frame from before that expiry must not vote for the track that
+    # returned, though it is within the result age bound (3 s).
+    from sentinel.status_page import build_status, read_store
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "benchmarks/runner"))
+    import face_evidence
+
+    held = Held()
+    loop = Loop(tmp_path, analyze=held)
+    loop.frame(settle=False)  # the first face tick at 0.07 s, its analysis held
+    held.running()
+    for _ in range(2):
+        loop.frame(settle=False)  # track 1 last detected at 0.2 s
+    for _ in range(20):
+        loop.frame(persons=[], settle=False)  # nobody until 1.53 s: track 1 expires at 1.2 s
+    assert _state(loop) is None
+    for _ in range(2):
+        loop.frame(settle=False)  # track 1 again, the same number: a new track's life, from 1.6 s
+    held.deliver(loop)
+    loop.runtime.step(timeout_s=0)  # the result for the 0.07 s frame, 1.53 s old, is applied to its people
+    records = loop.runtime.drain_identity_records()
+    (late,) = [r for r in records if r["identity"] == "result"]
+    assert late["outcome"] == "applied" and [(p["track_id"], p["vote"], p["label"]) for p in late["persons"]] == [
+        (1, "none", "before_expiry")]
+    assert loop.runtime.snapshot()["components"]["face"]["results"]["persons_before_expiry"] == 1
+    _until_analysed(loop, 2)  # the returned track's first analysis: one match
+    assert _state(loop) == "unresolved"  # the earlier life's vote does not make two
+    _until_analysed(loop, 3)
+    assert _state(loop) == "known"  # from the returned track's own matches
+    out = tmp_path / "evidence"  # the new label and counter fit the evidence profile
+    out.mkdir()
+    records += loop.runtime.drain_identity_records()
+    (out / "run.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+    status = build_status(loop.runtime.snapshot(), read_store(tmp_path / "sentinel.db"), NOW)
+    (out / "status-n1.json").write_text(json.dumps(status))
+    assert face_evidence.read(out / "run.jsonl", "f2").nonconforming == []
+    assert face_evidence.read(out / "status-n1.json", "f2").nonconforming == []
+    loop.close()
 
 
 # ---------------------------------------------------------------- session 79: the tracking diagnostic (validation runs only)

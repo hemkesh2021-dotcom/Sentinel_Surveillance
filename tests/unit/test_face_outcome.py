@@ -145,10 +145,67 @@ def test_stale_failed_and_not_live_results_are_rejected_and_counted() -> None:
 def test_a_late_result_within_its_bound_counts_from_its_own_frame_time() -> None:
     world = World()
     frame, persons = world.frame((1, LEFT), dt=1.0)
-    world.frame((1, LEFT), dt=2.5)
+    for _ in range(5):  # 2.5 s later, the same track all along (one detection gap of 2.5 s would be a new life)
+        world.frame((1, LEFT), dt=0.5)
     world.faces(frame, persons, (head(LEFT), A_FACE))
     assert world.core.identity_counters["results_applied"] == 1
     assert world.person(1).identity_vote_age_ms == 2500
+
+
+def test_a_late_result_from_a_tracks_earlier_life_gives_the_returned_track_no_vote() -> None:
+    # Review A, finding 6: the result is within its 3 s bound, but its frame is from before the track expired; the
+    # tracker gave the number back. One new match must not make KNOWN with it.
+    world = World()
+    old_frame, old_persons = world.frame((1, LEFT), dt=1.0)
+    world.frame(dt=0.75)
+    world.frame(dt=0.75)  # 1.5 s without the person: expired (1 s) and dropped
+    assert world.person(1) is None
+    frame, persons = world.frame((1, LEFT), dt=0.25)  # back, with the same number: a new life from here
+    late = world.faces(old_frame, old_persons, (head(LEFT), A_FACE)).face_result  # 1.75 s old
+    assert late.outcome == "applied" and late.persons == ((1, "assigned", "none", None, "before_expiry"),)
+    world.faces(frame, persons, (head(LEFT), A_FACE))
+    assert world.person(1).identity is IdentityState.UNRESOLVED  # one vote of this life
+    frame, persons = world.frame((1, LEFT), dt=1.0)
+    world.faces(frame, persons, (head(LEFT), A_FACE))
+    assert world.person(1).identity is IdentityState.KNOWN  # earned in this life
+    assert world.core.identity_counters["persons_before_expiry"] == 1
+
+
+def test_a_track_measured_again_only_after_expiring_starts_a_new_life_even_with_no_step_between() -> None:
+    # Nothing ran between its last detection and its return (no frame, no tick: a stalled loop), so no step saw it
+    # expire; it is still a new life, and the earlier votes do not carry over.
+    world = World()
+    for _ in range(2):
+        frame, persons = world.frame((1, LEFT), dt=1.0)
+        world.faces(frame, persons, (head(LEFT), A_FACE))
+    assert world.person(1).identity is IdentityState.KNOWN
+    world.frame((1, LEFT), dt=1.5)  # measured again 1.5 s later: past the 1 s expiry
+    assert world.person(1).identity is IdentityState.UNRESOLVED
+    assert world.transitions[-1]["to"] == "unresolved"
+    frame, persons = world.frame((1, LEFT), dt=1.0)  # exactly at the expiry age: the same life
+    world.faces(frame, persons, (head(LEFT), A_FACE))
+    frame, persons = world.frame((1, LEFT), dt=1.0)
+    world.faces(frame, persons, (head(LEFT), A_FACE))
+    assert world.person(1).identity is IdentityState.KNOWN
+
+
+def test_a_result_for_a_frame_from_before_face_was_on_again_is_ignored_while_later_ones_count() -> None:
+    # Review A, finding 7 (D99), in the core: turned off and on while the frame's analysis ran.
+    world = World()
+    early_frame, early_persons = world.frame((1, LEFT), dt=1.0)
+    world.core.set_face_recognition(Capability.DISABLED)
+    world.frame((1, LEFT), dt=0.2)
+    world.core.set_face_recognition(Capability.AVAILABLE)
+    frame, persons = world.frame((1, LEFT), dt=0.2)
+    late = world.faces(early_frame, early_persons, (head(LEFT), A_FACE)).face_result  # 0.4 s old: within 3 s
+    assert late.outcome == "ignored_face_unavailable" and late.persons == ()
+    world.faces(frame, persons, (head(LEFT), A_FACE))  # this frame is from after it was on again
+    assert world.person(1).identity is IdentityState.UNRESOLVED
+    frame, persons = world.frame((1, LEFT), dt=1.0)
+    world.faces(frame, persons, (head(LEFT), A_FACE))
+    assert world.person(1).identity is IdentityState.KNOWN
+    counters = world.core.identity_counters
+    assert (counters["results_ignored_face_unavailable"], counters["results_applied"]) == (1, 2)
 
 
 def test_results_are_ignored_while_face_recognition_is_unavailable() -> None:

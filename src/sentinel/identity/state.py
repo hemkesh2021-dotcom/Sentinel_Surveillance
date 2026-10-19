@@ -21,8 +21,11 @@ away, too small, ambiguous) adds no vote and clears nothing, so KNOWN or
 UNKNOWN is retained on the same track until the older of its confirming
 votes is ``vote_ttl_ns`` old; a contradicting vote makes it UNCERTAIN at
 once; a track that is no longer current loses its votes (``retain_only``),
-even if the tracker later reuses its ID. ``basis`` tells a fresh decision
-(its newest vote at most ``fresh_window_ns`` old) from a retained one.
+even if the tracker later reuses its ID. A track's votes belong to its current
+life (TrackTable.since): a face result for a frame from before that life began
+(a late result for a track that has since expired and come back with the same
+number) is not counted for it (``BEFORE_EXPIRY``). ``basis`` tells a fresh
+decision (its newest vote at most ``fresh_window_ns`` old) from a retained one.
 
 Continuity (D97; opt-in, ``continuity_retention_ns``; identity.continuity):
 a break in a track's continuity (a detection gap, a jump, an overlapping
@@ -35,7 +38,7 @@ default) every rule above is exactly as it was.
 from __future__ import annotations
 
 from collections import Counter, deque
-from collections.abc import Iterable, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 
@@ -48,6 +51,7 @@ from .matching import Enrollment, best_match
 VOTES_KEPT = 5
 UNKNOWN_VOTE = ""  # a good face that matched nobody enrolled
 BEFORE_BREAK = "before_break"  # D97: a face on a frame from before its track's latest break; it is not counted
+BEFORE_EXPIRY = "before_expiry"  # a face on a frame from before its track's current life began; it is not counted
 
 
 class IdentityState(str, Enum):
@@ -113,6 +117,7 @@ class IdentityResolver:
         self._votes: dict[TrackKey, deque[_Vote]] = {}
         self._last_note: dict[TrackKey, str] = {}
         self._broken: dict[TrackKey, tuple[int, Cause]] = {}  # D97: each track's latest break (frame time, cause)
+        self._lives: dict[TrackKey, int] = {}  # each current track's life began at this frame time (retain_only)
         self.counters: Counter[str] = Counter()  # ownership and vote outcomes, numbers only
 
     def observe(
@@ -127,6 +132,11 @@ class IdentityResolver:
             key = person.key
             ownership = association.person_ownership.get(key, Ownership.NO_FACE)
             self.counters[f"persons_{ownership.value}"] += 1
+            began = self._lives.get(key)
+            if began is not None and person.observed_mono_ns < began:  # from the track's earlier life
+                self.counters["persons_before_expiry"] += 1
+                records.append(VoteRecord(key, ownership, None, BEFORE_EXPIRY))
+                continue
             broken = self._broken.get(key)
             if broken is not None and person.observed_mono_ns < broken[0]:  # D97: from before the track's break
                 self.counters["persons_before_break"] += 1
@@ -175,12 +185,23 @@ class IdentityResolver:
         """Tracks with identity bookkeeping; bounded by the current tracks."""
         return len(self._votes.keys() | self._last_note.keys())
 
-    def retain_only(self, keys: Iterable[TrackKey]) -> None:
-        """Forget tracks that are no longer current."""
-        keep = set(keys)
-        for table in (self._votes, self._last_note, self._broken):
-            for key in [k for k in table if k not in keep]:
+    def retain_only(self, lives: Mapping[TrackKey, int]) -> None:
+        """Forget tracks that are no longer current. ``lives``: each current track with the frame time its current
+        life began (TrackTable.since). A track whose life began again (it expired and came back with its number before
+        a step saw it go) keeps no vote from its earlier life, and later results count for it only from that time."""
+        for table in (self._votes, self._last_note, self._broken, self._lives):
+            for key in [k for k in table if k not in lives]:
                 del table[key]
+        for key, began in lives.items():
+            if self._lives.get(key) == began:
+                continue
+            self._lives[key] = began
+            votes = self._votes.get(key)
+            if votes and votes[0].at_ns < began:
+                kept = [vote for vote in votes if vote.at_ns >= began]
+                self._votes[key] = deque(kept, maxlen=VOTES_KEPT)
+                if not kept:
+                    self._last_note.pop(key, None)
 
     def break_track(self, key: TrackKey, at_ns: int, cause: Cause) -> None:
         """D97: the track's continuity broke on the frame at ``at_ns``: its votes are dropped, and a face result for an
@@ -195,7 +216,7 @@ class IdentityResolver:
         """Drop every vote, note and break (face recognition turned off at runtime, D99): nothing earlier may be
         presented as current, and a later start begins unresolved."""
         for table in (self._votes, self._last_note, self._broken):
-            table.clear()
+            table.clear()  # the tracks' lives stay: they are the tracker's facts, not face evidence
 
     def diagnostic_similarity(self, embedding: Sequence[float]) -> float | None:
         """D87: the best cosine similarity of an embedding to the enrollment, exactly as a vote computes it

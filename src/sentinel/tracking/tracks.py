@@ -7,6 +7,11 @@ detection, even if frames stop or the tracker keeps predicting. Frames that
 are not new for this consumer (a frozen latest-frame buffer, out-of-order or
 from a previous epoch) are ignored, so a stalled camera cannot keep anyone
 "present".
+
+Each current track also has the time its current life began (``since``): its
+first measurement, and again when it is measured after expiring, even if the
+tracker kept its ID (ByteTrack can give a lost track its number back after this
+table's expiry). Identity uses it so that nothing from an earlier life counts.
 """
 
 from __future__ import annotations
@@ -27,12 +32,17 @@ class TrackTable:
             raise ValueError("expiry_ns must be positive")
         self._expiry_ns = expiry_ns
         self._tracks: dict[TrackKey, TrackObservation] = {}
+        self._since: dict[TrackKey, int] = {}  # each track's current life began at this measurement (mono ns)
         self._last_frame: FrameKey | None = None
         self.counters: Counter[str] = Counter()
 
     @property
     def size(self) -> int:
         return len(self._tracks)
+
+    def since(self, key: TrackKey) -> int:
+        """When the current life of a track in the table began: its first measurement after it was new or expired."""
+        return self._since[key]
 
     def update(
         self,
@@ -47,16 +57,25 @@ class TrackTable:
             return novelty
         if novelty is FrameNovelty.NEW_EPOCH:
             self._tracks.clear()  # track IDs mean nothing across epochs
+            self._since.clear()
         self._last_frame = frame.key
         for observation in observations:
             if observation.frame != frame.key:
                 raise ValueError("observation belongs to another frame")
+            previous = self._tracks.get(observation.key)
+            # A new life: a track not in the table (new, or dropped when it expired), or one measured again only after
+            # it had expired, when no current() call came in between to drop it. Measured again exactly at its expiry
+            # age it is the same life: this update comes before any current() call at that instant.
+            if previous is None or (observation.last_measured_mono_ns - previous.last_measured_mono_ns
+                                    > self._expiry_ns):
+                self._since[observation.key] = observation.last_measured_mono_ns
             self._tracks[observation.key] = observation
         if len(self._tracks) > MAX_TRACKS:
             self.counters["track_overflow"] += len(self._tracks) - MAX_TRACKS
             by_age = sorted(self._tracks.items(), key=lambda item: item[1].last_measured_mono_ns)
             for key, _ in by_age[: len(self._tracks) - MAX_TRACKS]:
                 del self._tracks[key]
+                del self._since[key]
         return novelty
 
     def current(self, live: StreamIdentity | None, now: MonoInstant) -> tuple[TrackObservation, ...]:
@@ -69,4 +88,5 @@ class TrackTable:
             else:
                 self.counters[f"track_dropped_{status.value}"] += 1
         self._tracks = keep
+        self._since = {key: self._since[key] for key in keep}
         return tuple(sorted(keep.values(), key=lambda observation: observation.track_id))

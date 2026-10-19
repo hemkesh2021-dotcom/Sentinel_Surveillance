@@ -296,6 +296,7 @@ class EdgeCore:
         self._new_breaks: list[Break] = []
         self._scene_on = True  # D99: scene analysis turned off at runtime (the lane paused, nothing held)
         self._queued_evidence: list[Evidence] = []  # D99: skipped by turning scene analysis off; routed next step
+        self._face_on_since_ns = 0  # D99: face recognition last turned on at runtime (0: on since the start, if at all)
         self._face_result_max_age_ns = identity.face_result_max_age_ns
         self.face_counters: Counter[str] = Counter()  # face results: applied or rejected, and why
         self._reported: dict[TrackKey, tuple[str, str | None, str | None]] = {}
@@ -336,11 +337,14 @@ class EdgeCore:
         """D99: face recognition turned off at runtime (DISABLED) or on again (AVAILABLE). Either way every vote, note and
         break is forgotten: nothing from before is presented as current, the identities that were reported end at the
         next step (to unresolved, "face recognition disabled"), and on again every track starts unresolved. A result
-        still in flight when it is off is ignored (``ignored_face_unavailable``)."""
+        for a frame from before it was last turned on is ignored (``ignored_face_unavailable``), whenever it arrives:
+        an analysis that was running when it was turned off cannot be interrupted, and may finish after it is on."""
         if capability is self._face_recognition:
             return
         self._face_recognition = capability
         self._identities.forget_all()
+        if capability is Capability.AVAILABLE:
+            self._face_on_since_ns = self._clock.mono().ns
 
     def set_scene_analysis(self, on: bool) -> None:
         """D99: scene analysis turned off at runtime, or on again. Off: no new scene job (one in flight ends by its
@@ -411,10 +415,12 @@ class EdgeCore:
 
         Its faces are associated with those people only, and its votes carry that frame's time. It is
         rejected, and counted, when face recognition is not available, the analysis failed, the frame's
-        stream (camera, boot, run, epoch) is not the live one, or the frame is older than
-        ``identity.face_result_max_age_s``. Votes for tracks that are no longer current are dropped by
-        the next ``_finish``. With ``landmarks`` (session 90, the landmark diagnostic) each person on an applied
-        result also gets its landmark record from the native pass (``full_scale``), associated by the same rule.
+        stream (camera, boot, run, epoch) is not the live one, the frame is from before face recognition
+        was last turned on (D99), or the frame is older than ``identity.face_result_max_age_s``. Votes for
+        tracks that are no longer current are dropped by the next ``_finish``; a person whose track has
+        expired and come back since that frame gets no vote (identity.state.BEFORE_EXPIRY). With ``landmarks``
+        (session 90, the landmark diagnostic) each person on an applied result also gets its landmark record from
+        the native pass (``full_scale``), associated by the same rule.
         """
         freshness = self._freshness.assess(connected)
         now = self._clock.mono()
@@ -429,6 +435,8 @@ class EdgeCore:
             outcome = "rejected_not_live"
         elif frame.boot_id != now.boot_id:
             outcome = "rejected_boot"
+        elif frame.ingest_mono_ns < self._face_on_since_ns:  # D99: its frame is from before face was on again
+            outcome = "ignored_face_unavailable"
         elif now.ns - frame.ingest_mono_ns > self._face_result_max_age_ns:
             outcome = "rejected_age"
         else:
@@ -519,7 +527,7 @@ class EdgeCore:
                        for e in new)
         view = self._scene.view(live, now)
         tracks = self._tracks.current(live, now)
-        self._identities.retain_only(t.key for t in tracks)
+        self._identities.retain_only({t.key: self._tracks.since(t.key) for t in tracks})
         if self._continuity is not None:
             self._continuity.retain_only(t.key for t in tracks)
         breaks, self._new_breaks = tuple(self._new_breaks), []

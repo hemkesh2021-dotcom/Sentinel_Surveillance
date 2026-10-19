@@ -175,7 +175,8 @@ IDENTITY_STATES = ("unresolved", "unknown", "known", "uncertain")  # identity.st
 BASIS = vocab("fresh", "retained")  # identity.state.Basis
 OWNERSHIP = ("assigned", "no_face", "no_person", "ambiguous")  # identity.association.Ownership
 VOTE_LABELS = ("match", "unknown", "margin", "low_quality", "incompatible", "no_enrollment",  # state._NOTE_LABELS
-               "before_break")  # D97: state.BEFORE_BREAK (continuity runs only)
+               "before_break",  # D97: state.BEFORE_BREAK (continuity runs only)
+               "before_expiry")  # state.BEFORE_EXPIRY: a late result from the track's earlier life
 CONTINUITY_CAUSES = ("gap", "jump", "overlap")  # identity.continuity.Cause (D97)
 NOT_CARRIED = tuple(f"not carried over a break in tracking ({why})" for why in (  # identity.continuity.NOT_CARRIED
     "a detection gap", "the box jumped", "another detection overlapped"))
@@ -676,7 +677,8 @@ RESULT = JsonProfile({  # step5_guard.supervise
 FACE_COUNTERS = vocab(*(f"persons_{o}" for o in OWNERSHIP), *(f"faces_{o}" for o in OWNERSHIP),
                       *(f"results_{o}" for o in sorted(OUTCOMES.values)), "votes_match", "votes_unknown",
                       "no_vote_margin", "no_vote_low_quality", "no_vote_incompatible", "no_vote_no_enrollment",
-                      "persons_before_break", *(f"breaks_{c}" for c in CONTINUITY_CAUSES))  # D97
+                      "persons_before_break", *(f"breaks_{c}" for c in CONTINUITY_CAUSES),  # D97
+                      "persons_before_expiry")  # state.BEFORE_EXPIRY
 STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.build_status
     "generated_utc": ISO,
     "runtime.camera_id": TEXT, "runtime.state": RUNTIME, "runtime.updated_utc": ISO, "runtime.status_age_s": SECONDS,
