@@ -1,6 +1,17 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-20, session 98 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 96's gallery and audit consistency gaps reproduced and fixed: one gallery change at a time, audited before and after it (`d50d163`; session 98 log).**
+Last updated 2026-10-20, session 99 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Review A's finding 8 and the remaining redaction gaps reproduced through their callers and fixed (`0d5b9aa`, `aaee239`; session 99 log).**
+- **Finding 8:**
+  - **Reproduced:** through the CLI with the real DeepFace adapter over a fake runtime, provider failures during `sentinel identity enroll` escaped as raw exceptions whose messages named the photo's path (a person's name) and synthetic secrets.
+  - **Fixed:** they are now one line, `identity: enrollment_photo_failed:<Class>`; a non-finite face width is `inconsistent_output`; any other failure in an identity command is `identity: failed:<Class>`.
+- **Redaction:**
+  - **Reproduced:** `Authorization: Bearer …` values, JSON and dict-repr credential fields and `secret_key`-style names reached the scene evidence, the outbox's stored records, an adapter's load reason and `config validate`'s output.
+  - **Fixed:** these are now redacted, values with spaces, escapes or a cut-off quote included, with linear patterns: 166 ms worst on hostile inputs of up to 400,000 characters.
+- **Tests at `aaee239`:** the full portable suite gave 2,692 passed, 2 skipped (`torch`, `cv2`), 0 failed, under the existing Python 3.10.14 `.venv` and then under the isolated 3.12.3 environment; `config/default.yaml` valid under both. That is 43 new tests; every reproduction failed on `a09167c` first. Local runs, not CI.
+- **Not changed:** findings 9-10, the gallery crash limitations (session 98), thresholds, F2 criteria, admission, real enrollment data and the review copy; nothing pushed, published or launched.
+- **Next (the maintainer):** review `0d5b9aa` and `aaee239`; findings 9-10 stay open.
+
+Session 98's summary: **Session 96's gallery and audit consistency gaps reproduced and fixed: one gallery change at a time, audited before and after it (`d50d163`; session 98 log).**
 - **Reproduced on `cde3563`** with synthetic galleries only:
   - Concurrent changes lost an enrollment, brought back a revoked or purged identity, or left an `enroll` line for a change that failed (through the shared staging file).
   - Nothing excluded another process, and a capture overwrote a working gallery that had appeared after its check.
@@ -542,6 +553,9 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 ## Next concrete task
 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
+   - **Done (session 99):** finding 8 and the remaining redaction gaps reproduced and fixed (`0d5b9aa`, `aaee239`; session 99 log).
+   - **Maintainer (session 99):** review the two commits; findings 9-10 and session 98's crash limitations stay open.
+   - **Claude, next (session 99):** none until asked.
    - **Done (session 98):** session 96's gallery and audit consistency gaps reproduced and fixed (`d50d163`, session 98 log).
    - **Maintainer (session 98):** review `d50d163`; decide whether to add reconciliation of a started line without an outcome (the crash limitation) and findings 8-10.
    - **Claude, next (session 98):** none until asked.
@@ -890,6 +904,74 @@ Notes on partial and in-progress rows:
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
 
+## Session 99 log (Claude, 2026-10-20): review A's finding 8 (enrollment provider errors) and the remaining redaction gaps (Authorization values, JSON and quoted credential fields, *_key names) reproduced through their callers and fixed; nothing pushed
+
+From `a09167c` (clean), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`; the review copy clean at `fd3933a`/`3acb419`.
+
+**The authorization:**
+- **The task:** finding 8 (enrollment provider exceptions as raw tracebacks) and the redaction gaps (`Authorization: Bearer` values, JSON credential fields, `secret_key`-style fields). Reproduce reachable leaks through actual callers with synthetic secrets and fake providers, add regressions, then fix the boundaries and the redaction.
+- **Keep:** useful error categories, without raw provider messages; linear patterns.
+- **Do not:** refactor helpers, implement crash recovery, or touch findings 9-10, the gallery crash limitations, F2, admission, thresholds, real enrollment data or the review copy; push, publish, launch or review.
+
+1. **Finding 8, reproduced** (`test_identity_enroll.py`):
+   - **The path:** `sentinel identity enroll` through `main()` with the real `LegacyDeepFaceBackend` over a fake runtime. It loads; then each photo fails.
+   - **The cases:** a `RuntimeError` from `represent`; an OpenCV-style `error` from `imread`; a `MemoryError`; and infinite and NaN face widths (`round()` raising `OverflowError` or `ValueError`).
+   - **The leak:** all escaped `main()` as raw exceptions whose messages held the photo's path (`…/inbox/Alice Example/Alice Example 0.jpg`, a person's name) and the synthetic secrets. A command-line run prints that as a traceback.
+2. **Finding 8, fixed** (`0d5b9aa`):
+   - **The adapter boundary:** `enrollment_photo` wraps the provider calls, so any exception becomes `FaceBackendError("enrollment_photo_failed", <class>)`; `enrollment_face` treats a non-finite or negative width as `inconsistent_output`.
+   - **The command boundary:** the identity command prints a `FaceBackendError` as `label:Class`, as the adapter records it (`identity: enrollment_photo_failed:MemoryError`; `load_failed:<Class>` likewise). Any other exception becomes `identity: failed:<Class>`, exit 1, never its message.
+   - **The outcome:** nothing is written, and the photos stay.
+3. **The redaction gaps, reproduced** with synthetic secrets:
+   - `test_redaction.py`: 15 forms leaked;
+   - the scene lane's submit-failure evidence: a JSON `Authorization` header, a dict repr with `api_key`, and a password with spaces;
+   - the outbox's stored dead reason and delivery attempts: a Telegram 401 description echoing a header and a JSON body;
+   - an adapter's load-failure reason: an import-time error with a header, JSON and `secret_key=`;
+   - `sentinel config validate`: a value given as a mapping with `password` and `api_key`, echoed in the problem text.
+4. **The redaction, fixed** (`aaee239`, `redaction.py`):
+   - **Authorization:** an (Proxy-)`Authorization` value is redacted whatever its scheme, to the end of the value.
+   - **Schemes anywhere:** a Bearer token, and Basic credentials of 8 or more base64 characters.
+   - **Credential keys:** the value of any key ending in `token`, `password`, `passwd`, `secret`, `api_key`, `secret_key`, `access_key`, `private_key` or `credential(s)`, written `key=value`, `key: value`, `"key": "value"` or `'key': 'value'`. A quoted value is taken whole: escapes included, and to the line's end when the message cuts it off.
+   - **Left alone:** names that only look similar (`token_count:`, `max_tokens=`, `"token_type"`, "basic check", `secretary=`).
+   - **Performance:**
+     - The patterns are linear by construction: separators are bounded at 16 spaces or tabs, and each value is consumed whole.
+     - Measured on 11 hostile inputs of 200,000-400,000 characters: worst 166 ms (`"Bearer " * 50,000`).
+     - For comparison, a naive unbounded variant took 18.5 s on 40,000 characters; the regression's bound is 1 s per input.
+5. **Regressions:** 43 new tests:
+   - `test_redaction.py`: 33 (15 forms, 8 near misses left alone, 10 hostile inputs);
+   - `test_identity_enroll.py`: 6;
+   - `test_adapters.py`: 2;
+   - `test_outbox.py`: 1;
+   - `test_r3_stale_scene_results.py`: 1.
+
+   Every reproduction failed on `a09167c`'s code first; the near-miss and hostile-input cases pass on both.
+
+**Limitations:**
+1. **Not recognized:** credentials in other forms are not redacted: cookies, PEM blocks, a bare secret with no name or scheme, a credential name outside the list, a key separated from its value by more than 16 spaces or a line break.
+2. **Over-redaction is accepted** on the safe side: everything after `Authorization:` up to a delimiter, the word after "bearer", and a long word after "basic".
+3. **`identity: failed:<Class>` names only the class.** A failure after a completed enrollment (for example deleting a photo copy) is reported as a failure although the enrollment took effect.
+4. **Findings 9-10 and session 98's crash limitations remain open.**
+
+### Verification: exact commands and results
+
+```
+T = PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m pytest -q -p no:cacheprovider   # Python 3.10.14, in the worktree
+T tests/unit/test_redaction.py   # unchanged code (a09167c): 15 failed (every new form), 32 passed
+T tests/unit/test_outbox.py tests/replay/test_r3_stale_scene_results.py tests/unit/test_adapters.py -k "echo or leaky or credential"   # unchanged code: the four caller tests failed with SYNTH in the stored or shown text
+T tests/unit/test_identity_enroll.py -k "provider_failure or other_failure"   # unchanged code: 6 failed (raw RuntimeError, error, MemoryError, OverflowError, ValueError, KeyError)
+T tests/unit/test_redaction.py tests/unit/test_outbox.py tests/replay/test_r3_stale_scene_results.py tests/unit/test_adapters.py tests/unit/test_jobs.py tests/unit/test_config.py   # fixed: 121 passed
+<python> <timing script>   # 11 hostile inputs: worst 165.6 ms; naive unbounded variant: 18.53 s on 40,005 characters
+T <redaction, outbox, adapters, jobs, config, identity, face backend, gallery, face runtime, demo runtime, status page, CLI, portable imports files> tests/replay   # 451 passed
+PYTHONPATH=$PWD/src ~/sentinel-validation/py312-df8d9bc/venv/bin/python -m pytest ... <five files>   # 3.12: 155 passed
+T   # the full portable suite at aaee239 (clean tree): 2692 passed, 2 skipped (torch, cv2) in 1357.61 s (20:40:08-21:02:48 UTC); exit 0
+PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m sentinel.cli config validate config/default.yaml   # valid; exit 0
+export VIRTUAL_ENV=~/sentinel-validation/py312-df8d9bc/venv PATH=~/sentinel-validation/py312-df8d9bc/venv/bin:$PATH
+python -m pytest --junitxml=~/sentinel-validation/review-a-aaee239/logs/py312-junit.xml   # Python 3.12.3 at aaee239: 2692 passed, 2 skipped (torch, cv2) in 1270.72 s (21:03:01-21:24:13 UTC); exit 0
+sentinel config validate config/default.yaml   # valid; exit 0
+# Sequential runs; during the 3.12 run the only uncommitted file was this record (no test reads docs/).
+git -C ~/sentinel-review/a-identity-df8d9bc status --short; git -C ~/sentinel-review/a-identity-df8d9bc log --oneline -2   # clean; 3acb419, fd3933a (unchanged)
+# Logs: ~/sentinel-validation/review-a-aaee239/logs/
+```
+
 ## Session 98 log (Claude, 2026-10-20): session 96's gallery and audit consistency gaps reproduced and fixed (a change lock, a base check, started and completed audit lines, whole-line audit writes); the crash limitation documented; nothing pushed
 
 From `cde3563` (clean), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`; the review copy clean at `fd3933a`/`3acb419`.
@@ -1116,12 +1198,12 @@ Each finding below was reproduced by its new tests failing on the unchanged code
 1. Findings 6-10 are not addressed:
    - 6: a late face result can vote for an expired track whose number returns;
    - 7: a result from before recognition was switched off and on can vote;
-   - 8: `enrollment_photo`'s provider errors escape the CLI as tracebacks;
+   - 8: `enrollment_photo`'s provider errors escape the CLI as tracebacks (**addressed in session 99, `0d5b9aa`**);
    - 9: duplicated helpers;
    - 10: four copies of YuNet's 0.9.
 2. `revoke()` still saves before it audits (the same class as finding 2, not in the finding). **Addressed in session 98 (`d50d163`).**
 3. There is no lock against two concurrent enrollments. This was already the case; the staging file's name is shared. **Addressed in session 98 (`d50d163`), with the audit-before-rename gap.**
-4. The redaction covers `key=value`, URL userinfo and bot tokens only. `Authorization: Bearer …`, JSON `"password": "…"` and keys such as `secret_key=` are not covered (outside the finding).
+4. The redaction covers `key=value`, URL userinfo and bot tokens only. `Authorization: Bearer …`, JSON `"password": "…"` and keys such as `secret_key=` are not covered (outside the finding). **Addressed in session 99 (`aaee239`); cookies, PEM blocks and bare secrets remain unrecognized.**
 5. A failed shutdown step is recorded as false, without its exception class.
 6. Not run: CI (nothing pushed), the `Dashboard checks` workflow, any device, camera or model session.
 
