@@ -1,0 +1,41 @@
+name: Track Repository Traffic
+
+on:
+  schedule:
+    # 05:15 IST on the following day. GitHub schedules can be delayed.
+    - cron: '45 23 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sentinel-traffic-tracker
+  cancel-in-progress: false
+
+jobs:
+  record-traffic:
+    if: github.repository == 'hemkesh2021-dotcom/Sentinel_Surveillance' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Load collector and regression tests at this workflow commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in traffic_tracker.py test_traffic_tracker.py; do
+            gh api -H 'Accept: application/vnd.github.raw+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/.github/scripts/${file}?ref=${GITHUB_SHA}" \
+              > "${RUNNER_TEMP}/${file}"
+          done
+      - name: Verify aggregation and atomic publishing
+        shell: bash
+        run: python3 "${RUNNER_TEMP}/test_traffic_tracker.py"
+      - name: Archive traffic and update report
+        env:
+          TRAFFIC_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: python3 "${RUNNER_TEMP}/traffic_tracker.py"
