@@ -43,7 +43,8 @@ hazard:
 
 identity:
   # Starting values only; calibrate on separate identities before relying on them.
-  match_threshold: 0.5   # cosine similarity (not a probability) needed to match
+  match_threshold: 0.70  # cosine similarity (not a probability) needed to match; DeepFace 0.0.99's
+                         # Facenet512 value (cosine distance 0.30), the code default; uncalibrated here
   margin: 0.05           # over the next-best enrolled identity
   min_quality: 0.6       # faces below this quality do not vote
   confirmations: 2       # consistent votes needed for known (or unknown)

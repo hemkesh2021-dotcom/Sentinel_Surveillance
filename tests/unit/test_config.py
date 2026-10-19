@@ -96,6 +96,14 @@ def test_scene_evidence_must_outlive_the_job_deadline(tmp_path: Path) -> None:
     ]
 
 
+def test_the_shipped_identity_section_is_the_codes_documented_starting_values(tmp_path: Path) -> None:
+    # config/default.yaml is the documented starting point: copying it must not loosen matching. 0.70 is DeepFace
+    # 0.0.99's Facenet512 cosine value, the code default and the value every device session ran with.
+    identity = load_config(DEFAULT_CONFIG).identity
+    assert identity.match_threshold == 0.70
+    assert load_config(write_config(tmp_path, "config_version: 1\ncamera: {id: cam-1}\n")).identity == identity
+
+
 def test_scene_server_defaults_bounds_and_no_host_setting(tmp_path: Path) -> None:
     server = load_config(DEFAULT_CONFIG).scene_server
     assert (server.port, server.request_timeout_s) == (18081, 20.0)
