@@ -1,4 +1,4 @@
-# Sentinel v2 — EXPERIMENTAL ALPHA (v2.0.0-alpha.1): notes
+# Sentinel v2 — EXPERIMENTAL ALPHA (v2.0.0-alpha.1 and the unreleased work after it): notes
 
 **EXPERIMENTAL ALPHA. v2.0.0-alpha.1 is an experimental pre-release, not a production release.** Production acceptance
 and feature admission are separate decisions, and this pre-release makes neither: nothing is declared accepted, face
@@ -7,6 +7,31 @@ branch `alpha-candidate-2026-10` (published 2026-10-14 from the local `v2-ui-ref
 carries the pre-release; the tag is `v2.0.0-alpha.1` and the package version `2.0.0a1` (release notes:
 [`RELEASE_NOTES_v2.0.0-alpha.1.md`](RELEASE_NOTES_v2.0.0-alpha.1.md)). `docs/IMPLEMENTATION_STATUS.md` is the source of
 every result named here, by session; where the two differ, the status record governs.
+
+**Since v2.0.0-alpha.1 (sessions 75–93; these notes updated 2026-10-19, session 94).**
+- **Where the work is:** the local `v2-ui-refresh`, more than 30 commits past the tag. The code last changed at
+  `f547d4b` (session 90); later commits are records and documents.
+- **Not published or released:** nothing pushed after `65df7f3` (14 October, a README change after the tag); the
+  package version is still `2.0.0a1`; no new pre-release decided.
+- **Unchanged since the tag:** face recognition stays `PENDING_VALIDATION`; chat is not admitted; no threshold,
+  gallery, identity rule, admission or memory-guard limit has changed.
+
+**The alpha's goal is not met.** On 12 October the maintainer set the October 20 alpha's centre as working face
+recognition and real local chat with the vision-language model, as one plan. Neither part is done:
+- no F2 has validated: since the tag, three attempts on the normal recognition path, one stopped by the memory guard
+  and two not validated;
+- there is no false-acceptance data;
+- chat is not admitted;
+- face recognition and the VLM have never run together.
+
+Under the recorded readiness rule, face is shown only as the experimental demonstration until an F2 actually validates.
+
+**Readiness of the unreleased candidate (session 93): not ready to call the alpha complete.** No release-blocking code
+defect is established: none is recorded open, and an independent review is still to come. The blocking items:
+1. the release documents, which this revision brings up to session 93;
+2. no CI run on the unpushed commits (the last recorded CI result is at `b33c2f3`);
+3. the alpha goal above, a decision gate rather than a defect;
+4. the full alpha configuration's memory, still unmeasured.
 
 Device: one Jetson Orin Nano (JetPack 6, L4T 36.4.7) with one camera, reached from a Mac over SSH. Portable tests run
 on any machine without a camera, GPU or model; browser tests use headless Chromium when one is installed.
@@ -26,11 +51,27 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
     come from production detection, the normal recognition path the dashboard runs; the 15:18 figure comes from the
     full-scale detection candidate (a validation-only option, not adopted), so it is not evidence for the normal path
     (session 77).
-  - **Face acceptance and the non-enrolled-person checks, pending.** The formal validation (F2) has never passed. Its
-    attempt on the normal recognition path (15 October, under lamps) did not validate: retention while the face was
-    hidden was not exercised, though recognition while facing the camera and clearing across both absences passed in
-    that one session (session 78). No session with consenting non-enrolled participants has run, so there is no
-    false-acceptance data. Face
+  - **Recognition in ordinary seated use is intermittent** (sessions 89 and 91; no code defect established). Looking
+    at the Mac, with natural head turns and chair movement, KNOWN is lost in two ways:
+    - when one non-matching vote follows matches: the documented two-vote rule, with the enrolled person's similarity
+      running close to the threshold;
+    - when production detection finds no face for longer than the 30 s vote lifetime allows.
+
+    In the ten-minute ordinary-use diagnostic `lmk-20261019T105756Z`:
+    - the identity was KNOWN 363 of 600 s;
+    - production detection found the face on 22 % of results;
+    - 232 of the 237 s not KNOWN followed vote expiry during such stretches;
+    - a native-scale detection pass found a face on 258 of the 450 results without a production face; whether those
+      faces would match is not recorded.
+  - **Face acceptance and the non-enrolled-person checks, pending.** The formal validation (F2) has never passed. On
+    the normal recognition path:
+    - 15 October, under lamps (session 78): not validated. Retention while the face was hidden was not exercised,
+      though recognition while facing the camera and clearing across both absences passed in that one session.
+    - 18 October (session 86): stopped by the memory guard 54.6 s after T0, before any cue.
+    - 18 October, after a one-time page-cache drop (session 88): completed but not validated. The locked account
+      answered `unknown` to whether other faces were in view, and retention was again not exercised.
+
+    No session with consenting non-enrolled participants has run, so there is no false-acceptance data. Face
     recognition stays `PENDING_VALIDATION` and runs only in guarded validation runs.
   - **The proposed identity continuity rule (D97) and the feature controls (D99), not fully validated on the device.**
     The rule ran in one device session without changing any vote; the controls' face session ran with its switch
@@ -49,6 +90,9 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
 | The live dashboard with face recognition in a validation run (D95, D96) | The dashboard check `dash-20261013T181703Z` (session 68): execution and privacy passed; recognition described, not judged | Safari observed by the maintainer (user-reported); departure and return not exercised; **face recognition stays pending validation** |
 | The dashboard's detection path, compared on the same frames (production detection with the live view) | `dpath2-20261014T113113Z` (session 73): execution and privacy passed; 171 of 176 compared faces matched, outcome D1 for that session's late-afternoon light (launched 17:04 IST, reported apart) | Investigative, not acceptance; one control pair and three full-scale-only faces compared, too few to compare the detection paths; the live view sent no picture for at least 90 s of the run; **face recognition stays pending validation** |
 | F2 on the normal recognition path (production detection, the original enrollment, D97 off) | `f2n-20261015T125427Z` (session 78): **not validated**. Recognition while seated facing the camera (K1, K2) and clearing across both absences (E1, E2) passed; retention with the face hidden (A) NOT_EXERCISED | One session, under lamps; not reliable recognition and not validated retention; **face recognition stays pending validation** |
+| Ten-minute tracking diagnostic (validation only, never an F2 attempt) | `trk-20261017T103831Z` (session 84): execution complete; one tracker number on the seated person through a face-hidden hold; the identity retained by its 30 s rule, then unresolved | One session, daylight; descriptive; a 1.9 s input stall cleared the identity once (re-earned in 3 s) |
+| F2 on the normal path after a one-time page-cache drop (D103, a changed test condition, reported apart) | `f2c-20261018T155424Z` (session 88): completed, **not validated** (the account's `other_faces_in_view` answer `unknown`; A NOT_EXERCISED: one non-matching vote just after the 4:00 cue ended KNOWN). The attempt before it, `f2n-20261018T104038Z` (session 86), was stopped by the memory guard before any cue | One session, under lamps; K1 and K2 passed but unstable (7 of 62 and 6 of 58 votes did not match); **face recognition stays pending validation** |
+| Landmark diagnostic in ordinary use (validation only, never an F2 attempt) | `lmk-20261019T105756Z` (session 91): execution complete; its predeclared outcome **inconclusive** (39 usable evaluation votes against 100 required, no misses among them, the reference band unstable); kept as the result, never extended or repeated | One session, daylight, after a one-time page-cache drop (reported apart); landmark numbers are proxies, never angles; the recognition figures above come from its identity records |
 | Advisory chat about the live frame, answered by the local scene model | Two passing device runs: `alpha-20261012T040450Z` (`f6ced5e`) and `alpha-20261013T084310Z` (`c3a37f0`), runtime and browser results | **Chat is not admitted.** Answers' accuracy is not evaluated (one unverified operator report of a wrong answer); never with face recognition running |
 
 ## Implemented and portable-tested, not validated on the device
@@ -73,6 +117,19 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
   its switch items not exercised (session 69); the scene session has not run.
 - Chat cancellation, the memory-pressure response and the scene-job grace (D77, D81); the combined face-and-chat
   reading (D80) and a grounding check (G, designed for the combined package, not implemented).
+- **Validation-only diagnostics and operator tooling since the tag:**
+  - the tracking diagnostic (`--tracking-diagnostic`, sessions 79–81);
+  - F2's corrected retention reading (session 85);
+  - the operator's launch-memory check (`benchmarks/runner/launch_memory.py`, D103, session 87): a one-time page-cache
+    drop and an empirical launch floor with no reserve;
+  - the landmark diagnostic (`--face-landmark-diagnostic`, session 90): derived landmark proxies of the native-scale
+    face, associated one to one with the vote's own frame and person, read with a predeclared, association-only
+    analysis.
+
+  None changes production detection, votes, thresholds, enrollment or admission.
+- **PROPOSED, not implemented (session 92):** a complete-coverage variant of the existing shadow comparison (D87).
+  Its pinned budget was shown, on sealed timelines, unable to establish whether voting native-only faces would help;
+  the variant would compare every such face and record its outcome, never as a vote.
 
 ## Gates still open for the alpha
 
@@ -125,6 +182,25 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
    actually held; the criterion, tolerances and every other F2 item unchanged; no earlier F2 verdict changes), and F2 is
    re-pinned with the host preparation (`f2-normal-d754976`, dry-run, not yet run on the device). Face remains the
    experimental demonstration until an F2 actually validates.
+
+   **Sessions 86–92:**
+   - **Session 86:** that package's session was stopped by the memory guard before any cue.
+   - **Session 87:** F2 re-packaged with an operator-controlled one-time page-cache drop and a launch-memory check
+     (D103).
+   - **Session 88:** the resulting session completed but did not validate (the account's `unknown` answer about
+     other faces in view; A not exercised).
+   - **Session 89:** a read-only investigation across 13 sealed sessions. Its strongest supported explanation for
+     intermittent KNOWN loss in ordinary use: score variability around a thin margin to the 7-photo gallery, turned
+     into exits by the single-vote contradiction rule, with head turn and drift contributing. Production's half-scale
+     detection also misses many faces a native-scale pass finds. No code defect established.
+   - **Session 90:** the landmark diagnostic.
+   - **Session 91:** its ten-minute ordinary-use session (inconclusive by its predeclared rule; the identity figures
+     above).
+   - **Session 92:** whether native-scale detection would help is not established. The existing shadow comparison
+     cannot settle it, and a complete-coverage variant is proposed, not implemented.
+
+   No detection, threshold, identity rule, enrollment or admission changed. Face remains the experimental
+   demonstration until an F2 actually validates.
 2. Chat: its earlier runtime checks passed; admission (operator-run resource and interference checks; the maintainer's
    decision) and factual accuracy (the grounding check G is designed, not implemented) remain pending.
 3. Face and chat (the VLM) together: no combined run yet.
@@ -135,13 +211,31 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
 6. Whole-device memory targets (5,000,000,000 B steady, 5,400,000,000 B peak) are acceptance targets. The two chat
    runs' readings passed their memory items (peaks 3,773,243,392 B and 3,721,973,760 B); the full alpha configuration
    (face, chat, scene and the live view together) has not been measured.
+
+   Since the tag:
+   - **Guard stops:** the memory guard stopped three face runs with the scene model loaded (18.7 s, 3.0 s and 54.6 s
+     after T0). Lower launch headroom is the strongest supported explanation; these were policy stops at its 1 GiB
+     floor, not allocation failures.
+   - **The launch-memory check:** with the one-time page-cache drop and the launch check (D103), two runs completed.
+     Their lowest MemFree was 2,480,082,944 B and 2,283,102,208 B; their peak pressure 4,217,470,976 B and
+     4,389,052,416 B (face, the scene model loaded, no chat or live view).
+   - **The floor's reference exceeded:** in the second run, one unattributed 11 s transient took consumption from
+     launch 221 MB past the launch floor's reference run. The floor carries no reserve.
+8. Release readiness (session 93):
+   - **CI:** no CI run on the unreleased commits.
+   - **Review:** an independent code review is still to come. Six review scopes are proposed; no single comparison
+     base fits the review tool's size limit without omitting critical earlier work.
+   - **Release documents:** brought up to session 93 in this revision.
 7. Not started for the alpha: a two-hour soak (V2-24), real API, sessions and screens (V2-17, V2-18), clips (V2-21).
 
 ## Data and privacy in this repository
 
 - No credentials, tokens, keys, enrollment galleries, face images, embeddings, similarity values, photos, run evidence or
-  the local-only planning documents are tracked; test fixtures use synthetic values and reserved documentation
-  addresses. The publication scans (sessions 67 and 73) list what was checked and how.
+  the local-only planning documents are tracked. The publication scans (sessions 67 and 73) list what was checked and
+  how; session 93 scanned every file version reachable from the unreleased branch (counts only).
+- **Test fixtures:** synthetic, using reserved documentation addresses and, in refusal and redaction tests, synthetic
+  private-range addresses. The exceptions are three fixtures derived from sealed device runs (sessions 81, 85 and 87):
+  they hold memory figures, times and fixed labels only, with no identity ID, similarity, box or image.
 - The status record names device runs, packages and some machine identifiers (the device's user name, the USB tether's
   default address, boot IDs), as earlier published records already do; they hold no credential.
 - Face recognition is context only: it never grants or denies anything, and no page, record or log shows a name.
@@ -153,6 +247,12 @@ python -m pip install -e '.[dev]'
 python -m pytest            # browser tests skip when no Chromium-family browser is found (SENTINEL_TEST_BROWSER)
 sentinel config validate config/default.yaml
 ```
+
+**Latest recorded results:**
+- the full portable suite at `f547d4b` (the unreleased code): 2,578 passed and 2 skipped (`torch`, `cv2` absent), on
+  Python 3.10 on the device (session 90);
+- the last recorded CI result: at `b33c2f3`, on Python 3.10 and 3.12;
+- not covered since: Python 3.12; browsers other than headless Chromium.
 
 The two tests that used to fail intermittently (`test_alpha_check`'s load-tool window, anchored on a question the page
 could refuse, and `test_face_runtime`'s shadow-run comparison, which included wall-clock `processing_ms`) are

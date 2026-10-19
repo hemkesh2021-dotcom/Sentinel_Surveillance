@@ -1,6 +1,24 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-19, session 93 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **An alpha candidate readiness assessment of `a06ffa0`, done locally after two `/ultrareview` attempts were refused for size. The first refusal measured the main checkout's `v2-beta`, not this worktree.
+Last updated 2026-10-19, session 94 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **On the maintainer's instruction the release documents now reflect sessions 86-93 (documents only).**
+- **`docs/ALPHA_CANDIDATE_NOTES.md`:**
+  - the unreleased work since alpha.1, and session 93's readiness verdict with its blocking items;
+  - the unmet face-plus-chat alpha goal, stated explicitly;
+  - status: intermittent recognition in ordinary use, and the F2 attempts since the tag;
+  - three device-table rows (`trk-`, `f2c-` with the guard-stopped `f2n-`, `lmk-`);
+  - the validation-only diagnostics and the PROPOSED comparison variant;
+  - gate 1 (sessions 86-92), gate 6 (memory) and a new gate 8 (release readiness);
+  - the fixture statement corrected (three fixtures derived from sealed runs);
+  - the latest recorded test and CI results.
+- **`docs/REQUIREMENTS_TRACE.md`:** a new as-of line (code at `f547d4b`), the suite figure, the V2-25 row (sessions 86-93) and the memory gate; no class changed, so section 5's counts are unchanged.
+- **`README.md`:** the unmet alpha goal in the callout, the face row and a diagnostics row in the feature table, and the CI note.
+- **`docs/RELEASE_NOTES_v2.0.0-alpha.1.md`:** a dated pointer only; the published notes are not revised.
+
+F2 remains unvalidated; face `PENDING_VALIDATION`; admission, thresholds and the version `2.0.0a1` unchanged; nothing pushed; the wiki not updated (it needs a push).**
+- **Tests:** none run (no code changed).
+- **Next (the maintainer):** review the documents; the other session-93 decisions (CI, whether this alpha may ship with face experimental and chat unavailable, the review scope pairs) and session 92's stay open.
+
+Session 93's summary: **An alpha candidate readiness assessment of `a06ffa0`, done locally after two `/ultrareview` attempts were refused for size. The first refusal measured the main checkout's `v2-beta`, not this worktree.
 - **Verdict:** not ready to call the alpha complete; no release-blocking code defect is established.
 - **The candidate:** clean; 31 commits after `v2.0.0-alpha.1` and not pushed; its code identical to `f547d4b`'s full suite (2,578 passed, 2 skipped: `torch`, `cv2`).
 - **Blocking items:**
@@ -388,6 +406,7 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 | Session 88 (Claude, 2026-10-18) | From `1d15ca6` (clean). This record only (docs only); outside Git, the private analysis `~/sentinel-runs/analysis/f2c-20261018T155424Z/`; read only: the sealed session `f2c-20261018T155424Z`, its preparation records `prep-f2c-20261018T155424Z` and the observation `hm-20261018T172604Z-prepared-f2c-20261018t155424z`, the package `f2-cache-890af72`, and for descriptive comparison the sealed sessions `f2n-20261015T125427Z`, `trk-20261017T103831Z`, `f2-face-20261007T215900Z-20261008T055134Z` and the other sealed F2 and diagnostic folders. Not merged or pushed; nothing launched; no cache dropped. See the session 88 log. |
 | Session 89 (Claude, 2026-10-18) | From `28e3f2d` (clean). This record only (docs only); outside Git, the private analysis `~/sentinel-runs/analysis/s89-recognition/`; read only: 13 sealed sessions (the F2, diagnostic, dashboard, evaluation and capture folders named in the session 89 log), the sealed F1 enrollment record, the pinned face code and the installed DeepFace 0.0.99 sources. Not merged or pushed; nothing launched; no image, embedding or gallery opened. See the session 89 log. |
 | Session 90 (Claude, 2026-10-19) | From `76f0b9f` (clean). `4f1bbb4` (the landmark diagnostic, its reading and tests) and `f547d4b` (its follow-up from the dry run, the pin), then this record; outside Git, the package `landmarks-f547d4b` (manifest `1a66c206...`), its harness `dryrun-harness-f547d4b-landmarks`, the superseded `landmarks-4f1bbb4` with its note and harness; read only: f2-cache-890af72, the prerequisite's seal, the installed OpenCV's documentation of FaceDetectorYN's rows. Not merged or pushed; nothing launched; no real cache dropped. See the session 90 log. |
+| Session 94 (Claude, 2026-10-19) | From `5044467` (clean). The release documents (`docs/ALPHA_CANDIDATE_NOTES.md`, `docs/REQUIREMENTS_TRACE.md`, `README.md`, `docs/RELEASE_NOTES_v2.0.0-alpha.1.md`) and this record; documents only. Not merged or pushed; the wiki not updated. See the session 94 log. |
 | Session 93 (Claude, 2026-10-19) | From `a06ffa0` (clean). This record only (docs only): the readiness assessment and the session-92 corrections; read only: the worktree, the main checkout's `v2-beta` diff, the bundle-reachable history (scanned, counts only), the local credential files (compared in memory, never printed). Not merged or pushed; nothing launched or uploaded. See the session 93 log. |
 | Session 92 (Claude, 2026-10-19) | From `f8f22c7` (clean). This record only (docs only); outside Git, the private design check `~/sentinel-runs/analysis/s92-comparison-design/`; read only: the pinned D87 code, `lmk-20261019T105756Z`, `alpha-20261012T182923Z` and `dpath2-20261014T113113Z`'s records. Not merged or pushed; nothing implemented, packaged or launched. See the session 92 log. |
 | Session 91 (Claude, 2026-10-19) | From `b500b5d` (clean). This record only (docs only); outside Git, the private analysis `~/sentinel-runs/analysis/lmk-20261019T105756Z/`; read only: the sealed session `lmk-20261019T105756Z`, its preparation records `prep-lmk-20261019T105756Z` and the observation `hm-20261019T110223Z-prepared-lmk-20261019t105756z`, the package `landmarks-f547d4b`, the prerequisite's seal, nine earlier sealed sessions' records and the pinned code. Not merged or pushed; nothing launched; no cache dropped. See the session 91 log. |
@@ -468,6 +487,10 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 ## Next concrete task
 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
+   - **Done (session 94):** the release documents updated to sessions 86-93, the unmet face-plus-chat goal explicit (session 94 log).
+   - **Maintainer (session 94):** review the documents; the open session-93 and session-92 decisions.
+   - **Claude, next (session 94):** none until asked; the wiki's status page stays at the pre-release until a push is decided.
+   - **The earlier text of this item, kept (session 93):**
    - **Done (session 93):** the readiness assessment of `a06ffa0`; the session-92 specification corrected; review scopes measured; the upload content checked (session 93 log).
    - **Maintainer (session 93):** the four blocking items (section 3); whether to build the review scope pairs and in which order.
    - **Claude, next (session 93):** on request, update the release documents to sessions 86-93 for review; on approval, build the scope pairs (plumbing only, no push) and hand over the exact review commands. Nothing launched by Claude.
@@ -797,6 +820,49 @@ Notes on partial and in-progress rows:
   - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Session 50: Step 5 ran it on the device (camera, detector, scene server, Telegram; see the session 50 log). Not done: the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 94 log (Claude, 2026-10-19): the release documents updated to reflect sessions 86-93 (documents only); the face-plus-chat alpha goal kept explicit as unmet; F2 unvalidated; admission unchanged; no tests, review, upload, push or device session
+
+From `5044467` (clean), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`. The maintainer asked for the release documents to reflect sessions 86-93, with the unfinished face-plus-chat alpha goal explicit, F2 unvalidated and admission unchanged; no tests, review launch, upload, push or device experiment.
+
+1. **`docs/ALPHA_CANDIDATE_NOTES.md`.**
+   - **Title and introduction:** the title now covers alpha.1 and the unreleased work after it. A new introduction says where the work is (code last changed at `f547d4b`), that it is not published and the version is still `2.0.0a1`, and what is unchanged since the tag. It states the unmet alpha goal (no F2 validated in three attempts since the tag, no false-acceptance data, chat not admitted, never together; face only as the experimental demonstration) and session 93's verdict with its four blocking items.
+   - **Status at a glance:** a new item on intermittent recognition in ordinary use (sessions 89 and 91, with `lmk-20261019T105756Z`'s identity figures and the unknown matching of native-only faces). The F2 item now lists the three attempts since the tag.
+   - **The device table:** rows for `trk-20261017T103831Z`, for `f2c-20261018T155424Z` (with the guard-stopped `f2n-20261018T104038Z`), and for `lmk-20261019T105756Z` with its inconclusive outcome.
+   - **Implemented, not validated:** the validation-only diagnostics since the tag (the tracking diagnostic, the corrected retention reading, the launch-memory check, the landmark diagnostic) and the PROPOSED complete-coverage comparison.
+   - **The gates:** gate 1 gains sessions 86-92; gate 6 gains the guard stops, the cache-drop runs' memory figures and the transient; a new gate 8 holds the release-readiness items.
+   - **Data and privacy:** the fixture statement corrected. Three fixtures derived from sealed device runs (sessions 81, 85, 87) hold memory figures, times and labels only, and synthetic private-range addresses appear in refusal and redaction tests. Session 93's scan noted.
+   - **Running the checks:** the latest recorded suite result and the last recorded CI result.
+2. **`docs/REQUIREMENTS_TRACE.md`.**
+   - **As of 2026-10-19:** code at `f547d4b`; not merged or published; the unmet goal. No class changed, so section 5's counts are unchanged.
+   - **Sources:** the suite figure updated.
+   - **The V2-25 row:** sessions 86-93 appended.
+   - **The memory gate:** the guard stops, the two cache-drop runs and the transient.
+3. **`README.md`.**
+   - **The callout:** the unmet alpha goal and the unreleased later work.
+   - **The feature table:** the face row (no F2 validated; how recognition lapses in ordinary use) and a row for the validation-only diagnostics.
+   - **Portable development:** a sentence that the unpushed commits have not run in CI.
+4. **`docs/RELEASE_NOTES_v2.0.0-alpha.1.md`:** a dated note that it describes the published pre-release and is not revised, pointing to the alpha notes. The published text is otherwise unchanged.
+5. **Checked:**
+   - the added lines hold no address, credential, URL with userinfo or similarity value;
+   - every table row stays on one line;
+   - two pre-existing notes lines touched only by re-wrapping were restored as they were.
+6. **Not done:**
+   - the wiki's status page (a separate repository; it needs a push);
+   - `docs/ALPHA_FLOW.md` (a usage guide unaffected by sessions 86-93);
+   - the version label;
+   - no test run, review launch, upload, push or device session.
+
+   F2 remains unvalidated; face stays `PENDING_VALIDATION` and the experimental demonstration; admission unchanged.
+
+### Verification: exact commands and results
+
+```
+git diff --stat 5044467 -- README.md docs/ALPHA_CANDIDATE_NOTES.md docs/REQUIREMENTS_TRACE.md docs/RELEASE_NOTES_v2.0.0-alpha.1.md
+git diff -U0 | grep '^+' | grep -Ei 'rtsp://|[a-z]+://[^ ]*@|[0-9]{1,3}(\.[0-9]{1,3}){3}|password|token|similarity[^a-z]{0,6}0\.[0-9]'   # no match
+awk '/^\|/ && !/\|[ \t]*$/' README.md docs/ALPHA_CANDIDATE_NOTES.md docs/REQUIREMENTS_TRACE.md   # no unclosed table row
+git diff --stat 5044467 -- src tests benchmarks config pyproject.toml   # empty: no code changed
+```
 
 ## Session 93 log (Claude, 2026-10-19): an alpha candidate readiness assessment of `a06ffa0` (not ready to call complete; no release-blocking code defect established, four blocking items and the open decision gates listed); the session-92 specification corrected (an exhaustive N0-N3 partition; KNOWN bounds apart from interruption counts; simulated figures labelled); review scopes measured and proposed; the upload content checked without printing it; nothing launched, uploaded, pushed or implemented
 

@@ -26,6 +26,16 @@ face recognition and scene analysis under validation*
 > can be reviewed and tried. It is **not production-accepted**, and **feature admission is a separate decision**:
 > face recognition and chat are not admitted for normal use, and nothing on this branch is merged into `master`.
 >
+> **The alpha's goal is not met yet.** The October alpha was set to centre on working face recognition and real local
+> chat with the vision-language model. Neither is done:
+> - face recognition's formal validation (F2) has never passed, and there is no false-acceptance data;
+> - chat is not admitted;
+> - the two have never run together.
+>
+> Face recognition is shown only as an experimental demonstration in guarded validation runs. Later work (validation
+> diagnostics and their device sessions, through 19 October) is unreleased: the version is still `2.0.0a1`. See the
+> [alpha notes](docs/ALPHA_CANDIDATE_NOTES.md).
+>
 > - **Known limitations:** [Status and limitations](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Status-and-limitations)
 >   (wiki) and [`docs/ALPHA_CANDIDATE_NOTES.md`](docs/ALPHA_CANDIDATE_NOTES.md)
 > - **Release:** [v2.0.0-alpha.1](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.1)
@@ -93,7 +103,8 @@ its configuration checks and its tests run on any machine.
 | Incident page and acknowledgment (while monitoring is stopped) | yes | checked | core path |
 | Live view and incident snapshots | yes | checked | opt-in flags |
 | Dashboard (live picture, recognition panel, incidents, appearance) | yes | checked in validation runs; Safari observed by the operator | opt-in flags |
-| Face recognition | yes | described in validation runs, **not accepted**; an intermittent failure is unresolved | **no** (`PENDING_VALIDATION`) |
+| Face recognition | yes | described in validation runs, **not accepted**: no F2 has validated (three attempts on the normal path since the pre-release); in ordinary seated use recognition is intermittent (a single non-matching vote ends it; it lapses when no face is detected for longer than the 30 s vote lifetime) | **no** (`PENDING_VALIDATION`) |
+| Validation-only diagnostics (tracking, landmarks, a launch-memory check for operator packages) | yes | each ran in device sessions, descriptive only | not features; guarded validation runs only |
 | Identity continuity rule (proposed) | yes | ran in one session; not validated | **no** (validation runs only) |
 | Feature controls (pause and resume lanes) | yes | partly exercised; not validated | opt-in flag |
 | Chat about the live frame (local VLM) | yes | runtime checks passed in two earlier runs | **no**: admission, factual accuracy and combined face/VLM validation pending |
@@ -104,9 +115,10 @@ everything still unresolved; none of it is waived by this pre-release.
 
 ## Getting started
 
-### Portable development (verified on every push by CI)
+### Portable development (CI runs on every push)
 
-Python 3.10 or newer. No camera, GPU or model is needed.
+Python 3.10 or newer. No camera, GPU or model is needed. The unreleased commits after `65df7f3` have not been pushed,
+so they have not run in CI.
 
 ```bash
 git clone --branch v2.0.0-alpha.1 https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance.git
