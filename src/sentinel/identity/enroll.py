@@ -29,11 +29,19 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .gallery import CONSENT_SCOPE, GalleryDocument, GalleryIdentity, GalleryNotVerified, IdentityStore, new_identity_id
+from .gallery import (
+    CONSENT_SCOPE,
+    GalleryDocument,
+    GalleryIdentity,
+    GalleryNotVerified,
+    IdentityStore,
+    check_consent_date,
+    new_identity_id,
+)
 from .matching import MAX_PROTOTYPES
 from .vault import Secret, VaultError
 
@@ -66,7 +74,7 @@ def enroll(
     utc_now: Callable[[], datetime] = lambda: datetime.now(timezone.utc).replace(microsecond=0),
     new_id: Callable[[set[str]], str] = new_identity_id,
 ) -> dict[str, Any]:
-    date.fromisoformat(consent_date)  # ValueError for an invalid date
+    check_consent_date(consent_date)  # ValueError unless YYYY-MM-DD, the form the gallery stores
     store.ensure_directory()
     entries = store.enrollment_folder(folder)
     photos = [path for path, _ in entries]

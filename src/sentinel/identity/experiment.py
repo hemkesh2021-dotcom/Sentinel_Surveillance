@@ -31,11 +31,18 @@ import math
 from array import array
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .gallery import CONSENT_SCOPE, GalleryDocument, GalleryIdentity, GalleryNotVerified, IdentityStore
+from .gallery import (
+    CONSENT_SCOPE,
+    GalleryDocument,
+    GalleryIdentity,
+    GalleryNotVerified,
+    IdentityStore,
+    check_consent_date,
+)
 from .matching import MAX_PROTOTYPES, Enrollment, best_match
 from .vault import Secret, VaultError
 
@@ -144,7 +151,7 @@ class Capture:
     finished: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
-        date.fromisoformat(self.consent_date)  # ValueError for an invalid date
+        check_consent_date(self.consent_date)  # ValueError unless YYYY-MM-DD, before anything is collected
         if len(self.original.identities) != 1:
             raise ExperimentRefused("face_capture_needs_one_identity")
         if self.store.exists():
@@ -164,7 +171,8 @@ class Capture:
         self._embeddings.append(array("d", embedding))
 
     def finish(self) -> dict[str, Any]:
-        """Select, check and write once; the report (numbers and fixed labels only). The embeddings are discarded."""
+        """Select, check and write once; the report (numbers and fixed labels only). The embeddings are discarded.
+        Never raises: anything unexpected is refused as ``capture_write_failed``, with nothing written."""
         if self.finished is not None:
             return self.finished
         report: dict[str, Any] = {"identity": "capture", "written": False, "refused": None,
@@ -210,6 +218,9 @@ class Capture:
                 report["refused"] = "capture_write_failed"
                 return self._end(report)
             report.update(written=True, verified=True)
+            return self._end(report)
+        except Exception:  # noqa: BLE001 - it runs in the runtime's stop: refused there, never raised into it
+            report.update(written=False, verified=False, refused="capture_write_failed")
             return self._end(report)
         finally:
             self._times.clear()

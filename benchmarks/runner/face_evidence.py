@@ -203,7 +203,9 @@ RELEASE_COMPONENTS = vocab("scene", "detector", "face")  # memory_policy.RELEASE
 RELEASE_ROLES = vocab("llm", "mmproj", "engine", "facenet512_weights.h5", "face_detection_yunet_2023mar.onnx")
 STOPPED_PARTS = vocab("capture", "face_worker", "scene_server", "scene_worker", "outbox", "status_page",
                       "snapshots", "live_view",  # only with --snapshots and --live-preview (D70, D75)
-                      "control_key_removed")  # D99, only with --feature-controls
+                      "control_key_removed",  # D99, only with --feature-controls
+                      # demo_runtime.SHUTDOWN_STEPS: only as false, when that shutdown step raised
+                      "status", "face_capture", "tracking_summary", "flush")
 CHANNELS = vocab("telegram")
 GUARD_STATUS = Either((vocab("duration_stop", "child_exited", "cleanup_failed", "forced_stop", "guard_stop",
                              "ready_timeout", "operator_interrupt", "readiness_refused"), template(r"refused:(.+)")))

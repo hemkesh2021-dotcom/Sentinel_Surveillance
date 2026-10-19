@@ -14,7 +14,6 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
-from datetime import date
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -684,6 +683,7 @@ def _identity(config: SentinelConfig, args: argparse.Namespace, face_backend: Ca
               identity_store: Callable[[Path], Any], out: TextIO) -> int:
     """``sentinel identity``: JSON on stdout (opaque IDs, counts and labels); errors as one label on stderr."""
     from .identity.enroll import EnrollmentRefused, enroll
+    from .identity.gallery import check_consent_date
     from .identity.legacy_deepface import FaceBackendError
 
     store = identity_store(args.identity_dir.expanduser())
@@ -701,7 +701,7 @@ def _identity(config: SentinelConfig, args: argparse.Namespace, face_backend: Ca
                       file=sys.stderr)
                 return 1
             try:
-                date.fromisoformat(args.consent_date)
+                check_consent_date(args.consent_date)  # the gallery's own form, before any passphrase or model
             except ValueError:
                 print("identity: consent_date_invalid (use YYYY-MM-DD)", file=sys.stderr)
                 return 1

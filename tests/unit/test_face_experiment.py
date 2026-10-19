@@ -208,6 +208,22 @@ def test_a_capture_whose_write_fails_after_sealing_leaves_no_gallery_to_open(tmp
         open_shadow(IdentityStore(directory, sealer), SECRET, ORIGINAL)
 
 
+@pytest.mark.parametrize("text", ["20261019", "2026-W42-1", "2026-10-19\n", "2026-02-30", "14 October"])
+def test_a_capture_takes_only_the_gallerys_own_date_form_before_it_collects_anything(tmp_path, sealer, text) -> None:
+    # date.fromisoformat also takes the basic and week forms on Python 3.11+; the gallery stores YYYY-MM-DD only.
+    with pytest.raises(ValueError):
+        capture(tmp_path, sealer, consent_date=text)
+
+
+def test_a_capture_that_cannot_build_its_gallery_at_the_stop_is_refused_never_raised(tmp_path, sealer) -> None:
+    made = capture(tmp_path, sealer)
+    feed(made)
+    made.consent_date = "20261019"  # as the start once let through: the gallery's own validation refuses it
+    report = made.finish()
+    assert (report["written"], report["refused"], report["verified"]) == (False, "capture_write_failed", False)
+    assert made.kept == 0 and made.finish() is report and not made.store.exists()  # discarded, ended once
+
+
 # ---------------------------------------------------------------- the working gallery, compared read only
 
 

@@ -178,6 +178,20 @@ def test_enrollment_needs_explicit_consent_and_a_valid_date(store, tmp_path, mon
     assert not store.exists() and len(list(folder.iterdir())) == 2
 
 
+@pytest.mark.parametrize("text", ["20261019", "2026-W42-1", "2026-10-19\n", "2026-02-30"])
+def test_enrollment_takes_only_the_gallerys_own_date_form_before_the_model_loads(
+        store, tmp_path, monkeypatch, capsys, text) -> None:
+    # date.fromisoformat also takes the basic and week forms on Python 3.11+; the gallery stores YYYY-MM-DD only.
+    folder = photos(store, "a:1", "a:2")
+    assert call(store, tmp_path, monkeypatch, "enroll", str(folder), "--consent-confirmed",
+                "--consent-date", text) == 1
+    assert "consent_date_invalid" in capsys.readouterr().err
+    pipeline = Pipeline()
+    with pytest.raises(ValueError):
+        run(store, folder, consent_date=text, pipeline=pipeline)
+    assert pipeline.loads == 0 and not store.exists() and len(list(folder.iterdir())) == 2
+
+
 def test_the_commands_enroll_list_revoke_and_purge_without_names(store, tmp_path, monkeypatch, capsys) -> None:
     folder = photos(store, "a:1", "a:2")
     assert call(store, tmp_path, monkeypatch, "enroll", str(folder), "--consent-confirmed",

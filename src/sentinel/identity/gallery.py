@@ -34,6 +34,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import secrets
 import stat
 from collections.abc import Callable
@@ -73,6 +74,18 @@ Version = Annotated[str, StringConstraints(min_length=1, max_length=40, pattern=
 Name = Annotated[str, StringConstraints(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")]
 IdentityId = Annotated[str, StringConstraints(pattern=r"^idn-[0-9a-f]{12}$")]
 ConsentDate = Annotated[str, StringConstraints(pattern=r"^\d{4}-\d{2}-\d{2}$")]
+CONSENT_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")  # ASCII digits only: never wider than ConsentDate
+
+
+def check_consent_date(text: object) -> str:
+    """``text`` if it is a calendar date written YYYY-MM-DD, the one form a gallery stores (ConsentDate and
+    GalleryIdentity's check); ValueError otherwise. Every entry point checks with this before anything is loaded or
+    collected: ``date.fromisoformat`` alone also takes 20261019 and 2026-W42-1 on Python 3.11+, which the gallery
+    would refuse only when it is finally written."""
+    if not isinstance(text, str) or CONSENT_DATE.fullmatch(text) is None:
+        raise ValueError("consent date must be YYYY-MM-DD")
+    date.fromisoformat(text)  # a real calendar date: ValueError for 2026-02-30
+    return text
 
 
 class FaceCompatibility(Contract):

@@ -672,6 +672,9 @@ def _candidate(face_setup, **kwargs):
     (dict(face_extra={"shadow_dir": "SELF"}), "face_experiment_same_gallery"),
     (dict(face_extra={"capture_dir": WORK}), "face_capture_consent_date"),
     (dict(face_extra={"capture_dir": WORK, "capture_consent_date": "14 October"}), "face_capture_consent_date"),
+    # Accepted by date.fromisoformat on Python 3.11+, never by the gallery: refused before the capture collects.
+    (dict(face_extra={"capture_dir": WORK, "capture_consent_date": "20261019"}), "face_capture_consent_date"),
+    (dict(face_extra={"capture_dir": WORK, "capture_consent_date": "2026-W42-1"}), "face_capture_consent_date"),
     (dict(face_extra={"shadow_dir": WORK}, stores={WORK: Store(None)}), "face_shadow_missing"),
     (dict(face_extra={"shadow_dir": WORK}, stores={WORK: Store(GALLERY.model_copy(update={
         "compatibility": COMPAT.model_copy(update={"numpy_version": "2.3.0"})}))}),
@@ -793,6 +796,24 @@ def test_a_capture_run_offers_only_the_one_persons_compared_faces_and_writes_onc
     (identity,) = store.load(SECRET).identities
     assert identity.identity_id == "idn-00000000000a" and len(identity.prototypes) == CAPTURE_SEGMENTS
     assert "embedding" not in json.dumps(record) and capture.kept == 0
+
+
+def test_a_capture_that_raises_at_the_stop_is_reported_and_the_rest_of_the_stop_still_runs(tmp_path) -> None:
+    class Raising:  # a capture whose write raises: Capture.finish refuses instead, so this is the backstop
+        def offer(self, frame_ns, embedding) -> None:
+            pass
+
+        def finish(self):
+            raise RuntimeError("synthetic")
+
+    loop = Loop(tmp_path, capture=Raising())
+    for _ in range(20):
+        loop.frame()
+    result = loop.close()
+    assert result["stopped"]["face_capture"] is False and result["all_stopped"] is False
+    assert result["stopped"]["capture"] is True and result["stopped"]["face_worker"] is True
+    assert loop.runtime.snapshot()["runtime"]["state"] == "stopped"
+    assert not [r for r in loop.runtime.drain_identity_records() if r["identity"] == "capture"]
 
 
 def test_the_experiment_flags_need_the_candidate_and_go_one_at_a_time(tmp_path, monkeypatch, capsys) -> None:

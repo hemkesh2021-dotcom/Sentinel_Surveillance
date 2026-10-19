@@ -98,7 +98,7 @@ import hashlib
 import threading
 import time
 from collections import Counter, OrderedDict, deque
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -122,7 +122,7 @@ from .features import APPLIED, FEATURES, REFUSED, UNCHANGED, Change, FeatureCont
 from .alerts.telegram import NotifierUnavailable, TelegramNotifier
 from .config import CaptureConfig, NotificationsConfig, SentinelConfig
 from .contracts import FrameKey, FrameRef, StreamIdentity, TrackStatus
-from .identity.gallery import GalleryDocument
+from .identity.gallery import GalleryDocument, check_consent_date
 from .identity.association import AssociationGeometry
 from .identity.comparison import ComparisonPolicy, FullScaleComparator
 from .identity.experiment import Capture as ExperimentCapture
@@ -201,6 +201,8 @@ PENDING_DURABILITY = (
 RECORD_RETRY_NS = NS_PER_SECOND
 RATE_WINDOW_NS = 10 * NS_PER_SECOND
 FACE_STOP_TIMEOUT_S = 2.0  # a DeepFace call cannot be interrupted; p99 989 ms in the replay profile
+# Shutdown steps with no part of their own; each appears in "stopped" (as false) only when it raised.
+SHUTDOWN_STEPS = ("status", "face_capture", "tracking_summary", "flush")
 MAX_IDENTITY_RECORDS = 10_000  # identity records (ticks, results, transitions) per run; more are counted, not kept
 MAX_PINNED_SNAPSHOT_FRAMES = 4  # distinct frames whose images wait with unrecorded observations (D70)
 MAX_FACE_ROWS = 8  # D95: people listed with their recognition state on the status page; more are counted, not listed
@@ -502,40 +504,67 @@ class DemoRuntime:
             self.step()
 
     def shutdown(self) -> dict[str, Any]:
-        """Stop what this runtime started, each within its own bound; returns what stopped."""
+        """Stop what this runtime started, each within its own bound; returns what stopped.
+
+        Every step runs even when an earlier one raised. A step that raises counts as not stopped: under its part's
+        name, or, for a step with no part of its own, under one of SHUTDOWN_STEPS (only then present). So
+        ``all_stopped`` is false, and the rest of the stop (the final flush and the outbox among it) still happens."""
+        failed: list[str] = []
+
+        def attempt(part: str, action: Callable[[], Any], default: Any = None) -> Any:
+            try:
+                return action()
+            except Exception:  # noqa: BLE001 - one part that fails must not skip the rest of the stop
+                failed.append(part)
+                return default
+
+        def record() -> dict[str, Any]:
+            stopped.update(dict.fromkeys(failed, False))  # a part that raised, whatever a later call of it returned
+            return {"stopped": stopped, "all_stopped": all(stopped.values()),
+                    "signals_not_recorded": len(self._pending) + self.counters["signals_dropped"]}
+
         self._state = RuntimeState.STOPPING
-        self._refresh_status(force=True)
+        attempt("status", lambda: self._refresh_status(force=True))
         capture = self._config.capture
-        stopped: dict[str, bool] = {"capture": self._capture.stop(capture.open_timeout_s + capture.read_timeout_s + 1.0)}
-        if self._face is not None:
-            stopped["face_worker"] = self._face.worker.stop(FACE_STOP_TIMEOUT_S)
-            if self._face.capture is not None:  # D91: after the worker stops (a result in flight is not applied,
-                # as in every run); the working gallery is written or refused once, and its record is numbers only
-                self._keep_record({**self._face.capture.finish(), "schema": self._identity_schema})
+        stopped: dict[str, bool] = {"capture": attempt(
+            "capture", lambda: self._capture.stop(capture.open_timeout_s + capture.read_timeout_s + 1.0), False)}
+        face = self._face
+        if face is not None:
+            stopped["face_worker"] = attempt("face_worker", lambda: face.worker.stop(FACE_STOP_TIMEOUT_S), False)
+            experiment = face.capture
+            if experiment is not None:  # D91: after the worker stops (a result in flight is not applied, as in every
+                # run); the working gallery is written or refused once, and its record is numbers only
+                attempt("face_capture",
+                        lambda: self._keep_record({**experiment.finish(), "schema": self._identity_schema}))
         if self._tracking is not None:  # the diagnostic's summary: what was kept, dropped and shortened
-            self._identity_records.append(summary_record(
+            attempt("tracking_summary", lambda: self._identity_records.append(summary_record(
                 self.counters["tracking_records_kept"], self.counters["tracking_records_dropped"],
                 self._tracking_bytes, self.counters["tracking_records_truncated"], self._tracking_max_line,
-                self.counters["frames_processed"], dict(self._tracking_problems), self._tracking))
-        if self._scene is not None:
-            self._scene.analyzer.stop(0.0)  # drop a waiting job; a running request ends when the server goes
-            if self._scene.server is not None:
-                stopped["scene_server"] = self._scene.server.stop(10.0)
-            stopped["scene_worker"] = self._scene.analyzer.stop(self._config.scene_server.request_timeout_s + 1.0)
-        if self._preview is not None:  # D75: its encoder thread, if a viewer started it; waiting requests are answered
-            stopped["live_view"] = self._preview.close(1.0)
-        self._flush(force=True)  # last chance for observations that are still waiting
-        if self._snapshots is not None:  # saves what is queued, including incidents the flush just created
-            stopped["snapshots"] = self._snapshots.stop(SNAPSHOT_STOP_TIMEOUT_S)
-        if self._outbox is not None:
-            stopped["outbox"] = self._outbox.stop(self._config.notifications.request_timeout_s + 2.0)
-        self._shutdown = {
-            "stopped": stopped,
-            "all_stopped": all(stopped.values()),
-            "signals_not_recorded": len(self._pending) + self.counters["signals_dropped"],
-        }
+                self.counters["frames_processed"], dict(self._tracking_problems), self._tracking)))
+        scene = self._scene
+        if scene is not None:
+            # Drop a waiting job; a running request ends when the server goes.
+            attempt("scene_worker", lambda: scene.analyzer.stop(0.0))
+            server = scene.server
+            if server is not None:
+                stopped["scene_server"] = attempt("scene_server", lambda: server.stop(10.0), False)
+            stopped["scene_worker"] = attempt(
+                "scene_worker", lambda: scene.analyzer.stop(self._config.scene_server.request_timeout_s + 1.0), False)
+        preview = self._preview
+        if preview is not None:  # D75: its encoder thread, if a viewer started it; waiting requests are answered
+            stopped["live_view"] = attempt("live_view", lambda: preview.close(1.0), False)
+        attempt("flush", lambda: self._flush(force=True))  # last chance for observations that are still waiting
+        snapshots = self._snapshots
+        if snapshots is not None:  # saves what is queued, including incidents the flush just created
+            stopped["snapshots"] = attempt("snapshots", lambda: snapshots.stop(SNAPSHOT_STOP_TIMEOUT_S), False)
+        outbox = self._outbox
+        if outbox is not None:
+            stopped["outbox"] = attempt(
+                "outbox", lambda: outbox.stop(self._config.notifications.request_timeout_s + 2.0), False)
+        self._shutdown = record()
         self._state = RuntimeState.STOPPED
-        self._refresh_status(force=True)
+        attempt("status", lambda: self._refresh_status(force=True))
+        self._shutdown = record()  # again, in case that last refresh failed
         return dict(self._shutdown)
 
     # ------------------------------------------------------------ one step
@@ -1433,7 +1462,7 @@ def _experiment_options(face: FaceOptions) -> None:
         raise StartupRefused("face_experiment_same_gallery: the working gallery is never the original's directory")
     if face.capture_dir is not None:
         try:
-            date.fromisoformat(face.capture_consent_date or "")
+            check_consent_date(face.capture_consent_date)  # the gallery's own form, before the capture collects
         except ValueError:
             raise StartupRefused("face_capture_consent_date: the enrolled person's consent date (YYYY-MM-DD) is "
                                  "needed for a capture") from None

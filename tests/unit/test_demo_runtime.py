@@ -589,6 +589,35 @@ def test_shutdown_records_observations_that_were_still_waiting(tmp_path) -> None
     assert len(h.outbox_rows()) == 1
 
 
+def test_a_part_that_raises_while_stopping_is_reported_and_every_later_step_still_runs(tmp_path) -> None:
+    h = Harness(tmp_path, flaky={"before": 1})
+    h.runtime.start()
+    for _ in range(6):
+        h.frame()
+    assert h.outbox_rows() == []  # a signal still waits to be recorded
+
+    def broken(timeout_s: float) -> bool:
+        raise RuntimeError("synthetic")
+
+    h.capture.stop = broken  # the first step of the stop
+    result = h.runtime.shutdown()
+    assert result["stopped"] == {"capture": False, "outbox": True} and result["all_stopped"] is False
+    assert result["signals_not_recorded"] == 0 and len(h.outbox_rows()) == 1  # the final flush still ran
+    assert h.outbox.status()["state"] == "stopped" and h.runtime.snapshot()["runtime"]["state"] == "stopped"
+
+
+def test_the_evidence_profile_names_every_shutdown_step_that_can_be_reported(tmp_path, monkeypatch) -> None:
+    from sentinel.demo_runtime import SHUTDOWN_STEPS
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "benchmarks/runner"))
+    import face_evidence
+
+    stopped = {"capture": True, **dict.fromkeys(SHUTDOWN_STEPS, False)}
+    (tmp_path / "run.jsonl").write_text(json.dumps({"run": "stopped", "shutdown": {
+        "stopped": stopped, "all_stopped": False, "signals_not_recorded": 0}, "database_closed": True}) + "\n")
+    assert face_evidence.read(tmp_path / "run.jsonl", "f2").nonconforming == []  # a failed step is the reason shown
+
+
 class ThreadedSource:
     """A VideoSource for the real CaptureWorker: a few frames per connection, then the stream ends."""
 
