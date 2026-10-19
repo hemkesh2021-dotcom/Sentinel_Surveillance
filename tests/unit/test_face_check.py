@@ -1918,7 +1918,8 @@ def test_the_vocabularies_are_the_codes(mods) -> None:
     assert set(fe.IDENTITY_STATES) == {e.value for e in state.IdentityState}
     assert set(fe.OWNERSHIP) == {e.value for e in Ownership}
     assert set(fe.VOTE_NOTES) == set(state._NOTE_LABELS)
-    assert set(fe.VOTE_LABELS) == set(state._NOTE_LABELS.values()) | {state.BEFORE_BREAK}  # D97
+    assert set(fe.VOTE_LABELS) == set(state._NOTE_LABELS.values()) | {state.BEFORE_BREAK,  # D97
+                                                                      state.BEFORE_EXPIRY}  # review A, finding 6
     from sentinel.identity.continuity import NOT_CARRIED, Cause, ContinuityPolicy
     assert set(fe.CONTINUITY_CAUSES) == {c.value for c in Cause} and set(fe.NOT_CARRIED) == set(NOT_CARRIED.values())
     assert set(fe.CONTINUITY_POLICY) == set(ContinuityPolicy().numbers())
