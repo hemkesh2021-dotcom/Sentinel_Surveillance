@@ -9,10 +9,21 @@ from __future__ import annotations
 
 import re
 
+
+def _userinfo(match: re.Match[str]) -> str:
+    # A password may hold an unencoded '/' or '@', so everything up to the last
+    # '@' of the token after the scheme counts as userinfo. A path or query that
+    # holds an '@' is hidden too: the safe side. The token is consumed whole, so
+    # the scan stays linear.
+    _, at, rest = match.group(1).rpartition("@")
+    return f"://<redacted>@{rest}" if at else match.group(0)
+
+
 _PATTERNS = (
-    (re.compile(r"(?<=://)[^/@\s]+@"), "<redacted>@"),  # URL userinfo
+    (re.compile(r"://(\S+)"), _userinfo),  # URL userinfo
     (re.compile(r"\bbot\d+:[A-Za-z0-9_-]+"), "bot<redacted>"),  # Telegram bot token in a path
-    (re.compile(r"(?i)\b(token|password|passwd|secret|api[_-]?key)=[^&\s]+"), r"\1=<redacted>"),
+    # Any key ending in one of these names: access_token, client_secret, db_password...
+    (re.compile(r"(?i)(token|password|passwd|secret|api[_-]?key)=[^&\s]+"), r"\1=<redacted>"),
 )
 
 

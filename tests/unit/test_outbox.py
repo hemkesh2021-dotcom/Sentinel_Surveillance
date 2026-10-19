@@ -385,3 +385,15 @@ def test_a_notifier_bug_does_not_stop_the_worker_and_secrets_are_redacted(db: Da
     stored = " ".join(str(v) for r in db.connection.execute("SELECT * FROM outbox") for v in r)
     stored += " ".join(str(v) for r in db.connection.execute("SELECT * FROM delivery_attempts") for v in r)
     assert "FAKE-test-token" not in stored and "notifier error: RuntimeError" in stored and "bot<redacted>" in stored
+
+
+def test_stored_delivery_details_redact_prefixed_keys_and_awkward_userinfo(db: Database, clock: FakeClock) -> None:
+    open_incident(db, clock, signal(1))
+    leaky = DeliveryResult(DeliveryStatus.RETRY,
+                           "POST https://relay:pa/s@s@192.0.2.7/x?client_secret=cl1ent&access_token=acc3ss failed")
+    assert worker(db, clock, Scripted("telegram", leaky)).run_once() == [(1, "retry")]
+    stored = " ".join(str(v) for r in db.connection.execute("SELECT * FROM outbox") for v in r)
+    stored += " ".join(str(v) for r in db.connection.execute("SELECT * FROM delivery_attempts") for v in r)
+    assert "https://<redacted>@192.0.2.7/x?client_secret=<redacted>&access_token=<redacted>" in stored
+    for secret in ("relay", "pa/s", "cl1ent", "acc3ss"):
+        assert secret not in stored

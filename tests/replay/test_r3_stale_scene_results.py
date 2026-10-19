@@ -273,6 +273,19 @@ def test_adapter_submit_failure_is_error_evidence_and_frees_the_slot() -> None:
     assert lane.in_flight is None and lane.counters["submit_failed"] == 1
 
 
+def test_a_submit_failure_naming_a_prefixed_credential_or_odd_userinfo_is_redacted() -> None:
+    class Broken(StubAnalyzer):
+        def submit(self, job) -> None:
+            raise ConnectionError("POST http://u:p/4@ss@127.0.0.1:8080/v1?access_token=acc3ss refused")
+
+    clock = FakeClock()
+    lane = SceneLane(Broken(), clock, SETTINGS, id_prefix="job")
+    step = _one_frame(clock)
+    (evidence,) = lane.on_frame(step.frame, step.stream)
+    assert "http://<redacted>@127.0.0.1:8080/v1?access_token=<redacted> refused" in evidence.reason
+    assert "p/4" not in evidence.reason and "acc3ss" not in evidence.reason
+
+
 def test_enrichment_of_an_older_frame_cannot_overwrite_newer_scene_state() -> None:
     # A dwell rule may ask about the entry frame long after it: the answer is on
     # time and within TTL, but it is older than the scene state already shown.
