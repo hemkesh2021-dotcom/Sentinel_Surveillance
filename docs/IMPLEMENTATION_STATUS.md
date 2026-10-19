@@ -1,6 +1,18 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-19, session 95 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Local Python 3.12 validation of `df8d9bc` (local validation on the device, not CI): the portable workflow's three steps passed in a new isolated environment, `~/sentinel-validation/py312-df8d9bc/venv` (Python 3.12.3, aarch64).**
+Last updated 2026-10-19, session 96 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Review scope A's cloud findings 1-5 reproduced and fixed, each with regressions, on the maintainer's authorization (session 96 log).**
+- **The review:** `/ultrareview` of scope A (`~/sentinel-review/a-identity-df8d9bc`, left unchanged) returned 10 findings: 6 normal, 4 nits. Findings 1-5 are fixed here; 6-10 are not addressed.
+- **The fixes (code from `027c800`):**
+  1. redaction of prefixed credential keys and of URL userinfo holding `/` or `@` (`3dbc05f`, `2700240`);
+  2. enrollment and capture galleries committed only after read-back and audit (`19e7cbc`, follow-up `692f5f4`);
+  3. consent dates checked with the gallery's own rule before capture or enrollment, and a shutdown that keeps going past a failed step (`836a7a5`);
+  4. the face worker's `error:<class>` counters declared in the evidence profile (`925f3ac`);
+  5. `config/default.yaml` shipped at the documented `match_threshold` 0.70 (`8932461`).
+- **Tests at `925f3ac`:** the full portable suite gave 2,624 passed, 2 skipped (`torch`, `cv2`), 0 failed, both under the existing Python 3.10.14 `.venv` and under the isolated 3.12.3 environment; `config/default.yaml` valid under both. That is 46 more tests than at `df8d9bc`: 47 new, one replaced. Each fix's new tests failed on the unchanged code first. Commits `19e7cbc`, `836a7a5` and `8932461` do not pass alone: 13 capture-reading tests fail, fixed by `692f5f4`. Local runs, not CI.
+- **Not changed:** thresholds (only the shipped file's value brought to the code default), user configurations, F2 criteria and admission; nothing pushed, published or launched; no device session; no further review.
+- **Next (the maintainer):** review the seven commits; decide on findings 6-10 and the gaps listed in the session 96 log; CI still needs a push.
+
+Session 95's summary: **Local Python 3.12 validation of `df8d9bc` (local validation on the device, not CI): the portable workflow's three steps passed in a new isolated environment, `~/sentinel-validation/py312-df8d9bc/venv` (Python 3.12.3, aarch64).**
 - **The install:** the editable install with the pinned dependencies, exit 0.
 - **pytest:** 2,578 passed, 0 failed, 2 skipped (`torch`, `cv2` absent), with warnings as errors.
 - **The configuration:** `config/default.yaml` valid.
@@ -505,6 +517,9 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 ## Next concrete task
 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
+   - **Done (session 96):** review scope A's findings 1-5 fixed with regressions, seven local commits after `027c800` (session 96 log).
+   - **Maintainer (session 96):** review the commits; decide whether findings 6-10 and the listed gaps get fixes; CI still needs a push.
+   - **Claude, next (session 96):** on request only, findings 6-10 (6 and 7 change when face votes count; 8 is the enrollment CLI's error boundary; 9 and 10 are clean-ups).
    - **Done (session 95):** the local Python 3.12 validation of `df8d9bc` (passed; local, not CI) recorded with its remaining gaps (session 95 log).
    - **Maintainer (session 95):** CI still needs a push (your decision); check the scope-A review preparation.
    - **Done (session 95, part 2):** review scope A prepared in `~/sentinel-review/a-identity-df8d9bc` (base `604e5a7`, target `e717e07`; 32 files, 7,745 lines); nothing launched or uploaded.
@@ -843,6 +858,105 @@ Notes on partial and in-progress rows:
   - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Session 50: Step 5 ran it on the device (camera, detector, scene server, Telegram; see the session 50 log). Not done: the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 96 log (Claude, 2026-10-19): review scope A's cloud findings 1-5 reproduced and fixed with regressions (redaction; enrollment and capture galleries committed after read-back and audit; consent dates checked before capture and a shutdown that survives a failed step; the worker's error counters in the evidence profile; the shipped match threshold); findings 6-10 not addressed; nothing pushed
+
+From `027c800` (clean), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`; code identical to `df8d9bc`.
+- **The review:** the maintainer ran `/ultrareview` in `~/sentinel-review/a-identity-df8d9bc`. That copy's commits are `fd3933a` (base) and `3acb419` (target), not the `604e5a7` and `e717e07` recorded in session 95 (not investigated). It returned 10 findings, 6 normal and 4 nits.
+- **The authorization:** fix findings 1-5 here, each reproduced first with a regression test, after checking the original findings and their callers. Leave the review copy unchanged (it is: clean, same two commits), modify no real enrollment data, tune no threshold, rewrite no user configuration, change neither F2 nor admission, and push, publish or launch nothing.
+
+Each finding below was reproduced by its new tests failing on the unchanged code before the fix:
+- in the worktree before editing (findings 1, 2, 4 and 5);
+- or against `git archive 027c800 src` in the scratchpad, with `PYTHONPATH` pointing there (the capture part of finding 2, and finding 3 under both interpreters).
+
+1. **Redaction (`src/sentinel/redaction.py`; `3dbc05f`, `2700240`).**
+   - **The defect:**
+     - The key pattern needed a word boundary, so `access_token=`, `auth_token=`, `refresh_token=`, `client_secret=` and `db_password=` passed unredacted.
+     - The userinfo pattern stopped at `/` and `@`, so `rtsp://admin:pa/ss@host/` was not redacted at all and `rtsp://admin:p@ss@host/` kept `ss@`.
+   - **Reproduced:** through two callers, the outbox's stored delivery detail and the scene lane's submit-failure evidence.
+   - **The fix:**
+     - Any key ending in `token`, `password`, `passwd`, `secret` or `api_key`/`apikey` is redacted, with its prefix kept.
+     - Everything up to the last `@` of the token after `://` is redacted as userinfo. A path or query holding an `@` is hidden too.
+     - Both scans are linear: the token is consumed whole. A naive `(?<=://)\S*@` did not finish within 180 s on the first 120,000 characters of the test's adversarial input (stopped); the new patterns take 0.055 s on all 400,000 (bound 2 s).
+   - **Tests:** `tests/unit/test_redaction.py` (new, 14 cases), one case each in `test_outbox.py` and `tests/replay/test_r3_stale_scene_results.py`.
+2. **Gallery and audit consistency (`identity/gallery.py`, `vault.py`, `enroll.py`, `experiment.py`; `19e7cbc`, `692f5f4`).**
+   - **The defect:** `enroll()` and `Capture.finish()` replaced `gallery.sealed` before the read-back and the audit. When either failed, the identity stayed enrolled with no audit line and the operator was told it had failed; a retry was refused as `close_to_enrolled_identity`. A failed capture left a sealed working gallery that `--face-shadow-gallery` would open.
+   - **Reproduced** for four failures, for a first and a second person, and for the capture:
+     - a read-back that differs;
+     - a sealer timeout on the read-back;
+     - an audit file with mode 0644;
+     - an audit write error, which also escaped the CLI as a raw `OSError`.
+   - **The fix: `IdentityStore.commit`.**
+     - It seals into `.gallery.sealed.staged`, decrypts it from there and compares it in full (`GalleryNotVerified`), then audits, then renames it over the gallery (`replace_private`, with the directory fsynced).
+     - A failure before the rename removes the staging file and leaves the gallery and the audit log byte-identical.
+     - Only a failed rename, or a stop between the audit and the rename, can leave an audit line for a change that did not take effect; never an identity without its line. A test pins that direction.
+     - `audit()` reports an `OSError` as `audit_failed:<class>`.
+     - `purge` also deletes a leftover staging file. The purge line's fields are unchanged, as the F1 profile requires.
+     - Labels kept: `enrollment_not_verified`, `capture_not_verified`, `capture_write_failed`.
+   - **Tests:** `tests/support/sealer_faults.py` (the real helper with one call made to fail), 11 new cases in `test_identity_enroll.py` (the old read-back test, which patched `store.load`, replaced), 3 in `test_face_experiment.py`. All use synthetic galleries in `tmp_path` with the real helper at n 2^14; no real enrollment data was read or written.
+   - **The follow-up `692f5f4`:** `test_face_check.py`'s in-memory `WorkStore` still had the old `save`, so 13 capture-reading tests failed. They were observed failing on the tree after `8932461` (with finding 4's change, not yet committed); they fail at `19e7cbc` and `836a7a5` by the same cause (not run separately). The double now has `commit`. Commits `19e7cbc`, `836a7a5` and `8932461` therefore do not pass the full suite; `925f3ac` does (see the verification; `692f5f4` was not run separately). Not amended, as instructed.
+3. **Consent dates and shutdown (`gallery.py`, `cli.py`, `demo_runtime.py`, `experiment.py`, `enroll.py`, `benchmarks/runner/face_evidence.py`; `836a7a5`).**
+   - **The defect:** on Python 3.11+ `date.fromisoformat` takes `20261019` and `2026-W42-1`, which the gallery's `ConsentDate` refuses. A capture run started with such a date collected faces for its whole length; `Capture.finish()` then raised a pydantic `ValidationError` out of `DemoRuntime.shutdown()`. That skipped the scene stop, the final flush, snapshots, the outbox and the CLI's own cleanup: the status page, the control key's removal and the database close.
+   - **Reproduced:** on 3.12, both forms passed the CLI, `enroll()`, `Capture()` and the runtime's start; on 3.10 and 3.12, any step raising in shutdown skipped every later step.
+   - **The fix:**
+     - `gallery.check_consent_date` (ASCII `YYYY-MM-DD` and a real calendar date) at all four entry points, so a bad date is refused before a passphrase, a model or a capture.
+     - `Capture.finish()` never raises; anything unexpected is refused as `capture_write_failed`.
+     - `DemoRuntime.shutdown()` runs every step even when one raised. The step counts as not stopped, under its part's name or under one of `SHUTDOWN_STEPS` (`status`, `face_capture`, `tracking_summary`, `flush`), present only as false, and `all_stopped` is then false.
+     - The profile's `STOPPED_PARTS` names those steps, so such a run reads as not stopped rather than as nonconforming evidence.
+   - **Tests:** `test_identity_enroll.py` (4), `test_face_experiment.py` (6), `test_face_runtime.py` (3), `test_demo_runtime.py` (2, one tying `SHUTDOWN_STEPS` to the profile).
+4. **The worker's error counters (`benchmarks/runner/face_evidence.py`; `925f3ac`).**
+   - **The defect:** after the first face-analysis error, every status file read as nonconforming, because `components.face.worker.counters` was a fixed vocabulary without `error:<class>`.
+   - **Reproduced:** through the runtime and `build_status` (a `FaceBackendError` and a `MemoryError`).
+   - **The fix:** a template `error:([A-Za-z0-9_]+)`, the class name being content, as for the comparison counters' `failed:` labels. The worker is unchanged.
+   - **Test:** `test_face_runtime.py` (1).
+5. **The shipped match threshold (`config/default.yaml`; `8932461`).**
+   - **Established:** the documented intended value is 0.70:
+     - the code default since `5f5cb36` (DeepFace 0.0.99's Facenet512 cosine distance 0.30; session 50: "That is the new `match_threshold` default"), uncalibrated;
+     - F2's checker pins `MATCH_THRESHOLD = 0.70` against it;
+     - every device package writes a configuration with no `identity` section, so every recorded device session ran at 0.70.
+
+     `default.yaml`'s 0.5 dates from `91369d3`, when the code default was 0.5.
+   - **The fix:** `default.yaml` now says 0.70 with that reasoning, and its `identity` section equals the code defaults exactly, checked as the `capture` and `scene_server` sections already are (`test_config.py`, 1).
+   - **Unchanged:** no threshold tuned. The only other configurations on the device that set it, the main checkout's and the review copy's `default.yaml`, are untouched.
+
+**Gaps and decisions left open:**
+1. Findings 6-10 are not addressed:
+   - 6: a late face result can vote for an expired track whose number returns;
+   - 7: a result from before recognition was switched off and on can vote;
+   - 8: `enrollment_photo`'s provider errors escape the CLI as tracebacks;
+   - 9: duplicated helpers;
+   - 10: four copies of YuNet's 0.9.
+2. `revoke()` still saves before it audits (the same class as finding 2, not in the finding).
+3. There is no lock against two concurrent enrollments. This was already the case; the staging file's name is shared.
+4. The redaction covers `key=value`, URL userinfo and bot tokens only. `Authorization: Bearer …`, JSON `"password": "…"` and keys such as `secret_key=` are not covered (outside the finding).
+5. A failed shutdown step is recorded as false, without its exception class.
+6. Not run: CI (nothing pushed), the `Dashboard checks` workflow, any device, camera or model session.
+
+### Verification: exact commands and results
+
+```
+cd ~/sentinel-worktrees/v2-ui; git status; git log --oneline -1   # clean, v2-ui-refresh at 027c800 before any edit
+T = PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m pytest -q -p no:cacheprovider   # Python 3.10.14, in the worktree
+O = git archive 027c800 src | tar -x -C <scratch>/orig   # the unchanged code, used as PYTHONPATH=<scratch>/orig/src for reproduction
+# Reproduction, each new test against the unchanged code before its fix:
+T tests/unit/test_redaction.py   # 8 failed, 6 passed (the prefixed keys; '/' or '@' in the userinfo)
+T tests/unit/test_outbox.py tests/replay/test_r3_stale_scene_results.py   # 2 failed: stored delivery detail, lane evidence
+T tests/unit/test_identity_enroll.py   # 10 failed (8 failure cases, the CLI's raw OSError, no staged_path)
+PYTHONPATH=<scratch>/orig/src ... -m pytest tests/unit/test_face_experiment.py -k write_fails_after   # 3 failed: gallery.sealed left
+PYTHONPATH=<scratch>/orig/src <3.10 and 3.12> -m pytest <the finding-3 tests>   # 3.10: 3 failed (finish, shutdown x2); 3.12: 9 failed (+ dates)
+T tests/unit/test_face_runtime.py -k analysis_failed_still_fits   # 1 failed: components.face.worker.counters.<key> nonconforming
+T tests/unit/test_config.py -k shipped_identity   # 1 failed: 0.5 == 0.7
+# After the fixes:
+T tests/unit/test_face_check.py tests/unit/test_guard_verdict.py tests/unit/test_alpha_check.py   # 13 failed at first (WorkStore); 349 passed after 692f5f4
+T   # the full portable suite at 925f3ac: 2624 passed, 2 skipped (torch, cv2) in 1297.35 s (17:17:41-17:39:21 UTC); exit 0
+PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m sentinel.cli config validate config/default.yaml   # valid; exit 0
+export VIRTUAL_ENV=~/sentinel-validation/py312-df8d9bc/venv PATH=~/sentinel-validation/py312-df8d9bc/venv/bin:$PATH
+python -m pytest --junitxml=<scratch>/py312-junit.xml   # Python 3.12.3 at 925f3ac: 2624 passed, 2 skipped (torch, cv2) in 1206.08 s (16:57:16-17:17:24 UTC); exit 0
+sentinel config validate config/default.yaml   # valid; exit 0
+git diff --check 027c800 HEAD   # clean
+git -C ~/sentinel-review/a-identity-df8d9bc status --short; git -C ~/sentinel-review/a-identity-df8d9bc log --oneline -2   # clean; 3acb419, fd3933a (unchanged)
+# Logs: ~/sentinel-validation/review-a-925f3ac/logs/ (py310-full.log, py312-full.log, py312-junit.xml, evidence-tests.log)
+```
 
 ## Session 95 log (Claude, 2026-10-19): local Python 3.12 validation of `df8d9bc` (local validation on the device, not CI): the portable workflow's three steps passed in a new isolated environment (2,578 passed, 2 skipped, 0 failed; `config/default.yaml` valid); the remaining coverage gaps listed; no code, F2 or admission change; nothing pushed
 
