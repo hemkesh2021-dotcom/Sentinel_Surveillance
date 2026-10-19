@@ -9,7 +9,13 @@ Last updated 2026-10-19, session 95 (Claude), on branch `v2-ui-refresh` (worktre
 
 No code, pin, F2 or admission change; nothing pushed.
 - **Tests:** as above (session 95 log; logs in `~/sentinel-validation/py312-df8d9bc/logs/`).
-- **Next (the maintainer):** check the identity-and-recognition review scope prepared next (session 95 log, part 2, when recorded); the other session-93 decisions stay open.
+- **Review scope A prepared locally (part 2):**
+  - `~/sentinel-review/a-identity-df8d9bc`: a standalone two-commit repository, base `604e5a7`, target `e717e07`;
+  - the diff: 32 files, 7,745 lines, under the 8,000-line limit;
+  - the upload check: no credential, enrollment material, sealed-run fixture or operational record.
+
+  Not launched.
+- **Next (the maintainer):** check the scope, its note and the upload check (session 95 log, part 2), then launch `/ultrareview review-base` from that directory if satisfied; the other session-93 decisions stay open.
 
 Session 94's summary: **On the maintainer's instruction the release documents now reflect sessions 86-93 (documents only).**
 - **`docs/ALPHA_CANDIDATE_NOTES.md`:**
@@ -501,7 +507,8 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
    - **Done (session 95):** the local Python 3.12 validation of `df8d9bc` (passed; local, not CI) recorded with its remaining gaps (session 95 log).
    - **Maintainer (session 95):** CI still needs a push (your decision); check the scope-A review preparation.
-   - **Claude, next (session 95):** prepare review scope A locally (on instruction), then stop for the maintainer's check.
+   - **Done (session 95, part 2):** review scope A prepared in `~/sentinel-review/a-identity-df8d9bc` (base `604e5a7`, target `e717e07`; 32 files, 7,745 lines); nothing launched or uploaded.
+   - **Claude, next (session 95):** on request only, adjust scope A after the maintainer's check, or prepare the next scope.
    - **The earlier text of this item, kept (session 94):**
    - **Done (session 94):** the release documents updated to sessions 86-93, the unmet face-plus-chat goal explicit (session 94 log).
    - **Maintainer (session 94):** review the documents; the open session-93 and session-92 decisions.
@@ -877,6 +884,41 @@ python -m pytest --junitxml=~/sentinel-validation/py312-df8d9bc/logs/pytest-juni
 sentinel config validate config/default.yaml   # valid; exit 0
 git status --porcelain --untracked-files=all   # empty before and after
 ```
+
+### Session 95, part 2: review scope A (identity and recognition) prepared locally; nothing launched or uploaded
+
+On the maintainer's instruction, only scope A was prepared, from this worktree at `df8d9bc`, for the maintainer to check before any launch.
+
+1. **The review directory:** `~/sentinel-review/a-identity-df8d9bc`, a new standalone Git repository (its own object database, no remote, no history).
+   - **Its two commits:**
+     - the base `review-base` (`604e5a73feb6779305d850d3e6e791994386d29a`, a root commit): the code tree without the scope's files;
+     - the target `review-a-identity` (`e717e07d163530056ec14a5aca793d1b63fee376`, checked out): adds the scope's files back with `REVIEW_SCOPE.md`.
+   - **Source:** the tree was taken with `git archive` from `df8d9bc`'s tracked files. All 212 files the copy shares with `df8d9bc` are byte-identical; `REVIEW_SCOPE.md` is the only addition.
+   - **Commits:** made with the source repository's author identity, passed per command (no Git configuration written); no attribution text.
+2. **The diff** (`review-base`..`review-a-identity`): 32 files, 7,745 lines (all additions) against the limit of 8,000 lines and 500 files, a margin of 255 lines.
+   - **Code (5,803 lines):** `src/sentinel/identity/` (all 14 files), `runtime.py`, `tracking/tracker.py`, `tracking/tracks.py`, `tracking/diagnostic.py`, `live_state.py`, `redaction.py`, `config.py`, `contracts.py`, `media/clock.py`.
+   - **Tests (1,860 lines):** `tests/unit/test_identity*.py` (6), `tests/unit/test_face_outcome.py`, `tests/replay/test_r1_face_identity.py`.
+   - **The note** (82 lines).
+   - **Against session 93's scope A:** the four track-probe tooling modules (`box_summary`, `multi_person`, `preview`, `probe`; 900 lines; not recognition) moved out to a later tooling scope; `contracts.py`, `media/clock.py` and the two face tests added. The other scopes need that adjustment when they are prepared.
+3. **Context (in both commits, not in the diff):**
+   - the callers `demo_runtime.py` (`assemble`, `FaceRuntime`, `face_admission`, `open_gallery`) and `cli.py` (the identity commands and `--face*` flags);
+   - the rest of `src/`, `benchmarks/runner/` (the readers of identity records and the guard's readiness), `config/default.yaml`, `pyproject.toml` and `CLAUDE.md`;
+   - the rest of the tests. The copy collects 2,144 tests on Python 3.12.3, with only the `torch` module skip.
+4. **Left out of the copy entirely (27 files):**
+   - `docs/` (7, the status record among them);
+   - the v1 prototype files, the two images and `LICENSE` (13);
+   - the three fixtures derived from sealed device runs and the five tests that read them or import their helpers (`test_face_check.py`, `test_guard_verdict.py`, `test_launch_memory.py`, `test_tracking_check.py`, `test_landmark_check.py`);
+   - the v1 `tests/test_dashboard.py`.
+5. **The upload check** (every object in the review repository: 2 commits, 213 blobs, 3.85 MB; values never printed):
+   - **Absent:** docs, the status record, local-only files, sealed-run fixtures and evidence files, images, models, databases, keys and `.env`. No binary, no embedding-like data, no key or token pattern.
+   - **Credentials:** none (the camera URL, password, host and its hash, the bot token, the chat ID: 0). The short user value occurs only in synthetic test URLs, with a placeholder password and a documentation-range address.
+   - **Enrollment:** the enrolled identity's ID and the original enrollment's file hashes: 0.
+   - **Residual details:**
+     - one sealed session's boot ID, inside the accepted resource-profile record in `src/sentinel/adapters.py`, published since 7 October;
+     - the device account name once, in a run hint in the torch-only test `tests/unit/test_tracking_diagnostic_installed.py` (unpublished);
+     - session names in code comments in 13 files;
+     - synthetic private-range addresses in three tests.
+6. **Proposed command (not run; the maintainer launches it):** start Claude Code in `~/sentinel-review/a-identity-df8d9bc`, with `review-a-identity` checked out, then `/ultrareview review-base` (the form the tool's refusal message gave for a base branch; `/code-review ultra` is its current name). Before confirming, check that the launch dialog shows 32 files and 7,745 lines.
 
 ## Session 94 log (Claude, 2026-10-19): the release documents updated to reflect sessions 86-93 (documents only); the face-plus-chat alpha goal kept explicit as unmet; F2 unvalidated; admission unchanged; no tests, review, upload, push or device session
 
