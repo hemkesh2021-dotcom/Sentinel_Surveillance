@@ -1,6 +1,23 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-19, session 97 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Review scope A's findings 6 and 7 reproduced through the runtime and fixed (`a2d4e96`, test follow-up `466cb58`; session 97 log).**
+Last updated 2026-10-20, session 98 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 96's gallery and audit consistency gaps reproduced and fixed: one gallery change at a time, audited before and after it (`d50d163`; session 98 log).**
+- **Reproduced on `cde3563`** with synthetic galleries only:
+  - Concurrent changes lost an enrollment, brought back a revoked or purged identity, or left an `enroll` line for a change that failed (through the shared staging file).
+  - Nothing excluded another process, and a capture overwrote a working gallery that had appeared after its check.
+  - `revoke()` removed an identity without an audit line when the audit failed.
+  - A failed rename left a completed `enroll` line.
+  - A short write left a torn audit line (and the enrollment went ahead); an unflushed line stayed in the log; and a torn last line was appended to.
+- **Fixed:**
+  - A change lock (`flock` on `.gallery.lock`) is held from reading the gallery to writing it: concurrent changes wait (up to 60 s) or are refused (`gallery_busy`).
+  - `commit` checks the gallery is still the one read (`gallery_changed`), then writes `<action>_started`, renames, then `<action>`. A failed rename adds `<action>_aborted`; a completed line that cannot be written undoes the change.
+  - `revoke` goes through `commit`, and `purge` runs between `purge_started` and `purge`.
+  - Audit lines are written whole or not at all, and a torn last line is refused (`audit_log_torn`).
+- **Not atomic across a crash:** a stop between a started line and its outcome leaves the started line alone, and only the gallery shows whether the change took effect (session 98 log, limitations).
+- **Tests at `d50d163`:** the full portable suite gave 2,649 passed, 2 skipped (`torch`, `cv2`), 0 failed, under the existing Python 3.10.14 `.venv` and then under the isolated 3.12.3 environment; `config/default.yaml` valid under both. That is 19 new tests; each reproduction failed on `cde3563` first. Local runs, not CI.
+- **Not changed:** existing galleries (no migration), thresholds, F2 criteria (F1 still counts `enroll` lines) and admission. The F1 audit profile also accepts the started and aborted actions. No real enrollment data touched; the review copy unchanged; nothing pushed, published or launched.
+- **Next (the maintainer):** review `d50d163`; findings 8-10 and session 96's other gaps stay open.
+
+Session 97's summary: **Review scope A's findings 6 and 7 reproduced through the runtime and fixed (`a2d4e96`, test follow-up `466cb58`; session 97 log).**
 - **Finding 6:** a late face result (within its 3 s bound) for a frame from before a track expired (1 s) voted for the track that came back with the same number, so one new match made it KNOWN. Votes now count only within the track's current life (`TrackTable.since`): such a person gets no vote (`before_expiry`). A track measured again only after expiring, with no step in between, now also starts a new life.
 - **Finding 7:** an analysis running across face recognition being turned off and on, or its result waiting until the step that turned it on, voted after the switch, so one new match made KNOWN. Results for frames from before recognition was last turned on are now ignored (`ignored_face_unavailable`). An off and an on queued together never switch (the later replaces the earlier), so that variant does not occur.
 - **Both violated documented rules** (`identity.state`'s "even if the tracker later reuses its ID"; D99's "on again every track starts unresolved"). On the unchanged code one new match after either boundary gave KNOWN; now two matches after the boundary are needed, and valid results count as before.
@@ -525,6 +542,9 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 ## Next concrete task
 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
+   - **Done (session 98):** session 96's gallery and audit consistency gaps reproduced and fixed (`d50d163`, session 98 log).
+   - **Maintainer (session 98):** review `d50d163`; decide whether to add reconciliation of a started line without an outcome (the crash limitation) and findings 8-10.
+   - **Claude, next (session 98):** none until asked.
    - **Done (session 97):** review scope A's findings 6 and 7 reproduced through the runtime and fixed (`a2d4e96`, follow-up `466cb58`; session 97 log).
    - **Maintainer (session 97):** review `a2d4e96` and `466cb58`; decide on findings 8-10 and session 96's gaps; CI still needs a push.
    - **Claude, next (session 97):** none until asked.
@@ -870,6 +890,100 @@ Notes on partial and in-progress rows:
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
 
+## Session 98 log (Claude, 2026-10-20): session 96's gallery and audit consistency gaps reproduced and fixed (a change lock, a base check, started and completed audit lines, whole-line audit writes); the crash limitation documented; nothing pushed
+
+From `cde3563` (clean), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`; the review copy clean at `fd3933a`/`3acb419`.
+
+**The authorization:**
+- **The task:** investigate session 96's gaps: `revoke()` saving before auditing; concurrent enrollment operations conflicting, including through the shared staging file; and the commit path auditing before renaming. Check the whole read-modify-write sequence, partial audit writes included, using synthetic temporary galleries only.
+- **The fixes:** reproduce reachable failures first, then make bounded fixes against lost updates and unaudited gallery changes. Distinguish an attempted change from a completed one in the audit, and document any remaining crash-consistency limitation without claiming atomicity.
+- **Preserve:** gallery compatibility, thresholds, F2 criteria and admission.
+- **Do not:** touch real enrollment data, push, publish, launch, or review again.
+
+**The sequences checked:**
+- **enroll:** consent date, photos and model work (no gallery access), then: read the gallery → check compatibility and closeness → new ID → seal, stage, verify → audit → rename → delete the supplied copies.
+- **revoke:** read → remove → write → audit.
+- **purge:** delete the gallery, the staging file and the inbox → audit.
+- **capture (D91):** an existence check at the end of the run → stage → verify → audit → rename, into a separate working directory.
+- **The CLI and the runtime** only read the gallery. It is replaced by rename, so a reader sees either version.
+
+1. **Reproduced on the unchanged code** (`cde3563`'s `src` exported to the scratchpad), all with synthetic galleries in `tmp_path` and the real sealing helper (n 2^14):
+   1. **Concurrent changes** (`test_a_change_made_while_an_enrollment_is_under_way_is_neither_lost_nor_undone`, 6 cases).
+      - **The set-up:** an enrollment, through its own store on the same directory as another process would, is held either after reading the gallery (a sealer whose first open waits) or just before its first audit line. Another enrollment, a revoke or a purge then runs.
+      - **The result:** in all 6 cases the gallery and the completed audit lines disagreed:
+        - the other enrollment was lost;
+        - a revoked identity came back;
+        - a purged gallery came back with the purged identity;
+        - an `enroll` line was left for an enrollment whose rename then failed (`save_failed:FileNotFoundError`), because the other change had taken the shared staging file;
+        - a purge during an enrollment also crashed that enrollment after its commit (its photo folder deleted).
+   2. **Another process:** a subprocess holding an `flock` on the directory's lock file did not stop an enrollment.
+   3. **A capture's working gallery** that appeared after the capture's last check was overwritten.
+   4. **Gap 1:** with the audit file not private, or its name a link, `revoke()` removed the identity from the gallery and then failed, leaving no audit line.
+   5. **Gap 3:** a failed rename left a completed `enroll` line for an enrollment that never took effect.
+   6. **Partial audit writes:**
+      - a write cut to half its bytes left a torn line, and the enrollment went ahead;
+      - a line whose `fsync` failed stayed in the log as an `enroll` line for a failed enrollment;
+      - a torn last line was appended to.
+2. **The fixes** (`d50d163`; `identity/gallery.py`, `enroll.py`, `experiment.py`, `vault.py`, the F1 audit profile):
+   - **The change lock** (`IdentityStore.locked`): an exclusive `flock` on `.gallery.lock` (empty, 0600, `O_NOFOLLOW`).
+     - **Who holds it:** enroll from reading the gallery to deleting the copies (a dry run only reads, without it), revoke, purge, `commit` and `audit`.
+     - **Waiting:** a change waits up to `lock_wait_s` (60 s; a commit's sealing takes seconds), then refuses (`gallery_busy`) having changed nothing.
+     - **Release:** the kernel releases it with the process, so no stale lock is left. It is re-entrant only within a thread; another thread waits as another process does.
+   - **The base check:** `read_for_update` gives the gallery and its sealed file's SHA-256; `commit(base=…)` refuses (`gallery_changed`) if the gallery is no longer that file (None: no gallery). A capture's base is None, so a working gallery that appeared is refused as `capture_target_has_gallery`.
+   - **Two audit lines:** `commit` writes `<action>_started` (fsynced) before the rename and `<action>` after it.
+     - A failed rename adds `<action>_aborted`.
+     - A completed line that cannot be written undoes the change from a hard-linked copy of the previous gallery (or removes a new one) and adds `<action>_aborted`.
+     - If the undo also fails, the change stays with only its started line: `committed_audit_incomplete`.
+     - `revoke` goes through `commit`. `purge` runs under the lock between `purge_started` and `purge`, and also removes a leftover previous file.
+     - So a completed line is only ever written for a change in effect, and the gallery never changes without a started line before it.
+   - **Whole lines:** `audit()` loops until the line is written, then fsyncs. A short or failed write, or a failed fsync, is cut back to the log's previous length (`audit_failed:<class>`). A log whose last byte is not a newline is refused (`audit_log_torn`).
+   - **Readers:** F1 counts `action == "enroll"`, so it is unchanged; the F1 audit profile accepts `enroll_started`, `enroll_aborted`, `revoke_started`, `revoke_aborted` and `purge_started`. Existing galleries and audit logs need no change.
+3. **Regressions:** 19 new tests (`test_identity_enroll.py` 18, `test_face_experiment.py` 1). Five existing tests changed for the new lines and the lock file:
+   - the basic enrollment test, the revoke-and-purge test and the capture write test expect the started lines;
+   - the capture failure test allows the empty lock file;
+   - the failed-rename test (renamed) expects started and aborted lines, where it had pinned the old ordering.
+
+   The 10 concurrency tests passed 10 of 10 repeated runs.
+4. **One regression while fixing:** `load()` read the gallery before checking the directory, so a non-private directory reported `file_missing` instead of `identity_dir_not_private` (`test_the_identity_directory_must_be_private`). The directory is checked first again.
+
+**Limitations, explicitly (not claimed atomic):**
+1. **A crash or power loss** between a started line and its outcome leaves the started line alone:
+   - the gallery is unchanged if the stop came before the rename, changed if after;
+   - only the gallery, not the log, says which;
+   - nothing reconciles this automatically: a later change does not add the missing outcome.
+2. **The staging and previous files** (sealed embeddings) can be left by such a stop until the next change or purge removes them.
+3. **A torn last audit line** (only a stop during an append) stops every change, purge included, until an operator removes or completes it. Deleting the files by hand remains possible.
+4. **Best-effort steps:** the directory fsync after a rename, and the aborted line, which a failing audit log cannot record. A started line with neither outcome then means "not completed, unknown whether undone"; the gallery says.
+5. **`committed_audit_incomplete`** (the completed line and the undo both failed) leaves the change in effect with only its started line. The command says so, and the photo copies are not deleted.
+6. **Where the lock holds:** only among processes that use this code on the same local filesystem (`flock`; not NFS). `save()` stays an unlocked, unaudited write for setting up galleries in tests.
+7. **The runtime and `list`** read without the lock, which rename makes safe; a reader may see the version from before a change in progress.
+8. **Purge's deletions cannot be undone:** a failure part way leaves `purge_started` without `purge`.
+
+**Unchanged:** thresholds, F2 criteria, admission, the gallery format and compatibility record, the review copy, and any real enrollment data.
+
+### Verification: exact commands and results
+
+```
+T = PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m pytest -q -p no:cacheprovider   # Python 3.10.14, in the worktree
+git archive cde3563 src | tar -x -C <scratch>/orig
+PYTHONPATH=<scratch>/orig/src ... -m pytest tests/unit/test_identity_enroll.py   # unchanged code: 17 failed, 28 passed, 1 error (the purge-during-enrollment thread crash); the concurrency, cross-process, revoke, rename, short-write and torn-line tests fail; the rest are new behaviour or API
+PYTHONPATH=<scratch>/orig/src ... tests/unit/test_identity_enroll.py -k flushed   # unchanged code: 1 failed (an unflushed line kept)
+PYTHONPATH=<scratch>/orig/src ... tests/unit/test_face_experiment.py -k appears_after   # unchanged code: 1 failed (written over the gallery that appeared)
+T tests/unit/test_identity_enroll.py tests/unit/test_identity_gallery.py tests/unit/test_identity_vault.py tests/unit/test_face_experiment.py tests/unit/test_face_runtime.py   # fixed: 188 passed (before the last two tests were added)
+T tests/unit/test_face_check.py tests/unit/test_guard_verdict.py tests/unit/test_alpha_check.py   # 349 passed (F1's real enrollments through the new lines and lock file)
+T <the identity, face, runtime, CLI and config files> tests/replay   # 365 passed
+for i in $(seq 10); do T tests/unit/test_identity_enroll.py -k "under_way or waits_for or another_process or two_threads or appears_after" tests/unit/test_face_experiment.py; done   # 10 x 10 passed
+PYTHONPATH=$PWD/src ~/sentinel-validation/py312-df8d9bc/venv/bin/python -m pytest ... the four identity store files   # 3.12: 115 passed
+T   # the full portable suite at d50d163 (clean tree): 2649 passed, 2 skipped (torch, cv2) in 1348.13 s (19:37:51-20:00:22 UTC); exit 0
+PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m sentinel.cli config validate config/default.yaml   # valid; exit 0
+export VIRTUAL_ENV=~/sentinel-validation/py312-df8d9bc/venv PATH=~/sentinel-validation/py312-df8d9bc/venv/bin:$PATH
+python -m pytest --junitxml=~/sentinel-validation/review-a-d50d163/logs/py312-junit.xml   # Python 3.12.3 at d50d163: 2649 passed, 2 skipped (torch, cv2) in 1256.79 s (20:00:36-20:21:34 UTC); exit 0
+sentinel config validate config/default.yaml   # valid; exit 0
+# Sequential runs; during the 3.12 run the only uncommitted file was this record (no test reads docs/).
+git -C ~/sentinel-review/a-identity-df8d9bc status --short; git -C ~/sentinel-review/a-identity-df8d9bc log --oneline -2   # clean; 3acb419, fd3933a (unchanged)
+# Logs: ~/sentinel-validation/review-a-d50d163/logs/
+```
+
 ## Session 97 log (Claude, 2026-10-19): review scope A's findings 6 and 7 reproduced through the runtime and fixed (face votes count only within the track's current life and the current recognition activation); the review-hash explanation corrected; nothing pushed
 
 From `89a396a` (clean), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`; the review copy clean at `fd3933a`/`3acb419`.
@@ -1005,8 +1119,8 @@ Each finding below was reproduced by its new tests failing on the unchanged code
    - 8: `enrollment_photo`'s provider errors escape the CLI as tracebacks;
    - 9: duplicated helpers;
    - 10: four copies of YuNet's 0.9.
-2. `revoke()` still saves before it audits (the same class as finding 2, not in the finding).
-3. There is no lock against two concurrent enrollments. This was already the case; the staging file's name is shared.
+2. `revoke()` still saves before it audits (the same class as finding 2, not in the finding). **Addressed in session 98 (`d50d163`).**
+3. There is no lock against two concurrent enrollments. This was already the case; the staging file's name is shared. **Addressed in session 98 (`d50d163`), with the audit-before-rename gap.**
 4. The redaction covers `key=value`, URL userinfo and bot tokens only. `Authorization: Bearer …`, JSON `"password": "…"` and keys such as `secret_key=` are not covered (outside the finding).
 5. A failed shutdown step is recorded as false, without its exception class.
 6. Not run: CI (nothing pushed), the `Dashboard checks` workflow, any device, camera or model session.
