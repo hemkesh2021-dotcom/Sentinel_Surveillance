@@ -337,3 +337,17 @@ def test_an_outage_clears_the_current_scene_and_it_never_revives() -> None:
     assert outage.evidence is None and outage.reason is Applicability.NO_LIVE_STREAM
     after = [view for ms, view in run.views if ms >= 2000]
     assert after and all(view.evidence is None for view in after)
+
+
+def test_a_submit_failure_echoing_an_authorization_header_or_json_credentials_is_redacted() -> None:
+    class Broken(StubAnalyzer):
+        def submit(self, job) -> None:
+            raise ConnectionError('POST /v1/chat failed; sent {"Authorization": "Bearer sk-SYNTH-1"} '
+                                  "with {'api_key': 'SYNTH-2', 'password': 'two SYNTH words'}")
+
+    clock = FakeClock()
+    lane = SceneLane(Broken(), clock, SETTINGS, id_prefix="job")
+    step = _one_frame(clock)
+    (evidence,) = lane.on_frame(step.frame, step.stream)
+    assert evidence.reason.startswith("submit failed: ConnectionError: POST /v1/chat failed")
+    assert "SYNTH" not in evidence.reason

@@ -397,3 +397,16 @@ def test_stored_delivery_details_redact_prefixed_keys_and_awkward_userinfo(db: D
     assert "https://<redacted>@192.0.2.7/x?client_secret=<redacted>&access_token=<redacted>" in stored
     for secret in ("relay", "pa/s", "cl1ent", "acc3ss"):
         assert secret not in stored
+
+
+def test_a_telegram_error_that_echoes_credentials_is_stored_without_them(db: Database, clock: FakeClock) -> None:
+    # The provider's own description is untrusted text: it may echo a header or a JSON body (synthetic values).
+    open_incident(db, clock, signal(1))
+    echoed = ('Unauthorized: request had Authorization: Bearer SYNTH-bearer-1, '
+              'body {"secret_key": "SYNTH key 2", "client_secret":"SYNTH-3"}')
+    notifier, _ = telegram(http_error(401, {"ok": False, "error_code": 401, "description": echoed}))
+    assert worker(db, clock, notifier).run_once() == [(1, "dead")]  # a 401 is not retried
+    stored = " ".join(str(v) for r in db.connection.execute("SELECT * FROM outbox") for v in r)
+    stored += " ".join(str(v) for r in db.connection.execute("SELECT * FROM delivery_attempts") for v in r)
+    assert "needs operator action: HTTP 401, error 401: Unauthorized" in stored
+    assert "SYNTH" not in stored

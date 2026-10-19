@@ -235,3 +235,26 @@ def test_config_validate_reports_each_adapter_state(tmp_path: Path, capsys: pyte
         "  adapter llama-scene: unavailable (not a built-in adapter)",
         "  adapter telegram: disabled (disabled in configuration)",
     ]
+
+
+def test_an_adapter_that_fails_to_load_with_credentials_in_its_error_shows_only_their_names(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "sentinel_synthetic_leaky_adapter.py").write_text(
+        "raise RuntimeError('cannot reach model server: Authorization: Bearer SYNTH-1; "
+        "config {\"api_key\": \"SYNTH-2\"}, secret_key=SYNTH-3')\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    spec = AdapterSpec(**{**vars(REGISTRY["demo-scene"]), "module": "sentinel_synthetic_leaky_adapter"})
+    (scene,) = resolve([manifest()], registry={"demo-scene": spec}, known_profiles=PROFILES)
+    implementation, after = load(scene)
+    assert implementation is None and after.state is AdapterState.UNAVAILABLE
+    assert after.reason.startswith("failed to load: RuntimeError: cannot reach model server")
+    assert "SYNTH" not in after.reason
+
+
+def test_config_validate_never_echoes_a_credential_given_where_a_value_was_expected(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path = tmp_path / "sentinel.yaml"
+    path.write_text("config_version: 1\ncamera: {id: {password: SYNTH-1, api_key: SYNTH-2}}\n", encoding="utf-8")
+    assert main(["config", "validate", str(path)]) == 1
+    captured = capsys.readouterr()
+    assert "camera.id" in captured.out + captured.err and "SYNTH" not in captured.out + captured.err

@@ -60,3 +60,56 @@ def test_long_adversarial_text_is_redacted_in_linear_time() -> None:
     started = time.monotonic()
     redact_line(hostile)
     assert time.monotonic() - started < 2.0
+
+
+# ---------------------------------------------------------------- Authorization values, JSON fields, *_key names
+
+
+@pytest.mark.parametrize(("text", "secret", "kept"), [
+    ("POST /v1 Authorization: Bearer eyJhbGci.SYNTH.sig", "SYNTH", "Authorization: <redacted>"),
+    ('headers {"Authorization": "Bearer sk-SYNTH-1 more"}', "SYNTH", '{"Authorization": <redacted>}'),
+    ("{'Proxy-Authorization': 'Basic dXNlcjpTWU5USA=='}", "dXNlcjpTWU5USA==", "{'Proxy-Authorization': <redacted>}"),
+    ("authorization=token SYNTH-gh-1", "SYNTH", "authorization=<redacted>"),
+    ("retry with bearer SYNTH.tok-en_1 failed", "SYNTH", "bearer <redacted> failed"),
+    ("auth Basic dXNlcjpTWU5USA== rejected", "dXNlcjpTWU5USA==", "Basic <redacted> rejected"),
+    ('body {"password": "correct horse SYNTH", "user": "u"}', "SYNTH", '{"password": <redacted>, "user": "u"}'),
+    ('{"client_secret":"SYNTH-3","api_key": "SYNTH-4"}', "SYNTH", '{"client_secret":<redacted>,"api_key": <redacted>}'),
+    ("{'access_token': 'SYNTH-5'}", "SYNTH", "{'access_token': <redacted>}"),
+    ('{"password": "esc\\"aped SYNTH-6"}', "SYNTH", '{"password": <redacted>}'),
+    ("secret_key=SYNTH-7 region=x", "SYNTH", "secret_key=<redacted> region=x"),
+    ("AWS_SECRET_ACCESS_KEY: SYNTH-8", "SYNTH", "AWS_SECRET_ACCESS_KEY: <redacted>"),
+    ("private_key='SYNTH 9' next", "SYNTH", "private_key=<redacted> next"),
+    ("credentials: SYNTH-10", "SYNTH", "credentials: <redacted>"),
+    ('{"password": "unterminated SYNTH-11', "SYNTH", '{"password": <redacted>'),
+], ids=["header", "json-header", "dict-proxy-basic", "header-token-scheme", "bare-bearer", "bare-basic",
+        "json-spaces", "json-compact", "dict-repr", "json-escaped-quote", "secret_key", "aws-env", "kwarg-repr",
+        "credentials", "cut-off-json"])
+def test_authorization_values_json_fields_and_key_names_are_redacted(text, secret, kept) -> None:
+    assert secret not in redact(text) and kept in redact(text)
+
+
+@pytest.mark.parametrize("text", [
+    "token_count: 3 tokens processed", "max_tokens=512", '{"token_type": "bearer"}', "basic check failed",
+    "the secretary=front desk", "no credentials here", "Bearer", "keyword: value",
+])
+def test_names_that_only_look_like_credentials_are_left_alone(text) -> None:
+    assert redact(text) == text
+
+
+@pytest.mark.parametrize("hostile", [
+    '"password": "' + "\\" * 200_000,  # escapes in a quoted value, never closed
+    '"' * 200_000,
+    "password" * 40_000,  # names with no separator
+    "password:" * 40_000,
+    "secret_key=" + "=" * 200_000,
+    "Authorization:" + " " * 200_000,
+    "Bearer " * 50_000,
+    "bearer" + "\t" * 200_000 + "x",
+    "basic " + "A" * 200_000,
+    "'token'" * 40_000,
+], ids=["escapes", "quotes", "names", "names-colon", "equals", "header-spaces", "bearers", "tabs", "basic-run",
+        "quoted-names"])
+def test_the_new_patterns_stay_linear_on_hostile_text(hostile) -> None:
+    started = time.monotonic()
+    redact_line(hostile)
+    assert time.monotonic() - started < 1.0
