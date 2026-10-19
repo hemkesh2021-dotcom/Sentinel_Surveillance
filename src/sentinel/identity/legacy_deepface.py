@@ -298,9 +298,10 @@ def enrollment_face(raw: Sequence[Mapping[str, Any]]) -> tuple[EnrollmentFace | 
         return None, "several_faces"
     item = found[0]
     embedding = _unit(item.get("embedding") or ())
-    if embedding is None:
+    width = _pixel_box(item)[2]
+    if embedding is None or not math.isfinite(width) or width < 0:
         raise FaceBackendError("inconsistent_output")
-    return EnrollmentFace(embedding, _confidence(item), round(_pixel_box(item)[2])), "face_found"
+    return EnrollmentFace(embedding, _confidence(item), round(width)), "face_found"
 
 
 def _import_runtime() -> SimpleNamespace:
@@ -571,13 +572,19 @@ class LegacyDeepFaceBackend:
                  "geometry": geometry} for (area, confidence, geometry), result in zip(reported, per_crop)]
 
     def enrollment_photo(self, path: Path) -> tuple[EnrollmentFace | None, str]:
-        """Decode a photo with the same OpenCV (EXIF orientation applied) and find its single face."""
+        """Decode a photo with the same OpenCV (EXIF orientation applied) and find its single face. A failure in the
+        provider (OpenCV, DeepFace, TensorFlow, memory) is ``enrollment_photo_failed`` with its exception class only:
+        its message can name the photo's path, and so a person."""
         if self._runtime is None:
             raise FaceBackendError("not_loaded")
-        image = self._runtime.cv2.imread(str(path), self._runtime.cv2.IMREAD_COLOR)
-        if image is None:
-            return None, "unreadable_photo"
-        return enrollment_face(self._runtime.DeepFace.represent(img_path=image, **FACE_ARGS))
+        try:
+            image = self._runtime.cv2.imread(str(path), self._runtime.cv2.IMREAD_COLOR)
+            if image is None:
+                return None, "unreadable_photo"
+            raw = self._runtime.DeepFace.represent(img_path=image, **FACE_ARGS)
+        except Exception as exc:  # noqa: BLE001 - a fixed label and the class; never the provider's message
+            raise FaceBackendError("enrollment_photo_failed", type(exc).__name__) from None
+        return enrollment_face(raw)
 
 
 def _cached_recognition_model(runtime: SimpleNamespace) -> Any:

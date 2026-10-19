@@ -728,8 +728,14 @@ def _identity(config: SentinelConfig, args: argparse.Namespace, face_backend: Ca
         print(json.dumps({"identity": "enroll", "refused": refused.label, **refused.report}), file=out)
         print(f"identity: {refused.label}", file=sys.stderr)
         return 1
-    except (VaultError, FaceBackendError) as exc:
+    except FaceBackendError as exc:  # the provider's fixed label and, at most, its exception class
+        print(f"identity: {exc.label}" + (f":{exc.error_type}" if exc.error_type else ""), file=sys.stderr)
+        return 1
+    except VaultError as exc:
         print(f"identity: {exc.label}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - anything else: its class only (a message can name a photo's path)
+        print(f"identity: failed:{type(exc).__name__}", file=sys.stderr)
         return 1
 
 

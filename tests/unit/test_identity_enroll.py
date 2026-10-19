@@ -11,6 +11,7 @@ import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sealer_faults import Pausing, Tampering, timing_out
@@ -163,12 +164,12 @@ def cli(store: IdentityStore, tmp_path: Path, *args: str) -> list[str]:
     return ["identity", command, str(config), *rest, "--identity-dir", str(store.directory)]
 
 
-def call(store, tmp_path, monkeypatch, *args, secret: str | None = SECRET.reveal()):
+def call(store, tmp_path, monkeypatch, *args, secret: str | None = SECRET.reveal(), backend=None):
     if secret is None:
         monkeypatch.delenv(SECRET_ENV, raising=False)
     else:
         monkeypatch.setenv(SECRET_ENV, secret)
-    code = main(cli(store, tmp_path, *args), face_backend=lambda weights: Pipeline(),
+    code = main(cli(store, tmp_path, *args), face_backend=lambda weights: backend or Pipeline(),
                 identity_store=lambda directory: store)
     return code
 
@@ -647,3 +648,82 @@ def test_a_commit_finds_the_gallery_as_it_was_read_or_changes_nothing(store) -> 
             store.commit(document, SECRET, "revoke", document.identities[0].identity_id, base=stale,
                          identities_left=0)
     assert files(store) == before
+
+
+# ---------------------------------------------------- review A, finding 8: the provider's errors at enrollment
+
+
+CvError = type("error", (Exception,), {})  # named as OpenCV's cv2.error is
+
+
+class ProviderRuntime:
+    """TensorFlow, OpenCV and DeepFace as the real adapter (LegacyDeepFaceBackend) sees them: it loads, then each
+    enrollment photo fails as ``fault`` says, with the photo's path (a person's name) and synthetic secrets in the
+    provider's message."""
+
+    def __init__(self, fault: str) -> None:
+        from sentinel.identity.legacy_deepface import DEEPFACE_VERSION
+
+        self.fault = fault
+        self.ns = SimpleNamespace(
+            tf=SimpleNamespace(config=SimpleNamespace(get_visible_devices=lambda kind: []), __version__="2.21.0"),
+            cv2=SimpleNamespace(__version__="4.13.0", IMREAD_COLOR=1, imread=self._imread),
+            numpy=SimpleNamespace(__version__="2.2.6", zeros=lambda shape, dtype: ("warmup", shape), uint8="uint8"),
+            tf_keras=SimpleNamespace(__version__="2.21.0"),
+            deepface=SimpleNamespace(__version__=DEEPFACE_VERSION),
+            DeepFace=SimpleNamespace(build_model=lambda name: None, represent=self._represent))
+
+    def _imread(self, path: str, flag: int):
+        if self.fault == "decoder":
+            raise CvError(f"imread: cannot decode {path}; token=SYNTH-decoder")
+        return ("photo", path)
+
+    def _represent(self, img_path, **kwargs):
+        if img_path[0] == "warmup":
+            return []
+        if self.fault == "provider":
+            raise RuntimeError(f"represent failed for {img_path[1]} with {{'api_key': 'SYNTH-provider'}}")
+        if self.fault == "memory":
+            raise MemoryError(f"cannot pad {img_path[1]} (SYNTH)")
+        width = {"infinite-width": float("inf"), "nan-width": float("nan")}[self.fault]
+        return [{"embedding": [0.0] * 511 + [1.0], "facial_area": {"x": 0, "y": 0, "w": width, "h": 10},
+                 "face_confidence": 0.9}]
+
+
+def provider(fault: str):
+    from sentinel.identity.legacy_deepface import DETECTOR_WEIGHTS, MODEL_WEIGHTS, LegacyDeepFaceBackend
+
+    runtime = ProviderRuntime(fault)
+    digests = {MODEL_WEIGHTS[0]: MODEL_WEIGHTS[1], DETECTOR_WEIGHTS[0]: DETECTOR_WEIGHTS[1]}
+    return LegacyDeepFaceBackend(Path("/synthetic/weights"), importer=lambda: runtime.ns,
+                                 sha256=lambda path: digests[path.name])
+
+
+@pytest.mark.parametrize(("fault", "label"), [
+    ("provider", "enrollment_photo_failed:RuntimeError"),
+    ("decoder", "enrollment_photo_failed:error"),
+    ("memory", "enrollment_photo_failed:MemoryError"),
+    ("infinite-width", "inconsistent_output"),
+    ("nan-width", "inconsistent_output"),
+])
+def test_a_provider_failure_at_enrollment_is_one_label_with_its_class_never_its_message(
+        store, tmp_path, monkeypatch, capsys, fault, label) -> None:
+    folder = photos(store, "a:1", "a:2")
+    assert call(store, tmp_path, monkeypatch, "enroll", str(folder), "--consent-confirmed", "--consent-date",
+                "2026-10-07", backend=provider(fault)) == 1
+    captured = capsys.readouterr()
+    assert captured.err == f"identity: {label}\n" and captured.out == ""
+    assert not store.exists() and audit_lines(store) == [] and len(list(folder.iterdir())) == 2
+
+
+def test_any_other_failure_in_an_identity_command_is_one_label_too(store, tmp_path, monkeypatch, capsys) -> None:
+    class Broken(Pipeline):  # not the provider: a defect anywhere under the command
+        def enrollment_photo(self, path: Path):
+            raise KeyError(f"{path} SYNTH")
+
+    folder = photos(store, "a:1", "a:2")
+    assert call(store, tmp_path, monkeypatch, "enroll", str(folder), "--consent-confirmed", "--consent-date",
+                "2026-10-07", backend=Broken()) == 1
+    captured = capsys.readouterr()
+    assert captured.err == "identity: failed:KeyError\n" and captured.out == ""
+    assert not store.exists() and len(list(folder.iterdir())) == 2
