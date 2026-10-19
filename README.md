@@ -118,7 +118,7 @@ everything still unresolved; none of it is waived by this pre-release.
 ### Portable development (CI runs on every push)
 
 Python 3.10 or newer. No camera, GPU or model is needed. The unreleased commits after `65df7f3` have not been pushed,
-so they have not run in CI.
+so they have not run in CI; the same three steps passed locally on Python 3.12 on the device at `df8d9bc` (not CI).
 
 ```bash
 git clone --branch v2.0.0-alpha.1 https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance.git

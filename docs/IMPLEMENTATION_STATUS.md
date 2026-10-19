@@ -1,6 +1,17 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-19, session 94 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **On the maintainer's instruction the release documents now reflect sessions 86-93 (documents only).**
+Last updated 2026-10-19, session 95 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Local Python 3.12 validation of `df8d9bc` (local validation on the device, not CI): the portable workflow's three steps passed in a new isolated environment, `~/sentinel-validation/py312-df8d9bc/venv` (Python 3.12.3, aarch64).**
+- **The install:** the editable install with the pinned dependencies, exit 0.
+- **pytest:** 2,578 passed, 0 failed, 2 skipped (`torch`, `cv2` absent), with warnings as errors.
+- **The configuration:** `config/default.yaml` valid.
+- **Before the authorization:** the existing 3.12 interpreters lacked pydantic and pytest, so those steps were blocked. All 207 tracked files compiled under 3.12, and 21 of 74 modules imported.
+- **Remaining gaps:** CI itself (nothing pushed after `65df7f3`; the last recorded CI result is at `b33c2f3`); the platform differences (aarch64, the snap's Chromium, pip 24.0); the two skipped tests; the v1 `Dashboard checks`; Safari; and everything a portable test cannot show.
+
+No code, pin, F2 or admission change; nothing pushed.
+- **Tests:** as above (session 95 log; logs in `~/sentinel-validation/py312-df8d9bc/logs/`).
+- **Next (the maintainer):** check the identity-and-recognition review scope prepared next (session 95 log, part 2, when recorded); the other session-93 decisions stay open.
+
+Session 94's summary: **On the maintainer's instruction the release documents now reflect sessions 86-93 (documents only).**
 - **`docs/ALPHA_CANDIDATE_NOTES.md`:**
   - the unreleased work since alpha.1, and session 93's readiness verdict with its blocking items;
   - the unmet face-plus-chat alpha goal, stated explicitly;
@@ -406,6 +417,7 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 | Session 88 (Claude, 2026-10-18) | From `1d15ca6` (clean). This record only (docs only); outside Git, the private analysis `~/sentinel-runs/analysis/f2c-20261018T155424Z/`; read only: the sealed session `f2c-20261018T155424Z`, its preparation records `prep-f2c-20261018T155424Z` and the observation `hm-20261018T172604Z-prepared-f2c-20261018t155424z`, the package `f2-cache-890af72`, and for descriptive comparison the sealed sessions `f2n-20261015T125427Z`, `trk-20261017T103831Z`, `f2-face-20261007T215900Z-20261008T055134Z` and the other sealed F2 and diagnostic folders. Not merged or pushed; nothing launched; no cache dropped. See the session 88 log. |
 | Session 89 (Claude, 2026-10-18) | From `28e3f2d` (clean). This record only (docs only); outside Git, the private analysis `~/sentinel-runs/analysis/s89-recognition/`; read only: 13 sealed sessions (the F2, diagnostic, dashboard, evaluation and capture folders named in the session 89 log), the sealed F1 enrollment record, the pinned face code and the installed DeepFace 0.0.99 sources. Not merged or pushed; nothing launched; no image, embedding or gallery opened. See the session 89 log. |
 | Session 90 (Claude, 2026-10-19) | From `76f0b9f` (clean). `4f1bbb4` (the landmark diagnostic, its reading and tests) and `f547d4b` (its follow-up from the dry run, the pin), then this record; outside Git, the package `landmarks-f547d4b` (manifest `1a66c206...`), its harness `dryrun-harness-f547d4b-landmarks`, the superseded `landmarks-4f1bbb4` with its note and harness; read only: f2-cache-890af72, the prerequisite's seal, the installed OpenCV's documentation of FaceDetectorYN's rows. Not merged or pushed; nothing launched; no real cache dropped. See the session 90 log. |
+| Session 95 (Claude, 2026-10-19) | From `df8d9bc` (clean). This record and three release-document lines (docs only); outside Git, the new environment `~/sentinel-validation/py312-df8d9bc/` with its logs. Local Python 3.12 validation, not CI. Not merged or pushed. See the session 95 log. |
 | Session 94 (Claude, 2026-10-19) | From `5044467` (clean). The release documents (`docs/ALPHA_CANDIDATE_NOTES.md`, `docs/REQUIREMENTS_TRACE.md`, `README.md`, `docs/RELEASE_NOTES_v2.0.0-alpha.1.md`) and this record; documents only. Not merged or pushed; the wiki not updated. See the session 94 log. |
 | Session 93 (Claude, 2026-10-19) | From `a06ffa0` (clean). This record only (docs only): the readiness assessment and the session-92 corrections; read only: the worktree, the main checkout's `v2-beta` diff, the bundle-reachable history (scanned, counts only), the local credential files (compared in memory, never printed). Not merged or pushed; nothing launched or uploaded. See the session 93 log. |
 | Session 92 (Claude, 2026-10-19) | From `f8f22c7` (clean). This record only (docs only); outside Git, the private design check `~/sentinel-runs/analysis/s92-comparison-design/`; read only: the pinned D87 code, `lmk-20261019T105756Z`, `alpha-20261012T182923Z` and `dpath2-20261014T113113Z`'s records. Not merged or pushed; nothing implemented, packaged or launched. See the session 92 log. |
@@ -487,6 +499,10 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 ## Next concrete task
 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
+   - **Done (session 95):** the local Python 3.12 validation of `df8d9bc` (passed; local, not CI) recorded with its remaining gaps (session 95 log).
+   - **Maintainer (session 95):** CI still needs a push (your decision); check the scope-A review preparation.
+   - **Claude, next (session 95):** prepare review scope A locally (on instruction), then stop for the maintainer's check.
+   - **The earlier text of this item, kept (session 94):**
    - **Done (session 94):** the release documents updated to sessions 86-93, the unmet face-plus-chat goal explicit (session 94 log).
    - **Maintainer (session 94):** review the documents; the open session-93 and session-92 decisions.
    - **Claude, next (session 94):** none until asked; the wiki's status page stays at the pre-release until a push is decided.
@@ -820,6 +836,47 @@ Notes on partial and in-progress rows:
   - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Session 50: Step 5 ran it on the device (camera, detector, scene server, Telegram; see the session 50 log). Not done: the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 95 log (Claude, 2026-10-19): local Python 3.12 validation of `df8d9bc` (local validation on the device, not CI): the portable workflow's three steps passed in a new isolated environment (2,578 passed, 2 skipped, 0 failed; `config/default.yaml` valid); the remaining coverage gaps listed; no code, F2 or admission change; nothing pushed
+
+From `df8d9bc` (clean), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`. Session 93 had listed the missing Python 3.12 run as a blocking item; the maintainer asked for it in two steps:
+1. **First, with existing environments only.** Nothing could run: the system `/usr/bin/python3.12` (3.12.3; no user site-packages) and `~/onvif_env/.venv` (3.12.3; inspected only, nothing written) both lack pydantic and pytest, and PyYAML there is 6.0.1.
+   - **Recorded at that point:** the install, `python -m pytest` and `sentinel config validate` steps blocked.
+   - **Two install-free checks, not CI:**
+     - all 207 tracked Python files compile under 3.12.3, with no syntax error and no compile-time warning;
+     - of the package's 74 modules, 21 import and 53 are blocked only by the missing pydantic, with no other failure.
+2. **Then, on the maintainer's authorization, a new isolated environment** with the repository's declared development dependencies. No sudo, no system package or pin changed, no existing environment touched.
+
+1. **The environment.** `~/sentinel-validation/py312-df8d9bc/venv`, a new directory outside the repository, created with `/usr/bin/python3.12 -m venv`. Python 3.12.3 (aarch64), pip 24.0 from ensurepip, system site-packages not visible.
+   - **The install,** following `.github/workflows/v2-portable.yml`: `python -m pip install -e '.[dev]'` from the worktree, exit 0.
+     - The pins installed exactly: pydantic 2.13.5, PyYAML 6.0.3, pytest 9.1.1.
+     - Resolved as CI would resolve them: pydantic-core 2.46.5, annotated-types 0.8.0, typing-extensions 4.16.0, typing-inspection 0.4.4, iniconfig 2.3.1, packaging 26.3, pluggy 1.7.0, Pygments 2.21.0.
+     - `sentinel` resolves to the worktree's `src/` at `df8d9bc`. The build's `src/sentinel_surveillance.egg-info/` is ignored by `.gitignore`, so the tree stayed clean.
+2. **The results (local validation, not CI), at `df8d9bc84f5724982b7dffba452f5a68d171b0f2`:**
+   - **`python -m pytest`,** run from the worktree with the environment activated (as CI activates it), the project's `addopts` unchanged (including `-ra`; `filterwarnings = ["error"]` turns any 3.12 deprecation warning into a failure). Only a JUnit report file outside the repository was added.
+     - **2,578 passed, 0 failed, 0 errors, 2 skipped,** in 1,221.99 s (14:19:41-14:40:04 UTC).
+     - **The skips:** `tests/unit/test_tracking_diagnostic_installed.py` (the module: no `torch`) and `tests/unit/test_live_preview.py::test_the_device_encoder_scales_a_copy_and_leaves_the_frame_unchanged` (no `cv2`), the same two as on 3.10.
+     - **The browser tests ran,** in headless Chromium 155.0.8059.79 (the snap's binary, as the harness chooses).
+   - **`sentinel config validate config/default.yaml`:** valid (version 1, camera `cam-1`; no optional adapters: core monitoring only), exit 0. `sentinel --version`: 2.0.0a1.
+   - **Preserved output:** `~/sentinel-validation/py312-df8d9bc/logs/` (`pip-install.log`, `pip-freeze.txt`, `pytest.log`, `pytest-junit.xml`, `config-validate.log`, `pytest-start.txt`).
+3. **What it is not, and the remaining gaps:**
+   1. **Not a CI pass.** No commit after `65df7f3` has been pushed, so none has run on GitHub's x86_64 `ubuntu-latest`. The last recorded CI result is at `b33c2f3`. Earlier 3.12-only CI failures were timing-dependent tests, which a local pass does not rule out on runners.
+   2. **Differences from CI:** aarch64 and L4T's Ubuntu, the snap's Chromium instead of the runner's Chrome, pip 24.0, the worktree with ignored caches instead of a fresh checkout, and the configuration check run while pytest was running.
+   3. **Not run:** the two skipped tests (the installed-library module last ran in `~/onvif_env` in session 81), and the `Dashboard checks` workflow (the v1 Flask tests on Python 3.11).
+   4. **Not shown:** Safari and other browsers; camera, GPU, memory, recognition accuracy and the alpha's gates (portable tests establish none of them).
+
+F2 remains unvalidated; face stays `PENDING_VALIDATION`; admission, thresholds, code and pins unchanged; nothing pushed, uploaded or published.
+
+### Verification: exact commands and results
+
+```
+/usr/bin/python3.12 -m venv ~/sentinel-validation/py312-df8d9bc/venv   # new directory; pip 24.0 (ensurepip)
+cd ~/sentinel-worktrees/v2-ui && ~/sentinel-validation/py312-df8d9bc/venv/bin/python -m pip install -e '.[dev]'   # exit 0
+export VIRTUAL_ENV=~/sentinel-validation/py312-df8d9bc/venv PATH=~/sentinel-validation/py312-df8d9bc/venv/bin:$PATH
+python -m pytest --junitxml=~/sentinel-validation/py312-df8d9bc/logs/pytest-junit.xml   # 2578 passed, 2 skipped in 1221.99s; exit 0
+sentinel config validate config/default.yaml   # valid; exit 0
+git status --porcelain --untracked-files=all   # empty before and after
+```
 
 ## Session 94 log (Claude, 2026-10-19): the release documents updated to reflect sessions 86-93 (documents only); the face-plus-chat alpha goal kept explicit as unmet; F2 unvalidated; admission unchanged; no tests, review, upload, push or device session
 

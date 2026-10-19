@@ -15,7 +15,7 @@ Before it, as of 2026-10-15, code at `b10b877` (session 77: D101 and D102, readi
 **Sources:**
 - the v2 beta implementation guide, revised 23 September 2026 (a local file, not in this repository): chapter 20's backlog and its acceptance column, chapter 2's regressions, chapter 21's mandatory scenarios and chapter 22's release gates;
 - `docs/IMPLEMENTATION_STATUS.md`, the source of every device result below, with its session numbers;
-- the portable test suite: 2,578 tests passing and 2 skipped (`torch`, `cv2` absent) at `f547d4b`, on the device's Python 3.10 (session 90); browser tests in headless Chromium only. The last recorded CI result (Python 3.10 and 3.12) is at `b33c2f3`; earlier figures: 2,330 passing, 1 skipped, at `0edff19`.
+- the portable test suite: 2,578 tests passing and 2 skipped (`torch`, `cv2` absent) at `f547d4b`, on the device's Python 3.10 (session 90); the same at `df8d9bc` on Python 3.12.3 in an isolated environment on the device, with `config/default.yaml` validated (session 95: local validation, not CI); browser tests in headless Chromium only. The last recorded CI result (Python 3.10 and 3.12) is at `b33c2f3`; earlier figures: 2,330 passing, 1 skipped, at `0edff19`.
 
 Acceptance texts are paraphrased. Where this trace and the status record differ, the status record governs and this file should be corrected.
 

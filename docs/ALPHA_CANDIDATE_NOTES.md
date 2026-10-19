@@ -29,7 +29,8 @@ Under the recorded readiness rule, face is shown only as the experimental demons
 **Readiness of the unreleased candidate (session 93): not ready to call the alpha complete.** No release-blocking code
 defect is established: none is recorded open, and an independent review is still to come. The blocking items:
 1. the release documents, which this revision brings up to session 93;
-2. no CI run on the unpushed commits (the last recorded CI result is at `b33c2f3`);
+2. no CI run on the unpushed commits (the last recorded CI result is at `b33c2f3`). A local Python 3.12 run of the
+   portable checks passed at `df8d9bc` (session 95): local validation on the device, not CI;
 3. the alpha goal above, a decision gate rather than a defect;
 4. the full alpha configuration's memory, still unmeasured.
 
@@ -222,7 +223,8 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
    - **The floor's reference exceeded:** in the second run, one unattributed 11 s transient took consumption from
      launch 221 MB past the launch floor's reference run. The floor carries no reserve.
 8. Release readiness (session 93):
-   - **CI:** no CI run on the unreleased commits.
+   - **CI:** no CI run on the unreleased commits. Local validation only: Python 3.12.3 at `df8d9bc` passed the
+     portable workflow's three steps on the device (session 95), which does not stand in for CI.
    - **Review:** an independent code review is still to come. Six review scopes are proposed; no single comparison
      base fits the review tool's size limit without omitting critical earlier work.
    - **Release documents:** brought up to session 93 in this revision.
@@ -251,8 +253,16 @@ sentinel config validate config/default.yaml
 **Latest recorded results:**
 - the full portable suite at `f547d4b` (the unreleased code): 2,578 passed and 2 skipped (`torch`, `cv2` absent), on
   Python 3.10 on the device (session 90);
+- local validation on Python 3.12.3 at `df8d9bc` (session 95; not CI), following `.github/workflows/v2-portable.yml`
+  in a new isolated environment on the device (aarch64):
+  - the editable install with the pinned dependencies;
+  - 2,578 passed, 0 failed and 2 skipped (`torch`, `cv2` absent), with warnings as errors;
+  - `config/default.yaml` validated;
 - the last recorded CI result: at `b33c2f3`, on Python 3.10 and 3.12;
-- not covered since: Python 3.12; browsers other than headless Chromium.
+- not covered since:
+  - CI itself on either Python (GitHub's x86_64 runners; earlier 3.12-only CI failures were timing-dependent tests);
+  - the two skipped tests;
+  - browsers other than headless Chromium.
 
 The two tests that used to fail intermittently (`test_alpha_check`'s load-tool window, anchored on a question the page
 could refuse, and `test_face_runtime`'s shadow-run comparison, which included wall-clock `processing_ms`) are
