@@ -770,11 +770,13 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
         # D81: accepted behind a scene job, and the periodic job's grace
         "side_accepted_behind_scene", "side_grace_started", "side_finished_in_grace", "side_preempted_after_grace"),
     "components.face.results": FACE_COUNTERS,  # runtime face_counters
-    "components.face.worker.counters": vocab(  # identity.worker counters
-        "ticks", "skipped_no_person", "replaced", "offered", "abandoned_at_stop", "expired_before_start", "started",
-        "results_replaced", "errors", "completed", "faces_detected", "fallback_dropped", "faces_returned",
-        "yielded_to_comparison", "comparison_outcomes_dropped", "comparison_plan_errors",  # D87
-        "discarded_off"),  # D99
+    "components.face.worker.counters": Either((  # identity.worker counters; an error's class name is content
+        vocab("ticks", "skipped_no_person", "replaced", "offered", "abandoned_at_stop", "expired_before_start",
+              "started", "results_replaced", "errors", "completed", "faces_detected", "fallback_dropped",
+              "faces_returned",
+              "yielded_to_comparison", "comparison_outcomes_dropped", "comparison_plan_errors",  # D87
+              "discarded_off"),  # D99
+        template(r"error:([A-Za-z0-9_]+)"))),  # one per exception class (FaceWorker._process)
     "components.face.worker.comparison.counters": Either((  # identity.comparison counters; failure labels are content
         vocab(*(f"{stage}_{kind}" for stage in ("eligible", "attempted", "completed", "failed")
                 for kind in COMPARISON_KINDS), *(d for d in COMPARISON_DISPOSITIONS if d.startswith("skipped_"))),

@@ -951,6 +951,38 @@ def test_a_continuity_runs_breaks_come_before_the_transitions_they_cause_and_fit
     loop.close()
 
 
+def test_a_run_whose_face_analysis_failed_still_fits_the_evidence_profile(tmp_path, monkeypatch) -> None:
+    # The worker counts each failure by its class (error:<class>); the status written after it must stay conforming,
+    # so a reading names the analysis error, not the evidence files.
+    from sentinel.identity.legacy_deepface import FaceBackendError
+    from sentinel.status_page import build_status, read_store
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "benchmarks/runner"))
+    import face_evidence
+
+    failures = [FaceBackendError("inconsistent_output"), MemoryError()]
+    working = analyze_with(vec(0.97, 0.1, 0.0, 0.05))
+
+    def analyze(frame, image):
+        if failures:
+            raise failures.pop(0)
+        return working(frame, image)
+
+    loop = Loop(tmp_path, analyze=analyze)
+    for _ in range(60):  # four face ticks: two failures, then matches
+        loop.frame()
+    status = loop.runtime.snapshot()
+    counters = status["components"]["face"]["worker"]["counters"]
+    assert (counters["errors"], counters["error:FaceBackendError"], counters["error:MemoryError"]) == (2, 1, 1)
+    out = tmp_path / "evidence"
+    out.mkdir()
+    (out / "run.jsonl").write_text("".join(json.dumps(r) + "\n" for r in loop.runtime.drain_identity_records()))
+    (out / "status-n1.json").write_text(json.dumps(build_status(status, read_store(tmp_path / "sentinel.db"), NOW)))
+    assert face_evidence.read(out / "run.jsonl", "f2").nonconforming == []
+    assert face_evidence.read(out / "status-n1.json", "f2").nonconforming == []
+    loop.close()
+
+
 # ---------------------------------------------------------------- D99: face recognition turned off and on at runtime
 
 
