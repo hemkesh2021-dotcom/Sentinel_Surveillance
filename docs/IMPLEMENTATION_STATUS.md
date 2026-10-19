@@ -1,6 +1,14 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-19, session 96 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Review scope A's cloud findings 1-5 reproduced and fixed, each with regressions, on the maintainer's authorization (session 96 log).**
+Last updated 2026-10-19, session 97 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Review scope A's findings 6 and 7 reproduced through the runtime and fixed (`a2d4e96`, test follow-up `466cb58`; session 97 log).**
+- **Finding 6:** a late face result (within its 3 s bound) for a frame from before a track expired (1 s) voted for the track that came back with the same number, so one new match made it KNOWN. Votes now count only within the track's current life (`TrackTable.since`): such a person gets no vote (`before_expiry`). A track measured again only after expiring, with no step in between, now also starts a new life.
+- **Finding 7:** an analysis running across face recognition being turned off and on, or its result waiting until the step that turned it on, voted after the switch, so one new match made KNOWN. Results for frames from before recognition was last turned on are now ignored (`ignored_face_unavailable`). An off and an on queued together never switch (the later replaces the earlier), so that variant does not occur.
+- **Both violated documented rules** (`identity.state`'s "even if the tracker later reuses its ID"; D99's "on again every track starts unresolved"). On the unchanged code one new match after either boundary gave KNOWN; now two matches after the boundary are needed, and valid results count as before.
+- **Tests at `466cb58`:** the full portable suite gave 2,630 passed, 2 skipped (`torch`, `cv2`), 0 failed, under the existing Python 3.10.14 `.venv` and then under the isolated 3.12.3 environment; `config/default.yaml` valid under both. That is 6 new tests. Every new behavioural test failed on the unchanged code first. `a2d4e96` alone fails one vocabulary-tie test, fixed by `466cb58`. Local runs, not CI.
+- **Not changed:** thresholds, vote TTL, track expiry, the result age bound, F2 criteria and admission; nothing pushed, published or launched; no real enrollment data; no device session; no further review. The review copy is unchanged. Session 96's record now gives the reason for its hashes (the maintainer's requested rebuild).
+- **Next (the maintainer):** review `a2d4e96` and `466cb58`; findings 8-10 and session 96's gaps stay open.
+
+Session 96's summary: **Review scope A's cloud findings 1-5 reproduced and fixed, each with regressions, on the maintainer's authorization (session 96 log).**
 - **The review:** `/ultrareview` of scope A (`~/sentinel-review/a-identity-df8d9bc`, left unchanged) returned 10 findings: 6 normal, 4 nits. Findings 1-5 are fixed here; 6-10 are not addressed.
 - **The fixes (code from `027c800`):**
   1. redaction of prefixed credential keys and of URL userinfo holding `/` or `@` (`3dbc05f`, `2700240`);
@@ -517,6 +525,9 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 ## Next concrete task
 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
+   - **Done (session 97):** review scope A's findings 6 and 7 reproduced through the runtime and fixed (`a2d4e96`, follow-up `466cb58`; session 97 log).
+   - **Maintainer (session 97):** review `a2d4e96` and `466cb58`; decide on findings 8-10 and session 96's gaps; CI still needs a push.
+   - **Claude, next (session 97):** none until asked.
    - **Done (session 96):** review scope A's findings 1-5 fixed with regressions, seven local commits after `027c800` (session 96 log).
    - **Maintainer (session 96):** review the commits; decide whether findings 6-10 and the listed gaps get fixes; CI still needs a push.
    - **Claude, next (session 96):** on request only, findings 6-10 (6 and 7 change when face votes count; 8 is the enrollment CLI's error boundary; 9 and 10 are clean-ups).
@@ -859,10 +870,78 @@ Notes on partial and in-progress rows:
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
 
+## Session 97 log (Claude, 2026-10-19): review scope A's findings 6 and 7 reproduced through the runtime and fixed (face votes count only within the track's current life and the current recognition activation); the review-hash explanation corrected; nothing pushed
+
+From `89a396a` (clean), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`; the review copy clean at `fd3933a`/`3acb419`.
+
+**The authorization:**
+- **The task:** investigate findings 6 and 7, each reproduced first through the runtime and worker path with deterministic synthetic tests. Establish whether each violates the documented identity rules. Fix only confirmed defects: reject results from an expired track life or an earlier recognition activation, keep valid results working, and let old votes restore KNOWN across neither boundary.
+- **Preserve:** thresholds, retention durations, F2 criteria and admission.
+- **Do not:** run another review, push, publish, touch real enrollment data, or launch live workloads.
+- **Also:** correct the session 96 record's review-hash explanation.
+
+**How each was reproduced:**
+- **The runtime path:** `DemoRuntime` with the real `FaceWorker` thread, an analysis held on an event (`Held`, `test_face_runtime.py`), the fake tracker and clock, and the real feature controls.
+- **The core:** `EdgeCore` alone (`test_face_outcome.py`'s `World`).
+- **The unchanged code:** the new tests ran against the unchanged worktree `src`, and the core tests again against `git archive 89a396a src`.
+
+1. **Finding 6: a late result for an expired track whose number returns.**
+   - **The documented rule** (`identity/state.py`): "a track that is no longer current loses its votes (`retain_only`), even if the tracker later reuses its ID".
+   - **What happened:** `on_face_outcome` checked only stream, boot and age (3 s). Track expiry is 1 s; ByteTrack keeps a lost ID for 30 frames (`max_time_lost`, 2 s at 15 fps). So a result for a frame from before the expiry was applied as a vote for the track that came back.
+   - **Reproduced:**
+     - Runtime: frame at 0.07 s held; track last detected at 0.2 s; nobody until 1.53 s; back with ID 1 at 1.6 s; the held result then applied as a `match` for track 1. A scratch run of the same steps on the unchanged code gave KNOWN after one new match.
+     - Core: a result 1.75 s old voted for the returned track.
+     - A related edge found while reading the code: a track measured again 1.5 s after its last detection, with no step in between (a stalled loop, no tick), kept its votes and stayed KNOWN. No step ever saw it expire.
+   - **The fix:**
+     - `TrackTable.since`: when each current track's life began. That is its first measurement, and again when it is measured after expiring. A re-measurement exactly at the expiry age stays the same life, as before: `update()` comes before any `current()` at that instant.
+     - `IdentityResolver.retain_only` takes each current track with that time. A person on a frame from before it gets no vote (label `before_expiry`, counter `persons_before_expiry`, never a note), and a track whose life began again keeps no earlier vote.
+     - The face evidence profile names the label and the counter. Without that change the run's records read as nonconforming (`persons[].label`).
+2. **Finding 7: a result from before recognition was switched off and on.**
+   - **The documented rule** (D99, `EdgeCore.set_face_recognition`): "every vote … is forgotten: nothing from before is presented as current … on again every track starts unresolved".
+   - **What happened:** the capability was checked only when the result was applied. So an analysis running across the switch was applied once face was on again, whether it arrived after the on, or completed while face was off and waited in the worker's outbox until the step that applied the on (`_apply_features` runs before the drain).
+   - **Reproduced:** both variants through the feature controls; on the unchanged code each gave KNOWN after one new match.
+   - **Does not reproduce:** an off and an on in the same `_apply_features` batch, as the finding suggested. `FeatureControls.request` replaces a waiting change for the same feature, so the on replaces the off and recognition never switches. That behaviour was not changed.
+   - **The fix:** `EdgeCore` records when recognition was last turned on (`_face_on_since_ns`, the core's clock). A result for an earlier frame is `ignored_face_unavailable`, the outcome already documented for results in flight, so no new outcome label is needed.
+3. **What the regressions check** (`test_face_runtime.py` 2, `test_face_outcome.py` 3, `test_track_observations.py` 1; 6 new tests):
+   - the late or pre-switch result gives no vote;
+   - the first new match leaves the track unresolved;
+   - the second makes it KNOWN, so valid results still work;
+   - the records and status of the expiry run conform to the evidence profile.
+
+   The two threaded runtime tests passed 15 of 15 repeated runs.
+4. **Two corrections while fixing:**
+   - My first gap rule (`>=` the expiry) made 7 existing core tests fail, because their frames are exactly 1.0 s apart. Changed to `>`.
+   - `test_a_late_result_within_its_bound_counts_from_its_own_frame_time` measured its track 1.0 s and 3.5 s, a new life under the rule. Its track is now measured every 0.5 s between; the vote is still 2.5 s old, so its intent is unchanged.
+   - **A third, after the commit:** the full 3.10 suite at `a2d4e96` failed one test, `test_face_check.py::test_the_vocabularies_are_the_codes` (1 failed, 2,629 passed, 2 skipped). It ties the profile's vote labels to the code's, and its expected set lacked `BEFORE_EXPIRY`. My focused run had left out `test_face_check.py`. Fixed in the follow-up `466cb58` (test only); `a2d4e96` alone does not pass the full suite.
+5. **The record corrected:** session 96 said the review copy's `fd3933a`/`3acb419` differed from session 95's `604e5a7`/`e717e07` "(not investigated)". Per the maintainer, they come from the rebuild the maintainer explicitly requested, which restored `LICENSE` and excluded the device-account test.
+
+**Unchanged:** thresholds, vote TTL (30 s), track expiry (1 s), the result age bound (3 s), the continuity rule (D97), F2 criteria and admission, the review copy and any enrollment data. Findings 8-10 and session 96's gaps remain open.
+
+### Verification: exact commands and results
+
+```
+T = PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m pytest -q -p no:cacheprovider   # Python 3.10.14, in the worktree
+T tests/unit/test_face_runtime.py -k never_votes   # unchanged code: 2 failed (finding 7: 'applied' != 'ignored_face_unavailable'; finding 6: (1, 'match', 'match') != (1, 'none', 'before_expiry'))
+PYTHONPATH=$PWD/src <python> <scratch>/consequence.py   # unchanged code: KNOWN after one new match for finding 7 (after_on, while_off) and finding 6
+PYTHONPATH=<scratch>/orig/src ... tests/unit/test_face_outcome.py   # git archive 89a396a src: 3 failed (the three new core tests), 15 passed
+T tests/unit/test_face_outcome.py tests/unit/test_face_runtime.py tests/unit/test_track_observations.py ... tests/replay   # fixed: 374 passed
+for i in $(seq 15); do T tests/unit/test_face_runtime.py -k "never_votes or turned_off"; done   # 15 x 4 passed
+T   # the full portable suite at a2d4e96: 1 failed (test_face_check.py::test_the_vocabularies_are_the_codes), 2629 passed, 2 skipped in 1325.41 s (17:56:16-18:18:23 UTC)
+T tests/unit/test_face_check.py -k vocabularies   # after the fix: 1 passed (committed as 466cb58, test only)
+T   # the full portable suite at 466cb58: 2630 passed, 2 skipped (torch, cv2) in 1324.00 s (18:19:15-18:41:21 UTC); exit 0
+PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m sentinel.cli config validate config/default.yaml   # valid; exit 0
+export VIRTUAL_ENV=~/sentinel-validation/py312-df8d9bc/venv PATH=~/sentinel-validation/py312-df8d9bc/venv/bin:$PATH
+python -m pytest --junitxml=~/sentinel-validation/review-a-466cb58/logs/py312-junit.xml   # Python 3.12.3 at 466cb58: 2630 passed, 2 skipped (torch, cv2) in 1218.22 s (18:41:36-19:01:56 UTC); exit 0
+sentinel config validate config/default.yaml   # valid; exit 0
+# The 3.10 and 3.12 runs were sequential; the only uncommitted file during both was this record (no test reads docs/).
+git -C ~/sentinel-review/a-identity-df8d9bc status --short; git -C ~/sentinel-review/a-identity-df8d9bc log --oneline -2   # clean; 3acb419, fd3933a (unchanged)
+# Logs: ~/sentinel-validation/review-a-a2d4e96/logs/ (the failing 3.10 run), ~/sentinel-validation/review-a-466cb58/logs/ (both passing runs)
+```
+
 ## Session 96 log (Claude, 2026-10-19): review scope A's cloud findings 1-5 reproduced and fixed with regressions (redaction; enrollment and capture galleries committed after read-back and audit; consent dates checked before capture and a shutdown that survives a failed step; the worker's error counters in the evidence profile; the shipped match threshold); findings 6-10 not addressed; nothing pushed
 
 From `027c800` (clean), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`; code identical to `df8d9bc`.
-- **The review:** the maintainer ran `/ultrareview` in `~/sentinel-review/a-identity-df8d9bc`. That copy's commits are `fd3933a` (base) and `3acb419` (target), not the `604e5a7` and `e717e07` recorded in session 95 (not investigated). It returned 10 findings, 6 normal and 4 nits.
+- **The review:** the maintainer ran `/ultrareview` in `~/sentinel-review/a-identity-df8d9bc`. That copy's commits are `fd3933a` (base) and `3acb419` (target). They come from the rebuild the maintainer explicitly requested after session 95's first build (`604e5a7`, `e717e07`): it restored `LICENSE` and excluded the device-account test (the maintainer's account, recorded in session 97; corrected from "not investigated"). It returned 10 findings, 6 normal and 4 nits.
 - **The authorization:** fix findings 1-5 here, each reproduced first with a regression test, after checking the original findings and their callers. Leave the review copy unchanged (it is: clean, same two commits), modify no real enrollment data, tune no threshold, rewrite no user configuration, change neither F2 nor admission, and push, publish or launch nothing.
 
 Each finding below was reproduced by its new tests failing on the unchanged code before the fix:
