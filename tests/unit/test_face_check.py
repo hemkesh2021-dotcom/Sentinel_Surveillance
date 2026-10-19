@@ -2790,7 +2790,8 @@ class WorkStore:
     def ensure_directory(self) -> None:
         pass
 
-    def save(self, document, secret) -> None:
+    def commit(self, document, secret, action, identity_id, **counts) -> None:
+        self.audit(action, identity_id, **counts)  # audited, then in place (IdentityStore.commit)
         self.document = document
 
     def load(self, secret):

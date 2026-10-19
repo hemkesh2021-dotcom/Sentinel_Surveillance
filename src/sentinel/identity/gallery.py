@@ -22,9 +22,8 @@ compared in full, audited, and only then renamed over it. So the gallery never h
 audited; any failure before the rename leaves the gallery and the audit log as they were.
 
 Removal: ``revoke`` rewrites the gallery without the identity; ``purge`` deletes the gallery, any staging file left
-by a stop before its rename, and the inbox. The
-runtime reads the gallery once at startup, so either takes effect at the next start. Deleting files on an SSD is not
-secure erasure.
+by a stop before its rename, and the inbox. The runtime reads the gallery once at startup, so either takes effect at
+the next start. Deleting files on an SSD is not secure erasure.
 """
 
 from __future__ import annotations
