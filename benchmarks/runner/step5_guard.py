@@ -73,7 +73,8 @@ WATCHED_PORTS = (18090, 18081)  # the status page and the scene server, both loo
 STATUS_URL = "http://127.0.0.1:18090/status.json"
 MAX_STATUS_BYTES = 1_048_576
 STATUS_TIMEOUT_S = 2.0
-MAX_DURATION_S = 900.0
+MAX_DURATION_S = 3600.0  # session 109: the one-hour dashboard trial (900 s before it); offsets bounded alike
+MAX_READY_TIMEOUT_S = 900.0  # the readiness wait keeps its earlier bound
 # sentinel run's shutdown is bounded at about 66 s with scene analysis (capture 16 s, scene server 10 s plus 5 s to
 # kill, scene worker 21 s, outbox 12 s, status page 2 s); the grace leaves room above that.
 STOP_GRACE_S = 90.0
@@ -612,7 +613,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--duration-s", type=_seconds(MAX_DURATION_S), required=True)
     parser.add_argument("--from-launch", action="store_true",
                         help="count the duration and the status offsets from launch instead of from readiness")
-    parser.add_argument("--ready-timeout-s", type=_seconds(MAX_DURATION_S), default=READY_TIMEOUT_S)
+    parser.add_argument("--ready-timeout-s", type=_seconds(MAX_READY_TIMEOUT_S), default=READY_TIMEOUT_S)
     parser.add_argument("--stop-grace-s", type=_seconds(300.0), default=STOP_GRACE_S)
     parser.add_argument("--status-at", type=_status_at, action="append", default=[], metavar="SECONDS:NAME")
     parser.add_argument("--cue-at", type=_cue_at, action="append", default=[], metavar="SECONDS:NAME:TEXT",

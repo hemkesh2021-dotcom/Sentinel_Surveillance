@@ -303,7 +303,9 @@ def test_the_command_line_validates_its_offsets_and_needs_a_command(mod, tmp_pat
     with pytest.raises(SystemExit):
         mod.main(["--out", str(tmp_path / "x"), "--duration-s", "10", "--status-at", "nope"])
     with pytest.raises(SystemExit):
-        mod.main(["--out", str(tmp_path / "x"), "--duration-s", "901", "--", "true"])
+        mod.main(["--out", str(tmp_path / "x"), "--duration-s", "3601", "--", "true"])
+    with pytest.raises(SystemExit):  # the readiness wait keeps its 900 s bound (session 109)
+        mod.main(["--out", str(tmp_path / "x"), "--duration-s", "3600", "--ready-timeout-s", "901", "--", "true"])
     with pytest.raises(SystemExit):
         mod.main(["--out", str(tmp_path / "x"), "--duration-s", "10"])
     assert not (tmp_path / "x").exists()
@@ -432,11 +434,14 @@ def test_no_cue_before_readiness_and_none_without_cues(mod, tmp_path) -> None:
 
 
 @pytest.mark.parametrize("bad", ["5:t0", "5::text", "x:t0:text", "5:t 0:text", "5:t0:" + "x" * 161,
-                                 "5:t0:café", "901:t0:late"])
+                                 "5:t0:café", "3601:t0:late"])
 def test_cue_arguments_are_checked(mod, bad) -> None:
     with pytest.raises(argparse.ArgumentTypeError):
         mod._cue_at(bad)
     assert mod._cue_at("120:k1:sit at the Mac, facing the camera") == (120.0, "k1", "sit at the Mac, facing the camera")
+    # session 109: offsets up to the one-hour trial's duration
+    assert mod._cue_at("3590:stop:stopping") == (3590.0, "stop", "stopping")
+    assert mod._status_at("3585:end") == (3585.0, "end")
 
 
 def test_the_starting_summary_keeps_the_face_fields(mod, tmp_path) -> None:

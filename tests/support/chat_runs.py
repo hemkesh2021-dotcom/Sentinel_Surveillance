@@ -179,12 +179,15 @@ def _follow(runtime: DemoRuntime, status: int, document: dict[str, Any]) -> tupl
 
 def build_run(mods, root: Path, *, fps: float = 4.0, duration: float = 600.0, pressure: Any = None,
               face: bool = False, live: bool = True, captures_at: tuple = CAPTURES,
-              analyze: Any = _matching_face, grounding: dict[str, dict[str, Any]] | None = None) -> Path:
+              analyze: Any = _matching_face, grounding: dict[str, dict[str, Any]] | None = None,
+              viewer: bool = False) -> Path:
     """``face`` (session 103): face recognition in its validation run as well, one person in view, its identity records
     on stdout, and the guard's face_chat readiness recorded; ``live``: the live view and its viewer. ``grounding``
     (session 106): G's questions at alpha_load's slots, by ID: {"answer": synthetic text, "cut": bool} or
     {"hold": True} (held until the next scene job cancels it); grounding.jsonl written as alpha_load writes it, with the
-    slots the run never reached as not asked."""
+    slots the run never reached as not asked. ``viewer`` (session 109, with ``live``): a viewer pulls the newest picture
+    once a simulated second through the live view's own next_frame, as the dashboard's player does, so that the status
+    page's live-view counters count it."""
     run = root / "run"
     run.mkdir()
     clock = FakeClock(utc=NOW)
@@ -221,6 +224,7 @@ def build_run(mods, root: Path, *, fps: float = 4.0, duration: float = 600.0, pr
     viewer_lines, pending, captures, next_status = [], list(captures_at), [], 0.0
     held = None  # (asked at, job, kind, G slot) of the question held until the next scene job ends it
     a0, g_pending, g_lines = None, sorted(g_slots.values(), key=lambda item: item[1]), []
+    seen = None  # the newest picture the viewer was sent (stream epoch, frame)
     for n in range(1, int(duration * fps) + 1):
         t = n / fps
         clock.advance(ns=t0 + round(n * 1e9 / fps) - clock.monotonic_ns())
@@ -266,6 +270,10 @@ def build_run(mods, root: Path, *, fps: float = 4.0, duration: float = 600.0, pr
                     g_lines.append(json.dumps(mods.load._grounding_record(g_slot, a0, ready + t, kind, document,
                                                                           status)))
                 chat_lines.append(json.dumps(record))
+        if live and viewer and n % int(fps) == 0:  # the dashboard's player: the newest picture newer than its last
+            runtime.preview.encode_newest()
+            answer = runtime.preview.next_frame(seen, wait_s=0.0)
+            seen = answer.picture.order if answer.picture is not None else seen
         if live and n % int(fps) == 0:  # the viewer's tallies are written here; alpha_load's own on a real page
             viewer_lines.append(json.dumps({"second_mono_s": ready + t, "pictures": 14, "bytes": 14 * 30_000,
                                             "max_age_ms_when_sent": 180, "states": {}}))

@@ -9,6 +9,9 @@ evidence never passes. DESCRIPTIVE lines are never judged.
     alpha_check.py integration RUN_DIR
                                       session 103: the validation-only face + chat integration run (fci), read in four
                                       separate parts (below); never F2, never the combined run
+    alpha_check.py trial RUN_DIR      session 109: the one-hour live-dashboard trial, the integration run's reading with
+                                      the live view on and the operator's own questions (below); never F2, never the
+                                      combined run
 
 RUN_DIR holds the guard's files (result.json, guard.jsonl, run.jsonl, status-*.json) and alpha_load's
 chat-load.jsonl and viewer.jsonl. Limits, all set before any run:
@@ -59,6 +62,15 @@ format 2 records whether an answer names a person apart from brands and objects,
 claim apart; format 1's records read exactly as before). **This reading never prints a question's or an answer's
 text**; a G answer is also a chat answer and counts in "real answers" like any other.
 
+**The one-hour live-dashboard trial (session 109).** The integration run's configuration with the live view on, for
+TRIAL_DURATION_S from readiness, with the operator's own questions asked in the dashboard instead of alpha_load's (no
+chat load, no viewer log, no staging), read in five separately reported parts: execution (the integration's items, with
+the live view on at startup and at every capture and its encoder stopped at shutdown); the live view (pictures sent to a
+viewer, from the status counters); chat (at least one question accepted and answered, from the status counters, and
+the chat-induced scene delay; nothing about any question or answer but counters); recognition behaviour and memory, as
+in the integration run. A trial pass says that these ran together for the hour within the limits; it judges no
+recognition accuracy and no answer's correctness, implies no F2 acceptance and admits nothing.
+
 Stdlib only; reads files only.
 """
 
@@ -99,6 +111,12 @@ RECOGNITION_SCOPE = ("recognition behaviour in this run only, as the runtime dec
 LAUNCH_FLOOR_NOTE = ("the launch floor 5,569,835,008 B (D103) is an empirical minimum from an earlier face workload "
                      "without chat (trk-20261017T103831Z); it guarantees no headroom for this combined run")
 INTEGRATION_PARTS = ("execution", "chat completion", "recognition behaviour", "memory")
+TRIAL_DURATION_S = 3600.0  # session 109: the one-hour live-dashboard trial, from readiness
+TRIAL_SCOPE = ("validation-only one-hour live-dashboard trial (session 109): face recognition, scene analysis, the "
+               "live view and the operator's own chat questions together, before F2 validates; not F2 and not the "
+               "combined run; it assesses no recognition accuracy, retention or false acceptance and no answer's "
+               "correctness; nothing is admitted or accepted")
+TRIAL_PARTS = ("execution", "live view", "chat", "recognition behaviour", "memory")
 
 
 def _jsonl(path: Path) -> list[dict] | Any:
@@ -299,9 +317,11 @@ def read_chat(run_dir: Path, *, face: bool = False) -> s5.Reading:
     return r
 
 
-def read_integration(run_dir: Path) -> dict[str, s5.Reading]:
-    """The fci run's four parts, each its own Reading (INTEGRATION_PARTS), so that one never stands for another."""
-    execution, chat, recognition, memory = (s5.Reading() for _ in INTEGRATION_PARTS)
+def read_integration(run_dir: Path, *, trial: bool = False) -> dict[str, s5.Reading]:
+    """The fci run's four parts, each its own Reading (INTEGRATION_PARTS), so that one never stands for another; with
+    ``trial`` (session 109) the one-hour live-dashboard trial's five (TRIAL_PARTS)."""
+    execution, chat, recognition, memory, live = (s5.Reading() for _ in TRIAL_PARTS)
+    duration = TRIAL_DURATION_S if trial else INTEGRATION_DURATION_S
     result = s5._load(run_dir / "result.json")
     captures = _captures(run_dir, result)
     last = captures[-1][1] if captures else s5.MISSING
@@ -314,9 +334,9 @@ def read_integration(run_dir: Path) -> dict[str, s5.Reading]:
     value = {"duration_s": s5._get(result, "parameters", "duration_s"),
              "require_ready": s5._get(result, "parameters", "require_ready"),
              "readiness": {k: s5._get(readiness, k) for k in ("required", "met", "reason")}}
-    r.item(f"the run: {INTEGRATION_DURATION_S:g} s from readiness, the {INTEGRATION_READINESS} readiness required and "
+    r.item(f"the run: {duration:g} s from readiness, the {INTEGRATION_READINESS} readiness required and "
            "met before T0", value,
-           value["duration_s"] == INTEGRATION_DURATION_S and value["require_ready"] == INTEGRATION_READINESS
+           value["duration_s"] == duration and value["require_ready"] == INTEGRATION_READINESS
            and value["readiness"] == {"required": INTEGRATION_READINESS, "met": True, "reason": None})
     start = s5._startup(r, result, scope=face_check.SCENE_SCOPE, releases=face_check.RELEASES)
     server = s5._get(start, "scene_server")
@@ -328,21 +348,27 @@ def read_integration(run_dir: Path) -> dict[str, s5.Reading]:
     r.item("face at startup: a validation run of the normal path with one enrolled identity, no face problem",
            {"face": s5._get(start, "face"), "face_problem": s5._get(start, "face_problem")},
            s5._get(start, "face") == face_check.F2_FACE and s5._get(start, "face_problem") is None)
-    r.item("chat offered as a validation run (not admitted); no live view",
-           {"chat": s5._get(starting, "chat"), "live_preview": isinstance(s5._get(starting, "live_preview"), dict)},
-           s5._get(starting, "chat") == {"state": "available", "reason": VALIDATION_REASON}
-           and isinstance(starting, dict) and "live_preview" not in starting)
+    offered = s5._get(starting, "chat") == {"state": "available", "reason": VALIDATION_REASON}
+    if trial:
+        r.item("chat offered as a validation run (not admitted); the live view on",
+               {"chat": s5._get(starting, "chat"), "live_preview": isinstance(s5._get(starting, "live_preview"), dict)},
+               offered and isinstance(s5._get(starting, "live_preview"), dict))
+    else:
+        r.item("chat offered as a validation run (not admitted); no live view",
+               {"chat": s5._get(starting, "chat"), "live_preview": isinstance(s5._get(starting, "live_preview"), dict)},
+               offered and isinstance(starting, dict) and "live_preview" not in starting)
     seen = [{"capture": name, "scene": s5._get(c, "components", "scene", "state"), "video": s5._get(c, "live", "video"),
              "face": s5._get(c, "components", "face", "state"),
              "face_validation_run": s5._get(c, "components", "face", "validation_run"),
              "enrolled": s5._get(c, "components", "face", "identities_enrolled"),
-             "chat_validation_run": s5._get(c, "components", "chat", "validation_run")} for name, c in captures]
+             "chat_validation_run": s5._get(c, "components", "chat", "validation_run"),
+             **({"live_view": s5._get(c, "preview", "enabled")} if trial else {})} for name, c in captures]
     r.item("every capture: scene analysis available, video fresh, face available (validation run, 1 enrolled), chat in "
-           "its validation run", seen if seen else s5.MISSING,
+           "its validation run" + (", the live view on" if trial else ""), seen if seen else s5.MISSING,
            bool(seen) and not s5._has_missing(seen) and all(
                x["scene"] == "available" and x["video"] == "fresh" and x["face"] == "available"
                and x["face_validation_run"] is True and x["enrolled"] == 1 and x["chat_validation_run"] is True
-               for x in seen))
+               and x.get("live_view", True) is True for x in seen))
     s5._listeners(r, result, {18081, 18090})
     _scene_deadlines(r, last)
     _monitoring(r, last)
@@ -371,13 +397,23 @@ def read_integration(run_dir: Path) -> dict[str, s5.Reading]:
     r.describe("rates at each capture (captured and processed fps)",
                [[name, s5._get(c, "rates", "captured_fps"), s5._get(c, "rates", "processed_fps")]
                 for name, c in captures])
+    if trial:  # monitoring continuity over the hour, as each capture saw it
+        r.describe("monitoring at each capture (video, newest frame's age in ms, occupancy, scene analysis, frames "
+                   "processed and failed)",
+                   [[name, s5._get(c, "live", "video"), s5._get(c, "live", "last_frame_age_ms"),
+                     s5._get(c, "live", "occupancy"), s5._get(c, "live", "scene_analysis"),
+                     s5._get(c, "frames", "processed"), s5._get(c, "frames", "failed")] for name, c in captures])
 
-    # ---- chat completion
-    waits = _chat_delay(chat, last)
-    load, asked = _asked(run_dir)
-    worker = _cancellation(chat, last, asked)
-    answered = _answers(chat, load, asked)
-    _chat_described(chat, asked, answered, waits, worker, last)
+    if trial:
+        _trial_live(live, result, captures, last)
+        _trial_chat(chat, captures, last)
+    else:
+        # ---- chat completion
+        waits = _chat_delay(chat, last)
+        load, asked = _asked(run_dir)
+        worker = _cancellation(chat, last, asked)
+        answered = _answers(chat, load, asked)
+        _chat_described(chat, asked, answered, waits, worker, last)
 
     # ---- recognition behaviour: face executed alongside (judged); the rest descriptive
     r = recognition
@@ -406,13 +442,59 @@ def read_integration(run_dir: Path) -> dict[str, s5.Reading]:
     r.describe("the account's answers (unknown accepted; they qualify these lines only)",
                {k: account.get(k) for k in ("stayed_seated", "worked_as_usual", "looked_at_camera_on_purpose",
                                             "other_faces_in_view")} if account is not None else None)
+    if trial:  # leaving and returning over the hour, as the captures saw it (the dashboard's counts; never accuracy)
+        r.describe("identity states at each capture (persons by state)",
+                   [[name, s5._get(c, "live", "identity")] for name, c in captures])
 
     # ---- memory
     _memory(memory, run_dir, result)
     memory.describe("guard peak pressure, min MemFree, min MemAvailable (B)",
                     [s5._get(result, "guard", k) for k in s5.GUARD_FIGURES])
     memory.describe("launch floor", LAUNCH_FLOOR_NOTE)
+    if trial:
+        return dict(zip(TRIAL_PARTS, (execution, live, chat, recognition, memory)))
     return dict(zip(INTEGRATION_PARTS, (execution, chat, recognition, memory)))
+
+
+def _trial_live(r: s5.Reading, result: Any, captures: list[tuple[str, Any]], last: Any) -> None:
+    """The trial's live view (session 109): pictures sent to a viewer (the operator's dashboard), judged from the
+    status counters; its encoder stopped with the runtime; the rest descriptive. No picture is ever kept."""
+    counters = s5._get(last, "components", "preview", "counters")
+    sent = _counter(counters, "stream_pictures_sent")
+    r.item("the live view sent pictures to a viewer (the dashboard) during the run (last capture)",
+           sent if isinstance(sent, int) else s5.MISSING, isinstance(sent, int) and sent >= 1)
+    stopped = s5._get(result, "run_output", "stopped", "stopped")
+    r.item("the live view's encoder stopped with the runtime", s5._get(stopped, "live_view"),
+           s5._get(stopped, "live_view") is True)
+    r.describe("the live view at each capture (state, newest frame's age in ms, pictures sent and requests so far, "
+               "encoder starts)",
+               [[name, s5._get(c, "preview", "state"), s5._get(c, "preview", "age_ms"),
+                 _counter(s5._get(c, "components", "preview", "counters"), "stream_pictures_sent"),
+                 _counter(s5._get(c, "components", "preview", "counters"), "stream_requests"),
+                 _counter(s5._get(c, "components", "preview", "counters"), "encoder_starts")] for name, c in captures])
+    r.describe("live view encoding (ms) at the last capture", s5._get(last, "components", "preview", "encode_ms"))
+
+
+def _trial_chat(r: s5.Reading, captures: list[tuple[str, Any]], last: Any) -> None:
+    """The trial's chat (session 109): the operator's own questions, read from the status counters only (no question's
+    or answer's text exists in any saved file); the chat-induced scene delay judged as in the integration run."""
+    counters = s5._get(last, "components", "chat", "counters")
+    accepted, answered = _counter(counters, "accepted"), _counter(counters, "answered")
+    r.item("your questions: at least one accepted and answered by the scene model (status counters at the last "
+           "capture; no question's or answer's text is read or kept)",
+           {"accepted": accepted, "answered": answered} if isinstance(accepted, int) and accepted >= 1 else s5.MISSING,
+           isinstance(answered, int) and answered >= 1)
+    waits = _chat_delay(r, last)
+    worker = s5._get(last, "components", "scene", "worker")
+    r.describe("chat counters at each capture (fixed labels only)",
+               [[name, s5._get(c, "components", "chat", "counters")] for name, c in captures])
+    r.describe("scene jobs behind a question: waited, questions ended for one after the grace, questions that ended by "
+               "themselves within it (last capture)",
+               {k: _counter(worker, k) for k in ("jobs_waited_for_side", "side_preempted_after_grace",
+                                                 "side_finished_in_grace")})
+    r.describe("scene run time (ms) of the jobs that waited behind a question and of the others (the latest kept)",
+               s5._get(waits, "run_ms"))
+    r.describe("chat: the gate at the last capture", s5._get(last, "components", "chat", "gate"))
 
 
 GROUNDING_SCOPE = ("the grounding check G (sessions 65, 105, 106), descriptive only: four fixed questions; the "
@@ -503,6 +585,7 @@ def main(argv: list[str] | None = None) -> int:
     combined.add_argument("--identity-dir", type=Path, required=True)
     combined.add_argument("--recheck-root", type=Path, help="where accepted corrected F1 readings are")
     commands.add_parser("integration").add_argument("run_dir", type=Path)
+    commands.add_parser("trial").add_argument("run_dir", type=Path)
     args = parser.parse_args(argv)
     if args.command == "chat":
         reading = read_chat(args.run_dir)
@@ -523,6 +606,17 @@ def main(argv: list[str] | None = None) -> int:
             print("=== grounding check G (descriptive only; never part of any verdict)")
             print("\n".join(g.lines))
         print(f"alpha integration check: {'passed' if every else 'not passed'} ({INTEGRATION_SCOPE})")
+        return 0 if every else 1
+    if args.command == "trial":
+        parts = read_integration(args.run_dir, trial=True)
+        for name, part in parts.items():
+            print(f"=== {name}")
+            print("\n".join(part.lines))
+            print(f"trial {name}: {'passed' if part.ok else 'not passed'}"
+                  + (" (only that face executed alongside is judged; no recognition accuracy)"
+                     if name == "recognition behaviour" else ""))
+        every = all(part.ok for part in parts.values())
+        print(f"alpha dashboard trial: {'passed' if every else 'not passed'} ({TRIAL_SCOPE})")
         return 0 if every else 1
     reading, f2 = read_combined(args.run_dir, args.run, args.identity_dir, args.recheck_root)
     print("\n".join(reading.lines))

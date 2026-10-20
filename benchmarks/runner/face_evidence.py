@@ -36,7 +36,8 @@ STATUS_NAMES = ("e1", "k1", "a", "e2", "k2", "end", "n1", "look", "turn", "n2",
                 "seated", "turned", "out", "returned", "faceoff1", "faceoff2", "faceon", "liveoff1", "liveoff2",
                 "liveon", "asked", "sceneoff1", "sceneoff2", "sceneon", "chatoff1", "chatoff2", "chaton",
                 "snapoff",  # the feature-controls check's (D99, features_check)
-                "i1")  # the tracking diagnostic's short integration check's (session 81; with "end")
+                "i1",  # the tracking diagnostic's short integration check's (session 81; with "end")
+                "c4", "c5", "c6")  # the one-hour live-dashboard trial's, with c1-c3 and "end" (session 109)
 CUE_NAMES = ("t0", "k1", "a", "e2", "k2", "stop", "look", "turn", "n2",  # F2's, the natural check's, D91's
              "leave", "back", "pause", "resume",  # D95's live dashboard check
              "away", "faceoff", "faceon", "liveoff", "liveon", "ask", "sceneoff", "askoff", "sceneon", "chatoff",
