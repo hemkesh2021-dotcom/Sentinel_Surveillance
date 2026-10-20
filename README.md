@@ -30,9 +30,10 @@ face recognition and scene analysis under validation*
 > chat with the vision-language model. Neither is done:
 > - face recognition's formal validation (F2) has never passed, and there is no false-acceptance data;
 > - chat is not admitted;
-> - the two have run together only once, in an eight-minute validation-only integration check (20 October). It
->   passed, but it judged no answer's correctness or recognition accuracy, it is not the combined validation (which
->   still needs a passing F2), and it admits nothing.
+> - the two have run together only in two eight-minute validation-only integration checks (20 October). Both
+>   passed, but they judged no recognition accuracy and no answer's correctness: the second asked four grounding
+>   questions, judged by the maintainer against the staged room (two consistent, one unverifiable, one cancelled
+>   and untested). They are not the combined validation, which still needs a passing F2, and they admit nothing.
 >
 > Face recognition is shown only as an experimental demonstration in guarded validation runs. Later work (validation
 > diagnostics and their device sessions, through 20 October) is unreleased: the version is still `2.0.0a1`. See the

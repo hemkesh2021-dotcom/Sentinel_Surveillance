@@ -3,9 +3,9 @@
 Git tag `v2.0.0-alpha.1` · Python package `sentinel-surveillance` `2.0.0a1` · 14 October 2026 · branch
 `alpha-candidate-2026-10`
 
-> **Note (added 2026-10-19, session 94; updated 2026-10-20, session 106).** These notes describe the pre-release as
-> published at `b33c2f3` and are not revised. Later work on `v2-ui-refresh` (sessions 75–106: validation diagnostics,
-> review fixes, a validation-only face + chat integration run, the grounding check's tooling, their device sessions and
+> **Note (added 2026-10-19, session 94; updated 2026-10-21, session 107).** These notes describe the pre-release as
+> published at `b33c2f3` and are not revised. Later work on `v2-ui-refresh` (sessions 75–107: validation diagnostics,
+> review fixes, two validation-only face + chat integration runs, the grounding check, their device sessions and
 > records) is unreleased and summarized in [`ALPHA_CANDIDATE_NOTES.md`](ALPHA_CANDIDATE_NOTES.md). No F2 has validated
 > since, face recognition stays `PENDING_VALIDATION`, chat is not admitted, and the face-plus-chat alpha goal is not met.
 
