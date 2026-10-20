@@ -693,7 +693,15 @@ def _identity(config: SentinelConfig, args: argparse.Namespace, face_backend: Ca
             if not args.yes:
                 print("identity: purge needs --yes", file=sys.stderr)
                 return 1
-            print(json.dumps({"identity": "purge", **store.purge()}), file=out)
+            report = store.purge()  # deletes even when its audit lines cannot be written; reports both outcomes
+            print(json.dumps({"identity": "purge", **report}), file=out)
+            unwritten = [outcome for outcome in report["audit"].values() if outcome != "written"]
+            if report["deletion"] != "complete":
+                print("identity: purge_incomplete", file=sys.stderr)
+                return 1
+            if unwritten:
+                print(f"identity: purge_audit_incomplete:{unwritten[0]}", file=sys.stderr)
+                return 1
             return 0
         if command == "enroll":
             if not args.consent_confirmed:

@@ -213,8 +213,10 @@ COMPARISON_KEYS = {"identity", "schema", "stream_epoch", "frame_seq", "frame_mon
                    "disposition", "score", "w_px", "similarity", "ms", "error"}  # runtime.ComparisonRecord (D87)
 CAPTURE_KEYS = {"identity", "schema", "written", "refused", "faces_kept", "faces_dropped_over_cap", "faces_in_span",
                 "prototypes", "min_best_to_others", "similarity_to_original", "verified"}  # D91, Capture.finish
+CAPTURE_AUDIT_INCOMPLETE = "capture_audit_incomplete"  # identity.experiment: refused, with its gallery written
 CAPTURE_REFUSALS = ("too_few_faces", "too_few_prototypes", "inconsistent_capture", "capture_target_has_gallery",
-                    "capture_not_verified", "capture_write_failed")  # identity.experiment.CAPTURE_REFUSALS
+                    "capture_not_verified", "capture_write_failed",
+                    CAPTURE_AUDIT_INCOMPLETE)  # identity.experiment.CAPTURE_REFUSALS
 CAPTURE_MIN_PROTOTYPES = 4  # identity.experiment.CAPTURE_MIN_PROTOTYPES
 COMPARISON_KINDS = ("full_scale_only", "both")
 ATTEMPTED = ("completed", "failed", "production_not_applied")  # dispositions with a time; the rest were skipped
@@ -354,8 +356,9 @@ def _comparison_problem(item: dict) -> str | None:
 
 
 def _capture_problem(item: dict) -> str | None:
-    """D91: the capture's record (schema 6 only): written exactly when nothing refused it, verified only when written,
-    a fixed refusal label, counts that fit together, and one similarity to the original per prototype (or none)."""
+    """D91: the capture's record (schema 6 only): written exactly when nothing refused it or its completed audit line
+    is missing (CAPTURE_AUDIT_INCOMPLETE: in place, refused for use), verified only when written, a fixed refusal
+    label, counts that fit together, and one similarity to the original per prototype (or none)."""
     if item["schema"] != GEOMETRY_SCHEMA:
         return f"capture: schema {item['schema']!r}; the capture's record is schema {GEOMETRY_SCHEMA}"
     if set(item) != CAPTURE_KEYS:
@@ -369,8 +372,9 @@ def _capture_problem(item: dict) -> str | None:
             and isinstance(similarities, list) and all(_number(v, -1.0, 1.0) for v in similarities)
             and len(similarities) in (0, item["prototypes"])):
         return "capture: a field has the wrong type or value"
-    if item["written"] != (item["refused"] is None) or (item["verified"] and not item["written"]):
-        return "capture: written exactly when nothing refused it, and verified only when written"
+    if item["written"] != (item["refused"] in (None, CAPTURE_AUDIT_INCOMPLETE)) or (item["verified"]
+                                                                                 and not item["written"]):
+        return "capture: written exactly when nothing refused it (or its audit is incomplete), verified only if written"
     return None
 
 

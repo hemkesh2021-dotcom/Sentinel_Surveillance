@@ -15,9 +15,12 @@ the original's compatibility record and identity ID, the operator's consent date
 with the same passphrase into DIR, a new private directory that is not the original's; it is read back and compared,
 and the event is audited there (counts only). Nothing is written when any check fails, and the report's ``refused``
 says which (``too_few_faces``, ``too_few_prototypes``, ``inconsistent_capture``, ``capture_target_has_gallery``,
-``capture_not_verified``, ``capture_write_failed``). The embeddings never leave memory otherwise: the report carries
-counts, and, for the private validation evidence, each prototype's best similarity to the original and the
-consistency check's smallest value (numbers only, as D84's).
+``capture_not_verified``, ``capture_write_failed``). ``written`` is true exactly when the working gallery is on disk,
+so one refusal comes with it: ``capture_audit_incomplete``, a gallery read back and in place whose completed audit
+line could not be written and whose change could not be undone either (``AuditIncomplete``); it is not to be used
+(purge it). The embeddings never leave memory otherwise: the report carries counts, and, for the private validation
+evidence, each prototype's best similarity to the original and the consistency check's smallest value (numbers only,
+as D84's).
 
 **Shadow comparison** (``--face-shadow-gallery DIR``). A working gallery opened read only beside the original (the
 same passphrase, the same compatibility record, identities the original also has). Every face whose vote compared it
@@ -37,6 +40,7 @@ from typing import Any
 from ..media.clock import NS_PER_SECOND
 from .gallery import (
     CONSENT_SCOPE,
+    AuditIncomplete,
     GalleryChanged,
     GalleryDocument,
     GalleryIdentity,
@@ -54,8 +58,9 @@ CAPTURE_SEGMENTS = MAX_PROTOTYPES  # one prototype per equal time segment
 CAPTURE_MIN_FACES = 40  # faces inside the selection span
 CAPTURE_MIN_PROTOTYPES = 4  # segments that gave a face
 SIMILARITY_DECIMALS = 3
+CAPTURE_AUDIT_INCOMPLETE = "capture_audit_incomplete"  # the one refusal whose working gallery was written
 CAPTURE_REFUSALS = ("too_few_faces", "too_few_prototypes", "inconsistent_capture", "capture_target_has_gallery",
-                    "capture_not_verified", "capture_write_failed")
+                    "capture_not_verified", "capture_write_failed", CAPTURE_AUDIT_INCOMPLETE)
 
 
 class ExperimentRefused(Exception):
@@ -209,6 +214,9 @@ class Capture:
                 return self._end(report)
             except GalleryChanged:  # a gallery appeared in the directory after the check above
                 report["refused"] = "capture_target_has_gallery"
+                return self._end(report)
+            except AuditIncomplete:  # read back and in place, its completed line missing: written, not to be used
+                report.update(written=True, verified=True, refused=CAPTURE_AUDIT_INCOMPLETE)
                 return self._end(report)
             except (VaultError, OSError):
                 report["refused"] = "capture_write_failed"

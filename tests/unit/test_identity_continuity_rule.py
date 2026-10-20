@@ -306,6 +306,22 @@ def test_a_track_lost_beyond_its_expiry_still_loses_everything() -> None:
     assert room.person(1).identity is IdentityState.UNRESOLVED
 
 
+def test_a_track_in_a_new_life_never_shows_the_break_of_its_earlier_life() -> None:
+    # Follow-up review A, finding 7: a stalled loop (no frame, no tick) lets a track expire and come back with its
+    # number before any step saw it go. Its earlier life's break stayed and was published as the new life's reason.
+    room = known(Room())
+    jumped = (450.0, 100.0, 550.0, 400.0)
+    room.frames(0.1, (1, jumped))
+    assert room.person(1).identity_reason == NOT_CARRIED[Cause.JUMP]
+    room.clock.advance(1.5)  # nothing runs for 1.5 s: past the 1 s track expiry
+    room.frames(0.1, (1, jumped))  # the same place: a new life, and no break on this frame
+    assert room.breaks[-1]["cause"] == "jump" and len(room.breaks) == 1
+    assert (room.person(1).identity, room.person(1).identity_reason) == (
+        IdentityState.UNRESOLVED, "no face observed yet")
+    room.frames(0.1, (1, SEAT))  # a jump in this life is this life's reason
+    assert room.person(1).identity_reason == NOT_CARRIED[Cause.JUMP] and len(room.breaks) == 2
+
+
 def test_without_the_rule_the_core_reports_no_breaks_and_no_followed_time() -> None:
     room = known(Room(continuity=None))
     room.frames(0.1, (1, (450.0, 100.0, 550.0, 400.0)))  # a jump the plain rule ignores, as before

@@ -88,6 +88,25 @@ def test_authorization_values_json_fields_and_key_names_are_redacted(text, secre
     assert secret not in redact(text) and kept in redact(text)
 
 
+@pytest.mark.parametrize(("text", "secret", "kept"), [
+    ("login failed: password=ab;SYNTH-1", "SYNTH", "password=<redacted>"),
+    ("api_key=x,SYNTH-2 rejected", "SYNTH", "api_key=<redacted> rejected"),
+    ("token=a}SYNTH-3", "SYNTH", "token=<redacted>"),
+    ("secret=a]SYNTH-4", "SYNTH", "secret=<redacted>"),
+    ('passwd=a"SYNTH-5', "SYNTH", "passwd=<redacted>"),
+    ("password: a'SYNTH-6 next", "SYNTH", "password: <redacted> next"),
+    ("password=ab&SYNTH-7", "SYNTH", "password=<redacted>"),  # an & that starts no other parameter
+    ("GET /x?access_token=ab;SYNTH-8&page=2", "SYNTH", "access_token=<redacted>&page=2"),
+    ("Authorization: token ab;SYNTH-9", "SYNTH", "Authorization: <redacted>"),
+    ('Authorization: Digest username="u", response="SYNTH-10"', "SYNTH", "Authorization: <redacted>"),
+], ids=["semicolon", "comma", "brace", "bracket", "double-quote", "single-quote", "ampersand", "query",
+        "authorization-semicolon", "authorization-digest"])
+def test_a_credential_value_with_punctuation_is_redacted_whole(text, secret, kept) -> None:
+    # Follow-up review A, finding 1: an unquoted value stopped at , ; } ] " or ', so the rest of the secret leaked.
+    assert secret not in redact(text) and kept in redact(text)
+    assert secret not in redact_line(text)
+
+
 @pytest.mark.parametrize("text", [
     "token_count: 3 tokens processed", "max_tokens=512", '{"token_type": "bearer"}', "basic check failed",
     "the secretary=front desk", "no credentials here", "Bearer", "keyword: value",
@@ -107,8 +126,12 @@ def test_names_that_only_look_like_credentials_are_left_alone(text) -> None:
     "bearer" + "\t" * 200_000 + "x",
     "basic " + "A" * 200_000,
     "'token'" * 40_000,
+    "password=" + "&a" * 100_000,  # an & that starts no other parameter, again and again
+    "token=&" + "a" * 200_000,
+    "token=x" + "&a=" * 60_000,
+    "Authorization: " + "," * 200_000,
 ], ids=["escapes", "quotes", "names", "names-colon", "equals", "header-spaces", "bearers", "tabs", "basic-run",
-        "quoted-names"])
+        "quoted-names", "ampersands", "long-parameter-name", "parameters", "header-commas"])
 def test_the_new_patterns_stay_linear_on_hostile_text(hostile) -> None:
     started = time.monotonic()
     redact_line(hostile)

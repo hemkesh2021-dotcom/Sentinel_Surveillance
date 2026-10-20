@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -218,7 +219,9 @@ def test_the_commands_enroll_list_revoke_and_purge_without_names(store, tmp_path
     assert call(store, tmp_path, monkeypatch, "purge") == 1
     assert "purge needs --yes" in capsys.readouterr().err
     assert call(store, tmp_path, monkeypatch, "purge", "--yes") == 0
-    assert json.loads(capsys.readouterr().out) == {"identity": "purge", "gallery": 1, "inbox_files": 0}
+    assert json.loads(capsys.readouterr().out) == {"identity": "purge", "gallery": 1, "inbox_files": 0, "left": 0,
+                                                   "deletion": "complete",
+                                                   "audit": {"purge_started": "written", "purge": "written"}}
     assert not store.exists()
 
 
@@ -339,7 +342,8 @@ def test_purge_also_removes_a_staged_gallery_left_by_a_stop_before_the_rename(st
     run(store, photos(store, "a:1", "a:2"))
     store.staged_path.write_bytes(store.gallery_path.read_bytes())  # as a stop between the audit and the rename leaves
     store.staged_path.chmod(0o600)
-    assert store.purge() == {"gallery": 1, "inbox_files": 0}
+    assert store.purge() == {"gallery": 1, "inbox_files": 0, "left": 0, "deletion": "complete",
+                             "audit": {"purge_started": "written", "purge": "written"}}
     assert not store.exists() and not store.staged_path.exists()
 
 
@@ -624,14 +628,15 @@ def test_a_change_that_cannot_be_undone_either_says_it_took_effect(store, monkey
     assert lines[-1]["identity_id"] in enrolled(store) - audited(store)
 
 
-def test_a_torn_last_audit_line_stops_every_change_until_it_is_dealt_with(store) -> None:
+def test_a_torn_last_audit_line_stops_every_gallery_change_until_it_is_dealt_with(store) -> None:
+    # A purge is the exception: it deletes anyway and says its audit is incomplete (follow-up review A, finding 2).
     run(store, photos(store, "b:1", "b:2", folder="earlier"))
     (x,) = enrolled(store)
     with store.audit_path.open("ab") as log:
         log.write(b'{"utc":"2026-10-07T12:00:00+00:00","act')  # as a stop in the middle of an append leaves it
     before = files(store)
     folder = photos(store, "a:1", "a:2")
-    for change in (lambda: run(store, folder), lambda: store.revoke(x, SECRET), store.purge):
+    for change in (lambda: run(store, folder), lambda: store.revoke(x, SECRET)):
         with pytest.raises(VaultError, match="audit_log_torn"):
             change()
     assert files(store) == before and len(list(folder.iterdir())) == 2
@@ -731,3 +736,208 @@ def test_any_other_failure_in_an_identity_command_is_one_label_too(store, tmp_pa
     captured = capsys.readouterr()
     assert captured.err == "identity: failed:KeyError\n" and captured.out == ""
     assert not store.exists() and len(list(folder.iterdir())) == 2
+
+
+# ------------------------------------------- follow-up review A: purge, audit I/O and an enrollment under way
+
+
+def break_audit(store: IdentityStore, monkeypatch, failure: str) -> None:
+    """Make every audit append fail as ``failure`` says."""
+    import sentinel.identity.gallery as gallery
+
+    if failure == "torn":
+        with store.audit_path.open("ab") as log:
+            log.write(b'{"utc":"2026-10-07T12:00:00+00:00","act')  # as a stop in the middle of an append leaves it
+    elif failure == "no-space":
+        monkeypatch.setattr(gallery, "os", ShortWrites(*["fail"] * 8))  # ENOSPC on every audit write
+    elif failure == "not-private":
+        store.audit_path.chmod(0o644)
+    else:  # the log's name is a link, which O_NOFOLLOW refuses
+        store.audit_path.unlink()
+        store.audit_path.symlink_to(store.directory / "elsewhere")
+
+
+PURGE_AUDIT_FAILURES = {"torn": "audit_log_torn", "no-space": "audit_failed:OSError",
+                        "not-private": "audit_file_not_private", "link": "audit_failed:OSError"}
+
+
+@pytest.mark.parametrize("failure", PURGE_AUDIT_FAILURES)
+def test_a_purge_deletes_everything_even_when_its_audit_lines_cannot_be_written(
+        store, tmp_path, monkeypatch, capsys, failure) -> None:
+    # Follow-up review A, finding 2: purge wrote purge_started first and stopped when it could not, so a torn log or
+    # a full disk kept the gallery and the photos after the person withdrew consent.
+    run(store, photos(store, "b:1", "b:2", folder="earlier"))
+    pending = photos(store, "a:1", "a:2", folder="pending")
+    break_audit(store, monkeypatch, failure)
+    log = os.readlink(store.audit_path) if store.audit_path.is_symlink() else store.audit_path.read_bytes()
+    assert call(store, tmp_path, monkeypatch, "purge", "--yes", secret=None) == 1
+    captured = capsys.readouterr()
+    label = PURGE_AUDIT_FAILURES[failure]
+    assert captured.err == f"identity: purge_audit_incomplete:{label}\n"
+    assert json.loads(captured.out) == {"identity": "purge", "gallery": 1, "inbox_files": 2, "left": 0,
+                                        "deletion": "complete", "audit": {"purge_started": label, "purge": label}}
+    assert not store.exists() and list(store.inbox.iterdir()) == [] and not pending.exists()
+    assert (os.readlink(store.audit_path) if store.audit_path.is_symlink() else store.audit_path.read_bytes()) == log
+    assert not (store.directory / "elsewhere").exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root is not held back by a folder's permissions")
+def test_a_purge_that_cannot_delete_everything_says_what_is_left_and_audits_it_as_incomplete(
+        store, tmp_path, monkeypatch, capsys) -> None:
+    run(store, photos(store, "b:1", "b:2", folder="earlier"))
+    stuck = photos(store, "a:1", "a:2", folder="stuck")
+    free = photos(store, "c:1", folder="free")
+    stuck.chmod(0o500)  # its files cannot be unlinked (EACCES)
+    try:
+        assert call(store, tmp_path, monkeypatch, "purge", "--yes", secret=None) == 1
+    finally:
+        stuck.chmod(0o700)
+    captured = capsys.readouterr()
+    assert captured.err == "identity: purge_incomplete\n"
+    assert json.loads(captured.out) == {"identity": "purge", "gallery": 1, "inbox_files": 1, "left": 2,
+                                        "deletion": "incomplete",
+                                        "audit": {"purge_started": "written", "purge_incomplete": "written"}}
+    assert not store.exists() and not free.exists() and len(list(stuck.iterdir())) == 2
+    assert [(line["action"], line.get("left")) for line in audit_lines(store)[-2:]] == [
+        ("purge_started", None), ("purge_incomplete", 2)]
+
+
+class FailingAuditReads(ShortWrites):
+    """``os`` as gallery.py sees it, with ``fstat`` or ``pread`` (only the audit calls them) failing with EIO on its
+    ``nth`` call."""
+
+    def __init__(self, name: str, nth: int) -> None:
+        super().__init__()
+        self._name, self._nth, self._calls = name, nth, 0
+
+    def fstat(self, fd: int):
+        return self._call("fstat", os.fstat, fd)
+
+    def pread(self, fd: int, length: int, offset: int) -> bytes:
+        return self._call("pread", os.pread, fd, length, offset)
+
+    def _call(self, name, real, *args):
+        if name == self._name:
+            self._calls += 1
+            if self._calls == self._nth:
+                raise OSError(errno.EIO, "Input/output error")
+        return real(*args)
+
+
+@pytest.mark.parametrize("change", ["enroll", "revoke"])
+@pytest.mark.parametrize("line", ["started", "completed"])
+@pytest.mark.parametrize("failing", ["fstat", "pread"])
+def test_an_audit_read_error_is_an_audit_failure_and_never_leaves_a_change_half_audited(
+        store, tmp_path, monkeypatch, capsys, change, line, failing) -> None:
+    # Follow-up review A, finding 5: fstat and pread raised a bare OSError, which commit did not treat as a failed
+    # completed line: the change stayed in effect with its started line alone, and the command said failed:OSError.
+    import sentinel.identity.gallery as gallery
+
+    run(store, photos(store, "b:1", "b:2", folder="earlier"))
+    (x,) = enrolled(store)
+    folder = photos(store, "a:1", "a:2")
+    gallery_before, lines_before = store.gallery_path.read_bytes(), audit_lines(store)
+    monkeypatch.setattr(gallery, "os", FailingAuditReads(failing, 1 if line == "started" else 2))
+    args = ("enroll", str(folder), "--consent-confirmed", "--consent-date", "2026-10-07") if change == "enroll" \
+        else ("revoke", x)
+    assert call(store, tmp_path, monkeypatch, *args) == 1
+    captured = capsys.readouterr()
+    assert captured.err == "identity: audit_failed:OSError\n" and captured.out == ""
+    assert store.gallery_path.read_bytes() == gallery_before  # never changed, or put back
+    assert [entry["action"] for entry in audit_lines(store)[len(lines_before):]] == (
+        [f"{change}_started", f"{change}_aborted"] if line == "completed" else [])
+    assert enrolled(store) == audited(store) == {x} and len(list(folder.iterdir())) == 2
+
+
+class FailingAuditClose(ShortWrites):
+    """``os`` as gallery.py sees it: closing the audit log fails with EIO (after its line was written and flushed);
+    the descriptor is released all the same, as on Linux."""
+
+    def __init__(self, audit_path: Path) -> None:
+        super().__init__()
+        self._audit, self._fds, self.failed = str(audit_path), set(), 0
+
+    def open(self, path, flags, mode=0o777):
+        fd = os.open(path, flags, mode)
+        if str(path) == self._audit:
+            self._fds.add(fd)
+        return fd
+
+    def close(self, fd: int) -> None:
+        os.close(fd)
+        if fd in self._fds:
+            self._fds.discard(fd)
+            self.failed += 1
+            raise OSError(errno.EIO, "Input/output error")
+
+
+def test_a_close_error_after_an_audit_line_was_flushed_does_not_fail_the_change(store, monkeypatch) -> None:
+    import sentinel.identity.gallery as gallery
+
+    run(store, photos(store, "b:1", "b:2", folder="earlier"))
+    failing = FailingAuditClose(store.audit_path)
+    monkeypatch.setattr(gallery, "os", failing)
+    folder = photos(store, "a:1", "a:2")
+    report = run(store, folder)
+    assert report["verified"] is True and failing.failed == 2 and not folder.exists()
+    assert [line["action"] for line in audit_lines(store)][-2:] == ["enroll_started", "enroll"]
+    assert len(enrolled(store)) == 2 == len(audited(store))
+
+
+class Preparing(Pipeline):
+    """The face pipeline of an enrollment that holds once every photo is read and embedded, before the enrollment
+    takes the change lock (``compatibility`` is its next call), until ``go`` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reached, self.go = threading.Event(), threading.Event()
+
+    def compatibility(self) -> FaceCompatibility:
+        self.reached.set()
+        assert self.go.wait(60)
+        return super().compatibility()
+
+
+@pytest.mark.parametrize("before", ["no-gallery", "another-person"])
+@pytest.mark.parametrize("then", ["purged", "purged-and-supplied-again"])
+def test_a_purge_while_an_enrollment_prepares_is_never_undone_by_it(
+        store, tmp_path, monkeypatch, capsys, before, then) -> None:
+    # Follow-up review A, finding 8: enrollment reads and embeds the photos before it takes the change lock. A purge
+    # in that time deleted the gallery and the photos; the enrollment then wrote a new gallery holding the purged
+    # person's face. Copies supplied again under the same names, sizes and times are new files: refused too.
+    if before == "another-person":
+        run(store, photos(store, "b:1", "b:2", folder="earlier"))
+    folder = photos(store, "a:1", "a:2", "a:3")
+    names = {p.name: (p.read_text(), p.stat()) for p in folder.iterdir()}
+    pipeline = Preparing()
+    outcome: dict = {}
+    monkeypatch.setenv(SECRET_ENV, SECRET.reveal())
+    thread = threading.Thread(target=lambda: outcome.update(code=main(
+        cli(store, tmp_path, "enroll", str(folder), "--consent-confirmed", "--consent-date", "2026-10-07"),
+        face_backend=lambda weights: pipeline, identity_store=lambda directory: store)))
+    thread.start()
+    try:
+        assert pipeline.reached.wait(60)  # every photo embedded; the change lock not yet taken
+        store.purge()
+        assert not store.exists() and not folder.exists()
+        if then == "purged-and-supplied-again":
+            time.sleep(0.05)  # past the file clock's coarse tick, so the new copies' change times differ
+            folder.mkdir()
+            for name, (text, info) in names.items():
+                (folder / name).write_text(text)
+                os.utime(folder / name, ns=(info.st_atime_ns, info.st_mtime_ns))
+            again = {p.name: p.stat() for p in folder.iterdir()}
+            assert {n: (s.st_size, s.st_mtime_ns) for n, s in again.items()} == {
+                n: (i.st_size, i.st_mtime_ns) for n, (_, i) in names.items()}  # names, sizes and times alike
+            assert all(again[n].st_ctime_ns != i.st_ctime_ns for n, (_, i) in names.items())
+    finally:
+        pipeline.go.set()
+        thread.join(60)
+    assert not thread.is_alive() and outcome["code"] == 1
+    captured = capsys.readouterr()
+    assert captured.err == "identity: photos_changed\n"
+    assert json.loads(captured.out)["refused"] == "photos_changed"
+    assert not store.exists() and enrolled(store) == audited(store) == set()
+    assert [line["action"] for line in audit_lines(store)][-2:] == ["purge_started", "purge"]
+    if then == "purged-and-supplied-again":
+        assert sorted(p.name for p in folder.iterdir()) == sorted(names)  # the new copies are left alone

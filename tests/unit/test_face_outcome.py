@@ -189,6 +189,23 @@ def test_a_track_measured_again_only_after_expiring_starts_a_new_life_even_with_
     assert world.person(1).identity is IdentityState.KNOWN
 
 
+def test_a_track_in_a_new_life_never_shows_the_reason_its_earlier_life_ended_with() -> None:
+    # Follow-up review A, finding 7: a new life dropped the earlier life's note only along with earlier votes, so a
+    # life that had none (ambiguous faces, no face) passed its reason on to the track that came back with its number.
+    world = World()
+    frame, persons = world.frame((1, LEFT), dt=1.0)
+    x1, y1, x2, y2 = head(LEFT)
+    middle = (x1 + x2) / 2
+    world.faces(frame, persons, ((x1, y1, middle, y2), A_FACE), ((middle, y1, x2, y2), B_FACE))  # two in one head
+    assert world.person(1).identity_reason == "face ownership ambiguous"
+    world.frame((1, LEFT), dt=1.5)  # measured again only after its 1 s expiry, with no step between: a new life
+    assert (world.person(1).identity, world.person(1).identity_reason) == (
+        IdentityState.UNRESOLVED, "no face observed yet")
+    frame, persons = world.frame((1, LEFT), dt=0.5)  # this life's own observation is kept
+    world.faces(frame, persons)  # analysed: no face
+    assert world.person(1).identity_reason == "no face visible"
+
+
 def test_a_result_for_a_frame_from_before_face_was_on_again_is_ignored_while_later_ones_count() -> None:
     # Review A, finding 7 (D99), in the core: turned off and on while the frame's analysis ran.
     world = World()

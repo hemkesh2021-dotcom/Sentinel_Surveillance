@@ -26,11 +26,16 @@ back and compared in full, checked against the gallery it was based on, recorded
 over the gallery, then recorded as ``<action>`` (completed). A failed rename adds ``<action>_aborted``; a completed
 line that cannot be written undoes the change. A completed line is only ever written for a change in effect, and the
 gallery never changes without a started line before it. Readers that count completed events (F1 counts ``enroll``)
-are unaffected by the started and aborted lines. Purge records ``purge_started`` and ``purge``.
+are unaffected by the started and aborted lines. An audit I/O error of any kind is ``audit_failed:<class>``.
+
+**Purge deletes whatever the audit log's state.** It records ``purge_started``, deletes, then records ``purge`` (or
+``purge_incomplete`` with what is left), but a line it cannot write never stops the deletion: the operator's erasure
+does not depend on the log's health. Its report gives the deletion's outcome and each audit line's (written, or the
+failure's label) separately.
 
 **Not atomic across a stop.** A crash or power loss between a started line and its outcome leaves the started line
 alone, with the gallery either unchanged or changed; only the gallery says which. A torn last line (a stop during an
-append) stops every change until an operator deals with it (``audit_log_torn``).
+append) stops every change but a purge until an operator deals with it (``audit_log_torn``).
 
 Removal: ``revoke`` rewrites the gallery without the identity; ``purge`` deletes the gallery, any staging or previous
 file left by a stop, and the inbox. The runtime reads the gallery once at startup, so either takes effect at the next
@@ -212,6 +217,45 @@ def _associated(compatibility: FaceCompatibility) -> dict[str, Any]:
     return {"schema": SCHEMA, "schema_version": SCHEMA_VERSION, "compatibility": compatibility.model_dump(mode="json")}
 
 
+def _file_identity(info: os.stat_result) -> tuple[int, ...]:
+    """What makes a photo copy the same file: its device, inode, size, and modification and change times. A change
+    time is set when a file is made and cannot be set back, so a copy supplied again is never the same file."""
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def _empty(directory: Path) -> tuple[int, int]:
+    """Delete everything inside ``directory``, never following a link: (files deleted, files left). A folder that
+    cannot be listed counts as one left; an emptied folder is removed (best effort: an empty one holds nothing)."""
+    deleted = left = 0
+    try:
+        with os.scandir(directory) as listing:
+            entries = list(listing)
+    except FileNotFoundError:
+        return 0, 0
+    except OSError:
+        return 0, 1
+    for entry in entries:
+        try:
+            folder = entry.is_dir(follow_symlinks=False)
+        except OSError:
+            folder = False
+        if folder:
+            inside, still = _empty(Path(entry.path))
+            deleted, left = deleted + inside, left + still
+            with contextlib.suppress(OSError):
+                os.rmdir(entry.path)
+            continue
+        try:
+            os.unlink(entry.path)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            left += 1
+            continue
+        deleted += 1
+    return deleted, left
+
+
 class GalleryNotVerified(VaultError):
     """The sealed gallery, decrypted again, is not exactly what was sealed."""
 
@@ -379,10 +423,11 @@ class IdentityStore:
         5. Append ``<action>``, the completed line.
 
         A failure in 1-3 leaves the gallery and the audit log as they were. A failed rename (4) adds
-        ``<action>_aborted``. A completed line that cannot be written (5) undoes the change from the previous file
-        and adds ``<action>_aborted``, both best effort. So a completed line is only ever written for a change in
-        effect, and a change never takes effect without its started line before it; only if the undo also fails does
-        the change stay with its started line alone (``AuditIncomplete``).
+        ``<action>_aborted``. A completed line that cannot be written (5), for any reason, undoes the change from the
+        previous file and adds ``<action>_aborted``, both best effort. So a completed line is only ever written for a
+        change in effect, and a change never takes effect without its started line before it; only if the undo also
+        fails does the change stay with its started line alone (``AuditIncomplete``: the one failure after which the
+        new gallery is in place).
 
         Not atomic across a stop (a crash or power loss): a stop after 3 leaves a started line with no outcome, the
         gallery either unchanged (before 4) or changed (after 4), and the staging or previous file until the next
@@ -414,7 +459,7 @@ class IdentityStore:
                     raise
                 try:
                     self.audit(action, identity_id, **counts)
-                except VaultError:
+                except Exception:  # not written: no completed line for a change in effect
                     self._undo(had_gallery=base is not None)
                     self._audit_best_effort(f"{action}_aborted", identity_id)
                     raise
@@ -443,15 +488,20 @@ class IdentityStore:
 
     def audit(self, action: str, identity_id: str | None = None, **counts: int) -> None:
         """Append one complete numbers-only line, or nothing; the identity ID is opaque and nothing else identifies
-        anyone. A short or failed write is cut back to the log's previous length (``audit_failed:<class>``). A log
-        whose last line is torn (only a stop in the middle of an append leaves one) is refused (``audit_log_torn``):
-        nothing is appended to it until an operator has dealt with it."""
+        anyone. Any I/O error is ``audit_failed:<class>``, never a bare OSError; a short or failed write is cut back
+        to the log's previous length. A log whose last line is torn (only a stop in the middle of an append leaves
+        one) is refused (``audit_log_torn``): nothing is appended to it until an operator has dealt with it. Once the
+        line is flushed, an error closing the file changes nothing (the descriptor is released either way)."""
         if not all(isinstance(value, int) and not isinstance(value, bool) for value in counts.values()):
             raise ValueError("audit details are counts only")
         line = _canonical({"utc": self._utc_now().isoformat(timespec="seconds"), "action": action,
                            "identity_id": identity_id, **counts}) + b"\n"
         with self.locked():
-            if self.audit_path.exists():
+            try:
+                exists = self.audit_path.exists()
+            except OSError as exc:
+                raise VaultError(f"audit_failed:{type(exc).__name__}") from None
+            if exists:
                 problem = private_file_problem(self.audit_path)
                 if problem is not None:
                     raise VaultError(f"audit_{problem}")
@@ -460,8 +510,12 @@ class IdentityStore:
             except OSError as exc:
                 raise VaultError(f"audit_failed:{type(exc).__name__}") from None
             try:
-                length = os.fstat(fd).st_size
-                if length and os.pread(fd, 1, length - 1) != b"\n":
+                try:  # nothing written yet
+                    length = os.fstat(fd).st_size
+                    torn = length > 0 and os.pread(fd, 1, length - 1) != b"\n"
+                except OSError as exc:
+                    raise VaultError(f"audit_failed:{type(exc).__name__}") from None
+                if torn:
                     raise VaultError("audit_log_torn")
                 try:
                     view = memoryview(line)
@@ -474,7 +528,16 @@ class IdentityStore:
                         os.fsync(fd)
                     raise VaultError(f"audit_failed:{type(exc).__name__}") from None
             finally:
-                os.close(fd)
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+
+    def _audit_outcome(self, action: str, **counts: int) -> str:
+        """``written``, or the label of why the line could not be (``audit``'s failures)."""
+        try:
+            self.audit(action, None, **counts)
+        except VaultError as exc:
+            return exc.label
+        return "written"
 
     def revoke(self, identity_id: str, secret: Secret) -> bool:
         """Rewrite the gallery without ``identity_id`` through ``commit`` (under the lock, audited before and after);
@@ -489,32 +552,50 @@ class IdentityStore:
                         identities_left=len(document.identities) - 1)
             return True
 
-    def purge(self) -> dict[str, int]:
+    def purge(self) -> dict[str, Any]:
         """Delete the gallery, any staging or previous file left behind and everything in the inbox, under the lock,
-        between a ``purge_started`` and a ``purge`` line. Deleting cannot be undone: a failure part way leaves the
-        started line without its completed one."""
+        between a ``purge_started`` line and a ``purge`` one (``purge_incomplete``, with ``left``, when something
+        could not be deleted). An audit line that cannot be written is reported, never a reason to keep the data.
+
+        Returns the files deleted (``gallery``, ``inbox_files``), what is still there (``left``: the gallery, a
+        staging or previous file, or an inbox file; a folder that cannot be listed counts as one), ``deletion``
+        (``complete`` exactly when nothing is left) and ``audit`` (each line's action: ``written`` or why not)."""
         removed = {"gallery": 0, "inbox_files": 0}
         with self.locked():
-            self.audit("purge_started")
-            if self.gallery_path.exists():
-                self.gallery_path.unlink()
-                removed["gallery"] = 1
-            for leftover in (self.staged_path, self.previous_path):  # not counted: the purge line's fields stay
-                leftover.unlink(missing_ok=True)
-            if self.inbox.is_dir():
-                for path in sorted(self.inbox.rglob("*"), reverse=True):
-                    if path.is_dir() and not path.is_symlink():
-                        with contextlib.suppress(OSError):
-                            path.rmdir()
-                    else:
-                        path.unlink()
-                        removed["inbox_files"] += 1
-            self.audit("purge", None, **removed)
-        return removed
+            audit = {"purge_started": self._audit_outcome("purge_started")}
+            left = 0
+            for path in (self.gallery_path, self.staged_path, self.previous_path):  # only the gallery is counted
+                try:
+                    os.unlink(path)
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    left += 1
+                    continue
+                if path == self.gallery_path:
+                    removed["gallery"] = 1
+            fsync_directory(self.directory)
+            try:
+                inbox = os.lstat(self.inbox)
+            except FileNotFoundError:
+                inbox = None
+            except OSError:
+                left += 1
+                inbox = None
+            if inbox is not None and not stat.S_ISDIR(inbox.st_mode):
+                left += 1  # a link or a file in its place: never followed
+            elif inbox is not None:
+                removed["inbox_files"], inbox_left = _empty(self.inbox)
+                left += inbox_left
+            if left:
+                audit["purge_incomplete"] = self._audit_outcome("purge_incomplete", **removed, left=left)
+            else:
+                audit["purge"] = self._audit_outcome("purge", **removed)
+        return {**removed, "left": left, "deletion": "incomplete" if left else "complete", "audit": audit}
 
-    def enrollment_folder(self, folder: Path) -> list[tuple[Path, tuple[int, int, int]]]:
+    def enrollment_folder(self, folder: Path) -> list[tuple[Path, tuple[int, ...]]]:
         """The photo copies of one enrollment: a folder directly inside the inbox (not a link) holding regular,
-        non-hidden files only; returns each file with its (inode, size, mtime_ns). Anything else is refused."""
+        non-hidden files only; returns each file with its identity (``_file_identity``). Anything else is refused."""
         folder = Path(folder)
         if folder.is_symlink() or not folder.is_dir() or folder.resolve().parent != self.inbox.resolve():
             raise VaultError("photos_not_in_inbox")
@@ -523,10 +604,20 @@ class IdentityStore:
             info = os.lstat(path)
             if path.name.startswith(".") or not stat.S_ISREG(info.st_mode):
                 raise VaultError("photos_folder_not_plain")  # a link, folder, hidden or special file
-            entries.append((path, (info.st_ino, info.st_size, info.st_mtime_ns)))
+            entries.append((path, _file_identity(info)))
         return entries
 
-    def delete_supplied_copies(self, folder: Path, entries: list[tuple[Path, tuple[int, int, int]]]) -> dict[str, int]:
+    def supplied_copies_unchanged(self, folder: Path, entries: list[tuple[Path, tuple[int, ...]]]) -> bool:
+        """Whether ``folder`` is still a plain photo folder directly inside the inbox and every listed copy is still
+        there as the same file. Checked under ``locked()`` before a change uses what was read from them: a purge since
+        deleted them, and copies supplied again under the same names are new files (their change time differs)."""
+        try:
+            now = dict(self.enrollment_folder(folder))
+        except (VaultError, OSError):
+            return False
+        return all(now.get(path) == identity for path, identity in entries)
+
+    def delete_supplied_copies(self, folder: Path, entries: list[tuple[Path, tuple[int, ...]]]) -> dict[str, int]:
         """Delete exactly the listed copies, each only if it is still the same file, then the folder if empty."""
         deleted = changed = 0
         for path, identity in entries:
@@ -535,7 +626,7 @@ class IdentityStore:
             except FileNotFoundError:
                 changed += 1
                 continue
-            if not stat.S_ISREG(info.st_mode) or (info.st_ino, info.st_size, info.st_mtime_ns) != identity:
+            if not stat.S_ISREG(info.st_mode) or _file_identity(info) != identity:
                 changed += 1
                 continue
             path.unlink()

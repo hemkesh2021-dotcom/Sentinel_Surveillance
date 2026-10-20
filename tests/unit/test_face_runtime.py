@@ -831,6 +831,74 @@ def test_a_capture_run_offers_only_the_one_persons_compared_faces_and_writes_onc
     assert "embedding" not in json.dumps(record) and capture.kept == 0
 
 
+@pytest.mark.parametrize("fault", ["completed-line-unreadable", "completed-line-and-undo-fail"])
+def test_a_capture_says_written_exactly_when_its_working_gallery_stays_on_disk(tmp_path, monkeypatch, fault) -> None:
+    # Follow-up review A, findings 5 and 6, at the runtime's stop. An EIO from the audit's fstat on the completed line
+    # escaped as a bare OSError: no undo, and the record said written=False with the gallery in place. A completed
+    # line that cannot be written and an undo that fails too (AuditIncomplete) were also recorded as nothing written.
+    import errno
+
+    import sentinel.identity.gallery as gallery_module
+    from sentinel.identity.experiment import Capture
+    from sentinel.identity.gallery import IdentityStore
+
+    sealer = Sealer(kdf_n=2**14)
+    try:
+        sealer.check()
+    except VaultError as exc:
+        pytest.skip(f"the system Python's cryptography is not usable here ({exc.label})")
+    store = IdentityStore(tmp_path / "work", sealer)
+    capture = Capture(store, SECRET, GALLERY, "2026-10-14", 0.70)
+    (tmp_path / "run").mkdir()
+    faces = {"n": 0}
+
+    def embedding(frame):
+        faces["n"] += 1
+        return vec(0.97, 0.1, 0.0, 0.05 + 0.001 * (faces["n"] % 7))
+
+    loop = Loop(tmp_path / "run", analyze=_candidate_analyze(embedding), detection="full_scale", capture=capture)
+    for _ in range(int(80 * 15)):
+        loop.frame()
+    calls = {"fstat": 0, "write": 0}
+
+    class Faulty:  # ``os`` as gallery.py sees it; only the audit calls fstat and write there
+        def __getattr__(self, name: str):
+            return getattr(os, name)
+
+        def fstat(self, fd: int):
+            calls["fstat"] += 1
+            if fault == "completed-line-unreadable" and calls["fstat"] == 2:
+                raise OSError(errno.EIO, "Input/output error")
+            return os.fstat(fd)
+
+        def write(self, fd: int, data) -> int:
+            calls["write"] += 1
+            if fault == "completed-line-and-undo-fail" and calls["write"] == 2:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return os.write(fd, data)
+
+    monkeypatch.setattr(gallery_module, "os", Faulty())
+    if fault == "completed-line-and-undo-fail":
+        real_unlink = Path.unlink
+
+        def unlink(self, *args, **kwargs):  # the undo removes the new gallery: that fails too
+            if self == store.gallery_path:
+                raise OSError(errno.EIO, "Input/output error")
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", unlink)
+    assert "face_capture" not in loop.close()["stopped"]  # finish() refused or wrote; it never raised
+    (record,) = [r for r in loop.runtime.drain_identity_records() if r["identity"] == "capture"]
+    actions = [json.loads(line)["action"] for line in store.audit_path.read_text().splitlines()]
+    if fault == "completed-line-unreadable":  # undone: nothing written, and the log says so
+        assert (record["written"], record["refused"], record["verified"]) == (False, "capture_write_failed", False)
+        assert not store.exists() and actions == ["capture_started", "capture_aborted"]
+    else:  # in place, verified, its completed line missing: written, and refused for use
+        assert (record["written"], record["refused"], record["verified"]) == (True, "capture_audit_incomplete", True)
+        assert store.exists() and actions == ["capture_started"]
+        assert len(store.load(SECRET).identities[0].prototypes) == record["prototypes"]
+
+
 def test_a_capture_that_raises_at_the_stop_is_reported_and_the_rest_of_the_stop_still_runs(tmp_path) -> None:
     class Raising:  # a capture whose write raises: Capture.finish refuses instead, so this is the backstop
         def offer(self, frame_ns, embedding) -> None:

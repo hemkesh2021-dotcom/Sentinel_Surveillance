@@ -142,7 +142,8 @@ def test_revoke_removes_one_identity_and_purge_removes_everything(store) -> None
     assert store.revoke("idn-000000000001", SECRET) is False
     (store.inbox / "batch").mkdir()
     (store.inbox / "batch" / "photo-1.jpg").write_bytes(b"synthetic")
-    assert store.purge() == {"gallery": 1, "inbox_files": 1}
+    assert store.purge() == {"gallery": 1, "inbox_files": 1, "left": 0, "deletion": "complete",
+                             "audit": {"purge_started": "written", "purge": "written"}}
     assert not store.gallery_path.exists() and list(store.inbox.iterdir()) == []
     lines = [json.loads(line) for line in store.audit_path.read_text().splitlines()]
     assert [(line["action"], line["identity_id"]) for line in lines] == [  # each change started, then completed

@@ -410,3 +410,20 @@ def test_a_telegram_error_that_echoes_credentials_is_stored_without_them(db: Dat
     stored += " ".join(str(v) for r in db.connection.execute("SELECT * FROM delivery_attempts") for v in r)
     assert "needs operator action: HTTP 401, error 401: Unauthorized" in stored
     assert "SYNTH" not in stored
+
+
+@pytest.mark.parametrize("detail", [
+    "relay login failed: password=ab;SYNTH-1",
+    "relay refused api_key=x,SYNTH-2 for this chat",
+    "relay said token=a}SYNTH-3 and secret=b]SYNTH-4",
+    'relay sent Authorization: Digest username="u", response="SYNTH-5"',
+], ids=["semicolon", "comma", "brace-bracket", "digest"])
+def test_a_stored_delivery_detail_never_keeps_part_of_a_credential_with_punctuation(
+        db: Database, clock: FakeClock, detail: str) -> None:
+    # Follow-up review A, finding 1: the value stopped at the first , ; } ] or quote, and the rest was stored.
+    open_incident(db, clock, signal(1))
+    assert worker(db, clock, Scripted("telegram", DeliveryResult(DeliveryStatus.RETRY, detail))).run_once() == [
+        (1, "retry")]
+    stored = " ".join(str(v) for r in db.connection.execute("SELECT * FROM outbox") for v in r)
+    stored += " ".join(str(v) for r in db.connection.execute("SELECT * FROM delivery_attempts") for v in r)
+    assert "relay" in stored and "<redacted>" in stored and "SYNTH" not in stored

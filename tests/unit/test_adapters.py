@@ -251,6 +251,20 @@ def test_an_adapter_that_fails_to_load_with_credentials_in_its_error_shows_only_
     assert "SYNTH" not in after.reason
 
 
+def test_an_adapter_load_error_never_keeps_part_of_a_credential_with_punctuation(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Follow-up review A, finding 1: "password=ab;cd" kept ";cd" and "Authorization: token ab;cd" kept ";cd".
+    (tmp_path / "sentinel_synthetic_punctuated_adapter.py").write_text(
+        "raise RuntimeError('cannot reach model server: password=ab;SYNTH-1\\n"
+        "Authorization: token ab;SYNTH-2')\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    spec = AdapterSpec(**{**vars(REGISTRY["demo-scene"]), "module": "sentinel_synthetic_punctuated_adapter"})
+    (scene,) = resolve([manifest()], registry={"demo-scene": spec}, known_profiles=PROFILES)
+    implementation, after = load(scene)
+    assert implementation is None and after.reason.startswith("failed to load: RuntimeError: cannot reach model")
+    assert "password=<redacted>" in after.reason and "SYNTH" not in after.reason
+
+
 def test_config_validate_never_echoes_a_credential_given_where_a_value_was_expected(
         tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     path = tmp_path / "sentinel.yaml"

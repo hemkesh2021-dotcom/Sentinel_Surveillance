@@ -186,7 +186,8 @@ VOTE_NOTES = ("face matched", "face matched nobody", "face matches more than one
 TICKS = vocab("offered", "skipped_no_person", "stopping")  # identity.worker TICK_*
 COMPARISON_KINDS = ("full_scale_only", "both")  # identity.comparison.Kind
 CAPTURE_REFUSALS = ("too_few_faces", "too_few_prototypes", "inconsistent_capture", "capture_target_has_gallery",
-                    "capture_not_verified", "capture_write_failed")  # identity.experiment.CAPTURE_REFUSALS (D91)
+                    "capture_not_verified", "capture_write_failed",
+                    "capture_audit_incomplete")  # identity.experiment.CAPTURE_REFUSALS (D91)
 COMPARISON_DISPOSITIONS = ("completed", "failed", "production_not_applied", "skipped_one_per_result",
                            "skipped_stopping", "skipped_production_waiting", "skipped_no_landmarks",
                            "skipped_stale", "skipped_cap", "skipped_interval",
@@ -457,7 +458,7 @@ ENROLL = JsonProfile({
     "results[].reason": vocab("face_found", "no_face", "several_faces", "unreadable_photo", "low_quality"),
     "results[].quality": NUM, "results[].face_width_px": INT, "inconsistent_photos[]": INT,
     "refused": Either((vocab("too_many_photos", "too_few_usable_photos", "inconsistent_photos",
-                             "close_to_enrolled_identity"), template(r"gallery_incompatible:(.+)"))),
+                             "close_to_enrolled_identity", "photos_changed"), template(r"gallery_incompatible:(.+)"))),
     "identity_id": IDN, "verified": BOOL, "photos_deleted": INT, "photos_changed_not_deleted": INT,
     "folder_entries_left": INT,
 })
@@ -467,8 +468,9 @@ LISTING = JsonProfile({
 })
 AUDIT = JsonProfile({  # identity.gallery: a change's started line, then its completed (or aborted) one
     "utc": ISO, "action": vocab("enroll", "revoke", "purge", "enroll_started", "enroll_aborted", "revoke_started",
-                                "revoke_aborted", "purge_started"), "identity_id": maybe(IDN), "photos_used": INT,
-    "photos_rejected": INT, "identities_left": INT, "gallery": INT, "inbox_files": INT,
+                                "revoke_aborted", "purge_started", "purge_incomplete"), "identity_id": maybe(IDN),
+    "photos_used": INT, "photos_rejected": INT, "identities_left": INT, "gallery": INT, "inbox_files": INT,
+    "left": INT,  # purge_incomplete: what could not be deleted
 }, lines=True)
 F1_PROVENANCE = KeyValueProfile({
     "inbox_folder_name": RUN_NAME, "gallery_before_dryrun": vocab("absent", "present"),

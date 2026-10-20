@@ -622,6 +622,18 @@ def test_the_checker_matches_the_runtimes_schema_and_values(mods) -> None:
     assert set(mods.evidence.COMPARISON_DISPOSITIONS) == set(check.COMPARISON_DISPOSITIONS)
 
 
+def test_a_capture_left_in_place_without_its_completed_audit_line_is_a_valid_record_and_never_usable(mods) -> None:
+    # Follow-up review A, finding 6: such a working gallery is written (on disk) and refused for use.
+    record = {"identity": "capture", "schema": mods.check.GEOMETRY_SCHEMA, "written": True,
+              "refused": "capture_audit_incomplete", "faces_kept": 80, "faces_dropped_over_cap": 0,
+              "faces_in_span": 50, "prototypes": 8, "min_best_to_others": 0.95, "similarity_to_original": [0.9] * 8,
+              "verified": True}
+    assert mods.check._record_problem("capture", record) is None
+    assert mods.check._record_problem("capture", {**record, "written": False, "verified": False}) is not None
+    assert mods.check._record_problem("capture", {**record, "refused": "capture_write_failed"}) is not None
+    assert mods.check._record_problem("capture", {**record, "refused": None}) is None  # a complete capture
+
+
 # ---------------------------------------------------------------- D84: schema 2's diagnostic numbers
 
 
