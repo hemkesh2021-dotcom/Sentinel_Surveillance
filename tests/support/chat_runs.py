@@ -2,7 +2,9 @@
 
 ``build_run`` drives DemoRuntime with a threaded scene worker and chat in its validation run (and, with ``face``, a
 threaded face worker in its validation run too) over simulated minutes, writing the guard's files as step5_guard writes
-them and the chat load as alpha_load records it. Used by test_alpha_check and test_integration_check.
+them and the chat load as alpha_load records it. Used by test_alpha_check and test_integration_check. With
+``grounding`` (session 106) the grounding check's four questions are asked at alpha_load's G slots and recorded with
+alpha_load's own G record function, their synthetic answers (never real ones) in grounding.jsonl.
 """
 
 from __future__ import annotations
@@ -87,13 +89,14 @@ class Model:
     """The scene model's stand-in for chat: answers at once, except a question it is told to hold, which runs until a
     scene job's arrival aborts it (the real transport ends the request the same way)."""
 
-    def __init__(self) -> None:
+    def __init__(self, answers: dict[str, tuple[str, bool]] | None = None) -> None:
         self.hold_next = False
         self.holding = threading.Event()
+        self.answers = answers or {}  # session 106: synthetic answers by question (text, cut short)
 
     def __call__(self, question: ChatQuestion, image: Any, abort: Any = None) -> tuple[str, bool]:
         if not self.hold_next:
-            return "A chair stands by the window.", False
+            return self.answers.get(question.question, ("A chair stands by the window.", False))
         self.hold_next = False
         self.holding.set()
         try:
@@ -176,9 +179,12 @@ def _follow(runtime: DemoRuntime, status: int, document: dict[str, Any]) -> tupl
 
 def build_run(mods, root: Path, *, fps: float = 4.0, duration: float = 600.0, pressure: Any = None,
               face: bool = False, live: bool = True, captures_at: tuple = CAPTURES,
-              analyze: Any = _matching_face) -> Path:
+              analyze: Any = _matching_face, grounding: dict[str, dict[str, Any]] | None = None) -> Path:
     """``face`` (session 103): face recognition in its validation run as well, one person in view, its identity records
-    on stdout, and the guard's face_chat readiness recorded; ``live``: the live view and its viewer."""
+    on stdout, and the guard's face_chat readiness recorded; ``live``: the live view and its viewer. ``grounding``
+    (session 106): G's questions at alpha_load's slots, by ID: {"answer": synthetic text, "cut": bool} or
+    {"hold": True} (held until the next scene job cancels it); grounding.jsonl written as alpha_load writes it, with the
+    slots the run never reached as not asked."""
     run = root / "run"
     run.mkdir()
     clock = FakeClock(utc=NOW)
@@ -190,7 +196,9 @@ def build_run(mods, root: Path, *, fps: float = 4.0, duration: float = 600.0, pr
                                                revision="1+lfm2-vl-1.6b-q4_0", now=clock.monotonic_ns,
                                                schedule=timers), images)
     db = Database.open(root / "sentinel.db")
-    model = Model()
+    g_slots = {g: (g, offset, question) for g, offset, question in mods.load.GROUNDING} if grounding is not None else {}
+    model = Model({g_slots[g][2]: (spec["answer"], spec.get("cut", False)) for g, spec in (grounding or {}).items()
+                   if "answer" in spec})
     worker = FaceWorker(analyze, clock) if face else None
     runtime = DemoRuntime(config, clock, capture=capture, slot=slot,
                           incidents=IncidentService(db, clock, incidents=config.incidents,
@@ -211,7 +219,8 @@ def build_run(mods, root: Path, *, fps: float = 4.0, duration: float = 600.0, pr
     chat_lines = [json.dumps({"event": "started", "mono_s": ready, "questions": mods.load.QUESTIONS,
                               "every_s": 6.0})]
     viewer_lines, pending, captures, next_status = [], list(captures_at), [], 0.0
-    held = None  # (asked at, job) of the question held until the next scene job ends it
+    held = None  # (asked at, job, kind, G slot) of the question held until the next scene job ends it
+    a0, g_pending, g_lines = None, sorted(g_slots.values(), key=lambda item: item[1]), []
     for n in range(1, int(duration * fps) + 1):
         t = n / fps
         clock.advance(ns=t0 + round(n * 1e9 / fps) - clock.monotonic_ns())
@@ -229,20 +238,34 @@ def build_run(mods, root: Path, *, fps: float = 4.0, duration: float = 600.0, pr
         lines.extend(json.dumps(record) for record in runtime.drain_identity_records())
         if held is not None and not model.holding.is_set():
             status, document = _follow(runtime, *runtime.chat.poll(held[1]))
-            chat_lines.append(json.dumps(mods.load._record(held[0], "long", document, status)))
+            record = mods.load._record(held[0], mods.load.GROUNDING_KIND if held[3] else held[2], document, status)
+            if held[3]:
+                record["g"] = held[3][0]
+                g_lines.append(json.dumps(mods.load._grounding_record(held[3], a0, held[0], held[2], document, status)))
+            chat_lines.append(json.dumps(record))
             held = None
         if t % 6 == 0 and not scene.analyzer.busy():  # alpha_load's cadence: a question every 6 s, alternating
             kind = "short" if (t // 6) % 2 else "long"
-            model.hold_next = t == HELD_AT_S
-            status, document = runtime.chat.ask(ChatQuestion(mods.load.QUESTIONS[kind]))
-            if t == HELD_AT_S:
+            g_slot = (g_pending.pop(0) if g_pending and a0 is not None and ready + t >= a0 + g_pending[0][1]
+                      else None)
+            hold = t == HELD_AT_S or bool(g_slot and grounding[g_slot[0]].get("hold"))
+            model.hold_next = hold
+            status, document = runtime.chat.ask(ChatQuestion(g_slot[2] if g_slot else mods.load.QUESTIONS[kind]))
+            if status == 202 and a0 is None:
+                a0 = ready + t  # A0: the first acceptance (the simulated clock does not move during the request)
+            if hold:
                 deadline = time.monotonic() + 5
                 while not model.holding.is_set() and time.monotonic() < deadline:
                     time.sleep(0.0005)
-                held = (ready + t, document["job"])
+                held = (ready + t, document["job"], kind if g_slot else "long", g_slot)  # as recorded before G
             else:
                 status, document = _follow(runtime, status, document)
-                chat_lines.append(json.dumps(mods.load._record(ready + t, kind, document, status)))
+                record = mods.load._record(ready + t, mods.load.GROUNDING_KIND if g_slot else kind, document, status)
+                if g_slot:
+                    record["g"] = g_slot[0]
+                    g_lines.append(json.dumps(mods.load._grounding_record(g_slot, a0, ready + t, kind, document,
+                                                                          status)))
+                chat_lines.append(json.dumps(record))
         if live and n % int(fps) == 0:  # the viewer's tallies are written here; alpha_load's own on a real page
             viewer_lines.append(json.dumps({"second_mono_s": ready + t, "pictures": 14, "bytes": 14 * 30_000,
                                             "max_age_ms_when_sent": 180, "states": {}}))
@@ -263,6 +286,13 @@ def build_run(mods, root: Path, *, fps: float = 4.0, duration: float = 600.0, pr
     db.close()
     (run / "run.jsonl").write_text("\n".join(lines) + "\n")
     (run / "chat-load.jsonl").write_text("\n".join(chat_lines) + "\n")
+    if grounding is not None:  # as alpha_load writes it when it ends: the slots never reached, not asked
+        why = mods.load.NOT_ASKED["never_accepted"] if a0 is None else mods.load.NOT_ASKED["page_gone"]
+        g_lines += [json.dumps(mods.load._grounding_record(g_slot, a0, None, None, {}, None, state="not_asked",
+                                                           reason=why)) for g_slot in g_pending]
+        path = run / "grounding.jsonl"
+        path.write_text("".join(line + "\n" for line in g_lines))
+        path.chmod(0o600)
     if live:
         (run / "viewer.jsonl").write_text("\n".join(viewer_lines) + "\n")
     samples = (pressure or (lambda s: 3_900_000_000 if s > 30 else 4_400_000_000))

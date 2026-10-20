@@ -837,9 +837,10 @@ LOAD_EVENT = {"event": vocab("started", "page_never_answered", "page_gone", "sto
               "questions.short": template(fixed("What is visible in this picture? Answer in one sentence.")),
               "questions.long": template(fixed("Describe everything visible in this picture in detail, object by "
                                                "object, with its colour and where it is.")), "every_s": NUM}
+GROUNDING_IDS = vocab("G1", "G2", "G3", "G4")  # alpha_load.GROUNDING (session 106)
 CHAT_LOAD = JsonProfile({
-    **LOAD_EVENT, "asked_mono_s": NUM, "kind": vocab("short", "long"), "http_status": INT, "state": CHAT_FINAL,
-    "reason": maybe(CHAT_JOB_REASON),
+    **LOAD_EVENT, "asked_mono_s": NUM, "kind": vocab("short", "long", "grounding"), "g": GROUNDING_IDS,
+    "http_status": INT, "state": CHAT_FINAL, "reason": maybe(CHAT_JOB_REASON),
     "stream_epoch": COUNT, "frame_seq": COUNT, "ingest_utc": maybe(ISO), "age_ms_when_asked": COUNT,
     "age_ms_when_answered": COUNT, "historical": maybe(BOOL), "answer_ms": COUNT, "answer_chars": COUNT,
     "cut_short": maybe(BOOL),
@@ -850,11 +851,59 @@ VIEWER = JsonProfile({
 }, keys={"states": Either((vocab("live", "stale", "offline", "starting", "closed", "busy", "refused", "invalid",
                                  "off", "error"), template(r"http_(\d{3})")))}, lines=True)
 
+# The grounding check G (sessions 65, 105, 106): alpha_load's four records, the only evidence holding answers' text (a
+# TEXT field: content, searched like every other), and the operator's staging and judgments (fixed answers only).
+GROUNDING_STATE = vocab(*CHAT_FINAL.values, "not_asked", "no_response")
+GROUNDING = JsonProfile({
+    "g": GROUNDING_IDS,
+    "question": template(fixed("Is there a water bottle in this picture?"),
+                         fixed("Are there any cosmetic products beside the water bottle?"),
+                         fixed("What brand name is printed on the water bottle?"),
+                         fixed("What was happening here one minute before this picture was taken?")),
+    "offset_s": NUM, "a0_mono_s": SECONDS, "asked_mono_s": SECONDS, "asked_after_a0_s": SECONDS,
+    "replaced_kind": maybe(vocab("short", "long")), "http_status": COUNT, "state": GROUNDING_STATE,
+    "reason": maybe(Either((CHAT_JOB_REASON, template(
+        fixed("the page did not answer"), fixed("the page never answered"), fixed("chat never accepted a question"),
+        fixed("the page went away before this slot"), fixed("the load tool stopped asking before this slot"),
+        fixed("the load tool was stopped before this slot"))))),
+    "stream_epoch": COUNT, "frame_seq": COUNT, "ingest_utc": maybe(ISO), "age_ms_when_asked": COUNT,
+    "age_ms_when_answered": COUNT, "historical": maybe(BOOL), "answer_ms": COUNT, "answer_chars": COUNT,
+    "cut_short": maybe(BOOL), "answer": maybe(TEXT),
+}, lines=True)
+YES_NO_UNSURE = vocab("yes", "no", "unsure")
+GROUNDING_STAGING = KeyValueProfile({  # grounding.STAGING and S5
+    "grounding_staging_format": vocab("1"), "s1_bottle_at_seat": vocab("yes"),
+    "s2_cosmetics_cleared_room_checked": vocab("yes"), "s3_bottle_printed_text": YES_NO_UNSURE,
+    "s4_seen_in_live_view_before": YES_NO_UNSURE, "s5_bottle_stayed_in_place": YES_NO_UNSURE,
+})
+GROUNDING_CATEGORIES = {  # grounding.CATEGORIES
+    "g1": ("bottle_present", "bottle_absent", "uncertainty", "unclassifiable"),
+    "g2": ("cosmetics_present", "cosmetics_none", "uncertainty", "unclassifiable"),
+    "g3": ("printed_words_asserted", "brand_guessed_from_appearance", "nothing_printed", "uncertainty",
+           "unclassifiable"),
+    "g4": ("limit_acknowledged", "earlier_moment_asserted", "uncertainty", "unclassifiable"),
+}
+GROUNDING_LABELS = ("contradicted_by_staging", "consistent_with_staging", "unverifiable", "uncertainty",
+                    "limit_acknowledged", "asserts_other_moment", "unclassifiable")  # grounding.LABELS
+GROUNDING_JUDGMENTS = KeyValueProfile({
+    "grounding_judgments_format": vocab("1"), "judged_by": vocab("operator"), "judged_utc": ISO,
+    "records": vocab("present", "missing"),
+    **{key: spec for g, categories in GROUNDING_CATEGORIES.items() for key, spec in (
+        (f"{g}_state", vocab(*GROUNDING_STATE.values, "missing")), (f"{g}_cut_short", vocab("yes", "no", "none")),
+        (f"{g}_category", vocab(*categories, "not_answered")), (f"{g}_label", vocab(*GROUNDING_LABELS, "none")),
+        (f"{g}_identity", vocab("no", "yes", "unsure", "none")),
+        (f"{g}_qualified", vocab("bottle_may_have_moved", "no", "none")))},
+    "g2_other_objects": vocab("none", "named", "unsure", "not_answered"),
+    "g2_other_objects_label": vocab("unverifiable", "none"),
+})
+
 F1_PROFILES: dict[str, Any] = {"dryrun.json": ENROLL, "enroll.json": ENROLL, "list.json": LISTING,
                                "provenance.txt": F1_PROVENANCE, "audit.jsonl": AUDIT}
 F2_PROFILES: dict[str, Any] = {"result.json": RESULT, "guard.jsonl": GUARD, "run.jsonl": RUN, "run.err": RUN_ERR,
                                "account.txt": ACCOUNT, "provenance.txt": F2_PROVENANCE,
                                "chat-load.jsonl": CHAT_LOAD, "viewer.jsonl": VIEWER,  # a combined run's load (D80)
+                               "grounding.jsonl": GROUNDING, "grounding-staging.txt": GROUNDING_STAGING,
+                               "grounding-judgments.txt": GROUNDING_JUDGMENTS,  # the grounding check G (session 106)
                                **{f"status-{name}.json": STATUS for name in STATUS_NAMES}}
 PROFILES = {"f1": F1_PROFILES, "f2": F2_PROFILES}
 

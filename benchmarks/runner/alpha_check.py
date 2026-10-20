@@ -51,6 +51,12 @@ readiness, no live view, snapshots or zone, read in four separately reported par
 An integration pass says that these ran together within these limits; it implies neither recognition accuracy nor F2
 acceptance, admits nothing and is not the combined run (which still needs a validated F2).
 
+**The grounding check G (sessions 65, 105, 106), when the run holds its files:** a fifth section, DESCRIPTIVE only and
+never part of any verdict: the staging (S1-S5), each G slot's state, timing, frame and length from grounding.jsonl's
+non-text fields, and the operator's categories and labels (grounding-judgments.txt, judged in iv-G before this
+reading), with the labels recomputed from the categories and the staging. **This reading never prints a question's
+or an answer's text**; a G answer is also a chat answer and counts in "real answers" like any other.
+
 Stdlib only; reads files only.
 """
 
@@ -65,6 +71,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import face_check  # noqa: E402
+import grounding  # noqa: E402
 import step5_check as s5  # noqa: E402
 
 STEADY_LIMIT = 5_000_000_000  # adapters.STEP4_TARGET_STEADY_BYTES
@@ -406,6 +413,62 @@ def read_integration(run_dir: Path) -> dict[str, s5.Reading]:
     return dict(zip(INTEGRATION_PARTS, (execution, chat, recognition, memory)))
 
 
+GROUNDING_SCOPE = ("the grounding check G (sessions 65, 105, 106), descriptive only: four fixed questions; the "
+                   "answers' text is kept only in grounding.jsonl and shown only in the operator's own judging (iv-G); "
+                   "a claim that depends on the exact frame is unverifiable, never correct or incorrect; an "
+                   "uncertainty is its own label; G enters no verdict")
+SLOT_FIELDS = ("state", "reason", "asked_after_a0_s", "replaced_kind", "stream_epoch", "frame_seq", "ingest_utc",
+               "age_ms_when_asked", "age_ms_when_answered", "historical", "answer_chars", "cut_short")  # never text
+
+
+def read_grounding(run_dir: Path) -> s5.Reading | None:
+    """G's section (DESCRIPTIVE only), or None for a run without any of G's files."""
+    names = (grounding.RECORDS_NAME, grounding.STAGING_NAME, grounding.JUDGMENTS_NAME)
+    if not any((run_dir / name).exists() for name in names):
+        return None
+    r = s5.Reading()
+    r.describe("scope", GROUNDING_SCOPE)
+    try:
+        staging = grounding.read_staging(run_dir)
+    except grounding.Refused as exc:
+        staging = None
+        r.describe("the staging", f"not readable: {exc}")
+    else:
+        r.describe("the staging (S1-S4 before the launch, S5 after the account)",
+                   {k: v for k, v in staging.items() if k != "grounding_staging_format"})
+    try:
+        records = grounding.read_records(run_dir)
+    except grounding.Refused as exc:
+        records = None
+        r.describe("the G slots", f"not readable: {exc}")
+    else:
+        r.describe("the G slots (non-text fields of grounding.jsonl; A0 = the first acceptance)",
+                   None if records is None else {g: {k: records[g].get(k) for k in SLOT_FIELDS} if g in records
+                                                 else "no record" for g in grounding.IDS})
+    try:
+        judgments = grounding.read_judgments(run_dir)
+    except grounding.Refused as exc:
+        r.describe("the operator's judgments", f"not readable: {exc}")
+        return r
+    if judgments is None:
+        r.describe("the operator's judgments", "not judged (no grounding-judgments.txt)")
+        return r
+    shown, recomputed = {}, {}
+    for g in grounding.IDS:
+        key = g.lower()
+        shown[g] = {k: judgments.get(f"{key}_{k}") for k in (
+            "state", "category", "label", "cut_short", "identity", "qualified", "other_objects",
+            "other_objects_label") if f"{key}_{k}" in judgments}
+        category = judgments.get(f"{key}_category")
+        if staging is not None and category in dict(grounding.CATEGORIES[g]):
+            recomputed[g] = grounding.label(g, category, staging.get("s3_bottle_printed_text")) == judgments.get(
+                f"{key}_label")
+    r.describe("the operator's judgments (categories and labels; judged by the operator, never by this reading)",
+               {"judged_utc": judgments.get("judged_utc"), "records": judgments.get("records"), **shown})
+    r.describe("each judged label as the category and the staging imply it", recomputed)
+    return r
+
+
 def read_combined(run_dir: Path, face_run: Path, identity_dir: Path,
                   recheck_root: Path | None) -> tuple[s5.Reading, Any]:
     """This reading, with the incident and snapshot items of the alpha flow, and F2's own reading of the same run,
@@ -449,6 +512,10 @@ def main(argv: list[str] | None = None) -> int:
                   + (" (only that face executed alongside is judged; no recognition accuracy)"
                      if name == "recognition behaviour" else ""))
         every = all(part.ok for part in parts.values())
+        g = read_grounding(args.run_dir)
+        if g is not None:
+            print("=== grounding check G (descriptive only; never part of any verdict)")
+            print("\n".join(g.lines))
         print(f"alpha integration check: {'passed' if every else 'not passed'} ({INTEGRATION_SCOPE})")
         return 0 if every else 1
     reading, f2 = read_combined(args.run_dir, args.run, args.identity_dir, args.recheck_root)
