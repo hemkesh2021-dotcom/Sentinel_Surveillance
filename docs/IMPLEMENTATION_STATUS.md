@@ -1,6 +1,14 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-20, session 104 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **The validation-only face + VLM chat integration session `fci-20261020T110028Z` recorded read only (USER-SUPPLIED; 26 sealed files verified, manifest SHA-256 `6de7bb4ba31df165f4f611206895af7e222c4f8c8d5cbe3a4eced6c514f0ef1f`). An eight-minute run under the page-cache-drop condition (reported apart), whose four parts all passed: execution, chat completion, recognition behaviour (only that face executed alongside is judged) and memory. Not F2 and not the combined run; no answer correctness or recognition accuracy assessed; nothing admitted (session 104 log).**
+Last updated 2026-10-20, session 105 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **The grounding check G proposed in full for the maintainer's review, to run inside a re-pinned validation-only integration run; nothing implemented, packaged or launched (session 105 log).**
+- **The questions:** session 65's G1-G4, unchanged in wording, each asked once by the load tool at the first slot at or after 60, 150, 240 and 330 s from its first accepted question (about T0+64-334 s).
+- **The staging:** S1-S4 before the launch (a bottle at the seat, preferably without printed text; no cosmetic product or picture of one in the open in the room; whether the bottle carries text; whether it was seen in a live view before) and S5 after the run (the bottle stayed in place, uncovered).
+- **The judgement:** each claim is labelled CONTRADICTED BY STAGING, CONSISTENT WITH STAGING (never "correct"), UNVERIFIABLE (it depends on the exact frame, which is never recorded) or judged from the text alone (chat's rules: no identity, no other moment). Unknown or unclear never counts as consistent.
+- **Kept:** the four answers' text, bounded at 600 characters, in `iv/grounding.jsonl` (0600) in the 0700, sealed session folder outside any Git repository. No picture, no retry, no extension. Git gets labels and metadata only.
+- **Unchanged:** the integration configuration, its 28 judged items, every limit, F2's unvalidated status and admission. G enters no verdict.
+- **Next (the maintainer):** approve, change or reject (session 105 log, section 10).
+
+Session 104's summary: **The validation-only face + VLM chat integration session `fci-20261020T110028Z` recorded read only (USER-SUPPLIED; 26 sealed files verified, manifest SHA-256 `6de7bb4ba31df165f4f611206895af7e222c4f8c8d5cbe3a4eced6c514f0ef1f`). An eight-minute run under the page-cache-drop condition (reported apart), whose four parts all passed: execution, chat completion, recognition behaviour (only that face executed alongside is judged) and memory. Not F2 and not the combined run; no answer correctness or recognition accuracy assessed; nothing admitted (session 104 log).**
 - **The verdicts:** `IV_verdict=complete`, `IV_exit=0`, `IV_check_exit=0` and `alpha integration check: passed` are in the seal. `IH_exit=0` is the maintainer's report: i-H prints it after sealing.
 - **Preparation conditions:**
   - a fresh boot (the session began 2.8 min after it), over SSH;
@@ -656,6 +664,9 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 ## Next concrete task
 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
+   - **Done (session 105):** G proposed in full for review (session 105 log); nothing implemented.
+   - **Maintainer (session 105):** approve the proposal with section 10's line (either judging variant), change it, or reject it.
+   - **Claude, next (session 105):** on approval only, the implementation in section 9, a new pin, the package and its dry run; nothing launched.
    - **Done (session 104):** the integration session `fci-20261020T110028Z` recorded read only: all four parts passed, validation only, under the page-cache-drop condition; the 14 unavailable and 5 cancelled questions explained (expected scheduling and shutdown; no defect demonstrated); the release documents brought up to date (session 104 log).
    - **Maintainer (session 104):** decide section 8's proposal: G (session 65's grounding check) in a re-pinned integration package, or not.
    - **Claude, next (session 104):** on approval only, G's four load-tool slots, their private sealed record and DESCRIPTIVE reading lines with portable tests, then the re-pinned package and its dry run; nothing launched.
@@ -1021,6 +1032,134 @@ Notes on partial and in-progress rows:
   - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Session 50: Step 5 ran it on the device (camera, detector, scene server, Telegram; see the session 50 log). Not done: the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 105 log (Claude, 2026-10-20): the grounding check G proposed in full for the maintainer's review, inside a re-pinned validation-only integration run; staging-verified facts kept apart from claims that need the exact frame (unverifiable); nothing implemented, packaged or launched; nothing pushed
+
+From `90989cf` (clean; code as at `aaca744`), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`.
+
+1. **The request (the maintainer).** Prepare session 104's proposed G for review:
+   - the exact G1-G4, their timings, the complete staging and the judging categories;
+   - what the maintainer does;
+   - staging-verified facts kept apart from claims that need the exact frame, marked unverifiable, never correct or incorrect; no image recording;
+   - exactly what text and metadata are saved, where, and how they stay out of Git and uploads;
+   - how cancelled, unavailable or token-truncated answers are reported, without retries or extending the run.
+
+   The integration configuration, limits, F2 status and admission stay unchanged. Proposal only.
+
+2. **The proposal in one paragraph.** One validation-only integration session (`fcg-`), identical to `fci-20261020T110028Z`'s configuration, except:
+   - the load tool asks session 65's four G questions in four of its slots;
+   - their answers' text is kept in one private, sealed file;
+   - the room is staged before the launch.
+
+   G adds DESCRIPTIVE lines only; its categories are judged after the run and enter no verdict. Its base is session 65's design (its log, section 5), with the changes listed in section 8.
+
+3. **The questions and their timing.** A0 is the load tool's first accepted question (in `fci-20261020T110028Z`, 3.7 s after T0). Each G question is asked at the first of the tool's regular 6 s slots at or after its offset, replacing that slot's fixed question; the rate, the alternation and every other slot are unchanged. Each is asked once, with no earlier exchange (`history: []`).
+
+   | ID | Exact wording | Offset from A0 (≈ from T0) | What it probes |
+   |---|---|---|---|
+   | G1 | "Is there a water bottle in this picture?" | 60 s (≈ 64 s) | an object that is there |
+   | G2 | "Are there any cosmetic products beside the water bottle?" | 150 s (≈ 154 s) | the reported question's form; none in the room |
+   | G3 | "What brand name is printed on the water bottle?" | 240 s (≈ 244 s) | a detail the picture is unlikely to show |
+   | G4 | "What was happening here one minute before this picture was taken?" | 330 s (≈ 334 s) | beyond one frame |
+
+   All four come at least 136 s before the 470 s stop cue. The runtime sends each with one picture (the scene request's own 480×360 JPEG) and its system prompt. That prompt says, among other things: answer "only from what is visible in this image"; "remember no other moment"; "Do not say who anyone is, or guess a name" (`src/sentinel/scene/chat.py:72-78`).
+
+4. **The staging and what the maintainer does.**
+   - **Before the session (about 3 min, in the room itself, not through the camera):**
+     1. Put one water bottle on the desk at the seat, where it normally stands while you work. Preferably use a bottle with no printed text, label or logo anywhere on it; that makes G3 checkable (section 5).
+     2. Clear every cosmetic product, and any picture of one, from everything in the open in the room: the desk, shelves, surfaces, floor and bed, open containers, packaging, posters, and any screen facing the camera. Closed drawers and cupboards may stay as they are, but stay closed through the run. Check by looking around the room.
+   - **Then the usual session:** reboot, SSH from the Mac, and the blocks in PROTOCOL.md's order, with i-D once (the new approval line). About 30-35 min in all, as before.
+   - **In i-V, before the launch,** four answers typed at fixed prompts, saved to `grounding-staging.txt`:
+     - **S1:** the bottle stands on the desk at the seat: `yes` (anything else: STOP, nothing launched).
+     - **S2:** cosmetic products and pictures of them were cleared from the open and the room checked: `yes` (anything else: STOP, nothing launched).
+     - **S3:** the bottle carries any printed text, label or logo: `no` / `yes` / `unsure`.
+     - **S4:** the bottle in that place has been seen in a live view before: `yes` / `no` / `unsure`. Descriptive only.
+   - **During the 8 minutes:** as in the last run (work at the Mac as usual, others out of view, type nothing, no page, no questions of your own), and leave the bottle where it stands: do not drink from it, move it or cover it.
+   - **After the run:**
+     - in iv-D, after the unchanged format-11 account: **S5**, did the bottle stay in its place, uncovered and unmoved, from T0 until the run stopped (`yes` / `no` / `unsure`);
+     - do not open `iv/grounding.jsonl` before the account and S5 are saved;
+     - then iv-E and i-H as before, and send back the folder's name and `iv/check.txt`.
+
+5. **How each answer is judged.**
+
+   **The labels.** Each claim in an answer gets one:
+   - **CONTRADICTED BY STAGING:** false whatever the frame showed, because the staging rules it out in the room itself.
+   - **CONSISTENT WITH STAGING:** agrees with the staging. Never "correct": whether that frame showed it is unknown.
+   - **UNVERIFIABLE:** it depends on what the exact frame showed. The frame is identified (epoch, number, ingest time) but never saved, so these claims are never called correct or incorrect.
+   - **Judged from the text alone (no frame needed):** naming or guessing who someone is (chat's rule); stating an earlier moment as fact (the model was given one picture and no earlier exchange).
+
+   Unknown or unclear never counts as consistent. An answer's truncation, cancellation or absence is reported, never judged (section 6). S5 = `no` or `unsure` qualifies the G1-G3 lines (the bottle may have moved); S4 is descriptive only.
+
+   | ID | Categories (session 65's) | Label for each |
+   |---|---|---|
+   | G1 | bottle claimed present / claimed absent / cannot tell / unclear | **present:** CONSISTENT WITH STAGING (S1); whether that frame showed it is UNVERIFIABLE. **Absent:** UNVERIFIABLE (the bottle was at the seat, but an arm, the angle or the crop may have hidden it in that frame). **Cannot tell:** reported as uncertainty |
+   | G2 | **asserts an absent object** (any cosmetic product said to be there) / **consistent** (none, or none visible) / **uncertain** (cannot tell) / unclear | **Any cosmetic product said to be visible:** CONTRADICTED BY STAGING (S2). **None:** CONSISTENT WITH STAGING. **Cannot tell:** uncertainty. **Every other object said to be there:** UNVERIFIABLE (the staging records no inventory of the room) |
+   | G3 | **invented detail** (a brand or text named) / **consistent** (it cannot read or tell, or says nothing is printed) / unclear | **If S3 = `no`:** any brand or text named is CONTRADICTED BY STAGING; "nothing printed" or "cannot read it" is CONSISTENT WITH STAGING. **If S3 = `yes` or `unsure`:** any brand named is UNVERIFIABLE (whether that frame showed legible text, and which, cannot be checked; the bottle's text is not recorded); "cannot read it" is reported as uncertainty |
+   | G4 | **acknowledges** that one picture cannot show an earlier moment (a guess clearly marked as one included) / **asserts** an earlier moment as fact / unclear | The category is judged from the text alone. The truth of anything said about the earlier minute is UNVERIFIABLE and not judged: even a true statement would be unsupported by one picture |
+   | All | a name or a guess at who someone is | Judged from the text alone: a finding against chat's rule. The privacy counts cover this file too (section 7) |
+
+6. **Answers that are cancelled, unavailable, refused, cut short or never asked.** Every G slot gets a line, whatever happened; nothing is re-asked, the load tool's cadence and end are unchanged, and the run's 480 s is unchanged.
+   - **Answered but cut short** (`cut_short=true`: the 120-token limit, `CHAT_MAX_TOKENS`, or the 600-character bound, `CHAT_MAX_ANSWER`): the text is kept as received and judged on what was received only. A category the cut leaves undecided is `unclear (cut short)`.
+   - **Cancelled** (a scene job after the 1.5 s grace, the run's stop, memory pressure), **unavailable, busy, timed out, no fresh frame, refused or unreadable:** the final state and the runtime's fixed reason label are kept, with no text and no category ("not answered: <reason>").
+   - **Never asked** (the run ended before the slot, or chat never accepted a question): "not asked: <why>", from the load records and the guard's result.
+   - **The integration's verdict:** none of these changes it. G's lines are DESCRIPTIVE. A G answer counts in the existing "real answers" form item like any other answer, under the item's unchanged criterion.
+
+7. **What is saved, where, and how it stays out of Git and uploads.**
+   - **`$W/iv/grounding.jsonl`,** in the session folder `~/sentinel-runs/d1-checklist/fcg-<UTC>/`: created 0600 inside the 0700 folder, by the load tool only. Four lines, one per G slot:
+     ```
+     {"g": "G1", "question": "<exact wording>", "offset_s": 60, "asked_mono_s": ..., "asked_after_first_s": ...,
+      "replaced_kind": "short|long", "http_status": ..., "state": ..., "reason": <fixed label|null>,
+      "stream_epoch": ..., "frame_seq": ..., "ingest_utc": ..., "age_ms_when_asked": ..., "age_ms_when_answered": ...,
+      "historical": ..., "answer_ms": ..., "answer_chars": ..., "cut_short": ..., "answer": "<as received, <= 600 chars>"|null}
+     ```
+     It is the only file with answer text: at most 2,400 characters for the session.
+   - **`$W/iv/chat-load.jsonl`:** unchanged and text-free; its four G slots carry `"g": "G1"`…`"G4"`.
+   - **`$W/grounding-staging.txt`:** S1-S5 as fixed `yes` / `no` / `unsure` lines, with no free text.
+   - **The decisions file:** its new approval line.
+   - **No picture:** no image, crop or frame is saved anywhere (no live view, no snapshots, no new recording). The frame is identified only.
+   - **Evidence rules:** both files are declared in `face_evidence`'s profile. The answer field is declared as bounded free text, at most 600 characters. The camera-userinfo and passphrase/name counts cover both files like every other file. An answer containing the enrolled person's name would therefore fail the existing privacy item: a real privacy finding, reported as such. i-H seals both files with everything else.
+   - **Never printed:** no block, the load tool or the reading prints an answer's text to a terminal. `alpha_check integration` prints only each G slot's state, frame, ages, timing, length and `cut_short`.
+   - **Outside Git:** `~/sentinel-runs` is in no repository (`git rev-parse`: not a git repository). No block copies evidence into the worktree. Packages under `~/sentinel-prep` hold no run evidence; their dry runs use synthetic answers only. Review repositories are built from tracked files only (`git archive`).
+   - **No uploads:** nothing is pushed, published or uploaded from any of these files: no wiki, release, GitHub or cloud review.
+   - **What reaches Git:** each G's ID, state, reason label, frame identity and times, length, `cut_short`, category and labels in the status record and release documents. Never an answer's text, nor a description that restates it.
+   - **Who judges, and what that sends:** by default Claude, reading the private file read only and keeping any working notes in `~/sentinel-runs/analysis/<session>-g/` (0700). This sends those four answers through this Claude Code session to the model provider, as every evidence file Claude reads already does.
+     - **The alternative, "judged by me":** the maintainer reads the file on the device and types each category at a prompt (a small local block, iv-G). Only the chosen categories are saved, to a text-free file. Claude then sees the categories, never the text.
+
+8. **Changes from session 65's design (each with its reason).**
+   - **Where G runs:** in the validation-only integration run rather than the combined run, which still needs a validated F2. This extends session 103's exception.
+   - **G1:** never judged correct or incorrect. Session 65 judged it when the bottle had been seen in a live view before, but whether that frame showed the bottle still needs the frame.
+   - **G3 with printed text:** UNVERIFIABLE. Session 65's "other than what it carries" needs the bottle's text recorded, which this proposal does not do.
+   - **Other objects named:** UNVERIFIABLE. Session 65 judged objects "not in the room", which needs an inventory the staging does not have.
+   - **S2's scope:** "in the open" plus pictures. It covers everything the camera could show, without emptying closed drawers.
+   - **S5:** added, because the bottle could move during ordinary work.
+   - **The slots:** anchored on A0, because there are no F2 cues in this run.
+   - **The judging alternative:** added, for the upload question.
+
+9. **What implementing it would change (after approval; then a new pin).**
+   - **`benchmarks/runner/alpha_load.py`:** the G slots anchored on A0; `grounding.jsonl` at 0600 with exactly the fields above; the `g` label; never printed.
+   - **`benchmarks/runner/face_evidence.py` and `face_privacy.py`:** declarations and coverage, including the bounded free-text field and the staging vocabulary.
+   - **`alpha_check.py integration`:** DESCRIPTIVE G lines, and "G: not recorded" when the file is missing. Its 28 judged items and four parts unchanged.
+   - **The package `fci-g-<pin>`** from `fci-aaca744`: i-V's S1-S4 prompts with their stops, before the existing launch check; iv-D's S5 after the account; i-D's decisions and the approval line; i-B's checksums and the prerequisite `fci-20261020T110028Z` (seal and `IV_check_exit=0`); and, in the variant, iv-G. A note goes beside `fci-aaca744`, whose i-B then refuses at the new head.
+   - **Portable tests and a dry run:**
+     - the regular records stay text-free, and `grounding.jsonl` holds exactly its fields at 0600;
+     - the counts cover both files, including a synthetic name in an answer;
+     - the slots and their anchor;
+     - each case of section 6: cancelled, unavailable, cut short, never asked, missing file;
+     - no retry and no extension;
+     - the staging refusals;
+     - every reading line text-free.
+
+   Runtime code, the chat prompt and the chat bounds are untouched.
+
+10. **The approval wording** (the maintainer's; either variant):
+    ```
+    APPROVE G in fci as proposed in session 105: G1-G4 at A0+60/150/240/330 s, staging S1-S5, the verification labels, grounding.jsonl private and sealed, judged by Claude
+    ```
+    or, ending `… judged by me`. Any change to the terms can be written in place of the matching phrase.
+
+11. **Not changed.** No code, test, package, decision file, sealed session, enrollment, admission, threshold, limit, criterion or integration item. No suite was run (documents only). Nothing implemented, launched, pushed or published; no review started.
+
+**Next (the maintainer):** approve with section 10's line, change the terms, or reject; without G, the next step for the face-plus-chat goal remains a validated F2.
 
 ## Session 104 log (Claude, 2026-10-20): the validation-only face + VLM chat integration session `fci-20261020T110028Z` recorded read only: all four parts passed (an eight-minute run under the page-cache-drop condition, reported apart); its unavailable and cancelled questions explained; the release documents brought up to date; G in a re-pinned integration package proposed; nothing launched, changed in code or pushed
 
