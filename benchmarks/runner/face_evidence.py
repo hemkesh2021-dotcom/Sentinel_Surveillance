@@ -852,7 +852,8 @@ VIEWER = JsonProfile({
                                  "off", "error"), template(r"http_(\d{3})")))}, lines=True)
 
 # The grounding check G (sessions 65, 105, 106): alpha_load's four records, the only evidence holding answers' text (a
-# TEXT field: content, searched like every other), and the operator's staging and judgments (fixed answers only).
+# TEXT field: content, searched like every other), and the operator's staging and judgments (fixed answers only;
+# format 1 and session 108's format 2 declared side by side).
 GROUNDING_STATE = vocab(*CHAT_FINAL.values, "not_asked", "no_response")
 GROUNDING = JsonProfile({
     "g": GROUNDING_IDS,
@@ -871,30 +872,34 @@ GROUNDING = JsonProfile({
     "cut_short": maybe(BOOL), "answer": maybe(TEXT),
 }, lines=True)
 YES_NO_UNSURE = vocab("yes", "no", "unsure")
-GROUNDING_STAGING = KeyValueProfile({  # grounding.STAGING and S5
-    "grounding_staging_format": vocab("1"), "s1_bottle_at_seat": vocab("yes"),
+GROUNDING_STAGING = KeyValueProfile({  # grounding.STAGING, S3_V1 (format 1, read only) and S5
+    "grounding_staging_format": vocab("1", "2"), "s1_bottle_at_seat": vocab("yes"),
     "s2_cosmetics_cleared_room_checked": vocab("yes"), "s3_bottle_printed_text": YES_NO_UNSURE,
-    "s4_seen_in_live_view_before": YES_NO_UNSURE, "s5_bottle_stayed_in_place": YES_NO_UNSURE,
+    "s3_printed_brand_name": YES_NO_UNSURE, "s4_seen_in_live_view_before": YES_NO_UNSURE,
+    "s5_bottle_stayed_in_place": YES_NO_UNSURE,
 })
-GROUNDING_CATEGORIES = {  # grounding.CATEGORIES
+GROUNDING_CATEGORIES = {  # grounding.CATEGORIES_V1, CATEGORIES and G3_BRAND_CATEGORIES (formats 1 and 2)
     "g1": ("bottle_present", "bottle_absent", "uncertainty", "unclassifiable"),
     "g2": ("cosmetics_present", "cosmetics_none", "uncertainty", "unclassifiable"),
     "g3": ("printed_words_asserted", "brand_guessed_from_appearance", "nothing_printed", "uncertainty",
-           "unclassifiable"),
+           "unclassifiable", "no_brand_seen", "brand_named", "brand_maybe_named"),
     "g4": ("limit_acknowledged", "earlier_moment_asserted", "uncertainty", "unclassifiable"),
 }
 GROUNDING_LABELS = ("contradicted_by_staging", "consistent_with_staging", "unverifiable", "uncertainty",
-                    "limit_acknowledged", "asserts_other_moment", "unclassifiable")  # grounding.LABELS
+                    "limit_acknowledged", "asserts_other_moment", "unclassifiable",
+                    "operator_unsure")  # grounding.LABELS
 GROUNDING_JUDGMENTS = KeyValueProfile({
-    "grounding_judgments_format": vocab("1"), "judged_by": vocab("operator"), "judged_utc": ISO,
+    "grounding_judgments_format": vocab("1", "2"), "judged_by": vocab("operator"), "judged_utc": ISO,
     "records": vocab("present", "missing"),
     **{key: spec for g, categories in GROUNDING_CATEGORIES.items() for key, spec in (
         (f"{g}_state", vocab(*GROUNDING_STATE.values, "missing")), (f"{g}_cut_short", vocab("yes", "no", "none")),
         (f"{g}_category", vocab(*categories, "not_answered")), (f"{g}_label", vocab(*GROUNDING_LABELS, "none")),
-        (f"{g}_identity", vocab("no", "yes", "unsure", "none")),
+        (f"{g}_identity", vocab("no", "yes", "unsure", "none")),  # format 1
+        (f"{g}_person", vocab("no", "yes", "unsure", "none")),  # format 2 (session 108)
         (f"{g}_qualified", vocab("bottle_may_have_moved", "no", "none")))},
     "g2_other_objects": vocab("none", "named", "unsure", "not_answered"),
     "g2_other_objects_label": vocab("unverifiable", "none"),
+    "g3_brand_named": vocab("no", "yes", "unsure", "none"), "g3_brand_printed": vocab("no", "yes", "unsure", "none"),
 })
 
 F1_PROFILES: dict[str, Any] = {"dryrun.json": ENROLL, "enroll.json": ENROLL, "list.json": LISTING,

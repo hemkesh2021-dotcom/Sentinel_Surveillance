@@ -1,7 +1,20 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-21, session 107 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **The face + chat integration session with the grounding check, `fcg-20261020T154003Z`, recorded read only from `iv/check.txt` and non-text metadata (USER-SUPPLIED; 29 sealed files verified, manifest SHA-256 `136675ccd25b56111d0ef6ce1a9586dc9aa828ac1c8cef55cbf40045eb55275a`). The four integration parts passed; G1 and G2 were consistent with the staging, G3 unverifiable, and G4 cancelled for a scene job and untested. Not F2 and not the combined run; recognition accuracy not assessed; nothing admitted (session 107 log).**
-- **The verdicts:** `IV_verdict=complete`, `IV_exit=0`, `IG_exit=0`, `IV_check_exit=0` and `alpha integration check: passed` are in the seal. `IH_exit` was not supplied.
+Last updated 2026-10-21, session 108 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 107's `IH_exit` statement corrected from the maintainer's terminal output, and the grounding check's judging and staging wording clarified as operator tooling (format 2), with format 1's sealed records read exactly as before; focused tests passed; nothing launched (session 108 log).**
+- **The correction (USER-SUPPLIED, after the seal):** `IH_exit=0`, and the display manager `active` after its restart, for `fcg-20261020T154003Z`.
+- **Format 2:**
+  - every answered G asks whether it names a PERSON or guesses who a person is (a brand, product, object or place is not a person);
+  - G3 records `brand_named` and `brand_printed` apart, each `yes`, `no` or `unsure`;
+  - S3 asks whether a brand name is printed on the bottle;
+  - the operator's own unsure is `operator_unsure`, never consistent with the staging and never contradicted; the answer's uncertainty stays its own label.
+- **Format 1 kept:** read with its own meaning; the judging refuses a format-1 staging.
+- **Compatibility:** `fcg-20261020T154003Z` and `fci-20261020T110028Z`, re-read with the new code from scratch copies, reproduce their sealed `check.txt` byte for byte. `grounding.jsonl` was never opened or copied.
+- **Tests:** `test_grounding_check.py` 24 (17 updated, 7 new; five mutations each caught). The ten test files touching the changed modules: 599 passed, 0 failed (Python 3.10.14); the G file also passed under 3.12.3. Local, not CI; the full suite not run.
+- **Unchanged:** runtime, chat, thresholds, limits, F2, admission. The shutdown label is not fixed.
+- **Next:** the maintainer changed the priority to the one-hour live-dashboard trial; no further G work.
+
+Session 107's summary: **The face + chat integration session with the grounding check, `fcg-20261020T154003Z`, recorded read only from `iv/check.txt` and non-text metadata (USER-SUPPLIED; 29 sealed files verified, manifest SHA-256 `136675ccd25b56111d0ef6ce1a9586dc9aa828ac1c8cef55cbf40045eb55275a`). The four integration parts passed; G1 and G2 were consistent with the staging, G3 unverifiable, and G4 cancelled for a scene job and untested. Not F2 and not the combined run; recognition accuracy not assessed; nothing admitted (session 107 log).**
+- **The verdicts:** `IV_verdict=complete`, `IV_exit=0`, `IG_exit=0`, `IV_check_exit=0` and `alpha integration check: passed` are in the seal. `IH_exit=0`, with the display manager `active` afterwards, is the maintainer's terminal output, printed after the seal (USER-SUPPLIED in session 108; first written here as not supplied).
 - **Conditions:**
   - a fresh boot, over SSH; i-C closed the VNC desktop session with one SIGTERM; the display manager stopped; the camera probe passed first time;
   - one D103 page-cache drop (MemFree +991,559,680 B);
@@ -714,6 +727,7 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 ## Next concrete task
 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
+   - **Done (session 108):** session 107's `IH_exit` corrected (USER-SUPPLIED); G's judging and staging wording clarified (format 2), with format 1 read exactly as sealed; focused tests passed (session 108 log). No further G work: the priority is the one-hour live-dashboard trial.
    - **Done (session 107):** `fcg-20261020T154003Z` recorded read only (session 107 log):
      - integration passed (four parts); G1 and G2 consistent with the staging, G3 unverifiable, G4 cancelled and untested;
      - the operator's two clarifications on G3 recorded apart, beside the session;
@@ -1092,6 +1106,116 @@ Notes on partial and in-progress rows:
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
 
+## Session 108 log (Claude, 2026-10-21): session 107's `IH_exit` statement corrected from the maintainer's terminal output; G's judging and staging wording clarified as operator tooling (format 2: a person apart from brands and objects; G3's brand named and printed claim recorded apart; S3 about a printed brand name), with format 1's sealed records read exactly as before; focused tests; nothing launched; nothing pushed
+
+From `086e9b0` (clean; code as at `2004725`), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`.
+
+1. **The request (the maintainer).**
+   - **Correct** session 107's statement that `IH_exit` was not supplied, from the maintainer's terminal output for `fcg-20261020T154003Z`: `original_enrollment_unchanged=yes`, `working_copy_removed=yes`, `sealed: 29 files`, `IH_exit=0`, then the display manager's restart printed `active`. Record it as operator-supplied output; preserve the sealed evidence.
+   - **Implement** the operator-prompt clarification (session 107, section 11):
+     - ask explicitly whether an answer names or guesses a PERSON, excluding brands and objects;
+     - for G3, record separately whether it names a brand and whether it claims that brand is printed on the bottle, allowing uncertainty for each;
+     - make the staging question about printed brand names explicit, keep its interpretation consistent with the judging rules, and preserve the meaning of older records;
+     - keep uncertainty separate from consistency with the staging.
+   - **Test:** focused tests of these distinctions and of compatibility with the existing sealed records. Preserve answer-text privacy. Update the documents and commit locally.
+   - **Do not:** change runtime behaviour, fix the shutdown label in this change, launch another experiment, push or publish.
+   - **Report:** the changes and test results, then recommend whether another live test would answer a specific remaining question.
+
+2. **The correction (USER-SUPPLIED: the maintainer's terminal output, printed after the seal).**
+   - **Output:** i-H printed `original_enrollment_unchanged=yes`, `working_copy_removed=yes`, `sealed: 29 files` and `IH_exit=0`; the display manager's restart then printed `active`.
+   - **Against the seal:** the first two lines are also in the sealed `provenance.txt`, and the 29 files match the manifest. i-H prints `IH_exit` and the display manager's state after sealing (`fcg-2004725/i-H.sh`), so they are the operator's output, not sealed evidence.
+   - **Corrected in place:** session 107's summary, its log (section 2) and its "Next" list each say so, marked as corrected in session 108. The sealed folder was not touched; its 29 files verify.
+
+3. **The code (in the commit that records this session; operator tooling and tests only).** Format 2 of the staging and the judgments; format 1 is kept for reading only.
+   - **`benchmarks/runner/grounding.py`:**
+     - **A person:** every answered G is asked `PERSON_PROMPT`: "does it name a PERSON, or guess who a person is? A brand, product, object or place named is not a person, and saying that someone is there is not naming them." It is saved as `gN_person`; format 2 has no `gN_identity`.
+     - **G3:** two answers recorded apart, each `yes`, `no` or `unsure`:
+       1. `g3_brand_named`: "does it name a brand, or guess one?";
+       2. `g3_brand_printed`: "does it say that brand is printed, written or read on the bottle (not guessed from its shape, colour or look)?". It is asked only when a brand is or may be named; otherwise it is `none`.
+
+       Only an answer naming no brand is given a category: `no_brand_seen`, `uncertainty` or `unclassifiable`. Otherwise the category is set from the first answer (`brand_named`, `brand_maybe_named`), never chosen. The old forced choice between `printed_words_asserted` and `brand_guessed_from_appearance` is gone from format 2.
+     - **S3 (`s3_printed_brand_name`, staging format 2):** "a brand name is printed on the bottle, on its label, cap or body (a brand you know it by but cannot see printed on it is no)". Format 1's S3 (`s3_bottle_printed_text`, "printed text, a label or a logo") is kept as `S3_V1` for reading only.
+     - **The labels (format 2):** G1, G2 and G4 are as in format 1. G3 follows session 106's rules, restated for a printed brand name:
+
+       | G3: brand named | brand said printed | S3 = no | S3 = yes or unsure |
+       |---|---|---|---|
+       | yes | yes | `contradicted_by_staging` | `unverifiable` |
+       | yes | no (named from its look) | `unverifiable` | `unverifiable` |
+       | yes | unsure | `operator_unsure` | `unverifiable` |
+       | unsure | any | `operator_unsure` | `operator_unsure` |
+       | no: "no brand seen" | — | `consistent_with_staging` | `unverifiable` |
+       | no: the answer's own uncertainty | — | `uncertainty` | `uncertainty` |
+       | no: none fits | — | `unclassifiable` | `unclassifiable` |
+
+       `operator_unsure` is new. The operator's own unsure, where it decides the label, is never consistent with the staging and never contradicted. The answer's uncertainty stays its own label (session 106).
+     - **Format 1, read only:** `label_v1` and `CATEGORIES_V1` are session 106's, unchanged. `read_staging` reads either format with its own S3 key and refuses an unknown format or mixed keys. `judged_label` recomputes a judgment only against a staging of the same format.
+     - **`judge` refuses a format-1 staging** before S5 or any answer is shown: only the code it was staged with judges it.
+   - **`benchmarks/runner/alpha_check.py integration`:**
+     - **The G section:** each label recomputed in its own format; format 2's `person`, `brand_named` and `brand_printed` shown; one DESCRIPTIVE "the judging's format" line for format 2 only.
+     - **Format 1 unchanged:** its records read exactly as before; no line added or changed.
+     - **The four integration parts:** unchanged.
+   - **`benchmarks/runner/face_evidence.py`:** both formats' keys and vocabularies are declared side by side (`s3_printed_brand_name`, `gN_person`, `g3_brand_named`, `g3_brand_printed`, the new G3 categories, `operator_unsure`), so the privacy counts accept either format.
+   - **Unchanged:** the runtime, the load tool, G's questions and slots, the chat prompt and bounds, every limit, the shutdown label (session 107, section 7: not fixed here, as instructed), F2 and admission.
+
+4. **Tests and checks.**
+   - **`tests/unit/test_grounding_check.py`, 24 tests (17 updated, 7 new):**
+     - **The person question:** names a person only, never a brand or an object; asked for every answered G; no `identity` key in format 2.
+     - **G3:** nine combinations of the brand and printed answers. The printed question appears only when a brand is or may be named, and the no-brand categories only when none is.
+     - **The format-2 label table, exhaustively:**
+       - consistent only for "no brand seen" with S3 = no;
+       - contradicted only for a brand said to be printed with S3 = no;
+       - the operator's unsure never consistent or contradicted;
+       - uncertainty its own label;
+       - G1, G2 and G4 as in format 1.
+     - **S3's wording**, and format 1's staging read with its own key; mixed or unknown formats refused.
+     - **`judge` refuses a format-1 staging** with nothing shown and S5 not asked.
+     - **Session 107's sealed G records, verbatim, read exactly as sealed:** the staging and the judgments as fixtures (categories only), and a synthetic `grounding.jsonl` rebuilt from the sealed reading's own slot line. The reading reproduces the sealed G section line for line. The labels are recomputed in format 1 (G3 stays `unverifiable`), `g3_identity=yes` is never read as `person`, and both files fit the profiles.
+     - **Format 1 never relabelled by format 2's rules,** and mixed formats never relabelled.
+     - **Fixtures:** `tests/support/fixtures/fcg-20261020T154003Z-g/`, holding `grounding-staging.txt` and `grounding-judgments.txt` (byte copies of the sealed files, the same SHA-256) and `check-g-section.txt` (the sealed `check.txt`'s lines 53-58).
+   - **Mutations (each restored from a scratch copy, byte-identical afterwards):**
+     - the old person wording: 1 test failed;
+     - a brand named from its look labelled as a printed claim: 2 failed;
+     - the operator's unsure counted as consistent: 2 failed;
+     - format 1 read with format 2's labels: 1 failed;
+     - the format line added to format 1's reading: 1 failed.
+   - **Compatibility on the real sealed sessions (read only; scratch copies; nothing written in a sealed folder):**
+     - **`fcg-20261020T154003Z`:** copied without `iv/grounding.jsonl`, which was never opened or copied; a synthetic one was rebuilt from the sealed `check.txt`'s slot line. Read with `alpha_check.py integration`, the new code's output equals the sealed `check.txt` (lines 2-59, byte for byte), as does `086e9b0`'s. The real counts (`face_counts_f2`, synthetic terms only) found 39 lines, all 0, `nonconforming=0` for the sealed staging and judgments.
+     - **`fci-20261020T110028Z`** (no G files), read in place: identical to its sealed `check.txt`.
+     - **Both seals** verify unchanged.
+   - **A real pseudo-terminal** (`script -qec`, a synthetic session, synthetic answers marked `SYNTHETIC-G`): `grounding.py staging` wrote format 2. `judge` asked the person question 4 times and the brand and printed questions once each. It saved a format-2 file in which G3 named from its look reads `unverifiable` with S3 = no; no synthetic answer text was in it.
+   - **Focused suites (local, not CI):**
+     - **Python 3.10.14** (`.venv`), the ten test files that import the changed modules (`test_grounding_check`, `test_alpha_check`, `test_integration_check`, `test_face_check`, `test_features_check`, `test_guard_verdict`, `test_identity_continuity_rule`, `test_landmark_diagnostic`, `test_face_runtime`, `test_demo_runtime`): **599 passed, 0 failed** (739.1 s, 19:00:30-19:12:50 UTC).
+     - **Python 3.12.3** (the isolated environment), `test_grounding_check.py`: **24 passed**.
+     - **Not run:** the full suite.
+     - **Logs:** `~/sentinel-validation/g-wording-s108/logs/`.
+
+5. **Answer-text privacy.**
+   - **Never opened, read or copied:** no real `grounding.jsonl`.
+   - **What the fixtures hold:** categories, labels and the sealed reading's non-text lines only.
+   - **Synthetic answers only,** in the tests and the terminal check.
+   - **The answers' text** is still shown only on the operator's terminal in iv-G and saved nowhere else.
+
+6. **The package.** No new package was prepared, since no live run was requested.
+   - **`fcg-2004725`'s i-B now refuses at the head,** because `grounding.py` differs from its pin. A note beside it (`~/sentinel-prep/fcg-2004725.NOTE.txt`) says so. Its i-V would ask the old S3 wording, so it must not be used with this code.
+   - **What a later G session would need:** a re-pinned package whose i-V asks the new S3 wording, with its own dry run.
+
+7. **Would another live test answer a specific remaining question?**
+
+   **Superseded:** later in this session the maintainer changed the priority to the one-hour live-dashboard trial (session 109): no further G work, and no G experiment is prepared. The assessment below is kept as written.
+
+   **Yes, for one specific question: G4.** No record can answer it, because G4 was cancelled in session 107.
+   - **The question:** asked "What was happening here one minute before this picture was taken?" with one picture and no earlier exchange, does the model acknowledge that one picture cannot show it, or state an earlier moment as fact?
+   - **The test:** one more `fcg` session at the new pin, in session 107's configuration and staging. It would answer that for one answer, judged by the operator from the text alone. It would also record a G3 answer for the first time with the clarified questions: whether a brand is named and whether it is said to be printed, against S3's printed-brand answer.
+   - **What it can show:** one G4 answer's category (the limit acknowledged, another moment asserted, or uncertainty) and one G3 answer's brand answers, each tied to its frame. Descriptive only.
+   - **What it cannot show:** a rate (single, correlated answers), a cause, whether a frame-dependent claim was true (no picture is kept), recognition accuracy, F2 or admission.
+   - **A known limit:** G4 can be cancelled again. After T0 in session 107, 12 of the 81 questions were ended by scene jobs, G4 among them, and G is never retried or extended by design. A second cancellation would leave G4 untested again. Changing the slots to avoid that would change the predeclared design, so it is not proposed.
+   - **Not a reason for it:** session 107's own G3 distinction. A new run asks a new answer, and only the operator's reading of the sealed one can settle what that answer claimed.
+   - **What it needs first:** the maintainer's approval to package it: a re-pinned package (i-V asking the new S3, `grounding.py` at the new pin) and its dry run with synthetic answers, then the same operator session as session 107. Not prepared here.
+
+8. **Not changed.** No runtime code, chat setting or bound, threshold, guard limit, launch floor, criterion, F2 status, admission, enrollment, sealed session (both seals verify) or earlier package. The shutdown label is not fixed. Nothing launched, pushed or published; no review started.
+
+**Next:** the one-hour live-dashboard trial (session 109). Session 107's G3 distinction stays unresolved unless the maintainer states it.
+
 ## Session 107 log (Claude, 2026-10-21): the face + chat integration session with the grounding check, `fcg-20261020T154003Z`, recorded read only from `iv/check.txt` and non-text metadata: integration passed (four parts); G1-G3 answered, G4 cancelled for a scene job and untested; the operator's two later clarifications on G3 recorded apart; the chat error, the no-fresh-frame refusal and the differing cancellation counters explained; one next step proposed; nothing launched, changed in code or pushed
 
 From `adf656f` (clean; code as at `2004725`), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`.
@@ -1117,7 +1241,7 @@ From `adf656f` (clean; code as at `2004725`), in the worktree `~/sentinel-worktr
    - **Read, one named file at a time** (never a recursive search over `iv/`): `iv/check.txt`; `iv/chat-load.jsonl` (numbers and fixed labels; `alpha_load` writes no text there, its docstring and `_record`); `iv/result.json`; `iv/run.jsonl` (event kinds, transitions, ticks and vote counts; the result records' similarity values were never printed); the three status captures (the chat and scene counters); `iv/run.err` (library start-up warnings only); both provenance files; `decisions.txt`; `iv/account.txt`; `iv/grounding-staging.txt` and `iv/grounding-judgments.txt` (categories and labels); `launch-memory-report.txt`; the four memory records; `camera-probe.json` (fixed fields); the identity before/after lines; `validate-face.txt`; the counts; the preparation records.
    - **Never opened:** `iv/grounding.jsonl`. The answers' text has not reached Claude in any form.
    - **Inside the seal:** `IV_verdict=complete`, `IV_exit=0`, `IG_exit=0`, `IV_check_exit=0`, `original_enrollment_unchanged=yes`, `working_copy_removed=yes`; the identity lines before and after identical.
-   - **Not supplied:** `IH_exit` and the display manager's state after i-H (i-H prints them after the seal).
+   - **After the seal (USER-SUPPLIED; corrected in session 108, first written here as "not supplied"):** the maintainer's terminal output of i-H: `original_enrollment_unchanged=yes`, `working_copy_removed=yes` and `sealed: 29 files` (the first two are also in the sealed provenance, and the count matches the seal), then `IH_exit=0`; the display manager's restart then printed `active`. i-H prints `IH_exit` and that state after sealing (`i-H.sh`), so they are the operator's output, not sealed evidence.
    - **The provenance:** `commit=adf656f…` (session 106's record, a documents-only descendant), `pin_commit=2004725…`, `checksums=verified`, `decisions_sha256=61d00d82…` (typed `APPROVE 2004725 fcg grounding_operator_judged cache_drop`), and the two prerequisites `trk-20261017T103831Z` (`1086137a…`) and `fci-20261020T110028Z` (`6de7bb4b…`).
 
 3. **The run and its preparation conditions** (from the sealed provenance, the launch-memory report and the preparation records). One run under the page-cache-drop condition (D103), reported apart, never pooled.
@@ -1256,7 +1380,7 @@ From `adf656f` (clean; code as at `2004725`), in the worktree `~/sentinel-worktr
 **Next (the maintainer):**
 1. approve or change section 11's wording revision, or choose another next step;
 2. optionally, state from your own reading whether G3's answer said the brand was printed (it stays unresolved otherwise);
-3. `IH_exit` was not supplied, so send it if it is wanted on record.
+3. ~~`IH_exit` was not supplied, so send it if it is wanted on record.~~ Supplied in session 108: `IH_exit=0`, the display manager `active` (section 2).
 
 ## Session 106 log (Claude, 2026-10-20): the grounding check G implemented as operator tooling on the maintainer's approval of session 105's proposal (judged by the maintainer, three clarifications): `2004725`, its tests, the package `fcg-2004725` and its dry run with synthetic answers; nothing launched; nothing pushed
 

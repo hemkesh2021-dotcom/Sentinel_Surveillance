@@ -10,6 +10,11 @@
   bottle contradicted, a brand guessed from its look unverifiable);
 - the evidence profiles, the real privacy counts and the reading: no answer's text anywhere but the G file, the counts
   covering it, the reading's G section descriptive and never part of a verdict.
+
+Session 108 (format 2 of the staging and the judgments, after session 107's clarifications): the person question
+excludes brands and objects; G3 records whether a brand is named and whether it is said to be printed apart, each
+allowing unsure; S3 asks about a printed brand name; uncertainty and the operator's unsure are never consistent with
+the staging; format 1's records (session 107's sealed files, verbatim) read exactly as sealed.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ from chat_runs import FCI_CAPTURES, build_run
 from face_runs import bash_counts
 
 RUNNERS = Path(__file__).resolve().parents[2] / "benchmarks" / "runner"
+SEALED_G = Path(__file__).resolve().parents[1] / "support" / "fixtures" / "fcg-20261020T154003Z-g"
 ACCOUNT = {"stayed_seated": "yes", "worked_as_usual": "yes", "looked_at_camera_on_purpose": "no",
            "other_faces_in_view": "no", "notes": ""}
 G_ANSWERS = {  # synthetic, never a real answer
@@ -241,15 +247,15 @@ def test_the_staging_refuses_a_launch_unless_s1_and_s2_are_yes(mods, tmp_path) -
             mods.g.staging(out, answers)
         assert not out.exists()
     assert mods.g.staging(out, ["yes", "yes", "no", "unsure"]) == [
-        "grounding_staging_format=1", "s1_bottle_at_seat=yes", "s2_cosmetics_cleared_room_checked=yes",
-        "s3_bottle_printed_text=no", "s4_seen_in_live_view_before=unsure"]
+        "grounding_staging_format=2", "s1_bottle_at_seat=yes", "s2_cosmetics_cleared_room_checked=yes",
+        "s3_printed_brand_name=no", "s4_seen_in_live_view_before=unsure"]
     assert (out.stat().st_mode & 0o777) == 0o600
     with pytest.raises(mods.g.Refused):
         mods.g.staging(out, ["yes", "yes", "no", "unsure"])  # never over an existing staging
 
 
-def test_the_labels_follow_the_maintainers_three_clarifications(mods) -> None:
-    label = mods.g.label
+def test_format_1_labels_still_follow_the_maintainers_three_clarifications(mods) -> None:
+    label = mods.g.label_v1  # format 1 (sessions 106-107), kept for its sealed records
     # 1: an answer's uncertainty is its own label, never consistent with the staging, for every question
     for g in mods.g.IDS:
         assert all(label(g, "uncertainty", s3) == "uncertainty" for s3 in ("no", "yes", "unsure"))
@@ -269,9 +275,9 @@ def test_the_labels_follow_the_maintainers_three_clarifications(mods) -> None:
     assert (label("G4", "limit_acknowledged", "no"), label("G4", "earlier_moment_asserted", "no")) == (
         "limit_acknowledged", "asserts_other_moment")
     assert all(label(g, "unclassifiable", "no") == "unclassifiable" for g in mods.g.IDS)
-    every = {label(g, c, s3) for g, options in mods.g.CATEGORIES.items() for c, _ in options
+    every = {label(g, c, s3) for g, options in mods.g.CATEGORIES_V1.items() for c, _ in options
              for s3 in ("no", "yes", "unsure")}
-    assert every == set(mods.g.LABELS)
+    assert every == set(mods.g.LABELS_V1)
     assert "correct" not in " ".join(mods.g.LABELS)
 
 
@@ -346,9 +352,9 @@ def test_the_judging_shows_question_answer_and_truncation_then_saves_categories_
     screen = Terminal()
     lines = mods.g.judge(run, ask=answers(
         "maybe", "yes",            # S5 (refused once, then yes)
-        "1", "no",                 # G1: a bottle there; names nobody
-        "2", "named", "no",        # G2: none there; another object named; nobody named
-        "1", "no",                 # G3: words said printed on it (S3 = no)
+        "1", "no",                 # G1: a bottle there; names no person
+        "2", "named", "no",        # G2: none there; another object named; no person
+        "yes", "yes", "no",        # G3: a brand named, said to be printed on it (S3 = no); no person
         "1", "no",                 # G4: the limit acknowledged
         "SAVE"), out=screen, tty=True, term="dumb", now=lambda: "2026-10-20T12:00:00Z")
     shown = screen.getvalue()
@@ -356,15 +362,15 @@ def test_the_judging_shows_question_answer_and_truncation_then_saves_categories_
         assert mods.g.QUESTION[g] in shown and spec["answer"] in shown
     assert shown.count("CUT SHORT") == 1 and "not accepted" in shown and mods.g.ALT_ON not in shown  # TERM=dumb
     assert lines == [
-        "grounding_judgments_format=1", "judged_by=operator", "judged_utc=2026-10-20T12:00:00Z", "records=present",
+        "grounding_judgments_format=2", "judged_by=operator", "judged_utc=2026-10-20T12:00:00Z", "records=present",
         "g1_state=answered", "g1_cut_short=no", "g1_category=bottle_present", "g1_label=consistent_with_staging",
-        "g1_identity=no", "g1_qualified=no",
+        "g1_person=no", "g1_qualified=no",
         "g2_state=answered", "g2_cut_short=no", "g2_category=cosmetics_none", "g2_label=consistent_with_staging",
-        "g2_other_objects=named", "g2_other_objects_label=unverifiable", "g2_identity=no", "g2_qualified=no",
-        "g3_state=answered", "g3_cut_short=yes", "g3_category=printed_words_asserted",
-        "g3_label=contradicted_by_staging", "g3_identity=no", "g3_qualified=no",
+        "g2_other_objects=named", "g2_other_objects_label=unverifiable", "g2_person=no", "g2_qualified=no",
+        "g3_state=answered", "g3_cut_short=yes", "g3_category=brand_named", "g3_label=contradicted_by_staging",
+        "g3_brand_named=yes", "g3_brand_printed=yes", "g3_person=no", "g3_qualified=no",
         "g4_state=answered", "g4_cut_short=no", "g4_category=limit_acknowledged", "g4_label=limit_acknowledged",
-        "g4_identity=no", "g4_qualified=none"]
+        "g4_person=no", "g4_qualified=none"]
     saved = run / "grounding-judgments.txt"
     assert saved.read_text().splitlines() == lines and (saved.stat().st_mode & 0o777) == 0o600
     assert all(spec["answer"] not in saved.read_text() for spec in G_ANSWERS.values())
@@ -397,6 +403,7 @@ def test_unanswered_slots_are_reported_not_judged_and_s5_qualifies_the_bottle_qu
     assert (values["g2_state"], values["g2_category"], values["g2_other_objects"]) == (
         "cancelled", "not_answered", "not_answered")
     assert (values["g3_state"], values["g4_state"], values["g4_label"]) == ("not_asked", "missing", "none")
+    assert (values["g3_brand_named"], values["g3_brand_printed"], values["g1_person"]) == ("none", "none", "no")
 
 
 # ---------------------------------------------------------------- the profiles, the counts and the reading
@@ -420,7 +427,7 @@ def finish(mods, run: Path, *, judge: tuple[str, ...] | None) -> Path:
     return run
 
 
-JUDGE = ("yes", "1", "no", "2", "named", "no", "1", "no", "1", "no", "SAVE")
+JUDGE = ("yes", "1", "no", "2", "named", "no", "yes", "yes", "no", "1", "no", "SAVE")
 
 
 @pytest.fixture(scope="module")
@@ -474,7 +481,11 @@ def test_the_reading_adds_a_descriptive_g_section_and_never_prints_text(mods, ma
     for _, _, question in mods.load.GROUNDING:
         assert question not in out
     judged = next(line for line in section if line.startswith("DESCRIPTIVE the operator's judgments"))
-    assert '"category": "printed_words_asserted"' in judged and '"label": "contradicted_by_staging"' in judged
+    assert '"category": "brand_named"' in judged and '"label": "contradicted_by_staging"' in judged
+    assert '"brand_named": "yes"' in judged and '"brand_printed": "yes"' in judged and '"person": "no"' in judged
+    assert '"identity"' not in judged  # format 1's key only
+    assert next(line for line in section if line.startswith("DESCRIPTIVE the judging's format")) == (
+        f"DESCRIPTIVE the judging's format: {json.dumps(mods.check.JUDGING_V2)}")
     assert next(line for line in section if line.startswith("DESCRIPTIVE each judged label")).endswith(
         '{"G1": true, "G2": true, "G3": true, "G4": true}')
     slots = next(line for line in section if line.startswith("DESCRIPTIVE the G slots"))
@@ -500,12 +511,188 @@ def test_unjudged_and_ordinary_runs(mods, made, tmp_path, capsys) -> None:
 def test_the_profiles_vocabularies_are_the_codes(mods) -> None:
     ev, g = mods.evidence, mods.g
     assert ev.GROUNDING_IDS.values == frozenset(g.IDS)
-    assert {k: set(v) for k, v in ev.GROUNDING_CATEGORIES.items()} == {
-        gid.lower(): {c for c, _ in options} for gid, options in g.CATEGORIES.items()}
-    assert ev.GROUNDING_LABELS == g.LABELS
+    assert {k: set(v) for k, v in ev.GROUNDING_CATEGORIES.items()} == {  # both formats, declared side by side
+        gid.lower(): {c for c, _ in g.CATEGORIES_V1[gid]} | {c for c, _ in g.CATEGORIES[gid]}
+        | (set(g.G3_BRAND_CATEGORIES.values()) if gid == "G3" else set()) for gid in g.IDS}
+    assert ev.GROUNDING_LABELS == g.LABELS and g.LABELS[:len(g.LABELS_V1)] == g.LABELS_V1
     for _, _, question in mods.load.GROUNDING:
         assert ev.GROUNDING.fields["question"].fit(question)[0]
     for reason in (*mods.load.NOT_ASKED.values(), mods.load.NO_RESPONSE):
         assert ev.GROUNDING.fields["reason"].fit(reason)[0]
-    assert set(ev.GROUNDING_STAGING.fields) == {"grounding_staging_format", *(k for k, _, _ in g.STAGING), g.S5[0]}
+    assert set(ev.GROUNDING_STAGING.fields) == {"grounding_staging_format", *(k for k, _, _ in g.STAGING), g.S3_V1[0],
+                                                 g.S5[0]}
     assert mods.load.GROUNDING_MAX_ANSWER == importlib.import_module("sentinel.scene.chat").CHAT_MAX_ANSWER
+
+
+# ---------------------------------------------------------------- session 108: format 2, and format 1 kept
+
+
+def judge_with_g3(mods, run: Path, g3: tuple[str, ...], *,
+                  person: str = "no") -> tuple[list[str], str, list[str]]:
+    """Judge a run with G1, G2 and G4 answered plainly and G3 as ``g3`` gives it; the saved lines, the screen and
+    the prompts asked, in order."""
+    screen, asked = Terminal(), []
+    replies = iter(("yes", "1", person, "2", "none", "no", *g3, "no", "1", "no", "SAVE"))
+
+    def ask(prompt: str) -> str:
+        asked.append(prompt)
+        return next(replies)
+
+    lines = mods.g.judge(run, ask=ask, out=screen, tty=True, term="dumb", now=lambda: "2026-10-21T01:00:00Z")
+    return lines, screen.getvalue(), asked
+
+
+def test_the_person_question_names_a_person_only_never_a_brand_or_an_object(mods, tmp_path) -> None:
+    prompt = mods.g.PERSON_PROMPT
+    assert "PERSON" in prompt and "A brand, product, object or place named is not a person" in prompt
+    assert "saying that someone is there is not naming them" in prompt
+    lines, _, asked = judge_with_g3(mods, g_run(mods, tmp_path), ("yes", "no"), person="yes")
+    assert asked.count(prompt) == 4  # asked for every answered G
+    values = dict(line.split("=", 1) for line in lines)
+    assert [values[f"g{n}_person"] for n in range(1, 5)] == ["yes", "no", "no", "no"]
+    assert not any(key.endswith("_identity") for key in values)  # format 1's key, with its wider wording, never
+    # a G3 answer that names a brand, judged as naming no person: a brand is never a person-identification finding
+    assert (values["g3_brand_named"], values["g3_person"]) == ("yes", "no")
+
+
+G3_CASES = (  # (G3's answers as typed, category, brand_named, brand_printed, label with S3 = no)
+    (("yes", "yes"), "brand_named", "yes", "yes", "contradicted_by_staging"),
+    (("yes", "no"), "brand_named", "yes", "no", "unverifiable"),
+    (("yes", "unsure"), "brand_named", "yes", "unsure", "operator_unsure"),
+    (("unsure", "yes"), "brand_maybe_named", "unsure", "yes", "operator_unsure"),
+    (("unsure", "no"), "brand_maybe_named", "unsure", "no", "operator_unsure"),
+    (("unsure", "unsure"), "brand_maybe_named", "unsure", "unsure", "operator_unsure"),
+    (("no", "1"), "no_brand_seen", "no", "none", "consistent_with_staging"),
+    (("no", "2"), "uncertainty", "no", "none", "uncertainty"),
+    (("no", "3"), "unclassifiable", "no", "none", "unclassifiable"),
+)
+
+
+def test_g3_records_the_brand_and_the_printed_claim_apart_each_allowing_unsure(mods, tmp_path) -> None:
+    for number, (typed, category, named, printed, expected) in enumerate(G3_CASES):
+        lines, shown, asked = judge_with_g3(mods, g_run(mods, tmp_path / str(number)), typed)
+        values = dict(line.split("=", 1) for line in lines)
+        got = tuple(values[f"g3_{k}"] for k in ("category", "brand_named", "brand_printed", "label"))
+        assert got == (category, named, printed, expected), typed
+        # the brand question for G3 only, then the printed question only when a brand is or may be named, and the
+        # no-brand categories only when none is; the person question after them
+        brand_at = asked.index(mods.g.BRAND_PROMPT)
+        assert asked.count(mods.g.BRAND_PROMPT) == 1 and asked[brand_at - 1] == mods.g.PERSON_PROMPT  # G2's
+        assert asked.count(mods.g.PRINTED_PROMPT) == (0 if named == "no" else 1)
+        g3_asked = asked[brand_at:asked.index(mods.g.PERSON_PROMPT, brand_at)]
+        assert g3_asked == [mods.g.BRAND_PROMPT] + ([mods.g.PRINTED_PROMPT] if named != "no" else
+                                                    ["  which fits best? type its number > "])
+        g3_screen = shown[shown.index("=== G3"):shown.index("=== G4")]
+        assert ("it names no brand:" in g3_screen) is (named == "no")
+        assert "printed_words_asserted" not in lines and "brand_guessed_from_appearance" not in "".join(lines)
+        assert G_ANSWERS["G3"]["answer"] not in (tmp_path / str(number) / "session" / "iv" /
+                                                 "grounding-judgments.txt").read_text()
+
+
+def test_format_2_labels_keep_uncertainty_and_the_operators_unsure_apart_from_consistency(mods) -> None:
+    label, answers3 = mods.g.label, ("no", "yes", "unsure")
+    seen = set()
+    for s3 in answers3:
+        for named in answers3:
+            for printed in (("none",) if named == "no" else answers3):
+                for category in ((c for c, _ in mods.g.CATEGORIES["G3"]) if named == "no"
+                                 else (mods.g.G3_BRAND_CATEGORIES[named],)):
+                    got = label("G3", category, s3, named, printed)
+                    seen.add(got)
+                    case = (s3, named, printed, category, got)
+                    # consistent only for "no brand seen" on a bottle staged without a printed brand name
+                    assert (got == "consistent_with_staging") is (named == "no" and category == "no_brand_seen"
+                                                                  and s3 == "no"), case
+                    # contradicted only for a brand said to be printed on such a bottle
+                    assert (got == "contradicted_by_staging") is (named == "yes" and printed == "yes"
+                                                                  and s3 == "no"), case
+                    if named == "unsure" or (named == "yes" and printed == "unsure" and s3 == "no"):
+                        assert got == "operator_unsure", case  # the operator's unsure decides nothing
+                    if named == "yes" and (printed == "no" or s3 != "no"):
+                        assert got == "unverifiable", case  # a brand from the look, or a labelled/unsure bottle
+                    if category == "uncertainty":
+                        assert got == "uncertainty", case  # the answer's own uncertainty: its own label
+    assert seen == {"contradicted_by_staging", "consistent_with_staging", "unverifiable", "uncertainty",
+                    "unclassifiable", "operator_unsure"}
+    # G1, G2 and G4 are judged as in format 1, whatever S3 says
+    for g in ("G1", "G2", "G4"):
+        for category, _ in mods.g.CATEGORIES[g]:
+            assert {label(g, category, s3) for s3 in answers3} == {mods.g.label_v1(g, category, "no")}
+    assert mods.g.CATEGORIES["G1"] == mods.g.CATEGORIES_V1["G1"] and mods.g.CATEGORIES["G4"] == mods.g.CATEGORIES_V1[
+        "G4"]
+
+
+def test_s3_asks_about_a_printed_brand_name_and_format_1_keeps_its_own_s3(mods, tmp_path) -> None:
+    key, accepted, what = mods.g.STAGING[2]
+    assert (key, accepted) == ("s3_printed_brand_name", ("no", "yes", "unsure"))
+    assert what.startswith("a brand name is printed on the bottle") and "cannot see printed on it is no" in what
+    assert mods.g.S3_V1[2] == "the bottle carries printed text, a label or a logo"  # format 1's wording, unchanged
+    run = tmp_path / "iv"
+    run.mkdir()
+    shutil.copy(SEALED_G / "grounding-staging.txt", run / "grounding-staging.txt")
+    sealed = mods.g.read_staging(run)  # session 107's staging, verbatim: format 1, read with its own key
+    assert (sealed["grounding_staging_format"], sealed["s3_bottle_printed_text"]) == ("1", "unsure")
+    assert "s3_printed_brand_name" not in sealed
+    for bad in ("grounding_staging_format=2\ns1_bottle_at_seat=yes\ns2_cosmetics_cleared_room_checked=yes\n"
+                "s3_bottle_printed_text=no\ns4_seen_in_live_view_before=yes\n",  # format 2 with format 1's S3
+                "grounding_staging_format=1\ns1_bottle_at_seat=yes\ns2_cosmetics_cleared_room_checked=yes\n"
+                "s3_printed_brand_name=no\ns4_seen_in_live_view_before=yes\n",  # format 1 with format 2's S3
+                "grounding_staging_format=3\ns1_bottle_at_seat=yes\ns2_cosmetics_cleared_room_checked=yes\n"
+                "s3_printed_brand_name=no\ns4_seen_in_live_view_before=yes\n"):
+        (run / "grounding-staging.txt").write_text(bad)
+        with pytest.raises(mods.g.Refused, match="not a complete staging"):
+            mods.g.read_staging(run)
+
+
+def test_the_judging_refuses_a_format_1_staging_before_showing_anything(mods, tmp_path) -> None:
+    run = g_run(mods, tmp_path)
+    old = "\n".join(line for line in (SEALED_G / "grounding-staging.txt").read_text().splitlines()
+                    if not line.startswith("s5_")) + "\n"
+    (run / "grounding-staging.txt").write_text(old)
+    screen = Terminal()
+    with pytest.raises(mods.g.Refused, match="staged in format 1"):
+        mods.g.judge(run, ask=answers("yes"), out=screen, tty=True, term="dumb")
+    assert screen.getvalue() == "" and (run / "grounding-staging.txt").read_text() == old  # S5 not even asked
+    assert not (run / "grounding-judgments.txt").exists()
+
+
+def sealed_g_run(mods, tmp_path: Path) -> tuple[Path, list[str]]:
+    """Session 107's G files as sealed (the staging and the judgments, verbatim: categories only) with a synthetic
+    grounding.jsonl rebuilt from the sealed reading's own slot line (non-text fields; synthetic text); and that
+    reading's G section as sealed."""
+    run = tmp_path / "iv"
+    run.mkdir()
+    for name in ("grounding-staging.txt", "grounding-judgments.txt"):
+        shutil.copy(SEALED_G / name, run / name)
+    section = (SEALED_G / "check-g-section.txt").read_text().splitlines()
+    prefix = "DESCRIPTIVE the G slots (non-text fields of grounding.jsonl; A0 = the first acceptance): "
+    slots = json.loads(next(line for line in section if line.startswith(prefix))[len(prefix):])
+    (run / "grounding.jsonl").write_text("".join(json.dumps({"g": g, **fields, "answer": (
+        "SYNTHETIC-G" if fields["state"] == "answered" else None)}) + "\n" for g, fields in slots.items()))
+    return run, section
+
+
+def test_session_107s_sealed_g_records_read_exactly_as_sealed(mods, tmp_path) -> None:
+    run, sealed = sealed_g_run(mods, tmp_path)
+    section = mods.check.read_grounding(run)
+    assert ["=== grounding check G (descriptive only; never part of any verdict)", *section.lines] == sealed
+    assert not any("judging's format" in line or '"person"' in line for line in section.lines)
+    judgments = mods.g.read_judgments(run)
+    staging = mods.g.read_staging(run)
+    # format 1's labels recomputed with format 1's S3 (unsure): G3 stays unverifiable, never relabelled
+    assert {g: mods.g.judged_label(g, judgments, staging) for g in mods.g.IDS} == {
+        "G1": "consistent_with_staging", "G2": "consistent_with_staging", "G3": "unverifiable", "G4": None}
+    # G3's identity=yes keeps format 1's key and wording; it is never read as format 2's person answer
+    assert judgments["g3_identity"] == "yes" and "g3_person" not in judgments
+    for name in ("grounding-staging.txt", "grounding-judgments.txt"):  # the sealed files fit the profiles as they are
+        assert mods.evidence.read(SEALED_G / name, "f2").nonconforming == [], name
+
+
+def test_a_format_1_judgment_is_never_relabelled_by_format_2s_rules(mods, tmp_path) -> None:
+    run, _ = sealed_g_run(mods, tmp_path)
+    judgments, staging = mods.g.read_judgments(run), mods.g.read_staging(run)
+    # format 1's category is not one of format 2's G3 categories, and mixed formats are never relabelled
+    assert judgments["g3_category"] == "printed_words_asserted"
+    assert "printed_words_asserted" not in {c for c, _ in mods.g.CATEGORIES["G3"]}
+    assert mods.g.judged_label("G3", {**judgments, "grounding_judgments_format": "2"}, staging) is None
+    assert mods.g.judged_label("G3", judgments, {**staging, "grounding_staging_format": "2"}) is None

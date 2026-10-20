@@ -54,8 +54,10 @@ acceptance, admits nothing and is not the combined run (which still needs a vali
 **The grounding check G (sessions 65, 105, 106), when the run holds its files:** a fifth section, DESCRIPTIVE only and
 never part of any verdict: the staging (S1-S5), each G slot's state, timing, frame and length from grounding.jsonl's
 non-text fields, and the operator's categories and labels (grounding-judgments.txt, judged in iv-G before this
-reading), with the labels recomputed from the categories and the staging. **This reading never prints a question's
-or an answer's text**; a G answer is also a chat answer and counts in "real answers" like any other.
+reading), with the labels recomputed from the categories and the staging, each in its own format (session 108's
+format 2 records whether an answer names a person apart from brands and objects, and G3's brand named and printed
+claim apart; format 1's records read exactly as before). **This reading never prints a question's or an answer's
+text**; a G answer is also a chat answer and counts in "real answers" like any other.
 
 Stdlib only; reads files only.
 """
@@ -417,6 +419,9 @@ GROUNDING_SCOPE = ("the grounding check G (sessions 65, 105, 106), descriptive o
                    "answers' text is kept only in grounding.jsonl and shown only in the operator's own judging (iv-G); "
                    "a claim that depends on the exact frame is unverifiable, never correct or incorrect; an "
                    "uncertainty is its own label; G enters no verdict")
+JUDGING_V2 = ("2 (session 108): person = names a person or guesses who a person is, never a brand, product or "
+              "object; G3's brand_named and brand_printed recorded apart, each yes, no or unsure; S3 = a brand name "
+              "printed on the bottle; operator_unsure is never consistent with the staging")
 SLOT_FIELDS = ("state", "reason", "asked_after_a0_s", "replaced_kind", "stream_epoch", "frame_seq", "ingest_utc",
                "age_ms_when_asked", "age_ms_when_answered", "historical", "answer_chars", "cut_short")  # never text
 
@@ -457,12 +462,13 @@ def read_grounding(run_dir: Path) -> s5.Reading | None:
     for g in grounding.IDS:
         key = g.lower()
         shown[g] = {k: judgments.get(f"{key}_{k}") for k in (
-            "state", "category", "label", "cut_short", "identity", "qualified", "other_objects",
-            "other_objects_label") if f"{key}_{k}" in judgments}
-        category = judgments.get(f"{key}_category")
-        if staging is not None and category in dict(grounding.CATEGORIES[g]):
-            recomputed[g] = grounding.label(g, category, staging.get("s3_bottle_printed_text")) == judgments.get(
-                f"{key}_label")
+            "state", "category", "label", "cut_short", "identity", "person", "brand_named", "brand_printed",
+            "qualified", "other_objects", "other_objects_label") if f"{key}_{k}" in judgments}
+        implied = grounding.judged_label(g, judgments, staging) if staging is not None else None
+        if implied is not None:
+            recomputed[g] = implied == judgments.get(f"{key}_label")
+    if f"grounding_judgments_format={judgments.get('grounding_judgments_format')}" == grounding.JUDGMENTS_FORMAT:
+        r.describe("the judging's format", JUDGING_V2)  # format 1's records read exactly as they always did
     r.describe("the operator's judgments (categories and labels; judged by the operator, never by this reading)",
                {"judged_utc": judgments.get("judged_utc"), "records": judgments.get("records"), **shown})
     r.describe("each judged label as the category and the staging imply it", recomputed)
