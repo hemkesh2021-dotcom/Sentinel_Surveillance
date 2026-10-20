@@ -7,7 +7,8 @@ floor), exited 1 and printed that exit to the terminal only, and the block's ``T
 ``tee``, 0. The guard's own exit 0 is not enough either: it also covers a runtime that exited on its own before the
 duration (``child_exited``).
 
-    guard_verdict.py RESULT_JSON --guard-exit N --cues NAME[,NAME...] [--require-ready tracking_diagnostic|landmark_diagnostic]
+    guard_verdict.py RESULT_JSON --guard-exit N --cues NAME[,NAME...]
+                     [--require-ready tracking_diagnostic|landmark_diagnostic|face_chat]
                      [--prefix XX_]
 
 prints fixed ``key=value`` lines, each name with the prefix (the block appends them to the session's provenance):
@@ -42,7 +43,7 @@ STATUSES = ("duration_stop", "child_exited", "cleanup_failed", "forced_stop", "g
 LABEL = re.compile(r"[a-z][a-z0-9_]{0,63}")
 REASON = re.compile(r"[A-Za-z0-9_:() .,-]{1,160}")  # step5_guard.readiness_problem's labels (a detector problem's too)
 PREFIX = re.compile(r"[A-Z]{1,4}_")
-READINESS = ("tracking_diagnostic", "landmark_diagnostic")  # step5_guard.READINESS (sessions 80, 90)
+READINESS = ("tracking_diagnostic", "landmark_diagnostic", "face_chat")  # step5_guard.READINESS (sessions 80, 90, 103)
 
 
 def _status(value: Any) -> str:

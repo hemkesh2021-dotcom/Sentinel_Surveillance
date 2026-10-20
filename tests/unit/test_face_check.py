@@ -1109,8 +1109,8 @@ def test_a_format_4_account_is_schema_text_and_the_helper_offers_it(mods, tmp_pa
     assert read.nonconforming == [] and read.content == [(f"line {len(mods.account.FIELDS_V4) + 1}: notes",
                                                           "a note that is never printed")]
     with pytest.raises(SystemExit):
-        mods.account.main(["enter", str(run), "--format", "11"])  # 6 the comparison's (D87), 7, 8 D91's, 9 D101's,
-        # 10 session 90's (the landmark diagnostic)
+        mods.account.main(["enter", str(run), "--format", "12"])  # 6 the comparison's (D87), 7, 8 D91's, 9 D101's,
+        # 10 session 90's (the landmark diagnostic), 11 session 103's (the face and chat integration run)
 
 
 # ---------------------------------------------------------------- D101: format 9, the away posture named by the cue

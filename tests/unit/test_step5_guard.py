@@ -538,7 +538,7 @@ def test_readiness_met_needs_the_whole_marker_and_the_keys_are_the_runtimes(mod)
     assert mod.readiness_problem(REQUIRE, READY["startup"]) is None
     assert mod.readiness_problem("something_else", READY["startup"]) == "unknown_requirement"
     assert mod.TRACKING_SETTING_KEYS == SETTING_KEYS
-    assert mod.READINESS == ("tracking_diagnostic", "landmark_diagnostic")  # session 90 added the landmark diagnostic's
+    assert mod.READINESS == ("tracking_diagnostic", "landmark_diagnostic", "face_chat")  # sessions 90 and 103 added two
 
 
 def test_a_clean_exit_before_the_starting_line_never_meets_the_requirement(mod, tmp_path, monkeypatch) -> None:
@@ -567,3 +567,34 @@ def test_the_requirement_is_a_fixed_choice_on_the_command_line(mod, tmp_path, mo
     monkeypatch.setattr(mod, "supervise", lambda command, out, **kw: seen.update(kw) or {"status": "x"})
     mod.main(["--out", str(tmp_path / "y"), "--duration-s", "5", "--require-ready", REQUIRE, "--", "true"])
     assert seen["require_ready"] == REQUIRE
+
+
+# ---------------------------------------------------------------- session 103: face_chat readiness before T0
+
+
+def test_the_runtimes_starting_line_with_face_and_chat_meets_face_chat_and_anything_else_is_refused_before_t0(
+        mod, tmp_path) -> None:
+    from chat_runs import build_run
+
+    verdict = importlib.import_module("guard_verdict")
+    loads = type("Mods", (), {"load": importlib.import_module("alpha_load"), "guard": mod})
+    made = build_run(loads, tmp_path, face=True, live=False, duration=10.0, captures_at=())
+    starting = next(json.loads(line) for line in (made / "run.jsonl").read_text().splitlines()
+                    if json.loads(line).get("run") == "starting")
+    assert mod.readiness_problem("face_chat", starting["startup"]) is None  # the real runtime's face and chat entries
+    for name in ("met", "paused"):
+        (tmp_path / name).mkdir()
+    said: list[str] = []
+    result, _ = run(mod, tmp_path / "met", FakeBackend(ready_s=5, stop_s=1, starting=starting), duration_s=10.0,
+                    require_ready="face_chat", cues=((0.0, "t0", "T0"),), say=said.append)
+    assert result["status"] == "duration_stop" and result["readiness"]["met"] is True and len(said) == 1
+    assert dict(verdict.verdict(result, 0, ("t0",), "face_chat"))["readiness"] == "met"
+    paused = {**starting, "startup": {**starting["startup"], "chat": {"state": "paused", "reason": "x"}}}
+    said = []
+    result, _ = run(mod, tmp_path / "paused", FakeBackend(ready_s=5, stop_s=1, starting=paused), duration_s=10.0,
+                    require_ready="face_chat", cues=((0.0, "t0", "T0"),), say=said.append)
+    assert result["status"] == "readiness_refused" and said == []  # stopped at once, no cue printed
+    assert result["readiness"]["reason"] == "chat_not_available_as_validation_run:paused"
+    lines = dict(verdict.verdict(result, 1, ("t0",), "face_chat"))
+    assert lines["readiness"] == "unmet:chat_not_available_as_validation_run:paused"
+    assert lines["verdict"].startswith("incomplete:")

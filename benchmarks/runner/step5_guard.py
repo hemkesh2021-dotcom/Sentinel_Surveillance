@@ -33,6 +33,11 @@ no status is saved; a runtime that exits before its ``starting`` line leaves the
 (``no_starting_line``). The exit status is then 1: a clean process exit alone never implies the diagnostic was ready.
 ``--require-ready landmark_diagnostic`` (session 90) works the same way for the landmark diagnostic: no detector
 problem, no face problem, and the marker ``face.landmark_diagnostic`` holding exactly the pinned values below.
+``--require-ready face_chat`` (session 103, the validation-only face + chat integration run) works the same way: no
+detector, face or scene problem; face exactly ``FACE_CHAT_FACE`` (a validation run of the normal path with one
+enrolled identity, no candidate, comparison, experiment, continuity rule or diagnostic marker); the scene server
+ready (17/17 layers, the vision encoder on the GPU); and chat ``available`` with exactly its validation-run reason
+(``CHAT_VALIDATION_AVAILABLE``; chat paused by its memory gate, unavailable or admitted is not this run).
 
 At each ``--status-at SECONDS:NAME`` offset it saves ``status-NAME.json`` from the loopback status page, and it
 classifies the listeners on 18090 and 18081 as loopback, any or other. ``result.json`` holds numbers and fixed labels
@@ -74,10 +79,19 @@ MAX_DURATION_S = 900.0
 STOP_GRACE_S = 90.0
 KILL_GRACE_S = 5.0
 READY_TIMEOUT_S = 300.0
-READINESS = ("tracking_diagnostic", "landmark_diagnostic")  # --require-ready values
+READINESS = ("tracking_diagnostic", "landmark_diagnostic", "face_chat")  # --require-ready values
 # What the landmark diagnostic's startup marker must be before T0 (sentinel.identity.landmarks.marker(); kept equal by a
 # test; this script imports nothing from the runtime).
 LANDMARK_MARKER = {"version": 1, "score": 0.9, "min_eye_spacing_px": 4.0, "persons_max": 4}
+# What the face + chat integration run's starting line must show before T0 (session 103; kept equal to the runtime's by
+# a test; this script imports nothing from the runtime): face recognition on the normal path, nothing else, and chat
+# as a validation run, available now.
+FACE_CHAT_FACE = {"validation_run": True, "identities_enrolled": 1}
+CHAT_VALIDATION_AVAILABLE = {
+    "state": "available",
+    "reason": ("ask about the picture the camera is showing now (validation run: chat is not admitted; its answers "
+               "and their effect on monitoring are being checked)")}
+SCENE_LAYERS = "17/17"
 # What the tracking diagnostic's startup marker must hold before T0: the tracker's settings as the runtime records
 # them under face.tracking_diagnostic.tracker (legacy_ultralytics.diagnostic_settings; equal to
 # sentinel.tracking.diagnostic.SETTING_KEYS, kept so by a test; this script imports nothing from the runtime).
@@ -279,6 +293,22 @@ def readiness_problem(required: str | None, startup: Any) -> str | None:
     if problem is not None:
         return f"detector_problem:{problem}"
     face = startup.get("face")
+    if required == "face_chat":  # session 103: face, the scene server and chat as a validation run, all ready together
+        for name in ("face_problem", "scene_problem"):
+            if startup.get(name) is not None:
+                return f"{name}:{startup.get(name)}"
+        if face != FACE_CHAT_FACE:
+            return "face_not_the_plain_validation_run" if isinstance(face, dict) else "face_missing"
+        server = startup.get("scene_server")
+        if not (isinstance(server, dict) and server.get("state") == "ready" and server.get("problem") is None
+                and server.get("layers") == SCENE_LAYERS and server.get("vision_on_gpu") is True):
+            return "scene_server_not_ready"
+        chat = startup.get("chat")
+        if not isinstance(chat, dict):
+            return "chat_missing"
+        if chat != CHAT_VALIDATION_AVAILABLE:
+            return f"chat_not_available_as_validation_run:{chat.get('state')}"
+        return None
     if required == "landmark_diagnostic":  # session 90: the face loaded, and the marker exactly as pinned
         if startup.get("face_problem") is not None:
             return f"face_problem:{startup.get('face_problem')}"

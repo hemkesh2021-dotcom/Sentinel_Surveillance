@@ -53,6 +53,11 @@ answer here, not an incomplete account: face_check's comparison reading qualifie
 (not enrolled, consented, stayed seated, looked toward the camera at the 2:30 cue, nobody else in view), each a set of
 separate yes / no / unknown answers as in format 6. Never a name.
 
+**Format 11** (session 103; ``enter --format 11``): the face + chat integration run's account, not an F2 account:
+format 6's four separate questions about the whole run under their own header. The run is validation-only; the
+answers describe what the operator did and who was in view, and the reading uses them only to qualify its descriptive
+recognition lines.
+
 ``check`` shows a saved account, read only, with its lock state. Stdlib only.
 """
 
@@ -311,10 +316,21 @@ INTRO_V10 = (
     "on its own: yes or no, or unknown if you are not sure; an unknown answer affects only the readings that depend\n"
     "on it. Nothing here shows an identity result."
 )
-SEPARATE_FORMATS = (6, 7, 8, 10)  # formats whose answers are read one by one: unknown is accepted, never "incomplete"
+# Format 11 (session 103): the validation-only face + chat integration run. The enrolled person works at the Mac as
+# usual while the load tool asks the chat questions; format 6's separate questions about the whole run, under their own
+# header.
+HEADER_V11 = ("# face and chat integration run account, format 11, entered with benchmarks/runner/face_account.py; "
+              "values as typed")
+FIELDS_V11 = FIELDS_V6
+INTRO_V11 = (
+    "Your face and chat integration run account (format 11). Four separate questions about the whole run. Answer each\n"
+    "on its own: yes or no, or unknown if you are not sure; an unknown answer affects only the lines that depend on\n"
+    "it. Nothing here shows an identity result or a chat answer."
+)
+SEPARATE_FORMATS = (6, 7, 8, 10, 11)  # answers read one by one: unknown is accepted, never "incomplete"
 FORMATS = {HEADER_V1: (1, FIELDS_V1), HEADER: (2, FIELDS), HEADER_V3: (3, FIELDS_V3), HEADER_V4: (4, FIELDS_V4),
            HEADER_V5: (5, FIELDS_V5), HEADER_V6: (6, FIELDS_V6), HEADER_V7: (7, FIELDS_V7), HEADER_V8: (8, FIELDS_V8),
-           HEADER_V9: (9, FIELDS_V9), HEADER_V10: (10, FIELDS_V10)}
+           HEADER_V9: (9, FIELDS_V9), HEADER_V10: (10, FIELDS_V10), HEADER_V11: (11, FIELDS_V11)}
 INTRO = (
     "Your F2 account (format 2). Answer from what you noted; type unknown for anything you did not note or are not\n"
     "sure of. First: how many whole seconds after the T0 cue you started the stopwatch (0 if at the cue, as far as\n"
@@ -475,7 +491,9 @@ def enter(run_dir: Path, ask: Callable[[str], str] = input, say: Callable[[str],
                              5: (FIELDS_V5, HEADER_V5, INTRO_V5), 6: (FIELDS_V6, HEADER_V6, INTRO_V6),
                              7: (FIELDS_V7, HEADER_V7, INTRO_V7), 8: (FIELDS_V8, HEADER_V8, INTRO_V8),
                              9: (FIELDS_V9, HEADER_V9, INTRO_V9),
-                             10: (FIELDS_V10, HEADER_V10, INTRO_V10)}.get(account_format_number, (FIELDS, HEADER, INTRO))
+                             10: (FIELDS_V10, HEADER_V10, INTRO_V10),
+                             11: (FIELDS_V11, HEADER_V11, INTRO_V11)}.get(account_format_number,
+                                                                          (FIELDS, HEADER, INTRO))
     checker = review_separate if account_format_number in SEPARATE_FORMATS else review
     problem = not_ready(run_dir)
     if problem is not None:
@@ -556,13 +574,13 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     enter_parser = commands.add_parser("enter", help="answer each item; saving locks the account")
     enter_parser.add_argument("run_dir", type=Path)
-    enter_parser.add_argument("--format", type=int, choices=(2, 3, 4, 5, 6, 7, 8, 9, 10), default=2,
+    enter_parser.add_argument("--format", type=int, choices=(2, 3, 4, 5, 6, 7, 8, 9, 10, 11), default=2,
                               help="2 (D66, the default), 3 (D79, cued), 4 (D85, cued, the 4:00 head turn stated), 5 "
                                    "(D86, the natural seated check), 6 (D87, the natural recognition comparison), 7 "
                                    "(D91, the enrollment experiment's capture), 8 (D91, a non-enrolled participant's "
                                    "session), 9 (D101, cued, the away posture named by the 4:00 cue) or 10 (session "
-                                   "90, the landmark diagnostic's ordinary-use session); 3 to 10 only with the "
-                                   "maintainer's approval")
+                                   "90, the landmark diagnostic's ordinary-use session) or 11 (session 103, the "
+                                   "face and chat integration run); 3 to 11 only with the maintainer's approval")
     commands.add_parser("check", help="show a saved account and its lock state").add_argument("run_dir", type=Path)
     args = parser.parse_args(argv)
     if args.command == "enter":

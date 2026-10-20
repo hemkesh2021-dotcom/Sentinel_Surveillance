@@ -212,7 +212,7 @@ CHANNELS = vocab("telegram")
 GUARD_STATUS = Either((vocab("duration_stop", "child_exited", "cleanup_failed", "forced_stop", "guard_stop",
                              "ready_timeout", "operator_interrupt", "readiness_refused"), template(r"refused:(.+)")))
 STOP_BY = maybe(vocab("duration_elapsed", "guard_stop", "ready_timeout", "operator_interrupt", "readiness_refused"))
-READINESS = vocab("tracking_diagnostic", "landmark_diagnostic")  # step5_guard.READINESS (sessions 80 and 90)
+READINESS = vocab("tracking_diagnostic", "landmark_diagnostic", "face_chat")  # step5_guard.READINESS (80, 90, 103)
 CAPTURE_RESULT = Either((vocab("saved", "too_large", "not_json", "not_reached"), template(r"unavailable:(.+)")))
 LISTENER = {"port": INT, "family": vocab("tcp", "tcp6"), "scope": vocab("loopback", "any", "other")}
 
@@ -440,7 +440,7 @@ class KeyValueProfile:
 @dataclass(frozen=True)
 class AccountProfile:
     """F2's account.txt, as face_account renders it: its header, then ``key=value   # comment`` per field. The
-    header names the format (1 to 10, as face_account.FORMATS lists them), and each value is checked against that
+    header names the format (1 to 11, as face_account.FORMATS lists them), and each value is checked against that
     format's field."""
 
 
