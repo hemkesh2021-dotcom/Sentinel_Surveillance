@@ -35,18 +35,20 @@ from dataclasses import dataclass
 from enum import Enum
 
 from ..contracts import FrameRef, NormalizedBox, TrackKey, TrackObservation
+from ..media.clock import NS_PER_SECOND
 
-NS_PER_SECOND = 1_000_000_000
 MAX_RETENTION_NS = 600 * NS_PER_SECOND  # no configuration may keep votes longer than this
 
 
 def iou(a: NormalizedBox, b: NormalizedBox) -> float:
-    """Intersection over union of two boxes (geometry only)."""
+    """Intersection over union of two normalized boxes (geometry only; equal to the pixel boxes' for one frame), also
+    the landmark diagnostic's. 0.0 when the union is zero: boxes too small for their areas to be represented, which
+    the box contract allows (here a jump, the safe side; the tracker drops boxes under a pixel before they get here)."""
     width = min(a.x2, b.x2) - max(a.x1, b.x1)
     height = min(a.y2, b.y2) - max(a.y1, b.y1)
     inter = width * height if width > 0 and height > 0 else 0.0
     union = (a.x2 - a.x1) * (a.y2 - a.y1) + (b.x2 - b.x1) * (b.y2 - b.y1) - inter
-    return inter / union
+    return inter / union if union > 0 else 0.0
 
 
 class Cause(str, Enum):

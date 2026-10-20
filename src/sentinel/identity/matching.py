@@ -87,6 +87,12 @@ def best_match(embedding: Sequence[float], enrollment: Enrollment) -> Match:
     return Match(best_id, best, scores[1][0] if len(scores) > 1 else None, closest[best_id])
 
 
+def unit_cosine(a: Sequence[float], b: Sequence[float]) -> float:
+    """The cosine similarity of two unit-length vectors (gallery.unit's), which is their dot product: enrollment's
+    consistency and closeness checks and the capture experiment's, without best_match's division by the norms."""
+    return _dot(a, b)
+
+
 def _dot(a: Sequence[float], b: Sequence[float]) -> float:
     return math.fsum(x * y for x, y in zip(a, b, strict=True))
 

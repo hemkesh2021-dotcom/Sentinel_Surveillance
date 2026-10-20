@@ -64,12 +64,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from ..contracts import FrameRef, NormalizedBox, TrackKey, TrackObservation
+from ..contracts import FrameRef, TrackKey, TrackObservation
 from .association import AssociationGeometry, FaceObservation, Ownership, associate
+from .continuity import iou
+from .yunet import YUNET_THRESHOLD
 
 LANDMARK_SCHEMA_VERSION = 1
 ROW_VALUES = 15  # x, y, w, h, five landmarks (x, y), score (cv2.FaceDetectorYN)
-LANDMARK_SCORE = 0.9  # legacy_deepface.YUNET_THRESHOLD: candidates at least this strong take part (test-tied)
+LANDMARK_SCORE = YUNET_THRESHOLD  # production detection's own threshold: candidates at least this strong take part
 MIN_EYE_SPACING_PX = 4.0  # below this the eye line's direction is undefined in practice; a guard, not a calibration
 LANDMARK_PERSONS_MAX = 4  # people per result that get a record; the others are counted as not_recorded
 RATIO_DECIMALS = 3
@@ -153,17 +155,6 @@ def measure(landmarks: Landmarks | None, width: int, height: int) -> tuple[dict[
         return None, "malformed_row"
     return {k: round(v, DEGREE_DECIMALS if k == "eye_line_deg" else PX_DECIMALS if k == "eye_spacing_px"
                      else RATIO_DECIMALS) for k, v in values.items()}, None
-
-
-def iou(a: NormalizedBox, b: NormalizedBox) -> float:
-    """Intersection over union of two normalized boxes (equal to the pixel boxes' for one frame)."""
-    w = min(a.x2, b.x2) - max(a.x1, b.x1)
-    h = min(a.y2, b.y2) - max(a.y1, b.y1)
-    if w <= 0 or h <= 0:
-        return 0.0
-    inter = w * h
-    union = (a.x2 - a.x1) * (a.y2 - a.y1) + (b.x2 - b.x1) * (b.y2 - b.y1) - inter
-    return inter / union if union > 0 else 0.0
 
 
 def _record(status: str, reason: str | None = None, score: float | None = None, face_iou: float | None = None,

@@ -81,8 +81,9 @@ from typing import Any
 
 from ..contracts import FrameKey, NormalizedBox
 from .association import FaceObservation
-from .gallery import FaceCompatibility
+from .gallery import FaceCompatibility, unit
 from .landmarks import Landmarks, from_row
+from .yunet import YUNET_THRESHOLD  # DeepFace 0.0.99's default yunet_score_threshold: what production detection keeps
 
 DEEPFACE_VERSION = "0.0.99"
 MODEL_NAME = "Facenet512"
@@ -97,7 +98,6 @@ FACE_ARGS: Mapping[str, Any] = {  # demo_workload.py's FACE_ARGS with DeepFace's
     "align": True, "normalization": "base", "expand_percentage": 0,
 }
 WARMUP_SHAPE = (480, 640, 3)
-YUNET_THRESHOLD = 0.9  # DeepFace 0.0.99's default yunet_score_threshold: what production detection keeps
 YUNET_MAX_SIDE = 640  # DeepFace's YuNet wrapper scales anything larger down to this
 FULL_SCALE_FLOOR = 0.3  # D86: what the diagnostic full-scale pass records; never a decision threshold
 FULL_SCALE_KEPT = 8  # candidates kept per frame, highest score first
@@ -230,16 +230,18 @@ def static_difference(compatibility: FaceCompatibility) -> str | None:
 
 
 def _unit(values: Sequence[Any]) -> tuple[float, ...] | None:
+    """A provider's embedding at unit length (gallery.unit, the one normalization), or None unless it is DIMENSION
+    numbers with a finite, non-zero norm."""
     try:
         vector = [float(v) for v in values]
     except (TypeError, ValueError):
         return None
-    if len(vector) != DIMENSION or not all(math.isfinite(v) for v in vector):
+    if len(vector) != DIMENSION:
         return None
-    norm = math.sqrt(math.fsum(v * v for v in vector))
-    if norm == 0.0:
+    try:
+        return unit(vector)
+    except ValueError:  # a value that is not finite, a zero vector, or a norm beyond the float range
         return None
-    return tuple(v / norm for v in vector)
 
 
 def _confidence(item: Mapping[str, Any]) -> float:

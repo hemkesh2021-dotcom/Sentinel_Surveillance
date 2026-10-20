@@ -115,6 +115,32 @@ def test_the_policy_refuses_thresholds_that_leave_a_swap_uncovered() -> None:
     assert POLICY.numbers() == {"max_gap_s": 0.5, "overlap_iou": 0.3, "min_step_iou": 0.4, "retention_s": 120.0}
 
 
+def test_boxes_too_small_to_have_an_area_are_a_jump_not_a_division_by_zero() -> None:
+    """Review A, finding 9: the box contract allows a box whose area underflows to 0.0 (x1 < x2 and y1 < y2 hold), so
+    two of them have a zero union. This copy of the IoU divided by it (ZeroDivisionError out of the monitor and
+    EdgeCore.on_frame); the landmark diagnostic's copy gave 0.0. One IoU now, guarded: no overlap, so a jump, the safe
+    side. (PersonTracker drops boxes under a pixel, so a live run never gets here.)"""
+    from sentinel.identity import landmarks
+    from sentinel.runtime import EdgeCore
+
+    tiny = NormalizedBox(x1=0.0, y1=0.0, x2=1e-200, y2=1e-200)
+    assert iou(tiny, tiny) == 0.0 and landmarks.iou is iou
+    frames = Frames()
+    frames.step(0.1, (1, (0.0, 0.0, 6.4e-198, 4.8e-198)))
+    assert frames.step(0.1, (1, (0.0, 0.0, 6.4e-198, 4.8e-198))) == [(1, Cause.JUMP)]
+    clock = FakeClock()
+    stamper = FrameStamper("cam-1", clock)
+    stream = stamper.connect()
+    core = EdgeCore(CONFIG, clock, None, face_recognition=Capability.AVAILABLE, enrollment=ENROLLMENT,
+                    continuity=POLICY)
+    for _ in range(2):
+        clock.advance(0.1)
+        frame = stamper.stamp(native_width=640, native_height=480, pixel_format=PixelFormat.BGR)
+        output = core.on_frame(frame, [TrackObservation.detected(frame, track_id=1, box=tiny, confidence=0.9,
+                                                                 status=TrackStatus.CONFIRMED)], stream)
+    assert [(b.key.track_id, b.cause) for b in output.identity_breaks] == [(1, Cause.JUMP)]
+
+
 # ---------------------------------------------------------------- scenarios on the real core
 
 

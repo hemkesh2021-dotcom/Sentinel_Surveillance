@@ -36,8 +36,9 @@ from typing import Any
 from ..contracts import FrameRef, TrackKey, TrackObservation
 from ..media.clock import NS_PER_SECOND
 from .association import AssociationGeometry, FaceObservation, Ownership, associate
+from .yunet import YUNET_THRESHOLD
 
-FULL_SCALE_COUNTED = 0.9  # runtime.FULL_SCALE_COUNTED (test-tied): the production detector's own threshold
+FULL_SCALE_COUNTED = YUNET_THRESHOLD  # the production detector's own threshold, as runtime.FULL_SCALE_COUNTED
 COMPARISON_INTERVAL_S = 4.0
 COMPARISON_CAP = 75  # a 300 s run at one every 4 s
 CONTROL_SHARE = 4  # at most one control in four attempts

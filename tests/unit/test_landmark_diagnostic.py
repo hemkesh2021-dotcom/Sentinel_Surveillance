@@ -18,7 +18,6 @@ from sentinel.identity import landmarks as lm
 from sentinel.identity.association import AssociationGeometry, FaceObservation
 from sentinel.identity.legacy_deepface import (
     FULL_SCALE_KEPT,
-    YUNET_THRESHOLD,
     FaceBackendError,
     FullScale,
     full_scale_pass,
@@ -28,7 +27,6 @@ from sentinel.live_state import Capability
 from sentinel.media.clock import FakeClock
 from sentinel.media.frames import FrameStamper
 from sentinel.runtime import (
-    FULL_SCALE_COUNTED,
     IDENTITY_FULL_SCALE_SCHEMA,
     IDENTITY_GEOMETRY_SCHEMA,
     IDENTITY_LANDMARK_SCHEMA,
@@ -344,7 +342,6 @@ def test_the_launch_check_reads_the_named_blocks_and_keeps_the_f2_default(runner
 
 def test_the_runner_scripts_keep_the_runtimes_values(runners) -> None:
     check, evidence, landmark = runners.check, runners.evidence, runners.landmark
-    assert lm.LANDMARK_SCORE == YUNET_THRESHOLD == FULL_SCALE_COUNTED
     assert check.LANDMARK_SCHEMA == IDENTITY_LANDMARK_SCHEMA and check.LANDMARK_SCHEMA in check.SCHEMAS
     assert check.LANDMARK_RECORD_KEYS == set(lm.RECORD_KEYS) and check.LANDMARK_MEASURES == lm.MEASURES
     assert check.LANDMARK_INVALID == lm.INVALID_REASONS and check.LANDMARK_MIN_EYE_SPACING_PX == lm.MIN_EYE_SPACING_PX

@@ -659,7 +659,7 @@ CvError = type("error", (Exception,), {})  # named as OpenCV's cv2.error is
 class ProviderRuntime:
     """TensorFlow, OpenCV and DeepFace as the real adapter (LegacyDeepFaceBackend) sees them: it loads, then each
     enrollment photo fails as ``fault`` says, with the photo's path (a person's name) and synthetic secrets in the
-    provider's message."""
+    provider's message, or gives the malformed output it names."""
 
     def __init__(self, fault: str) -> None:
         from sentinel.identity.legacy_deepface import DEEPFACE_VERSION
@@ -685,8 +685,10 @@ class ProviderRuntime:
             raise RuntimeError(f"represent failed for {img_path[1]} with {{'api_key': 'SYNTH-provider'}}")
         if self.fault == "memory":
             raise MemoryError(f"cannot pad {img_path[1]} (SYNTH)")
-        width = {"infinite-width": float("inf"), "nan-width": float("nan")}[self.fault]
-        return [{"embedding": [0.0] * 511 + [1.0], "facial_area": {"x": 0, "y": 0, "w": width, "h": 10},
+        width = {"infinite-width": float("inf"), "nan-width": float("nan")}.get(self.fault, 10)
+        embedding = {"overflowing-value": [1e200] + [1.0] * 511,  # finite; its norm is not (gave all zeros)
+                     "overflowing-sum": [1e154] * 512}.get(self.fault, [0.0] * 511 + [1.0])  # OverflowError
+        return [{"embedding": embedding, "facial_area": {"x": 0, "y": 0, "w": width, "h": 10},
                  "face_confidence": 0.9}]
 
 
@@ -705,6 +707,8 @@ def provider(fault: str):
     ("memory", "enrollment_photo_failed:MemoryError"),
     ("infinite-width", "inconsistent_output"),
     ("nan-width", "inconsistent_output"),
+    ("overflowing-value", "inconsistent_output"),  # finding 9: was inconsistent_photos, from all-zero embeddings
+    ("overflowing-sum", "inconsistent_output"),  # finding 9: was failed:OverflowError
 ])
 def test_a_provider_failure_at_enrollment_is_one_label_with_its_class_never_its_message(
         store, tmp_path, monkeypatch, capsys, fault, label) -> None:

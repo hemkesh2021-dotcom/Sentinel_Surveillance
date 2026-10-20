@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from sentinel.contracts import FrameKey
-from sentinel.identity.gallery import FaceCompatibility
+from sentinel.identity.gallery import FaceCompatibility, unit
 from sentinel.identity.legacy_deepface import (
     DEEPFACE_VERSION,
     DETECTOR_WEIGHTS,
@@ -146,11 +146,29 @@ def test_faces_become_normalized_observations() -> None:
     face(embedding=[0.0] * 512),  # zero
     face(embedding=[1.0] * 128),  # another model's dimension
     face(embedding=[float("nan")] + [1.0] * 511),
+    face(embedding=[1e200] + [1.0] * 511),  # finite values whose norm is not: it gave a face with all zeros
+    face(embedding=[1e154] * 512),  # finite squares whose sum overflows: it raised OverflowError
     {"embedding": EMBEDDING, "face_confidence": 0.9},  # no facial area
 ])
 def test_inconsistent_output_is_an_error_not_a_face(bad) -> None:
     with pytest.raises(FaceBackendError, match="inconsistent_output"):
         to_face_run(FRAME, 640, 480, [bad])
+
+
+@pytest.mark.parametrize("head", [
+    [0.0], [1e-200] * 4, [float("nan"), 1.0], [float("inf"), 1.0], [1e200, 1.0], [1e154] * 512,
+])
+def test_one_normalization_refuses_any_norm_that_is_not_finite_and_non_zero(head) -> None:
+    """Review A, finding 9: gallery.unit is the adapter's (and the capture experiment's) normalization now. The
+    adapter's copy checked each value but not the norm: a value whose square overflows gave an all-zero embedding,
+    which best_match then refused inside EdgeCore.on_face_outcome, out of the runtime's loop; finite squares whose
+    sum overflows raised OverflowError from all three copies. Each is refused here, and an inconsistent_output."""
+    vector = head + [0.0] * (512 - len(head))
+    with pytest.raises(ValueError, match="finite and non-zero"):
+        unit(vector)
+    with pytest.raises(FaceBackendError, match="inconsistent_output"):
+        enrollment_face([face(embedding=vector)])
+    assert unit([3.0, 4.0] + [0.0] * 510)[:2] == (0.6, 0.8)
 
 
 def test_an_enrollment_photo_needs_exactly_one_face(weights) -> None:
@@ -211,6 +229,19 @@ def test_the_full_scale_pass_detects_at_native_scale_and_keeps_numbers_only() ->
     assert result.ms >= 0 and FULL_SCALE_FLOOR < YUNET_THRESHOLD == 0.9
     assert full_scale_pass(FakeYuNet([row(1, 1, 5, 5, 0.9)] * 12), 640, 480, "f").candidates.__len__() == 8
     assert full_scale_pass(FakeYuNet(None), 640, 480, "f").candidates == ()
+
+
+def test_the_yunet_threshold_has_one_definition() -> None:
+    """Review A, finding 10: production detection, the D86 counts, the D87 comparison's eligibility and the landmark
+    records each wrote their own 0.9, kept equal only by tests, so a change to production's would have left the
+    other three behind. Each is now identity.yunet's value, imported: the same object (a literal in each module would
+    be a separate one), so a change to the one definition changes all four. The value itself is unchanged."""
+    from sentinel import runtime
+    from sentinel.identity import comparison, landmarks, yunet
+
+    assert yunet.YUNET_THRESHOLD == 0.9
+    for value in (YUNET_THRESHOLD, runtime.FULL_SCALE_COUNTED, comparison.FULL_SCALE_COUNTED, landmarks.LANDMARK_SCORE):
+        assert value is yunet.YUNET_THRESHOLD
 
 
 def test_the_full_scale_pass_never_changes_or_breaks_the_production_result() -> None:

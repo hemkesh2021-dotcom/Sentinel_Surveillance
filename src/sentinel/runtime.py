@@ -30,6 +30,7 @@ from .identity.continuity import Break, ContinuityMonitor, ContinuityPolicy
 from .identity.landmarks import landmark_records
 from .identity.matching import Enrollment
 from .identity.state import UNKNOWN_VOTE, IdentityPolicy, IdentityResolver, IdentityState, TrackIdentity, VoteRecord
+from .identity.yunet import YUNET_THRESHOLD
 from .jobs import WorkerOutcome
 from .live_state import Capability, LiveState, Occupancy, PersonState, SceneStatus
 from .media.clock import Clock, MonoInstant
@@ -75,9 +76,9 @@ DIAGNOSTIC_DECIMALS = 3
 RAW_BOUNDS = (-1.0, 2.0)
 GEOMETRY_PX_DECIMALS = 1
 PRODUCTION_OUTCOMES_KEPT = 16  # recent face results' outcomes, by frame, for the comparison records (D87)
-# DeepFace 0.0.99's YuNet threshold for production detections (legacy_deepface.YUNET_THRESHOLD; test-tied): the
-# full-scale pass's faces are counted at the same score, so its counts compare like for like.
-FULL_SCALE_COUNTED = 0.9
+# DeepFace 0.0.99's YuNet threshold for production detections (identity.yunet, its one definition): the full-scale
+# pass's faces are counted at the same score, so its counts compare like for like.
+FULL_SCALE_COUNTED = YUNET_THRESHOLD
 
 
 def _schema(schema: int) -> int:

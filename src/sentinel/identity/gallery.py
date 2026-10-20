@@ -50,7 +50,7 @@ import secrets
 import stat
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -192,8 +192,13 @@ def new_identity_id(existing: set[str], token: Callable[[int], str] = secrets.to
             return candidate
 
 
-def unit(vector: tuple[float, ...] | list[float]) -> tuple[float, ...]:
-    norm = math.sqrt(math.fsum(x * x for x in vector))
+def unit(vector: Sequence[float]) -> tuple[float, ...]:
+    """``vector`` at unit length: the one normalization, for the adapter's embeddings (legacy_deepface) and the capture
+    experiment's prototypes. ValueError unless its norm is finite and non-zero."""
+    try:
+        norm = math.sqrt(math.fsum(x * x for x in vector))
+    except OverflowError:  # finite squares whose exact sum exceeds the float range
+        norm = math.inf
     if norm == 0.0 or not math.isfinite(norm):
         raise ValueError("embedding must be finite and non-zero")
     return tuple(x / norm for x in vector)

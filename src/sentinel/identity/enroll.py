@@ -30,7 +30,6 @@ can contain names) and never contain embeddings.
 from __future__ import annotations
 
 import contextlib
-import math
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,7 +44,7 @@ from .gallery import (
     check_consent_date,
     new_identity_id,
 )
-from .matching import MAX_PROTOTYPES
+from .matching import MAX_PROTOTYPES, unit_cosine
 from .vault import Secret, VaultError
 
 MIN_PHOTOS = 2  # so that the consistency check has something to compare; a starting rule
@@ -58,10 +57,6 @@ class EnrollmentRefused(Exception):
         super().__init__(label)
         self.label = label
         self.report = report
-
-
-def _cosine(a: tuple[float, ...], b: tuple[float, ...]) -> float:
-    return math.fsum(x * y for x, y in zip(a, b, strict=True))  # both are unit length
 
 
 def enroll(
@@ -100,7 +95,7 @@ def enroll(
     if len(accepted) < MIN_PHOTOS:
         raise EnrollmentRefused("too_few_usable_photos", report)
     inconsistent = [index for index, embedding in accepted
-                    if max(_cosine(embedding, other) for j, other in accepted if j != index) < match_threshold]
+                    if max(unit_cosine(embedding, other) for j, other in accepted if j != index) < match_threshold]
     if inconsistent:
         report["inconsistent_photos"] = inconsistent
         raise EnrollmentRefused("inconsistent_photos", report)
@@ -114,7 +109,7 @@ def enroll(
                 raise EnrollmentRefused(f"gallery_incompatible:{difference}", report)
         document = current if current is not None else GalleryDocument(compatibility=compatibility)
         for identity in document.identities:
-            best = max(_cosine(e, p) for _, e in accepted for p in identity.prototypes)
+            best = max(unit_cosine(e, p) for _, e in accepted for p in identity.prototypes)
             if best >= match_threshold:
                 raise EnrollmentRefused("close_to_enrolled_identity", report)
         if dry_run:

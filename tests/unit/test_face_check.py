@@ -601,9 +601,8 @@ def test_the_checker_matches_the_runtimes_schema_and_values(mods) -> None:
     assert check.CAPTURE_MIN_PROTOTYPES == experiment.CAPTURE_MIN_PROTOTYPES
     assert check.EXPERIMENT_CUES[6] == mods.account.COMPARISON_CUE_AT_S
     assert check.EXPERIMENT_CUES[8] == mods.account.NON_ENROLLED_CUE_AT_S
-    from sentinel.identity.legacy_deepface import YUNET_THRESHOLD
-    from sentinel.runtime import FULL_SCALE_COUNTED, IDENTITY_FULL_SCALE_SCHEMA, full_scale_numbers
-    assert check.FULL_SCALE_SCHEMA == IDENTITY_FULL_SCALE_SCHEMA and FULL_SCALE_COUNTED == YUNET_THRESHOLD
+    from sentinel.runtime import IDENTITY_FULL_SCALE_SCHEMA, full_scale_numbers
+    assert check.FULL_SCALE_SCHEMA == IDENTITY_FULL_SCALE_SCHEMA
     numbers = full_scale_numbers(SimpleNamespace(candidates=((0.95, FACE_BOX),), ms=3.0),
                                  SimpleNamespace(key=None, native_width=640), (), None)
     assert set(numbers) == check.FULL_SCALE_KEYS and check._full_scale_fits(numbers)

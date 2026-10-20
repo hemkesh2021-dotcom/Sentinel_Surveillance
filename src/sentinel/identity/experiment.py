@@ -27,7 +27,6 @@ with the original is also compared with it, and the best similarity and its prot
 
 from __future__ import annotations
 
-import math
 from array import array
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -35,6 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..media.clock import NS_PER_SECOND
 from .gallery import (
     CONSENT_SCOPE,
     GalleryChanged,
@@ -43,11 +43,11 @@ from .gallery import (
     GalleryNotVerified,
     IdentityStore,
     check_consent_date,
+    unit,
 )
-from .matching import MAX_PROTOTYPES, Enrollment, best_match
+from .matching import MAX_PROTOTYPES, Enrollment, best_match, unit_cosine
 from .vault import Secret, VaultError
 
-NS = 1_000_000_000
 CAPTURE_MAX = 600  # faces kept in memory (each 512 doubles: about 2.5 MB in all); more are counted and dropped
 CAPTURE_WASHOUT_S = 15.0  # an assumption, not a measurement: settling after the first face and before the last
 CAPTURE_SEGMENTS = MAX_PROTOTYPES  # one prototype per equal time segment
@@ -104,15 +104,6 @@ def open_shadow(store: IdentityStore, secret: Secret, original: GalleryDocument)
     return Shadow(document.enrollment(), sum(len(identity.prototypes) for identity in document.identities))
 
 
-def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
-    return math.fsum(x * y for x, y in zip(a, b, strict=True))  # both unit length
-
-
-def _unit(values: Sequence[float]) -> tuple[float, ...]:
-    norm = math.sqrt(math.fsum(v * v for v in values))
-    return tuple(v / norm for v in values)
-
-
 def select(times_ns: Sequence[int], *, washout_s: float = CAPTURE_WASHOUT_S,
            segments: int = CAPTURE_SEGMENTS) -> tuple[list[int], int]:
     """The predeclared rule: (the indices of the chosen faces in time order, the faces inside the span). ``times_ns``
@@ -120,8 +111,8 @@ def select(times_ns: Sequence[int], *, washout_s: float = CAPTURE_WASHOUT_S,
     if not times_ns:
         return [], 0
     order = sorted(range(len(times_ns)), key=lambda i: (times_ns[i], i))
-    start = times_ns[order[0]] + round(washout_s * NS)
-    end = times_ns[order[-1]] - round(washout_s * NS)
+    start = times_ns[order[0]] + round(washout_s * NS_PER_SECOND)
+    end = times_ns[order[-1]] - round(washout_s * NS_PER_SECOND)
     span = [i for i in order if start <= times_ns[i] <= end]
     if end <= start or not span:
         return [], len(span)
@@ -190,9 +181,9 @@ class Capture:
                 report["refused"] = "too_few_prototypes"
                 report["prototypes"] = len(chosen)
                 return self._end(report)
-            prototypes = [_unit(self._embeddings[i]) for i in chosen]
+            prototypes = [unit(self._embeddings[i]) for i in chosen]
             report["prototypes"] = len(prototypes)
-            best_to_others = [max(_cosine(p, q) for j, q in enumerate(prototypes) if j != i)
+            best_to_others = [max(unit_cosine(p, q) for j, q in enumerate(prototypes) if j != i)
                               for i, p in enumerate(prototypes)]
             report["min_best_to_others"] = round(min(best_to_others), SIMILARITY_DECIMALS)
             original = self.original.enrollment()

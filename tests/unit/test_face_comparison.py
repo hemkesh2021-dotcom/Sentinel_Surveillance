@@ -326,7 +326,6 @@ def test_eligibility_uses_production_and_full_scale_association_on_the_same_fram
     assert comparison_targets(frame, persons, (), full((0.95, OUTSIDE_BOX)), GEOMETRY) == []  # not in a head region
     assert comparison_targets(frame, persons, (), None, GEOMETRY) == []
     assert comparison_targets(frame, (), (), full((0.95, FACE_BOX)), GEOMETRY) == []
-    assert comparison_module.FULL_SCALE_COUNTED == runtime_module.FULL_SCALE_COUNTED
 
 
 def test_a_production_face_owned_ambiguously_is_not_eligible(world) -> None:
