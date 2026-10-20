@@ -1,6 +1,19 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-20, session 99 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Review A's finding 8 and the remaining redaction gaps reproduced through their callers and fixed (`0d5b9aa`, `aaee239`; session 99 log).**
+Last updated 2026-10-20, session 100 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Review A's findings 9 and 10: the duplicated helpers inspected, the drifted ones made one, two defects reproduced and fixed, and the YuNet threshold given one definition (`24f7fc1`; session 100 log).**
+- **Finding 9, reproduced on `d4eddbb`:**
+  - **IoU:** `continuity.iou` divided by a zero union. Two contract-valid boxes whose areas underflow to 0.0 raised `ZeroDivisionError` out of `ContinuityMonitor` and `EdgeCore.on_frame` (`--face-continuity`), where the landmark copy returned 0.0. A live run could not reach it: the tracker drops boxes under a pixel.
+  - **Normalization:** the adapter's `_unit` checked each value but not the norm. A finite value whose square overflows gave an all-zero embedding: `best_match` then refused it inside `EdgeCore.on_face_outcome`, which ends the runtime's loop, and enrollment reported `inconsistent_photos`. Finite squares whose sum overflows raised `OverflowError` from all three copies. Facenet512's float32 output cannot reach either; a misbehaving provider can.
+  - **No drift:** the two cosine copies (bit-identical) and the second-to-nanosecond constants (equal).
+- **Finding 9, fixed:** one IoU (`continuity.iou`, guarded: a zero union is 0.0, a jump), one normalization (`gallery.unit`, refusing any norm that is not finite and non-zero; the adapter maps a refusal to `inconsistent_output`), one unit-vector cosine (`matching.unit_cosine`) and `media.clock.NS_PER_SECOND`.
+- **Finding 10:** the YuNet 0.9 is defined once (`identity/yunet.py`, which imports nothing); production detection, the D86 counts, the D87 eligibility and the landmark records import it. Before, editing production's value left the other three at 0.9. The value is unchanged.
+- **Unchanged results:** on 55,002 seeded valid inputs, every consolidated helper gives bit-identical results before and after.
+- **Tests at `24f7fc1`:** the full portable suite gave 2,704 passed, 2 skipped (`torch`, `cv2`), 0 failed, under the existing Python 3.10.14 `.venv` and then under the isolated 3.12.3 environment; `config/default.yaml` valid under both. That is 12 new tests; the 8 for a defect failed on `d4eddbb` first. The first 3.12 run was cut off at about 22% by an unclean device reboot (no result; cause not established) and was rerun alone. Local runs, not CI.
+- **Kept on purpose:** duplication with a different contract or owner (session 100 log, section 5): the adapter's provider checks, the vote's general cosine, the inference and evaluator IoUs, `NS_PER_MS` (no shared definition), and the benchmark evaluators' own 0.9 and nanosecond constants.
+- **Not changed:** thresholds (0.9 detection, 0.6 quality, 0.70 match, 0.3 recording floor), F2 criteria, admission, real enrollment data and the review copy; session 98's crash limitations stay open; nothing pushed, published or launched.
+- **Next (the maintainer):** review `24f7fc1`. All ten findings of review A are now addressed.
+
+Session 99's summary: **Review A's finding 8 and the remaining redaction gaps reproduced through their callers and fixed (`0d5b9aa`, `aaee239`; session 99 log).**
 - **Finding 8:**
   - **Reproduced:** through the CLI with the real DeepFace adapter over a fake runtime, provider failures during `sentinel identity enroll` escaped as raw exceptions whose messages named the photo's path (a person's name) and synthetic secrets.
   - **Fixed:** they are now one line, `identity: enrollment_photo_failed:<Class>`; a non-finite face width is `inconsistent_output`; any other failure in an identity command is `identity: failed:<Class>`.
@@ -553,6 +566,9 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 ## Next concrete task
 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
+   - **Done (session 100):** review A's findings 9 and 10 (`24f7fc1`; session 100 log): one IoU, normalization, unit cosine and YuNet threshold; two drift defects reproduced and fixed.
+   - **Maintainer (session 100):** review `24f7fc1`; session 98's crash limitations stay open.
+   - **Claude, next (session 100):** none until asked.
    - **Done (session 99):** finding 8 and the remaining redaction gaps reproduced and fixed (`0d5b9aa`, `aaee239`; session 99 log).
    - **Maintainer (session 99):** review the two commits; findings 9-10 and session 98's crash limitations stay open.
    - **Claude, next (session 99):** none until asked.
@@ -904,6 +920,124 @@ Notes on partial and in-progress rows:
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
 
+## Session 100 log (Claude, 2026-10-20): review A's findings 9 (duplicated helpers) and 10 (YuNet's 0.9 in four modules): the drifted copies made one, two defects reproduced and fixed, the threshold defined once; nothing pushed
+
+From `d4eddbb` (clean), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`; the review copy clean at `fd3933a`/`3acb419`.
+
+**The authorization:**
+- **The task:** findings 9 and 10. Inspect the duplicated IoU, normalization, cosine and time-unit helpers and the repeated YuNet threshold, and tell intentional differences from drift.
+- **Consolidate:** only helpers with the same intended semantics, keeping imports light and acyclic, after reproducing any behavioural defect (zero union, zero norm included). Give the shared YuNet threshold one definition, keeping its value, the separate match threshold and any intentionally different diagnostic thresholds.
+- **Do not:** crash recovery or other open issues; F2, admission, real enrollment data or the review copy; push, publish, launch or review.
+
+The cloud findings, read from the review's own text: 9 names `landmarks.iou` and `continuity.iou` (the continuity copy has no zero-union guard), `experiment._unit` and `gallery.unit` (no zero-norm or finiteness check), `enroll._cosine` and `experiment._cosine`, and `continuity.NS_PER_SECOND` (`media.clock` has it). 10 names `runtime.FULL_SCALE_COUNTED`, `comparison.FULL_SCALE_COUNTED`, `landmarks.LANDMARK_SCORE` and `legacy_deepface.YUNET_THRESHOLD`, kept equal only by tests.
+
+1. **The inventory** (`src/` and `benchmarks/runner/`, every definition and caller):
+   - **IoU:**
+     - `continuity.iou` and `landmarks.iou`: the same intersection over union of two `NormalizedBox`es; only the continuity copy lacks the zero-union guard.
+     - `inference/legacy_ultralytics._iou` (pixel tuples, the tracker's shadow agreement) and `benchmarks/runner/tracking_check._iou` (an evaluator over lists): both already guarded, other types and owners.
+   - **Normalization:**
+     - `gallery.unit`: guarded, but no `src` caller (tests only).
+     - `legacy_deepface._unit`: validates the provider's output (types, dimension, each value finite; None, not an exception) and normalizes, without a norm check.
+     - `experiment._unit`: normalizes with no check at all.
+     - `matching._norm`: a norm only, for the vote's general cosine.
+   - **Cosine:** `enroll._cosine` and `experiment._cosine` (the dot product of unit vectors, identical text); `matching._dot`, the same arithmetic as the numerator of `best_match`'s general cosine.
+   - **Time units:**
+     - `continuity.NS_PER_SECOND` and `experiment.NS` equal `media.clock.NS_PER_SECOND`.
+     - `NS_PER_MS` is written in `runtime.py`, `live_preview.py` and `rules/zones.py` (equal; no shared definition exists).
+     - Four benchmark runners write `NS = 1_000_000_000`.
+   - **0.9:** besides finding 10's four constants, every other 0.9 is a different quantity:
+     - IoU agreement limits (`tracking/diagnostic.py`, `legacy_ultralytics`);
+     - a share (`face_check.MIN_CONTINUITY`);
+     - replay defaults (`replay.py`'s confidence and quality);
+     - the evaluators' readings of records made at 0.9 (`face_check`'s literals; the pinned landmark markers in `step5_guard` and `landmark_check`).
+   - **Kept separate:** the recording floor `FULL_SCALE_FLOOR` (0.3), the quality gate (0.6) and the match threshold (0.70).
+2. **Reproduced on `d4eddbb`** (an export of its `src`; a scratch script and the new tests, synthetic inputs only):
+   - **Zero union:**
+     - **The input:** `NormalizedBox(0, 0, 1e-200, 1e-200)` satisfies the contract (`x1 < x2`, `y1 < y2`), but its area underflows to 0.0, so two such boxes have a zero union.
+     - **What happened:** `continuity.iou` raised `ZeroDivisionError`, and so did `ContinuityMonitor.observe` on the track's second detection and `EdgeCore.on_frame` with a continuity policy. `landmarks.iou` returned 0.0.
+     - **The live path:** `PersonTracker` dropped the box (`boxes_dropped_small`; `MIN_BOX_PX` is 1.0), so a live run could not reach it; the API and any other caller could.
+   - **Non-finite norm:**
+     - **One value of 1e200:** finite, but its square is not. The adapter's `to_face_run` and `enrollment_face` returned a face whose embedding was all zeros. `EdgeCore.on_face_outcome` then raised `ValueError` from `best_match`; `DemoRuntime.step` has no handler, so the loop would end. Enrollment through the CLI printed `identity: inconsistent_photos`.
+     - **512 values of 1e154:** finite squares whose exact sum overflows. `math.fsum` raised `OverflowError` from all three copies, `gallery.unit` included; enrollment printed `identity: failed:OverflowError`.
+     - **The capture copy:** `experiment._unit` divided a zero vector by zero and turned 1e200 into zeros. The runtime offers capture only embeddings that `best_match` already accepted, and `Capture.finish` refuses on any exception (`capture_write_failed`), so this did not reach a gallery.
+     - **Reach:** the pinned Facenet512 emits float32 values (at most about 3.4e38), which can reach neither case; a misbehaving provider can.
+   - **No drift, measured on 2,000 random pairs:** the two `_cosine`s and `matching._dot` were bit-identical; `experiment._unit`, `gallery.unit` and `legacy_deepface._unit` were bit-identical on valid input; the three second-to-nanosecond constants were equal.
+   - **Finding 10:**
+     - **Separate objects:** the four constants were four separate objects.
+     - **A copy with only production's value edited to 0.85:** `runtime.FULL_SCALE_COUNTED`, `comparison.FULL_SCALE_COUNTED` and `landmarks.LANDMARK_SCORE` stayed 0.9.
+3. **Fixed** (`24f7fc1`):
+   - **IoU:**
+     - `continuity.iou` is the one IoU, returning 0.0 for a zero union, as the landmark copy did. `landmarks` imports it (`continuity` imports only `contracts` and `media.clock`, so there is no cycle).
+     - For the monitor, a box without an area is a jump: the safe side, since the identity has to be earned again.
+   - **Normalization:**
+     - **The one definition:** `gallery.unit` refuses any norm that is not finite and non-zero, now including an overflowing sum (`ValueError`).
+     - **The adapter:** `legacy_deepface._unit` keeps its provider checks (types, dimension, None) and normalizes through `gallery.unit`, so a refusal is the adapter's existing `inconsistent_output`.
+     - **The capture experiment:** uses `gallery.unit`.
+   - **Cosine:** `matching.unit_cosine` (on `matching._dot`) replaces both `_cosine`s.
+   - **Time units:** `continuity` and `experiment` import `media.clock.NS_PER_SECOND`.
+   - **YuNet:** `identity/yunet.py` defines `YUNET_THRESHOLD = 0.9`; it imports nothing. `legacy_deepface.YUNET_THRESHOLD` (re-exported), `runtime.FULL_SCALE_COUNTED`, `comparison.FULL_SCALE_COUNTED` and `landmarks.LANDMARK_SCORE` are that value, imported under their own names; the "test-tied" comments are gone.
+   - **Imports checked:**
+     - Each edited module imports alone in a fresh interpreter, so no import order meets a cycle.
+     - `sentinel.runtime` and `sentinel.cli` load no `cv2`, `tensorflow`, `deepface`, `numpy` or `torch`.
+     - No edited module has an unused import.
+4. **Results unchanged:**
+   - **The comparison:** on 55,002 seeded valid inputs, the outputs hash identically before and after (`44fafeb3e051ac66`).
+   - **The inputs:**
+     - both IoUs on 20,000 box pairs;
+     - the adapter's, the gallery's and the capture's normalization on 3,000 vectors at scales from 1e-150 to 1e150;
+     - both cosines;
+     - the five thresholds;
+     - capture's `select`.
+5. **Retained on purpose:**
+   - **Different contracts:**
+     - `legacy_deepface._unit` remains as the provider-output validator (it returns None, never raises), but its arithmetic is `gallery.unit`'s.
+     - `matching._norm` and `_dot` remain as the vote's general cosine (it divides by both norms).
+   - **Other owners:**
+     - the inference adapter's and the tracking evaluator's IoUs (other types, already guarded, outside the identity scope);
+     - `tests/replay/b0_v1_snapshot._unit` (the v1 snapshot).
+   - **`NS_PER_MS`** in `runtime.py`, `live_preview.py` and `rules/zones.py`: equal and outside the finding; consolidating them needs a new shared definition.
+   - **The evaluators:**
+     - **Their constants:** the benchmark runners' `NS` and their 0.9 readings and markers. They read sealed records and import no identity code; a record made at another threshold has to show as a mismatch, not follow the code silently.
+     - **The pins:** the tests pinning the value (`YUNET_THRESHOLD == 0.9` in the adapter's and candidate's tests) stay.
+   - **Out of the finding:** `legacy_deepface.YUNET_ROW_VALUES` and `landmarks.ROW_VALUES` (both 15) repeat another YuNet fact. Finding 10 is the 0.9, so it is noted only.
+6. **Regressions:** 12 new test cases. The 8 for a defect failed on `d4eddbb` first; the other 4 are inputs the old copies already refused (zero, underflow, NaN, infinity) and pass on both, as do the 9 pre-existing cases of the same tests:
+   - `test_identity_continuity_rule.py`: 1. A zero union through the monitor and `EdgeCore.on_frame` is a jump.
+   - `test_face_backend.py`: 9.
+     - Two overflow cases in the adapter's inconsistent-output test.
+     - Six inputs that `gallery.unit` and `enrollment_face` must refuse; the zero, the underflow, the NaN and the infinity cases already passed before.
+     - The single-definition test: the four names are one object, and 0.9.
+   - `test_identity_enroll.py`: 2. Both overflow faults through the real adapter and the CLI are `identity: inconsistent_output`.
+
+   **Assertions removed:** three that only kept the threshold copies equal (`test_face_comparison.py`, `test_face_check.py`, `test_landmark_diagnostic.py`), replaced by the single-definition test.
+
+**Limitations:**
+1. **Not reachable live:** both defects need inputs a live run does not produce (a box under a pixel; a provider value beyond float32's range). The fixes change behaviour only for those inputs.
+2. **A zero union reads as a jump** in the continuity rule: a deliberate safe-side choice, not a measurement.
+3. **`identity.yunet` is a new module** holding one constant, because the threshold's natural owner (`legacy_deepface`) imports `landmarks`; `landmarks` could not import it back without a cycle.
+4. **Session 98's crash limitations remain open**, as does session 96's note that a failed shutdown step is recorded without its exception class.
+5. **The device rebooted uncleanly during the first 3.12 run** (`last`: a boot at 11:45 IST on 2026-10-20 with no shutdown record; no persistent journal), so its cause is not established. That run's partial log is kept and is not counted as a result.
+
+### Verification: exact commands and results
+
+```
+T = PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m pytest -q -p no:cacheprovider   # Python 3.10.14, in the worktree
+O = git archive d4eddbb src | tar -x -C <scratch>/orig   # the unchanged code; a second copy with only legacy_deepface's YUNET_THRESHOLD set to 0.85
+python -I <scratch>/repro.py   # on O: the ZeroDivisionErrors, the all-zero embeddings and EdgeCore's ValueError, the OverflowErrors, four separate threshold objects (the edited copy: three stay 0.9)
+python -I <scratch>/same.py   # on O and on the fix: 55,002 results, hash 44fafeb3e051ac66 both
+PYTHONPATH=<scratch>/orig/src <T without PYTHONPATH> <the three new-test files> -k "too_small or one_normalization or inconsistent_output_is or one_definition or provider_failure_at_enrollment"   # unchanged code: 8 failed (every new case for a defect), 13 passed (9 existing; 4 new inputs the old copies already refused)
+T <the same>   # fixed: 21 passed
+T tests/unit/test_identity*.py tests/unit/test_face*.py tests/unit/test_landmark*.py tests/replay/test_r1_face_identity.py   # 734 passed in 760.50 s
+PYTHONPATH=$PWD/src ~/sentinel-validation/py312-df8d9bc/venv/bin/python -m pytest -q -p no:cacheprovider <seven edited or related files>   # 3.12: 200 passed
+T --junitxml=~/sentinel-validation/review-a-24f7fc1/logs/py310-junit.xml   # the full portable suite at 24f7fc1 (clean tree): 2704 passed, 2 skipped (torch, cv2) in 1359.26 s (05:43:11-06:05:52 UTC); exit 0
+PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m sentinel.cli config validate config/default.yaml   # valid; exit 0
+export VIRTUAL_ENV=~/sentinel-validation/py312-df8d9bc/venv PATH=~/sentinel-validation/py312-df8d9bc/venv/bin:$PATH   # its editable install resolves sentinel to the worktree's src
+python -m pytest --junitxml=~/sentinel-validation/review-a-24f7fc1/logs/py312-junit.xml   # first run (from 06:05:53 UTC): cut off at about 22% by the unclean reboot; no exit line, no junit; kept as py312.interrupted-1.log
+python -m pytest --junitxml=~/sentinel-validation/review-a-24f7fc1/logs/py312-junit.xml   # rerun alone, Python 3.12.3 at 24f7fc1 (code clean; only this record modified): 2704 passed, 2 skipped (torch, cv2) in 1261.94 s (06:22:25-06:43:28 UTC); exit 0; boot ID, HEAD and an empty code diff the same before and after
+sentinel config validate config/default.yaml   # valid; exit 0
+git -C ~/sentinel-review/a-identity-df8d9bc status --short; git -C ~/sentinel-review/a-identity-df8d9bc log --oneline -2   # clean; 3acb419, fd3933a (unchanged)
+# Logs: ~/sentinel-validation/review-a-24f7fc1/logs/ (run.sh ran both in sequence; rerun-py312.sh, the 3.12 section alone, with the checks before and after)
+```
+
 ## Session 99 log (Claude, 2026-10-20): review A's finding 8 (enrollment provider errors) and the remaining redaction gaps (Authorization values, JSON and quoted credential fields, *_key names) reproduced through their callers and fixed; nothing pushed
 
 From `a09167c` (clean), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`; the review copy clean at `fd3933a`/`3acb419`.
@@ -1199,8 +1333,8 @@ Each finding below was reproduced by its new tests failing on the unchanged code
    - 6: a late face result can vote for an expired track whose number returns;
    - 7: a result from before recognition was switched off and on can vote;
    - 8: `enrollment_photo`'s provider errors escape the CLI as tracebacks (**addressed in session 99, `0d5b9aa`**);
-   - 9: duplicated helpers;
-   - 10: four copies of YuNet's 0.9.
+   - 9: duplicated helpers (**addressed in session 100, `24f7fc1`**);
+   - 10: four copies of YuNet's 0.9 (**addressed in session 100, `24f7fc1`**).
 2. `revoke()` still saves before it audits (the same class as finding 2, not in the finding). **Addressed in session 98 (`d50d163`).**
 3. There is no lock against two concurrent enrollments. This was already the case; the staging file's name is shared. **Addressed in session 98 (`d50d163`), with the audit-before-rename gap.**
 4. The redaction covers `key=value`, URL userinfo and bot tokens only. `Authorization: Bearer …`, JSON `"password": "…"` and keys such as `secret_key=` are not covered (outside the finding). **Addressed in session 99 (`aaee239`); cookies, PEM blocks and bare secrets remain unrecognized.**
