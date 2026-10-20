@@ -1,6 +1,28 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-20, session 100 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Review A's findings 9 and 10: the duplicated helpers inspected, the drifted ones made one, two defects reproduced and fixed, and the YuNet threshold given one definition (`24f7fc1`; session 100 log).**
+Last updated 2026-10-20, session 101 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Follow-up review A (the cloud review of review A's fixes): its eight findings checked through their callers; 1, 2, 5, 6, 7 and 8 reproduced and fixed (`508103d`); 3 and 4 confirmed and deferred (session 101 log).**
+- **The review:** `/ultrareview` of `~/sentinel-review/a-fixes-df8d9bc-24f7fc1` (`review-a-fixes` against `review-base`, 37 files) gave 8 findings. 3 normal: 1 redaction, 2 purge, 3 hard links. 2 nits: 4 Basic, 5 audit read errors. 3 marked pre-existing: 6 capture record, 7 earlier-life reason, 8 purge during enrollment. Both review repositories are unchanged.
+- **Reproduced on `9b31b13`,** each through its caller with synthetic data and fault injection:
+  - **1:** `password=ab;cd`, `api_key=x,y` and `Authorization: Digest …` values kept part of the secret, in the outbox's stored rows and an adapter's load reason.
+  - **2:** `identity purge --yes` deleted nothing when the audit log was torn, full, not private or a link.
+  - **5:** an EIO from the audit's `fstat` or `pread` on the completed line left an enrollment in effect with its started line alone. The command said `failed:OSError` and kept the photos.
+  - **6:** a capture whose completed line failed was recorded `written=False` with its gallery on disk.
+  - **7:** after a stalled loop, a track's new life showed its earlier life's reason.
+  - **8:** a purge while an enrollment embedded its photos was followed by a gallery holding the purged person.
+- **The review's classifications, checked against the review base:** 2, 3, 4 and 5 came with sessions 98 and 99, and so did 1 (its `&` case is older). 6, 7 and 8 existed before, in broader forms. One claim in finding 6 is wrong: under the base the capture saved before auditing, so any audit failure left a gallery recorded as not written.
+- **Fixed (`508103d`):**
+  - **Redaction:** an unquoted value runs to whitespace, or to an `&` that starts another parameter; an unquoted Authorization value runs to its line's end. Still linear.
+  - **Purge:** deletes whatever the audit log's state and reports the deletion and each audit line separately. A partial deletion is audited as `purge_incomplete`. The command exits 1 unless both are complete.
+  - **Audit I/O:** every error is `audit_failed:<class>`; a completed line that cannot be written, for any reason, undoes the change; a close error after the flush changes nothing.
+  - **Capture:** `written` is true exactly when the working gallery is on disk; the one written refusal is `capture_audit_incomplete`.
+  - **Enrollment:** under the change lock, every photo copy must still be the same file (its change time included), or the enrollment is refused (`photos_changed`).
+  - **Reasons:** a new life drops the earlier life's note and break and keeps its own.
+- **Deferred, with reasons:** 3 is not reachable on the supported setup (the identity directory is on the ext4 second drive, which supports hard links). 4 is on the safe side, and every narrowing considered would miss some credential form.
+- **Tests at `508103d`:** the full portable suite gave 2,746 passed, 2 skipped (`torch`, `cv2`), 0 failed, under the existing Python 3.10.14 `.venv` and then under the isolated 3.12.3 environment; `config/default.yaml` valid under both. That is 42 new tests; the 38 for a defect failed on `9b31b13` first (the other 4 bound the new pattern's time). Local runs, not CI.
+- **Not changed:** thresholds, F2 criteria, admission, real enrollment data and the review copies. The evidence profiles gained only the new labels. Nothing pushed, published or launched; no further review.
+- **Next (the maintainer):** review `508103d`; the open decisions in the session 101 log (revoke still needs a writable audit log; nothing repairs a torn log).
+
+Session 100's summary: **Review A's findings 9 and 10: the duplicated helpers inspected, the drifted ones made one, two defects reproduced and fixed, and the YuNet threshold given one definition (`24f7fc1`; session 100 log).**
 - **Finding 9, reproduced on `d4eddbb`:**
   - **IoU:** `continuity.iou` divided by a zero union. Two contract-valid boxes whose areas underflow to 0.0 raised `ZeroDivisionError` out of `ContinuityMonitor` and `EdgeCore.on_frame` (`--face-continuity`), where the landmark copy returned 0.0. A live run could not reach it: the tracker drops boxes under a pixel.
   - **Normalization:** the adapter's `_unit` checked each value but not the norm. A finite value whose square overflows gave an all-zero embedding: `best_match` then refused it inside `EdgeCore.on_face_outcome`, which ends the runtime's loop, and enrollment reported `inconsistent_photos`. Finite squares whose sum overflows raised `OverflowError` from all three copies. Facenet512's float32 output cannot reach either; a misbehaving provider can.
@@ -566,6 +588,9 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 ## Next concrete task
 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
+   - **Done (session 101):** follow-up review A's findings 1, 2, 5, 6, 7 and 8 reproduced through their callers and fixed (`508103d`); 3 and 4 confirmed and deferred with their reachability (session 101 log).
+   - **Maintainer (session 101):** review `508103d`; decide whether revoke may go ahead with its audit reported incomplete and how a torn audit log is repaired.
+   - **Claude, next (session 101):** none until asked.
    - **Done (session 100):** review A's findings 9 and 10 (`24f7fc1`; session 100 log): one IoU, normalization, unit cosine and YuNet threshold; two drift defects reproduced and fixed.
    - **Maintainer (session 100):** review `24f7fc1`; session 98's crash limitations stay open.
    - **Claude, next (session 100):** none until asked.
@@ -919,6 +944,135 @@ Notes on partial and in-progress rows:
   - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Session 50: Step 5 ran it on the device (camera, detector, scene server, Telegram; see the session 50 log). Not done: the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 101 log (Claude, 2026-10-20): follow-up review A's eight findings checked through their callers; 1, 2, 5, 6, 7 and 8 reproduced and fixed; 3 and 4 confirmed and deferred with their reachability; nothing pushed
+
+From `9b31b13` (clean), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`. Its source files equal the reviewed tree's (`cmp` of the five modules named by the review), and `9b31b13` differs from `24f7fc1` only in this record.
+
+**The review:** `/ultrareview review-base`, run from `~/sentinel-review/a-fixes-df8d9bc-24f7fc1` (branch `review-a-fixes` at `1ce7ce9` against `review-base` at `1b1b90c`: 37 files, 2,003 insertions, 231 deletions). It returned 8 findings. Three of its line numbers were wrong (`redaction.py:1330` and `:1332`, `gallery.py:918`); the right places are `redaction.py:46` and `:48` and `gallery.py:463-464`.
+
+**The authorization (the maintainer's instruction):**
+- **The task:** in the real worktree, after verifying it, fix findings 1, 2, 5, 6 and 8 together; assess 3, 4 and 7, fixing them where confirmed in a supported configuration and small, otherwise recording their reachability and why they are deferred.
+- **First:** reproduce each finding through its actual caller with synthetic temporary data and fault injection; check the review's claims and classifications rather than rely on them.
+- **Then:** focused regressions, then the full Python 3.10 and 3.12 suites in sequence, and a local commit without amending.
+- **Do not:** weaken filesystem privacy or redaction to satisfy a suggested fix; change thresholds, F2 criteria, admission or real enrollment data; change either review repository; push, publish, launch or start another review.
+
+1. **The findings, checked** (each verified on `9b31b13`; "came with" means the review base `df8d9bc`'s tree, read with `git show` in the review repository, did not have it):
+
+   | | The review said | Checked |
+   |---|---|---|
+   | 1 | Normal. The unquoted credential value stops at `,` `;` `}` `]` `"` `'`, so a punctuated secret is only partly redacted. | **Confirmed**, and wider: the Authorization value stopped at the same characters (`Authorization: token ab;cd`, Digest's parameters). Came with session 99 (`aaee239`); a value holding `&` leaked at the base too (`[^&\s]+`). |
+   | 2 | Normal. Purge writes `purge_started` before deleting, so a torn log or a full disk prevents erasure. | **Confirmed**, also for a non-private or linked log. Came with session 98 (`d50d163`). |
+   | 3 | Normal, conditional. On a filesystem without hard links every change after the first fails. | **Mechanism confirmed** by injecting `EPERM` into `os.link`. Came with session 98. **Not reachable on the supported setup:** `findmnt` shows `~/sentinel-data` (and so the identity directory) is ext4 on `/dev/nvme1n1p1`. Deferred (item 4). |
+   | 4 | Nit. `basic` followed by any word of 8 or more letters is redacted. | **Confirmed:** "using basic settings" gives "using basic <redacted>". Came with session 99. Safe side; deferred (item 4). |
+   | 5 | Nit. `fstat` and `pread` raise a bare OSError that `commit` does not undo. | **Confirmed, and not a nit:** the change stays in effect with its started line alone, `enroll` says `failed:OSError` and keeps the photos, and a capture is recorded `written=False` with its gallery on disk. Came with session 98. |
+   | 6 | Pre-existing. `Capture.finish` records `AuditIncomplete` as `written=False`. | **Confirmed.** Pre-existing in a broader form, but the review's reason is wrong: it says "under the base code ... this mismatch could not happen". At the base the capture saved the gallery, read it back, then audited, so any audit failure (and a failed read-back) left a gallery recorded as not written. Session 98 narrowed it to `AuditIncomplete` and, through finding 5, a bare OSError. |
+   | 7 | Pre-existing. A new life keeps the earlier life's note and break when it had no vote to drop. | **Confirmed**, published as `identity_reason` (the live state and the status JSON). Pre-existing in a broader form: at the base `retain_only` took keys only, so a returning track kept everything; session 97 (`a2d4e96`) narrowed it. With `--face-continuity` a stalled loop keeps the earlier break too, since the monitor counts no missed frame and so records no new break. |
+   | 8 | Pre-existing. A purge while an enrollment embeds its photos is undone by the enrollment. | **Confirmed.** Pre-existing: the base had no lock at all. |
+
+2. **Observed on `9b31b13`** (`repro.py` in the session scratchpad, run with the 3.10 `.venv` on synthetic galleries sealed by the real helper, through `sentinel.cli.main`, `Capture.finish`, `EdgeCore`, the outbox worker and an adapter load):
+   - **2:** `purge --yes` with a torn last line: exit 1, `identity: audit_log_torn`, nothing on stdout; afterwards the gallery still held its identity and the inbox its two photos. With ENOSPC on every audit write: `audit_failed:OSError`, the same.
+   - **5:** a second enrollment with EIO from `fstat` (or `pread`) on its completed line: exit 1, `identity: failed:OSError`; afterwards the gallery held both identities, the log ended `enroll_started` with no outcome, and the photos were still in the inbox.
+   - **5 and 6:** the capture, with EIO from `fstat` on its completed line, and with ENOSPC on the completed line plus an undo that fails: both recorded `written=False, refused=capture_write_failed, verified=False`, with the working gallery on disk and the log ending `capture_started`.
+   - **8:** an enrollment held after embedding its three photos, before its change lock; then `purge()`, with no gallery before and with another person enrolled. The purge deleted everything and logged `purge_started` and `purge`. The enrollment then wrote a gallery holding only the purged person, logged `enroll_started` and `enroll`, and the command said `failed:FileNotFoundError` (deleting the photos the purge had removed).
+   - **7:** a track whose last face result was ambiguous (two faces in one head), measured again 1.5 s later with no step between: the new life read `unresolved`, "face ownership ambiguous".
+   - **1:** `password=<redacted>;SYNTH-1`, `api_key=<redacted>,SYNTH-2 rejected`, `password=<redacted>&SYNTH-7`, `Authorization: <redacted>;SYNTH-9`, `Authorization: <redacted>"u", response="SYNTH-10"`; in the outbox's stored rows and an adapter's `failed to load` reason alike.
+   - **3 and 4:** as in the table.
+
+3. **The fixes (`508103d`):**
+   - **Redaction (1):**
+     - **An unquoted value:** runs to whitespace or to an `&` that starts another `name=` parameter. `?access_token=x&page=2` keeps `&page=2`, while `password=ab&cd` hides `ab&cd`.
+     - **An unquoted Authorization value:** runs to the end of its line; quoted values are unchanged.
+     - **Not covered (stated in the module):** a value holding whitespace outside quotes, and an `&` followed by `name=` inside a password (indistinguishable from a query string).
+     - **Linear:** 400,000 hostile characters take at most 144 ms, doubling with the input (200,000 to 800,000: 76, 144, 272 ms); session 99 recorded 166 ms.
+   - **Purge (2):**
+     - **Deletion first:** under the change lock it tries `purge_started`, deletes, then tries `purge` (or `purge_incomplete` with `left`); a line it cannot write is reported, never a reason to keep the data.
+     - **What it deletes:** the gallery, staging and previous files with `os.unlink`, then the inbox's contents by an explicit walk that never follows a link; an inbox that is a link or a file is counted as left, not followed.
+     - **Its report:** `gallery`, `inbox_files`, `left` (files still there; a folder that cannot be listed counts as one), `deletion` (`complete` exactly when nothing is left) and `audit` (each line's action: `written` or its label).
+     - **The command:** prints the report and exits 0 only when both are complete. Otherwise exit 1 with `identity: purge_incomplete`, or `identity: purge_audit_incomplete:<label>` when everything was deleted.
+     - **Unchanged:** the lock (`gallery_busy` after 60 s) and the directory's privacy check still come first.
+   - **Audit I/O (5):**
+     - **One label:** `fstat`, `pread` and the existence check map any OSError to `audit_failed:<class>` before anything is written.
+     - **Close:** an error closing the file after the line was written and fsynced is ignored (Linux releases the descriptor either way); before, it failed a change whose line was already durable.
+     - **Undo:** `commit` undoes the change when the completed line fails for any reason (`except Exception`, was `VaultError` only).
+   - **Capture record (6):**
+     - **The new refusal:** `AuditIncomplete` is recorded `written=True, verified=True, refused=capture_audit_incomplete`.
+     - **The record check:** `face_check`'s `_capture_problem` accepts that one written refusal.
+     - **The usability item:** "written, read back and verified" still requires no refusal, so such a gallery is never used; the capture's conditions item already says to purge and capture again.
+     - **The vocabulary:** `CAPTURE_REFUSALS` gained the label in its three tied copies.
+   - **Enrollment (8):**
+     - **The check:** under the change lock, before reading the gallery, `IdentityStore.supplied_copies_unchanged` lists the folder again; every copy listed before embedding must still be there as the same file.
+     - **A file's identity** (`_file_identity`): device, inode, size, modification and change times. The change time is set when a file is made and cannot be set back, so copies supplied again under the same names, sizes and times are new files.
+     - **Otherwise:** `EnrollmentRefused("photos_changed")`, nothing written.
+     - **Deletion:** `delete_supplied_copies` uses the same identity, so it is now also stricter: a copy whose change time moved (chmod during enrollment) is kept.
+     - **Files added during enrollment:** still allowed and kept.
+   - **Reasons (7):**
+     - **Timed notes:** `IdentityResolver._last_note` holds (frame time, note).
+     - **A new life:** `retain_only` drops the note and the D97 break from before it began and keeps this life's own (its first frame's face result or break, which can come before `retain_only` in the same step).
+     - **The earlier rule removed:** "drop the note only if every earlier vote was dropped".
+   - **Evidence profiles (`face_evidence`):** `ENROLL` accepts `photos_changed`; `AUDIT` accepts `purge_incomplete` and its `left` count. Readers that count completed events are unaffected (F1 counts `enroll`).
+
+4. **Deferred, with their reachability:**
+   - **3 (hard links):**
+     - **Reachable only** if the identity directory (or a capture's working directory) is on a filesystem that refuses `link()` but passes the ownership and mode check, such as vfat or exFAT mounted `uid=<user>,umask=077`, or some FUSE or network mounts.
+     - **The supported setup** is ext4 on the second drive (verified above), and the Mac's APFS links too.
+     - **A small fix exists** (on `EPERM`, `EXDEV` or `ENOTSUP`, keep a private copy with `write_private_atomic`) but is not made, since no supported configuration reaches it.
+   - **4 (Basic on prose):**
+     - **No narrowing keeps the coverage:** the review's suggestion (require a digit, `+`, `/` or `=`) misses letters-only base64 such as `dXNlcjpwYXNz` (`user:pass`).
+     - **The alternatives miss forms too:** requiring the decoded text to be printable, or to hold a `:`, would miss non-RFC tokens after "basic" and a cut-off credential's username part.
+     - **The cost is diagnostic words only**, never a secret, so the pattern is left as is.
+
+5. **Interface changes:**
+   - **`identity purge`:** its JSON adds `left`, `deletion` and `audit`, and it exits 1 when either is incomplete; before, a failure raised before or part way through and printed no report.
+   - **New labels:** `photos_changed` (enroll), `capture_audit_incomplete` (capture record), `purge_incomplete` (audit action), `purge_incomplete` and `purge_audit_incomplete:<label>` (command).
+   - **The operator packages** that call `identity purge` (`x-Z` in `enroll-exp-c3a37f0*` and `enroll-eval-35eafac`) pin older commits, stop on a non-zero exit (`set -e`) and do not parse the JSON.
+
+6. **Tests:**
+   - **New: 42 cases.**
+     - `test_redaction` (10 punctuated values, 4 linearity guards);
+     - `test_outbox` (4 stored details) and `test_adapters` (1 load reason);
+     - `test_identity_enroll`: purge under 4 audit failures through the CLI; a partial purge (a 0500 folder, skipped as root); 8 audit read errors (`fstat` or `pread`, started or completed line, enroll or revoke) through the CLI; a close error after the flush; 4 purges while an enrollment prepares (no gallery or another person; purged, or purged and the same copies supplied again with their times restored) through the CLI;
+     - `test_face_outcome` and `test_identity_continuity_rule` (an earlier-life note and break, through `EdgeCore`);
+     - `test_face_runtime` (2: the capture at the runtime's stop);
+     - `test_face_check` (1: the capture record's invariant).
+   - **Updated:** the purge report's expected shape in three tests. The torn-log test now expects enroll and revoke to be refused, while purge is covered by the new test.
+   - **Failing first:** on `9b31b13`, 38 of the 42 failed (every case for a defect); the 4 linearity guards passed, as they bound the new pattern.
+
+7. **Unresolved, for the maintainer:**
+   - **Revoke still needs a writable audit log** (audited before and after, by design). With a torn log the only erasure that goes ahead is purge, which removes every identity. Decide whether revoke may proceed with its audit reported incomplete, as purge now does.
+   - **Nothing repairs a torn last line;** the operator edits `audit.jsonl` by hand. A repair command, or purge truncating the torn line, is a decision.
+   - **An enrollment whose undo also failed** (`committed_audit_incomplete`) prints that label but not the enrolled ID (`identity list` shows it) and keeps the photos.
+   - **A purge that cannot delete an enrollment's photos** (`purge_incomplete`) leaves them unchanged, so an enrollment under way then completes. The purge said it was incomplete.
+   - **The change-time check** relies on the kernel's file timestamps (coarse ticks). The test waits 50 ms before supplying copies again; a person cannot do it within one tick.
+   - **Still open:** session 98's crash limitations.
+
+### Verification: exact commands and results
+
+```
+T = PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m pytest -q -p no:cacheprovider   # Python 3.10.14, in the worktree
+cmp src/sentinel/{redaction,identity/gallery,identity/experiment,identity/state,identity/enroll}.py ~/sentinel-review/a-fixes-df8d9bc-24f7fc1/<same>   # identical at 9b31b13
+git -C ~/sentinel-review/a-fixes-df8d9bc-24f7fc1 show HEAD~1:src/sentinel/identity/{gallery,experiment,state,enroll}.py   # the review base, read only (the classifications)
+findmnt -T ~/sentinel-data/identity -o TARGET,SOURCE,FSTYPE,OPTIONS   # ext4, /dev/nvme1n1p1[/sentinel/home/sentinel-data], rw,relatime (metadata only; nothing in it opened)
+~/sentinel-surveillance/.venv/bin/python -I <scratch>/repro.py $PWD <scratch>/repro-data-unchanged   # on 9b31b13: item 2's observations (repro-unchanged.txt)
+T tests/unit/test_redaction.py tests/unit/test_outbox.py tests/unit/test_adapters.py -k "punctuation or hostile"   # 9b31b13: 15 failed (every new punctuated case), 14 passed (10 existing and 4 new linearity guards)
+T <the six identity, face and checker files> -k "purge or audit_read_error or close_error or new_life or says_written_exactly or left_in_place or torn_last"   # 9b31b13: 25 failed (23 new, 2 with the purge report's new shape), 5 passed
+<the same two runs on the fix>   # all passed (after two test corrections: the stop result has no face_capture key when nothing raised; one more purge-shape expectation)
+~/sentinel-surveillance/.venv/bin/python -I <scratch>/repro.py $PWD <scratch>/repro-data-fixed   # on the fix: purge deletes and reports each audit line; audit_failed:OSError with the change undone; capture written=True only with its gallery on disk; photos_changed with no gallery; "no face observed yet"; 3 and 4 unchanged (repro-fixed.txt)
+<redact_line timing, 3.10>   # 400,000 hostile chars at most 144 ms; 200,000/400,000/800,000 chars: 76/144/272 ms
+T tests/unit/test_identity*.py tests/unit/test_face*.py tests/unit/test_landmark*.py tests/replay/test_r1_face_identity.py tests/unit/test_redaction.py tests/unit/test_outbox.py tests/unit/test_adapters.py tests/unit/test_config.py tests/unit/test_jobs*.py   # 883 passed in 778.21 s
+PYTHONPATH=$PWD/src ~/sentinel-validation/py312-df8d9bc/venv/bin/python -m pytest -q -p no:cacheprovider <the eight edited identity, redaction and caller files>   # 3.12: 255 passed
+git commit   # 508103d (code and tests; no amend)
+~/sentinel-validation/review-a-followup-508103d/run.sh   # both suites in sequence at 508103d, clean code tree:
+  T --junitxml=.../logs/py310-junit.xml   # 2746 passed, 2 skipped (torch, cv2) in 1378.96 s (08:09:41-08:32:42 UTC); exit 0
+  PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m sentinel.cli config validate config/default.yaml   # valid; exit 0
+  VIRTUAL_ENV=~/sentinel-validation/py312-df8d9bc/venv PATH=<its bin>:$PATH python -m pytest --junitxml=.../logs/py312-junit.xml   # Python 3.12.3: 2746 passed, 2 skipped (torch, cv2) in 1289.97 s (08:32:42-08:54:14 UTC); exit 0
+  sentinel config validate config/default.yaml   # valid; exit 0
+  # boot ID 9a802799-…, HEAD 508103d and an empty diff of src, tests, benchmarks, config and pyproject.toml against it: the same before, between and after
+git -C ~/sentinel-review/a-fixes-df8d9bc-24f7fc1 status --short --ignored; git -C ~/sentinel-review/a-identity-df8d9bc status --short --ignored   # no tracked change; HEADs 1ce7ce9 and 3acb419 as before. This session left two ignored artefacts in the a-fixes copy (src/sentinel/__pycache__ from the first redaction check, run there; the harness's .claude/scheduled_tasks.lock, this session's), removed after checking them: now no entry at all. a-identity's src/sentinel/__pycache__ dates from 2026-10-19 and was left
+# Logs: ~/sentinel-validation/review-a-followup-508103d/logs/; the reproduction script and its two outputs stayed in the session scratchpad
+```
+
+**Next (the maintainer):** review `508103d`; decide on item 7's open points; findings 3 and 4 stay deferred unless the supported filesystems or the redaction policy change.
 
 ## Session 100 log (Claude, 2026-10-20): review A's findings 9 (duplicated helpers) and 10 (YuNet's 0.9 in four modules): the drifted copies made one, two defects reproduced and fixed, the threshold defined once; nothing pushed
 
