@@ -1,6 +1,22 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-20, session 105 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **The grounding check G proposed in full for the maintainer's review, to run inside a re-pinned validation-only integration run; nothing implemented, packaged or launched (session 105 log).**
+Last updated 2026-10-20, session 106 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **On the maintainer's approval of session 105's proposal (judged by the maintainer, with three clarifications): the grounding check G implemented as operator tooling (`2004725`), packaged as `~/sentinel-prep/fcg-2004725/` (manifest SHA-256 `5b86ce98240d574f6a7efb8fb6a771c75210400914cc179d807f5902951bda39`, 19 files) and dry-run with synthetic answers only; not launched (session 106 log).**
+- **The clarifications, as implemented:**
+  1. an answer's uncertainty ("can't read it", "unclear") is always its own label, `uncertainty`, never consistent with the staging;
+  2. G3 with an unlabelled bottle: specific words or a brand said to be printed on it are `contradicted_by_staging`; a brand guessed from its shape or look is `unverifiable`, reported apart as its own category;
+  3. A0 is the moment the first question's POST returned 202, not when its answer finished.
+- **The code (`2004725`; operator tooling and tests only):**
+  - `alpha_load chat --grounding`: G1-G4 once each at the first slot at or after A0 + 60/150/240/330 s; the answers' text only in a new 0600 file; every outcome kept, nothing retried, the run never extended; slots never reached written `not_asked` when the tool ends (SIGTERM included).
+  - `benchmarks/runner/grounding.py`: the staging (a launch refused unless S1 and S2 are yes) and the maintainer's local judging interface. It works only on a terminal and only after the account; it asks S5 first and shows each question, answer and truncation flag; it saves categories, labels and non-text metadata only.
+  - `face_evidence` profiles for G's three files (the privacy counts cover them) and a DESCRIPTIVE G section in `alpha_check integration` that never prints a question's or an answer's text. The 28 judged items are unchanged.
+- **Tests:** 17 new; three deliberate mutations each fail one. The full portable suite at `2004725`: 2,778 passed, 2 skipped (`torch`, `cv2`), 0 failed, under Python 3.10.14 and then 3.12.3; `config/default.yaml` valid under both. Local runs, not CI.
+- **The package:** fci-aaca744's blocks plus iv-G (S5 and the judging), with S1-S4 in i-V, a second prerequisite `fci-20261020T110028Z` in i-B, 19 decisions and the approval line `APPROVE 2004725 fcg grounding_operator_judged cache_drop`.
+- **The dry run:** 48 cases in private namespaces, the judge on a real pseudo-terminal; it found one defect (iv-G pasted after the seal broke the seal) and two next-step messages that left out iv-G, each fixed and its case rerun. Synthetic secrets: 0 anywhere. G's synthetic answers: only in `grounding.jsonl` files (83), 0 in any other file.
+- **The answers' text** will be seen only by the maintainer, in iv-G. Claude never reads `iv/grounding.jsonl` (recorded as a standing rule).
+- **Unchanged:** runtime, chat prompt and bounds, thresholds, guard limits, the launch floor, F2's unvalidated status, admission, enrollment, every sealed session. Nothing pushed, published or launched; no review started.
+- **Next (the maintainer):** verify the two manifests, stage the room, then after a reboot run the session from i-R (about 33-38 min); send back the folder's name and `iv/check.txt`.
+
+Session 105's summary: **The grounding check G proposed in full for the maintainer's review, to run inside a re-pinned validation-only integration run; nothing implemented, packaged or launched (session 105 log).**
 - **The questions:** session 65's G1-G4, unchanged in wording, each asked once by the load tool at the first slot at or after 60, 150, 240 and 330 s from its first accepted question (about T0+64-334 s).
 - **The staging:** S1-S4 before the launch (a bottle at the seat, preferably without printed text; no cosmetic product or picture of one in the open in the room; whether the bottle carries text; whether it was seen in a live view before) and S5 after the run (the bottle stayed in place, uncovered).
 - **The judgement:** each claim is labelled CONTRADICTED BY STAGING, CONSISTENT WITH STAGING (never "correct"), UNVERIFIABLE (it depends on the exact frame, which is never recorded) or judged from the text alone (chat's rules: no identity, no other moment). Unknown or unclear never counts as consistent.
@@ -664,6 +680,9 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 ## Next concrete task
 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
+   - **Done (session 106):** G implemented on the maintainer's approval (`2004725`), packaged as `~/sentinel-prep/fcg-2004725/` (manifest `5b86ce98...`, 19 files) and dry-run with synthetic answers (session 106 log); not launched.
+   - **Maintainer (session 106):** verify the two manifests (session 106 log, section 7); stage the room; reboot; run the session from i-R; judge G in iv-G; send back the folder's name and `iv/check.txt` (never iv-G's screen).
+   - **Claude, next (session 106):** record the returned `fcg-` session read only, from `iv/check.txt` and the non-text records; never `iv/grounding.jsonl`.
    - **Done (session 105):** G proposed in full for review (session 105 log); nothing implemented.
    - **Maintainer (session 105):** approve the proposal with section 10's line (either judging variant), change it, or reject it.
    - **Claude, next (session 105):** on approval only, the implementation in section 9, a new pin, the package and its dry run; nothing launched.
@@ -1032,6 +1051,132 @@ Notes on partial and in-progress rows:
   - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Session 50: Step 5 ran it on the device (camera, detector, scene server, Telegram; see the session 50 log). Not done: the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 106 log (Claude, 2026-10-20): the grounding check G implemented as operator tooling on the maintainer's approval of session 105's proposal (judged by the maintainer, three clarifications): `2004725`, its tests, the package `fcg-2004725` and its dry run with synthetic answers; nothing launched; nothing pushed
+
+From `6ce01af` (clean; code as at `aaca744`), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`.
+
+1. **The approval (the maintainer):** `APPROVE G in fci as proposed in session 105: judged by me`, with three clarifications:
+   1. "Can't read it", "unclear" and similar uncertainty are classified separately as uncertainty, not "consistent with staging".
+   2. For G3 with an unlabelled bottle, an assertion that specific words or a brand are printed on it is contradicted by staging. A brand guessed from its shape is not disproved merely by the absence of a label: it is reported separately as unverifiable.
+   3. A0 is defined consistently as the timestamp when the first question was accepted, not when its answer finished.
+
+   **Further terms:**
+   - the four answers are shown only in the local judging interface, after the account is saved;
+   - their text is never read through Claude's tools, and never put in tool output, logs sent to Claude, Git, uploads or review bundles;
+   - the interface displays the question, the answer and any truncation flag;
+   - only the maintainer's categories and non-text metadata are reported to Claude.
+
+   **What was asked:** implement the operator tooling, run appropriate local tests, prepare the newly pinned package and dry-run it with synthetic answers. The runtime, limits, F2 status and admission decisions stay unchanged. Do not launch the live experiment.
+
+2. **The code (`2004725841dfbfcd759b255eef028b829229c2e5`; operator tooling and tests only; 6 files, +1,173/−49).**
+   - **`benchmarks/runner/alpha_load.py`, `chat --grounding G.jsonl`:**
+     - **When G is asked:** session 65's G1-G4 (`GROUNDING`), each asked once with `history: []`, at the first regular slot at or after A0 + 60, 150, 240 and 330 s, in place of that slot's fixed question. The rate, the alternation and every other slot are unchanged.
+     - **A0:** `time.monotonic()` when the first POST answered with 202 returns (clarification 3; `--for-s` keeps its own anchor).
+     - **The chat load's G records:** kind `grounding` with the G's ID, and no text.
+     - **G.jsonl:** created 0600 with `O_EXCL` (an existing file is refused, and nothing is asked). It holds `_record`'s non-text fields, A0, the slot, the replaced kind, the question, and the answer's text as received (at most 600 characters).
+     - **Outcomes without an answer:** a slot without a response is `no_response` (never asked again); the runtime's own states (cancelled, unavailable, busy, ...) are kept with their reason labels. On SIGTERM, the page going away, its own end, or a page that never answered, the slots never reached are written `not_asked` with why. The tool prints nothing.
+   - **`benchmarks/runner/grounding.py` (new):**
+     - **`staging OUT S1 S2 S3 S4`:** S1 and S2 must be `yes`, otherwise it is refused and nothing is written. S3 and S4 take `no`/`yes`/`unsure`. The file is 0600 and never written over an existing one.
+     - **`label()`:** the session 105 table with the clarifications. `uncertainty` is its own label for every G. G3 `printed_words_asserted` is `contradicted_by_staging` when S3 = no and `unverifiable` otherwise; `brand_guessed_from_appearance` is always `unverifiable`.
+     - **`judge RUN_DIR`, the interface:**
+       - **Refuses:** before the account is saved; after the reading (`check.txt`) or the seal; when G was judged already; and when stdout is not a terminal (a pipe or a file could keep the text). No answer is shown in any of these cases.
+       - **Order and display:** it asks S5 first and saves it before any answer is shown. It then shows each question, the answer as received (control characters made inert), CUT SHORT or complete, the frame and its age, and the staging, in the alternate screen when the terminal has one. It takes the category, the G2 other-objects answer and the identity answer, then `SAVE` or `REDO`.
+       - **What it saves:** the categories, the labels they imply and non-text metadata only, to `grounding-judgments.txt` (0600). An interruption saves nothing.
+   - **`benchmarks/runner/face_evidence.py`:**
+     - **New profiles:** `grounding.jsonl` (the answer a declared free-text field, so the privacy counts search it as content), `grounding-staging.txt` and `grounding-judgments.txt`, with fixed vocabularies.
+     - **The chat load:** the `grounding` kind and the `g` field.
+   - **`benchmarks/runner/alpha_check.py integration`:**
+     - **A fifth section, "grounding check G (descriptive only; never part of any verdict)":** the staging, each slot's non-text fields, the maintainer's categories and labels, and the labels recomputed from the categories and S3.
+     - **No text:** it never prints a question's or an answer's text.
+     - **Unchanged:** the four parts and their 28 judged items; the section appears only when a G file exists.
+   - **`tests/support/chat_runs.build_run(grounding=...)`:** asks G through the real runtime's chat at alpha_load's slots, with synthetic answers (or one held until a scene job cancels it), recorded with alpha_load's own G record function.
+
+3. **Tests.**
+   - **`tests/unit/test_grounding_check.py`, 17 new tests:**
+     - **The load tool on a fake clock:** the slots, A0 at the 202's return, the cadence and alternation, once each, outcomes kept without retry, `no_response`, without `--grounding` unchanged, an existing file refused.
+     - **A real SIGTERM** to the tool in its own process: four `not_asked`, exit 0, nothing printed, 0600.
+     - **The staging refusals.**
+     - **The labels against the three clarifications.**
+     - **The judging:** nothing before the account or to a pipe; refused when sealed or after the reading; S5 first; an interruption saves nothing; the display; the saved lines exactly; REDO; unanswered slots; control characters made inert.
+     - **The profiles and the real privacy counts** over all G files. A synthetic name in an answer is counted (`grounding.jsonl name=1`) and fails the existing privacy item.
+     - **The reading:** its G section is DESCRIPTIVE only, holds no question's or answer's text, and comes before an unchanged verdict line; an ordinary run gets no section.
+     - **The vocabularies tied to the code.**
+   - **Mutations (each restored from a scratch copy afterwards):** A0 at the ask time, a shape-guessed brand `contradicted_by_staging`, and no terminal check each failed exactly one test.
+   - **The full portable suite at `2004725`:** 2,778 passed, 2 skipped (`torch`, `cv2`), 0 failed, under the existing Python 3.10.14 `.venv` (1414.07 s, from 12:59:34 UTC) and then the isolated 3.12.3 environment (1318.80 s, 13:48:48-14:10:50 UTC); `config/default.yaml` valid under both. Boot ID, HEAD and an empty code diff were the same before, between and after. The dry run ran between the two suites, never beside one. Logs in `~/sentinel-validation/fcg-2004725/logs/`. Local runs, not CI.
+   - **A tool refusal, recorded:** session 103's wrapper script for these suites was refused by the environment's permission classifier. The same commands were run directly instead.
+
+4. **The package `~/sentinel-prep/fcg-2004725/`** (manifest SHA-256 `5b86ce98240d574f6a7efb8fb6a771c75210400914cc179d807f5902951bda39`, 19 files): PROTOCOL.md, DECISIONS.md, CHECKLIST.md, SOURCE.txt, DRYRUN.txt, hostprep.py, and the blocks i-R, i-D, i-B, i-C, i-P, i-F, i-M, i-O, i-V, iv-D, iv-G, iv-E, i-H.
+   - **From fci-aaca744:**
+     - **Renamed only:** i-C, i-O and hostprep.py (its docstring; hash `b5a05ac9...`).
+     - **Byte-identical:** i-P, i-F, iv-D.
+     - **i-M:** its next step after a launch names iv-G.
+   - **Changed:**
+     - **i-R:** the pin, the `fcg-` prefix, a 129-character T0 cue ("... leave the bottle where it stands ..."), the second prerequisite, and `J`.
+     - **i-D:** 19 decisions: fci-aaca744's 13, adapted where G changes them, and G's 14-19.
+     - **i-B:** 54 checksums at the pin, `grounding.py` added; the G decision lines; the second prerequisite `fci-20261020T110028Z` (seal `6de7bb4b...`, `IV_verdict=complete`, `IV_exit=0`, `IV_check_exit=0`).
+     - **i-V:**
+       - S1-S4 read with bash `read` at the top, beside framing and light (a Python prompt would read ahead in a file-fed shell);
+       - the staging written before the gate and the launch check, and refused with nothing launched;
+       - `alpha_load ... --grounding`;
+       - G's two files moved into `iv/`;
+       - iv-G in every next step after T0 and in the launch check's refusal.
+     - **iv-E:** needs G judged whenever an account is needed and G was staged.
+     - **i-H:** unsets S1-S4.
+   - **New, iv-G:** it writes nothing once the session is sealed, then calls `grounding.py judge`.
+   - **The operator's time:** about 33-38 min, the staging about 3 more.
+   - **Beside the old package:** a note next to fci-aaca744 (`fci-aaca744.NOTE.txt`), whose i-B now refuses at the head. That package is unchanged (its manifest verified).
+
+5. **The dry run** (`~/sentinel-prep/dryrun-harness-2004725-fcg`, from session 103's harness; all.sh in `~/sentinel-prep/dryrun-fcg-2004725`, outside the harness; the package's DRYRUN.txt has every case).
+   - **What was real:** every block as pasted; step5_guard's parser and readiness; guard_verdict; launch_memory; `alpha_load --grounding`; `grounding.py` (the judge under `script(1)`, a real pseudo-terminal, with each case's answers from a file); face_account; the counts; and the reading. They ran on runs made by the real runtime, with G asked at alpha_load's slots and synthetic answers marked `SYNTHETIC-G`.
+   - **Stand-ins:** sudo, sync, sysctl, systemctl, the camera probe, and the guard's `supervise()`, which also places the prebuilt `grounding.jsonl`.
+   - **The prerequisites:** the real trk and fci sessions, linked read only. i-B only hashes them; both seals verified unchanged afterwards.
+   - **48 cases:**
+     - **The full session (B):** passed; judged and saved; sealed 29 files with `grounding.jsonl` 0600.
+     - **Session 103's cases:** their exit lines (iv-G's apart), seals and drop calls are the same as in its dry run, in all 35 cases both share.
+     - **The staging refusals (GA-GC):** nothing launched, no launch check, no load started. A fix and re-paste (GD) launched.
+     - **A labelled bottle (GE):** G3's shape guess is unverifiable.
+     - **G2 cancelled by a scene job (GF):** not answered, nothing to judge. G3's printed words are contradicted by the staging.
+     - **iv-G before the account (GG) and iv-E before iv-G (GH):** both refused.
+     - **An interruption (GI):** saved nothing; S5 was kept.
+     - **No terminal (GJ):** refused before S5.
+     - **REDO (GK):** works; S5 no qualifies G1-G3.
+     - **The second prerequisite missing or another session's (P3, P4):** i-B refused.
+     - **Refused before launch (E):** the real load tool, ended by SIGTERM, wrote four `not_asked`.
+   - **Found and fixed:** GM (iv-G pasted after i-H) appended `IG_exit=1` to the sealed provenance, so the seal no longer verified. iv-G now checks the seal first and writes nothing. i-M's and i-V's messages now name iv-G. B, R1 and GM were rerun as B3, R1c and GM3, after restoring the dry home's reference link (R7 removes it on purpose); GM3 stayed sealed.
+   - **Scans of 112 dry folders:** the synthetic secrets 0 times. G's synthetic answers 83 times, all in `grounding.jsonl`, 0 in any other file (check.txt included). In the logs they appear only on iv-G's screens.
+   - **Untouched:** the real `~/sentinel-runs`, `~/sentinel-data` and host-memory have no `fcg` entry.
+
+6. **Privacy and the answers' text (the maintainer's terms, as built).**
+   - **Where the text is kept:** only `iv/grounding.jsonl` (0600) holds it, in the 0700 session folder outside any Git repository.
+   - **Where it is shown:** iv-G's terminal screen is the only place, after the account. No other block, the load tool or the reading prints it.
+   - **What Claude receives:** `iv/check.txt` holds states, timing, frames, lengths, truncation flags and the maintainer's categories. Claude reads that and the other non-text records only, never `grounding.jsonl` (also kept as a standing rule for later sessions).
+   - **Nothing leaves the device:** nothing is pushed, published, uploaded or put in a review bundle.
+
+7. **Verification before operator execution (commands and results).**
+   ```
+   cd ~/sentinel-prep/fcg-2004725 && sha256sum SHA256SUMS && sha256sum -c SHA256SUMS            # 5b86ce98...; 19 OK
+   cd ~/sentinel-prep/host-memory-observation && sha256sum SHA256SUMS && sha256sum -c SHA256SUMS # 74887d42...; OK
+   git -C ~/sentinel-worktrees/v2-ui diff --quiet 2004725 HEAD -- benchmarks src tests config pyproject.toml   # equal
+   <i-B's 54 checksums> | sha256sum -c --quiet -                                                  # 54 OK at the worktree
+   ~/sentinel-prep/dryrun-harness-2004725-fcg/all.sh ~/sentinel-prep/dryrun-fcg-2004725 && python3 verify106.py ...  # section 5
+   ```
+
+8. **What the session can and cannot establish.**
+   - **It can establish:** at that pin, with that scene, whether these four answers asserted an absent object, invented a printed detail or claimed knowledge of another moment, each tied to its frame, while face recognition ran, as judged by the maintainer against the staging. It also shows whether any answer named or guessed who someone is. The integration items are the same as in session 104.
+   - **It cannot establish:**
+     - a rate (four correlated answers) or a failure's cause;
+     - whether a frame-dependent claim was true (no picture is kept);
+     - the dashboard's presentation, or the operator's own wording;
+     - admission, F2, recognition accuracy, or the alpha's completion.
+
+9. **Not changed.** Runtime code, the chat prompt and bounds, admission, thresholds, guard limits, the launch floor, F2 criteria and status, the identity rules, real enrollment data, every earlier package and sealed session, and both review repositories. Nothing pushed, published or launched; no review started.
+
+**Next (the maintainer):**
+1. verify the two manifests (section 7);
+2. stage the room (PROTOCOL.md);
+3. reboot, then `ssh villain8001@192.168.55.1` from the Mac's Terminal;
+4. paste `~/sentinel-prep/fcg-2004725/i-R.sh`, then i-D once, then the blocks in PROTOCOL.md's order (iv-G between iv-D and iv-E).
 
 ## Session 105 log (Claude, 2026-10-20): the grounding check G proposed in full for the maintainer's review, inside a re-pinned validation-only integration run; staging-verified facts kept apart from claims that need the exact frame (unverifiable); nothing implemented, packaged or launched; nothing pushed
 

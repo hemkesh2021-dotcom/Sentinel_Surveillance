@@ -8,10 +8,10 @@ carries the pre-release; the tag is `v2.0.0-alpha.1` and the package version `2.
 [`RELEASE_NOTES_v2.0.0-alpha.1.md`](RELEASE_NOTES_v2.0.0-alpha.1.md)). `docs/IMPLEMENTATION_STATUS.md` is the source of
 every result named here, by session; where the two differ, the status record governs.
 
-**Since v2.0.0-alpha.1 (sessions 75–104; these notes updated 2026-10-20, session 104).**
+**Since v2.0.0-alpha.1 (sessions 75–106; these notes updated 2026-10-20, session 106).**
 - **Where the work is:** the local `v2-ui-refresh`, more than 30 commits past the tag. The code last changed at
-  `aaca744` (session 103: the face + chat integration run's readiness and reading, operator tooling only), after
-  review scope A's fixes (sessions 96–101); later commits are records and documents.
+  `2004725` (session 106: the grounding check G's operator tooling), after `aaca744` (session 103: the integration
+  run's readiness and reading) and review scope A's fixes (sessions 96–101); later commits are records and documents.
 - **Not published or released:** nothing pushed after `65df7f3` (14 October, a README change after the tag); the
   package version is still `2.0.0a1`; no new pre-release decided.
 - **Unchanged since the tag:** face recognition stays `PENDING_VALIDATION`; chat is not admitted; no threshold,
@@ -36,9 +36,9 @@ Under the recorded readiness rule, face is shown only as the experimental demons
 defect is established: none is recorded open. Review scope A (identity) and a follow-up review of its fixes ran
 (sessions 96–101: the findings fixed, two deferred with their reasons); the other proposed scopes have not run. The
 blocking items:
-1. the release documents, which this revision brings up to session 104;
+1. the release documents, which this revision brings up to session 106;
 2. no CI run on the unpushed commits (the last recorded CI result is at `b33c2f3`). The portable suite passed locally
-   at `aaca744` under Python 3.10.14 and 3.12.3 (session 103): local validation on the device, not CI;
+   at `2004725` under Python 3.10.14 and 3.12.3 (session 106): local validation on the device, not CI;
 3. the alpha goal above, a decision gate rather than a defect;
 4. the full alpha configuration's memory, still unmeasured (the integration run had no live view or snapshots).
 
@@ -87,7 +87,9 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
     items not exercised, and their scene session has not run.
   - **Chat: its runtime checks passed (two chat device runs, and one validation-only integration run with face
     recognition); admission, factual accuracy and combined face/VLM validation remain pending.** No run has kept or
-    read an answer's text, and there is one unverified operator report of a wrong answer. Chat is not admitted.
+    read an answer's text, and there is one unverified operator report of a wrong answer. The grounding check G (four
+    fixed questions judged by the maintainer against a staged room) is implemented and packaged, not run (session
+    106). Chat is not admitted.
   - **Face recognition and the scene model (VLM) together: unvalidated.** One validation-only integration run passed
     its execution, chat-completion, face-execution and memory items (session 104); no combined run has taken place.
 
@@ -128,8 +130,8 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
   preferences kept in the browser only (D100). Their two-session operator check `features`: the face session ran with
   its switch items not exercised (session 69); the scene session has not run.
 - Chat cancellation, the memory-pressure response and the scene-job grace (D77, D81); the combined face-and-chat
-  reading (D80) and a grounding check (G, designed for the combined package, not implemented; session 104 proposes it
-  for a re-pinned integration run).
+  reading (D80) and the grounding check G (session 106: implemented for the validation-only integration run, the
+  answers judged by the maintainer on the device and never read by Claude; packaged as `fcg-2004725`, not run).
 - **Validation-only diagnostics and operator tooling since the tag:**
   - the tracking diagnostic (`--tracking-diagnostic`, sessions 79–81);
   - F2's corrected retention reading (session 85);
@@ -139,7 +141,11 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
     face, associated one to one with the vote's own frame and person, read with a predeclared, association-only
     analysis;
   - the face + chat integration run's readiness (`--require-ready face_chat`) and reading (`alpha_check.py
-    integration`, session 103), which reports execution, chat completion, recognition behaviour and memory apart.
+    integration`, session 103), which reports execution, chat completion, recognition behaviour and memory apart;
+  - the grounding check G (`alpha_load chat --grounding`, `benchmarks/runner/grounding.py`, session 106): four fixed
+    questions once each, their answers' text kept only in a private sealed file and shown only in the maintainer's
+    local judging; only categories and labels (contradicted by or consistent with the staging, unverifiable,
+    uncertainty) reach the reading, descriptively.
 
   None changes production detection, votes, thresholds, enrollment or admission.
 - **PROPOSED, not implemented (session 92):** a complete-coverage variant of the existing shadow comparison (D87).
@@ -217,8 +223,9 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
    No detection, threshold, identity rule, enrollment or admission changed. Face remains the experimental
    demonstration until an F2 actually validates.
 2. Chat: its runtime checks passed; admission (operator-run resource and interference checks; the maintainer's
-   decision) and factual accuracy (the grounding check G is designed, not implemented) remain pending. The integration
-   run judged answers' form only; no run has kept an answer's text.
+   decision) and factual accuracy remain pending. The integration run judged answers' form only; no run has kept an
+   answer's text. The grounding check G is implemented and packaged, not run; it would judge four correlated answers,
+   never a rate (session 106).
 3. Face and chat (the VLM) together: one validation-only integration run passed (`fci-20261020T110028Z`, session 104:
    eight minutes, after a one-time page-cache drop, no live view). The combined run still needs a validated F2.
    Untested: answer content, the dashboard's presentation of answers with face running, and the full alpha
@@ -244,11 +251,11 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
      eight-minute integration run had peak pressure 4,203,548,672 B and lowest MemFree 2,443,522,048 B, within the
      limits; it had no live view or snapshots, so the full alpha configuration is still unmeasured.
 8. Release readiness (session 93):
-   - **CI:** no CI run on the unreleased commits. Local validation only: the portable suite passed at `aaca744` under
-     Python 3.10.14 and 3.12.3 on the device (2,761 passed, 2 skipped; session 103), which does not stand in for CI.
+   - **CI:** no CI run on the unreleased commits. Local validation only: the portable suite passed at `2004725` under
+     Python 3.10.14 and 3.12.3 on the device (2,778 passed, 2 skipped; session 106), which does not stand in for CI.
    - **Review:** scope A (identity) of the six proposed scopes ran, with a follow-up review of its fixes (sessions
      96–101: the findings fixed, two deferred with their reasons); scopes B–F have not run.
-   - **Release documents:** brought up to session 104 in this revision.
+   - **Release documents:** brought up to session 106 in this revision.
 7. Not started for the alpha: a two-hour soak (V2-24), real API, sessions and screens (V2-17, V2-18), clips (V2-21).
 
 ## Data and privacy in this repository
@@ -272,9 +279,9 @@ sentinel config validate config/default.yaml
 ```
 
 **Latest recorded results:**
-- the full portable suite at `aaca744` (the unreleased code): 2,761 passed, 0 failed and 2 skipped (`cv2`, `torch`
+- the full portable suite at `2004725` (the unreleased code): 2,778 passed, 0 failed and 2 skipped (`torch`, `cv2`
   absent), under the device's Python 3.10.14 `.venv` and then the isolated Python 3.12.3 environment, with
-  `config/default.yaml` valid under both (session 103; local, not CI);
+  `config/default.yaml` valid under both (session 106; local, not CI);
 - the isolated 3.12.3 environment was set up in session 95 following `.github/workflows/v2-portable.yml` (the editable
   install with the pinned dependencies, warnings as errors; 2,578 passed at `df8d9bc` then);
 - the last recorded CI result: at `b33c2f3`, on Python 3.10 and 3.12;
