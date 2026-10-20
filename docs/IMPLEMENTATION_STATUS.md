@@ -1,6 +1,26 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-21, session 108 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 107's `IH_exit` statement corrected from the maintainer's terminal output, and the grounding check's judging and staging wording clarified as operator tooling (format 2), with format 1's sealed records read exactly as before; focused tests passed; nothing launched (session 108 log).**
+Last updated 2026-10-21, session 109 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **On the maintainer's authorization (before F2 validates): the one-hour live-dashboard trial prepared. The code is `4e1d4f5`: the guard's one-hour bound and the reading `alpha_check trial`, operator tooling and tests only. The package is `~/sentinel-prep/dash-trial-4e1d4f5/` (manifest SHA-256 `1477af4045325524b2dba137607f4b261734f7109d87f983abf6280908eaac14`, 20 files), dry-run in 36 cases; not launched (session 109 log).**
+- **The trial:**
+  - 3,600 s from readiness of face recognition, scene analysis, the live view and chat, used in the dashboard from the Mac through an SSH tunnel (`http://127.0.0.1:18090/dashboard`);
+  - the operator works normally, leaves and returns, and asks chat in their own words;
+  - no question load, no staging, no recording of pictures, questions or answers, no upload;
+  - a guard stop or any early stop (Ctrl-C once) ends the attempt, never retried.
+- **Reused:** fcg-2004725's preparation, drop, launch floor, guard limits, readiness, account (format 11), counts, seal and cleanup.
+- **Changed:**
+  - the guard's 900 s cap was raised to 3,600 s (readiness still bounded at 900 s);
+  - captures `c4`-`c6` declared;
+  - the reading `alpha_check trial` in five parts: execution, live view, chat (counters only), recognition behaviour, memory. The integration reading is unchanged.
+- **Tests:** 10 new trial tests on a simulated hour of the real runtime; four mutations each caught. Focused suites: 741 passed, 0 failed (Python 3.10.14) and 112 passed (3.12.3). Local, not CI; the full suite not run.
+- **The dry run:**
+  - it found and fixed two package defects: `hostprep.py`'s hash, and the prerequisite's `IV_` lines renamed by mistake;
+  - a run during document edits was refused by h-B's clean-tree check, and the whole dry run was repeated on a clean tree;
+  - every case as designed, 0 synthetic secrets in 72 folders.
+- **Not measured, not blockers:** memory for an hour with the live view (8-minute runs peaked at 4.18-4.20 GB against the 4.8 GB stop), the identity-record margin (about 7,800 of 10,000 projected), and the browser and tunnel themselves.
+- **Unchanged:** runtime, chat, thresholds, guard limits, the launch floor, F2 (unvalidated), admission, enrollment, every sealed session. Nothing launched, pushed or published.
+- **Next (the maintainer):** verify the two manifests, then the session from h-R after a reboot (PROTOCOL.md); send back `hv/check.txt`, the h-H output and OBSERVATIONS.md's answers.
+
+Session 108's summary: **Session 107's `IH_exit` statement corrected from the maintainer's terminal output, and the grounding check's judging and staging wording clarified as operator tooling (format 2), with format 1's sealed records read exactly as before; focused tests passed; nothing launched (session 108 log).**
 - **The correction (USER-SUPPLIED, after the seal):** `IH_exit=0`, and the display manager `active` after its restart, for `fcg-20261020T154003Z`.
 - **Format 2:**
   - every answered G asks whether it names a PERSON or guesses who a person is (a brand, product, object or place is not a person);
@@ -727,6 +747,12 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 ## Next concrete task
 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
+   - **Done (session 109):** the one-hour live-dashboard trial prepared: the code `4e1d4f5`, the package `~/sentinel-prep/dash-trial-4e1d4f5/` (manifest `1477af40...`, 20 files) and its dry run (session 109 log). Not launched.
+   - **Maintainer (session 109):**
+     1. verify the package's and the helper's manifests;
+     2. reboot; plain SSH from the Mac's Terminal; h-R, h-D once, then PROTOCOL.md's order, with h-T's tunnel on the Mac before h-V;
+     3. send back the folder's name, `hv/check.txt`, the h-H output and OBSERVATIONS.md's answers.
+   - **Claude, next (session 109):** record the returned `dtr-` session read only. The observations are the maintainer's, recorded apart.
    - **Done (session 108):** session 107's `IH_exit` corrected (USER-SUPPLIED); G's judging and staging wording clarified (format 2), with format 1 read exactly as sealed; focused tests passed (session 108 log). No further G work: the priority is the one-hour live-dashboard trial.
    - **Done (session 107):** `fcg-20261020T154003Z` recorded read only (session 107 log):
      - integration passed (four parts); G1 and G2 consistent with the staging, G3 unverifiable, G4 cancelled and untested;
@@ -1105,6 +1131,115 @@ Notes on partial and in-progress rows:
   - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Session 50: Step 5 ran it on the device (camera, detector, scene server, Telegram; see the session 50 log). Not done: the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 109 log (Claude, 2026-10-21): the one-hour live-dashboard trial prepared on the maintainer's authorization (validation only, before F2 validates): the guard's one-hour bound, the trial's reading and its tests (4e1d4f5), the package `dash-trial-4e1d4f5` and its dry run; nothing launched; nothing pushed
+
+From `1231d7e` (clean; code as at `1231d7e`), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`.
+
+1. **The request (the maintainer).**
+   - **Finish first:** the already-running focused checks of session 108, then a local commit of its changes (`1231d7e`). Do not expand the grounding work or prepare another G experiment.
+   - **Prepare one 60-minute validation-only trial,** measured from readiness, with face recognition, scene analysis, the live video and manual VLM chat together in the dashboard. The maintainer will use it from the Mac through an SSH tunnel, work normally, move naturally, leave and return, and ask questions in their own words. No automated question load and no staged objects.
+   - **The authorization:** "I authorize preparing this trial before F2 validates. Keep F2 unvalidated and admission unchanged. Preserve the existing memory guards, thresholds, enrollment protection and cleanup. A guard stop ends the attempt, with no automatic retry."
+   - **How:** reuse existing tooling; implement only what the trial needs; test the changes and dry-run the operator steps. Keep private answers local; add no image or video recording and no evidence upload.
+   - **State:** the host preparation; the package verification, SSH tunnel, browser URL, launch, stop and cleanup instructions; a short observation checklist (dashboard freshness, recognition, chat usefulness, monitoring continuity, memory). Report any concrete blocker directly; otherwise finish with the first operator command.
+   - **Do not:** launch, push, publish or start a cloud review.
+
+2. **What was reused, and the three things that had to change.**
+   - **Reused unchanged:**
+     - the integration package's preparation and cleanup: host preparation, the camera probe, the working copy of the original enrollment, the one-time page-cache drop, the launch floor and its check, the account (format 11), the counts, the seal and the display manager's restart;
+     - the guard with its limits, the `face_chat` readiness and `guard_verdict`;
+     - the runtime's own `--live-preview` and dashboard (D75, D95-D96) and chat's validation run with its gate. The CLI already accepts them together; no runtime code changed.
+   - **Necessary changes (operator tooling and tests only):**
+     1. **`step5_guard.py`:** the duration and the cue and capture offsets were capped at 900 s (`MAX_DURATION_S`): an hour was refused at the argument parser. Now 3,600 s; the readiness wait keeps its own 900 s bound (`MAX_READY_TIMEOUT_S`). The guard streams its samples to `guard.jsonl` and keeps only the sampling gaps in memory, so an hour needs nothing else.
+     2. **`face_evidence.py`:** the status captures `c4`, `c5` and `c6` declared, beside `c1`-`c3` and `end`. Otherwise the privacy counts would have called the hour's captures nonconforming.
+     3. **`alpha_check.py trial`:** the integration reading would fail an hour with the live view on and no load tool (its 480 s, its "no live view" and its chat-load items). `read_integration(run_dir, trial=True)` reads the same evidence in five parts:
+        - **execution:** the integration items, with the live view on at startup and at every capture; monitoring at each capture described;
+        - **live view:** pictures sent to a viewer, judged from the status counters (`stream_pictures_sent`); the encoder stopped with the runtime;
+        - **chat:** at least one question accepted and answered, from the status counters, and the chat-induced scene delay as before (2,000 ms with the 1,500 ms grace); no question's or answer's text exists to read;
+        - **recognition behaviour:** only "face executed alongside" judged; identity states at each capture described;
+        - **memory:** the existing alpha limits.
+
+        The integration reading's output is unchanged (both sealed integration sessions re-read byte for byte).
+   - **Tests only:** `tests/support/chat_runs.build_run(viewer=True)`, a simulated viewer that pulls pictures through the live view's own `next_frame`, as the dashboard's player does.
+   - **Checked, not changed:**
+     - **The identity-record cap:** the runtime keeps at most 10,000 identity records per run. Session 107's 8 minutes made 1,037, so an hour projects to about 7,800, and the simulated hour at one frame a second made 7,201. "None dropped" stays judged. A busier hour could approach the cap; that would be a reported result, not a guard stop.
+     - **The page during the trial:** it stays loopback-only. The tunnel connects to it as a client, so the guard's listener check is unchanged.
+
+3. **The code (`4e1d4f544630cb4de09406f91cbf9c8133e09537`).** Operator tooling and tests only; 6 files, +338/-26: `benchmarks/runner/step5_guard.py`, `benchmarks/runner/face_evidence.py`, `benchmarks/runner/alpha_check.py`, `tests/support/chat_runs.py`, `tests/unit/test_step5_guard.py` and the new `tests/unit/test_dashboard_trial.py`.
+
+4. **Tests.** 
+   - **`tests/unit/test_dashboard_trial.py`, 10 tests,** on a simulated hour of the real runtime: face, the scene worker, chat and the live view, at one frame a second, with a viewer pulling pictures. The chat load and the viewer log are removed, as the trial has neither.
+     - **The hour passes each part:** the 3,600 s, the live view on at all seven captures, the records under the cap (7,201), pictures sent, questions answered, the delay bound, only "face executed alongside" judged.
+     - **The privacy counts:** cover `c4`-`c6`, all 0.
+     - **The two readings never stand for each other:** the integration reading fails the hour's execution and chat, and the trial reading fails an eight-minute run without the live view.
+     - **Each part fails alone:**
+       - no viewer: the live view;
+       - no question: chat MISSING;
+       - questions asked but none answered: chat FAIL;
+       - a capture with the live view off: execution;
+       - memory over 5.4 GB: memory.
+     - **The guard's bounds:** 3,600 s accepted, 3,601 s refused; the readiness wait keeps 900 s.
+   - **`tests/unit/test_step5_guard.py`:** the boundaries moved to 3,600/3,601 s, and the offsets of the hour accepted.
+   - **Mutations (each restored from a scratch copy, byte-identical afterwards):**
+     - the live view not required at the captures: 1 test failed;
+     - a chat item that always passes: 1 failed (the "none answered" test, added after the first try showed that the no-question case reads MISSING whatever the item says);
+     - no viewer required: 1 failed;
+     - the trial read at 480 s: 5 failed.
+   - **The integration reading unchanged:** `fcg-20261020T154003Z` (a scratch copy with a synthetic `grounding.jsonl`) and `fci-20261020T110028Z` re-read at the new code reproduce their sealed `check.txt` byte for byte.
+   - **Focused suites (local, not CI):**
+     - **Python 3.10.14:** 14 test files (session 108's ten plus `test_dashboard_trial`, `test_step5_guard`, `test_launch_memory`, `test_tracking_check`): **741 passed, 0 failed** (914.8 s, 19:29:29-19:44:44 UTC).
+     - **Python 3.12.3:** the changed files (`test_dashboard_trial`, `test_step5_guard`, `test_integration_check`, `test_alpha_check`, `test_grounding_check`): **112 passed**.
+     - **Not run:** the full suite.
+     - **Logs:** `~/sentinel-validation/dash-trial-s109/logs/`.
+
+5. **The package `~/sentinel-prep/dash-trial-4e1d4f5/`** (manifest SHA-256 `1477af4045325524b2dba137607f4b261734f7109d87f983abf6280908eaac14`, 20 files). Derived from fcg-2004725 by exact renames (blocks `i-` to `h-` and `iv-` to `hv-`, the run folder `hv/`, provenance prefixes `H?_`, `launch_memory --block H`, sessions `dtr-`); every renamed block was diffed against its source.
+   - **Renamed only:** h-C, h-P, h-F, h-O, hv-D, `hostprep.py` (its docstring names this package).
+   - **Changed:** h-R, h-D (15 decisions; approval `APPROVE 4e1d4f5 dashboard_trial one_hour cache_drop`), h-B (checksums at the pin, this package's 40 decision lines, the same prerequisites), h-M (one message), h-V, hv-E, h-H.
+   - **New:** h-T (the Mac's tunnel).
+   - **Removed:** G and the load tool.
+   - **The launch (h-V):**
+     ```
+     step5_guard.py --out $W/hv --step4-headroom --require-ready face_chat --duration-s 3600 --ready-timeout-s 300 \
+         --status-at 60:c1 --status-at 600:c2 --status-at 1200:c3 --status-at 1800:c4 --status-at 2400:c5 \
+         --status-at 3000:c6 --status-at 3585:end --cue-at "0:t0:..." --cue-at "3590:stop:..." -- \
+       sentinel run $W/face.yaml --data-dir $DATA/hv --engine ~/yolov8n.engine --workload-thp-disable --post-load-release \
+         --scene --face --face-validation --identity-dir $DATA/identity --chat --chat-validation --live-preview
+     ```
+   - **The cues:** T0 "T0 - open the dashboard and work as usual; move, leave and come back as you like; ask chat in your own words; keep others out of view" (133 characters); the stop at 3,590 s "stopping at 60:00 - read no result until your account is saved".
+   - **The Mac (h-T):** `caffeinate -i ssh -N -L 18090:127.0.0.1:18090 villain8001@192.168.55.1`, then `http://127.0.0.1:18090/dashboard` in Safari.
+   - **Stopping:** by itself at 60:00. To end early, Ctrl-C once in h-V's window: the guard's `operator_interrupt`, the runtime stopped cleanly, a STOP with hv-D, hv-E and h-H next. A guard stop or any early stop ends the attempt; nothing retries.
+   - **Privacy:** no picture, video, question or answer is written anywhere; the answers appear only in the operator's browser; nothing is uploaded. PROTOCOL.md says so, and the dry run's scan checks it (section 6).
+   - **The observation checklist (OBSERVATIONS.md):** dashboard freshness, recognition (seated, leaving, returning), chat usefulness (counts and kinds, never text), monitoring continuity, memory. It is the operator's report, recorded apart and never as a measurement.
+
+6. **The dry run.** `~/sentinel-prep/dryrun-harness-4e1d4f5-trial` (from fcg-2004725's harness; namespaces, stand-ins and fake /proc/meminfo as before; fcg-2004725's answers with the staging removed), 36 cases in `~/sentinel-prep/dryrun-dash-trial-4e1d4f5`. The package's DRYRUN.txt lists each.
+   - **What was real:** every block as pasted; step5_guard's parser and readiness; guard_verdict; launch_memory `--block H`; hostprep; hostmem_observe; face_account; the counts; `alpha_check trial`. They ran on runs made by the real runtime over a simulated hour with a viewer.
+   - **Stand-ins:** sudo, sync, sysctl, systemctl, the guard's supervise(), the camera probe.
+   - **Found and fixed:**
+     1. h-C and h-O still checked fcg-2004725's `hostprep.py` hash: now this package's own (`b2697d37...`).
+     2. **Run 1:** h-B refused every case. The exact rename `IV_` to `HV_` had also rewritten the lines that check the prerequisite `fci-20261020T110028Z`'s own provenance, so those lines keep `IV_` now. No other line refers to another session's records. The diff against the renamed source could not show this (both sides renamed).
+     3. **Run 2:** cases 0-H valid; from case I on, h-B refused correctly ("tracked changes present") because the release documents were being edited in the worktree. The edits were set aside as a patch and the whole dry run repeated on a clean tree.
+
+     Runs 1 and 2 are kept beside the harness (`-run1-hb-defect`, `-run2-dirty-tree`).
+   - **Run 3 (clean tree), every case as designed:**
+     - **The whole session (B):** HV_exit=0, the account, all five parts passed, the repeats refused, sealed 29 files.
+     - **The other passing sessions:** Y (unknown account answers), D1 and D6 (the drop declined or broken, then done), R2 and R6 (the launch floor exactly met, MemFree changed before launch) and J (blocks out of order, then in order) each pass.
+     - **Stops, each with its next step:** C a guard stop, H the operator's Ctrl-C (`operator_interrupt`), I a runtime exit, E refused before launch, F no result, G an unreadable result, X readiness refused.
+     - **V (nobody viewing):** the live view part alone not passed.
+     - **Refusals and recovery:** K, L, M, N, T and U the host preparation; Q1 and Q2 the probe; D2-D5 and D7 the drop; R1, R4, R5, R7 and R8 the launch check; P1-P4 the prerequisites.
+   - **Scan:** 72 dry session and preparation folders; the synthetic secrets and the stand-in model's answer text found 0 times.
+   - **Not exercised:** the terminal's delivery of Ctrl-C to the real guard (the stand-in returns its outcome); a real browser and tunnel.
+
+7. **Blockers.** None concrete.
+   - **What the hour depends on but nothing has measured:**
+     - memory for an hour with the live view on: the 8-minute integration runs peaked at 4.18-4.20 GB, against the guard's 4.8 GB stop and chat's 4.7 GB gate;
+     - the identity-record margin (section 2);
+     - the browser on the Mac staying in front.
+
+     A guard stop ends the attempt as authorized.
+
+8. **Not changed.** Runtime code, the chat prompt and bounds, face and chat admission, thresholds, guard limits, the launch floor, F2's criteria and status, the identity rules, the enrollment, every earlier package and sealed session. Nothing launched, pushed or published; no review started.
+
+**Next (the maintainer):** verify the two manifests, then follow PROTOCOL.md: after a reboot, start from h-R; h-D records the decisions once.
 
 ## Session 108 log (Claude, 2026-10-21): session 107's `IH_exit` statement corrected from the maintainer's terminal output; G's judging and staging wording clarified as operator tooling (format 2: a person apart from brands and objects; G3's brand named and printed claim recorded apart; S3 about a printed brand name), with format 1's sealed records read exactly as before; focused tests; nothing launched; nothing pushed
 

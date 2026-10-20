@@ -8,10 +8,12 @@ carries the pre-release; the tag is `v2.0.0-alpha.1` and the package version `2.
 [`RELEASE_NOTES_v2.0.0-alpha.1.md`](RELEASE_NOTES_v2.0.0-alpha.1.md)). `docs/IMPLEMENTATION_STATUS.md` is the source of
 every result named here, by session; where the two differ, the status record governs.
 
-**Since v2.0.0-alpha.1 (sessions 75–107; these notes updated 2026-10-21, session 107).**
+**Since v2.0.0-alpha.1 (sessions 75–109; these notes updated 2026-10-21, session 109).**
 - **Where the work is:** the local `v2-ui-refresh`, more than 30 commits past the tag. The code last changed at
-  `2004725` (session 106: the grounding check G's operator tooling), after `aaca744` (session 103: the integration
-  run's readiness and reading) and review scope A's fixes (sessions 96–101); later commits are records and documents.
+  `4e1d4f5` (session 109: the one-hour live-dashboard trial's guard bound and reading, operator tooling only), after
+  `1231d7e` (session 108: the grounding check's judging wording), `2004725` (session 106: G's operator tooling),
+  `aaca744` (session 103: the integration run's readiness and reading) and review scope A's fixes (sessions 96–101);
+  later commits are records and documents.
 - **Not published or released:** nothing pushed after `65df7f3` (14 October, a README change after the tag); the
   package version is still `2.0.0a1`; no new pre-release decided.
 - **Unchanged since the tag:** face recognition stays `PENDING_VALIDATION`; chat is not admitted; no threshold,
@@ -37,9 +39,10 @@ Under the recorded readiness rule, face is shown only as the experimental demons
 defect is established: none is recorded open. Review scope A (identity) and a follow-up review of its fixes ran
 (sessions 96–101: the findings fixed, two deferred with their reasons); the other proposed scopes have not run. The
 blocking items:
-1. the release documents, which this revision brings up to session 107;
+1. the release documents, which this revision brings up to session 109;
 2. no CI run on the unpushed commits (the last recorded CI result is at `b33c2f3`). The portable suite passed locally
-   at `2004725` under Python 3.10.14 and 3.12.3 (session 106): local validation on the device, not CI;
+   at `2004725` under Python 3.10.14 and 3.12.3 (session 106), and focused suites at `1231d7e` and `4e1d4f5` (sessions
+   108-109): local validation on the device, not CI;
 3. the alpha goal above, a decision gate rather than a defect;
 4. the full alpha configuration's memory, still unmeasured (the integration run had no live view or snapshots).
 
@@ -235,7 +238,9 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
    one-time page-cache drop, with no live view (`fci-20261020T110028Z`, session 104, daylight;
    `fcg-20261020T154003Z`, session 107, lamps, launched about 137 min after the drop). The combined run still needs
    a validated F2. Untested: answer content beyond G's three answers, chat about another moment (G4), the
-   dashboard's presentation of answers with face running, and the full alpha configuration.
+   dashboard's presentation of answers with face running, and the full alpha configuration. A one-hour live-dashboard
+   trial (face, scene analysis, the live view and the operator's own questions together; validation only) is packaged
+   and dry-run, not run (`dash-trial-4e1d4f5`, session 109).
 4. The feature controls on the device and in Safari (`features`, two sessions: the face session ran once with its switch
    items not exercised, session 69; the scene session pending), departure and return on the dashboard, and resource
    use with face and the live view together (the dashboard check ran; session 68).
@@ -260,10 +265,11 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
      still unmeasured.
 8. Release readiness (session 93):
    - **CI:** no CI run on the unreleased commits. Local validation only: the portable suite passed at `2004725` under
-     Python 3.10.14 and 3.12.3 on the device (2,778 passed, 2 skipped; session 106), which does not stand in for CI.
+     Python 3.10.14 and 3.12.3 on the device (2,778 passed, 2 skipped; session 106), and focused suites at `1231d7e`
+     (599 passed) and `4e1d4f5` (741 passed; sessions 108-109), which do not stand in for CI.
    - **Review:** scope A (identity) of the six proposed scopes ran, with a follow-up review of its fixes (sessions
      96–101: the findings fixed, two deferred with their reasons); scopes B–F have not run.
-   - **Release documents:** brought up to session 106 in this revision.
+   - **Release documents:** brought up to session 109 in this revision.
 7. Not started for the alpha: a two-hour soak (V2-24), real API, sessions and screens (V2-17, V2-18), clips (V2-21).
 
 ## Data and privacy in this repository
@@ -287,7 +293,10 @@ sentinel config validate config/default.yaml
 ```
 
 **Latest recorded results:**
-- the full portable suite at `2004725` (the unreleased code): 2,778 passed, 0 failed and 2 skipped (`torch`, `cv2`
+- focused suites at the later operator-tooling commits (the test files touching their modules; the full suite not
+  run): `1231d7e` 599 passed, 0 failed (session 108) and `4e1d4f5` 741 passed, 0 failed (session 109), under Python
+  3.10.14, their changed test files also under 3.12.3 (local, not CI);
+- the full portable suite at `2004725`: 2,778 passed, 0 failed and 2 skipped (`torch`, `cv2`
   absent), under the device's Python 3.10.14 `.venv` and then the isolated Python 3.12.3 environment, with
   `config/default.yaml` valid under both (session 106; local, not CI);
 - the isolated 3.12.3 environment was set up in session 95 following `.github/workflows/v2-portable.yml` (the editable
