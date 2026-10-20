@@ -1,6 +1,29 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-20, session 103 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **On the maintainer's approval of session 102's exception: the validation-only face + VLM chat integration run implemented (`aaca744`), packaged as `~/sentinel-prep/fci-aaca744/` (manifest SHA-256 `8857eeb4ce69fc433716d2730f572662342b70821a2cba06a0c5319e7e8f18a4`, 18 files) and dry-run checked; not launched (session 103 log).**
+Last updated 2026-10-20, session 104 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **The validation-only face + VLM chat integration session `fci-20261020T110028Z` recorded read only (USER-SUPPLIED; 26 sealed files verified, manifest SHA-256 `6de7bb4ba31df165f4f611206895af7e222c4f8c8d5cbe3a4eced6c514f0ef1f`). An eight-minute run under the page-cache-drop condition (reported apart), whose four parts all passed: execution, chat completion, recognition behaviour (only that face executed alongside is judged) and memory. Not F2 and not the combined run; no answer correctness or recognition accuracy assessed; nothing admitted (session 104 log).**
+- **The verdicts:** `IV_verdict=complete`, `IV_exit=0`, `IV_check_exit=0` and `alpha integration check: passed` are in the seal. `IH_exit=0` is the maintainer's report: i-H prints it after sealing.
+- **Preparation conditions:**
+  - a fresh boot (the session began 2.8 min after it), over SSH;
+  - i-C closed the VNC desktop session with one SIGTERM; the display manager stopped; no development, VS Code, v1 or llama-server process;
+  - the camera probe passed on its first attempt;
+  - one D103 page-cache drop (MemFree +943,415,296 B);
+  - the launch check passed: MemFree 7,051,526,144 B, 1,481,691,136 B above the floor, 54.5 s after the drop;
+  - daylight, framing unchanged since the capture;
+  - the original enrollment through a working copy: unchanged afterwards, and the copy removed.
+- **Chat:** the load tool asked 94 questions.
+  - **14 before readiness:** HTTP 503, "the runtime is starting". The tool starts before the launch, and the models took 81.3 s to load.
+  - **80 after T0:** 75 answered; 4 ended by periodic scene jobs after the 1.5 s grace (D81); 1 ended by the run's own stop.
+  - **All expected scheduling and shutdown behaviour;** no defect demonstrated. No answer's text was kept, so answer content is untested.
+- **Recognition, described only:**
+  - 456 applied results (442 at the last capture), none failed; one person track;
+  - KNOWN from T0+7.6 s, with no clear, UNKNOWN or UNCERTAIN transition to the end, as the runtime decided.
+  - One daylight session: not accuracy, retention, false acceptance or F2, and no evidence that the intermittent loss in ordinary use (sessions 89, 91) is resolved.
+- **Memory:** peak pressure 4,203,548,672 B, lowest MemFree 2,443,522,048 B: within the 5.0/5.4 GB alpha limits, and the chat gate never closed. Face, chat and scene without the live view, after the drop; the full alpha configuration is still unmeasured.
+- **Unchanged:** F2 unvalidated and face `PENDING_VALIDATION`; chat not admitted; the combined run still needs a validated F2. Also thresholds, guard limits, the launch floor, criteria, enrollment, and every sealed session and package.
+- **Release documents:** the alpha notes, the trace, the README and the alpha.1 notes' pointer brought up to this session. Statements made out of date by sessions 96-103 are corrected there: where the code last changed, the latest test results, the review.
+- **Next (the maintainer):** decide whether session 65's grounding check (G) may run in a re-pinned integration package (session 104 log, section 8).
+
+Session 103's summary: **On the maintainer's approval of session 102's exception: the validation-only face + VLM chat integration run implemented (`aaca744`), packaged as `~/sentinel-prep/fci-aaca744/` (manifest SHA-256 `8857eeb4ce69fc433716d2730f572662342b70821a2cba06a0c5319e7e8f18a4`, 18 files) and dry-run checked; not launched (session 103 log).**
 - **The approval (the maintainer):** implementation, tests, package preparation and dry runs only, no live session yet. The terms:
   - normal face and chat admission and F2's unvalidated status unchanged; thresholds, guard limits, the original enrollment (a working copy) and cleanup preserved;
   - actual chat requests and responses while face and the VLM run together, with `face_chat` readiness verified before T0;
@@ -633,6 +656,9 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 ## Next concrete task
 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
+   - **Done (session 104):** the integration session `fci-20261020T110028Z` recorded read only: all four parts passed, validation only, under the page-cache-drop condition; the 14 unavailable and 5 cancelled questions explained (expected scheduling and shutdown; no defect demonstrated); the release documents brought up to date (session 104 log).
+   - **Maintainer (session 104):** decide section 8's proposal: G (session 65's grounding check) in a re-pinned integration package, or not.
+   - **Claude, next (session 104):** on approval only, G's four load-tool slots, their private sealed record and DESCRIPTIVE reading lines with portable tests, then the re-pinned package and its dry run; nothing launched.
    - **Done (session 103):** on the maintainer's approval, the validation-only face + chat integration run implemented (`aaca744`), packaged (`~/sentinel-prep/fci-aaca744/`, manifest `8857eeb4...`) and dry-run checked; the track-expiry boundary recorded as unresolved (session 103 log).
    - **Maintainer (session 103):** verify the two manifests; then, after a reboot, the fci session from i-R (about 28-32 min); send back the folder's name and `iv/check.txt`.
    - **Claude, next (session 103):** record the returned session read only.
@@ -995,6 +1021,156 @@ Notes on partial and in-progress rows:
   - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Session 50: Step 5 ran it on the device (camera, detector, scene server, Telegram; see the session 50 log). Not done: the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 104 log (Claude, 2026-10-20): the validation-only face + VLM chat integration session `fci-20261020T110028Z` recorded read only: all four parts passed (an eight-minute run under the page-cache-drop condition, reported apart); its unavailable and cancelled questions explained; the release documents brought up to date; G in a re-pinned integration package proposed; nothing launched, changed in code or pushed
+
+From `dc94834` (clean; code as at `aaca744`), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`.
+
+1. **The request (the maintainer).**
+   - **Read:** the completed session `~/sentinel-runs/d1-checklist/fci-20261020T110028Z`. Verify the sealed manifest, then inspect the results without modifying the sealed evidence. Reported: all four integration sections passed, `IV_check_exit=0` and `IH_exit=0`.
+   - **Explain:** the 14 unavailable and five cancelled questions, including why four cancellations were attributed to scene preemption; distinguish expected scheduling behaviour from any demonstrated defect.
+   - **Update:** the project status and release documents with this eight-minute validation-only success and its preparation conditions. Preserve F2's unvalidated status and the current admission decisions; claim no answer correctness, recognition accuracy or alpha completion.
+   - **Recommend:** the smallest next test that advances the intended face-plus-chat alpha, addressing what remains untested about user-facing chat answers: one clear next step.
+   - **Do not:** launch another workload, change settings or thresholds, push, publish or start a cloud review.
+
+2. **Verification (read only; nothing written in the session folder or the preparation records).**
+   ```
+   cd ~/sentinel-runs/d1-checklist/fci-20261020T110028Z && sha256sum SHA256SUMS && sha256sum -c SHA256SUMS
+       # 6de7bb4ba31df165f4f611206895af7e222c4f8c8d5cbe3a4eced6c514f0ef1f; 26 files OK, exit 0
+   find . -type f | wc -l                                         # 27: the 26 listed and SHA256SUMS; nothing unlisted
+   cd ~/sentinel-prep/fci-aaca744 && sha256sum SHA256SUMS && sha256sum -c --quiet SHA256SUMS
+       # 8857eeb4...: the package as recorded in session 103, OK
+   cd ~/sentinel-runs/host-memory/hm-20261020T110813Z-prepared-fci-20261020t110028z && sha256sum SHA256SUMS && sha256sum -c SHA256SUMS
+       # 16ae802450724a5cf5bb1588d2cb8064bbe4c532cfbb947d8d179f9cb5db71ea (= IO_observation_manifest_sha256); 3 OK
+   ```
+   - **The records were read** with `python3 -I` from the session's scratch directory. Read: `iv/check.txt`, `iv/result.json`, `iv/chat-load.jsonl`, `iv/run.jsonl`, the three status captures, both provenance files, `decisions.txt`, `launch-memory-report.txt`, `camera-probe.json` (fixed fields only) and the account's answers.
+   - **The provenance:** `commit=dc94834…` (session 103's record, a documents-only descendant) with `pin_commit=aaca744…` and `checksums=verified` (i-B's 54 checksums). Also `decisions_sha256=dcab4260…`, typed `APPROVE aaca744 fci integration_before_f2 cache_drop`, and the prerequisite `trk-20261017T103831Z` with its manifest `1086137a…`.
+   - **Inside the seal:** `IV_verdict=complete`, `IV_exit=0`, `IV_check_exit=0`, `original_enrollment_unchanged=yes`, `working_copy_removed=yes`.
+   - **Reported only:** `IH_exit=0` is the maintainer's report: i-H prints it after the seal (`i-H.sh`, line 12). The display manager's state after i-H was not supplied.
+   - **The preparation records outside the seal:** `prep-fci-20261020T110028Z` (its `prep.txt`, the scan plan, the close log and i-O's check, unsealed by design) and the observation above.
+
+3. **The run and its preparation conditions** (from the sealed provenance, the launch-memory report and the preparation records).
+   - **Boot:** a fresh boot (`boot_id=19d789e8…`, booted 10:57:51 UTC = 16:27:51 IST). Decisions recorded 11:00:34 UTC; the session began 11:00:40, 2.8 min after boot.
+   - **Host preparation:**
+     - **i-C (11:01 UTC):** the scan found one target, the VNC desktop session's leader. One SIGTERM; it exited in 0.5 s; no package operation was running.
+     - **i-P:** stopped the display manager (`display_manager_before=active`, then `inactive`). No development, VS Code server, v1 or llama-server process; ollama inactive.
+     - **The camera probe:** passed on its first attempt (10.1 s; 139 frames captured at 640×480; no failed-attempt file).
+     - **i-F:** the working copy of the original enrollment, and the configuration validated.
+   - **Memory preparation (D103, the changed test condition):**
+     - **i-M:** one page-cache drop (attempt 1, 11:07:47 UTC): MemFree +943,415,296 B, Cached −844,525,568 B.
+     - **i-O's prepared record (11:08:14 UTC):** AnonPages 209.5 MB, MemFree 7,065.6 MB.
+     - **The launch check:** passed with MemFree 7,051,526,144 B, +1,481,691,136 B against the floor of 5,569,835,008 B, 54.5 s after the drop and 28.1 s after i-O. The floor rests on an earlier workload without chat and guarantees no headroom for this run.
+   - **i-V's answers and gates:** `framing_since_capture=none`, `lighting=daylight`, and the F1 gate passed (the accepted recheck of `face-20261007T215900Z`).
+   - **The run:**
+     - launched 11:08:42 UTC (16:38:42 IST); readiness `face_chat` met 81.29 s later (T0 ≈ 11:10:03 UTC);
+     - captures at T0+60, 240 and 465 s; the stop cue at T0+470 s; the guard's duration stop at T0+480.12 s;
+     - the runtime exited 5.84 s later with code 0 (11:18:09 UTC).
+   - **The configuration (unchanged from session 103's package):** `--scene --face --face-validation --chat --chat-validation`, production detection, D97 off, no live view, snapshots or zone. The load tool asked two fixed questions alternately every 6 s and kept no answer text.
+   - **The account (format 11, saved and locked before any result was shown):** stayed seated `yes`; worked as usual `yes`; looked at the camera on purpose `no`; other faces in view `no`. The operator's account, not a measurement.
+
+4. **The reading (`iv/check.txt`, four parts, each with its own verdict).**
+   - **Execution (23 judged items, all PASS):** supervision, readiness and the 480 s; the memory policy and its checkpoints; every post-load release returned 0; scene, face and chat at startup and at every capture; loopback-only listeners; no scene deadline missed or enrichment skipped; monitoring kept first (`signals_dropped` 0, `frames_failed` 0); identity records valid (none dropped); a clean shutdown including the face worker; every stdout line JSON (1,027); the account; no userinfo and all privacy counts 0. Processed rate at the captures 15.01, 14.72 and 14.22 fps (descriptive).
+   - **Chat completion (3 judged items, all PASS):**
+     - **The largest scene wait behind a question:** 1,502.5 ms (median 1,159.5 ms, n 61), within D80's 2,000 ms with D81's 1,500 ms grace.
+     - **Cancellation:** 4 questions ended for a scene job.
+     - **Answers:** 75 real answers, each naming its frame and ages.
+   - **Recognition behaviour (1 judged item, PASS):** face executed alongside: 442 results applied at the last capture, none failed, no worker error. Everything else is DESCRIPTIVE (section 6).
+   - **Memory (1 judged item, PASS):** steady and peak samples at most 4,203,548,672 B against 5,000,000,000 and 5,400,000,000 B (section 7).
+   - **The final line:** `alpha integration check: passed (validation-only face + chat integration run (session 103): not F2 and not the combined run; it assesses no recognition accuracy, retention or false acceptance; nothing is admitted or accepted)`.
+
+5. **The 14 unavailable and five cancelled questions: expected scheduling and shutdown behaviour; no defect demonstrated.**
+
+   The load tool's own records (`iv/chat-load.jsonl`: 94 questions, 47 short and 47 long) against the guard's clock (the same monotonic clock: readiness at 731.834 s):
+
+   | Asked, from T0 | Kind | Final state | The runtime's reason | Ended, from T0 (the runtime's `answer_ms` after acceptance) |
+   |---|---|---|---|---|
+   | −80.33 to −2.28 s (14) | 7 short, 7 long | unavailable, HTTP 503 | "the runtime is starting" | at once |
+   | +9.73 s | long | cancelled | "a scene job is waiting: monitoring comes first" | +12.18 s |
+   | +261.83 s | long | cancelled | the same | +263.46 s |
+   | +273.83 s | long | cancelled | the same | +275.92 s |
+   | +369.86 s | long | cancelled | the same | +373.37 s |
+   | +477.91 s | long | cancelled | "the runtime is stopping" | +480.64 s (the stop requested at +480.12 s) |
+
+   - **The 14 unavailable questions: before readiness, by design.**
+     - **Why they happened:** i-V starts `alpha_load.py chat` just before the launch, so that nothing runs under a deadline (D50). The tool asks from the moment the page first answers: here 651.50 s, 0.95 s after the guard's baseline sample. The status page answers a chat question with `CHAT_STARTING` (HTTP 503, "the runtime is starting"; `src/sentinel/status_page.py:229` and `:2394`) until the runtime is ready.
+     - **Why 14:** the models took 81.29 s to load, and 14 of the tool's 6 s slots fell in that time: 80.33 s from the first ask to readiness.
+     - **After T0:** 80 questions were asked; none was unavailable, busy, without a fresh frame or timed out.
+     - **The earlier checks:** the two chat-only checks had 7 each, with the same reason (`alpha-20261012T040450Z`, `alpha-20261013T084310Z`; there each also had one `no_fresh_frame` just after readiness, here none). The longer load here is consistent with the face model loading too; that is not measured separately.
+     - **Not judged:** the reading does not judge them. Its DESCRIPTIVE "chat load" line pools them with the in-run questions (long 35/5/7, short 40/7), which reads as if chat were unavailable during the run. That is a presentation limit of the reading, not a runtime defect; no change is made.
+   - **The four cancellations attributed to scene preemption: D77 and D81 working as documented.**
+     - **The mechanism:** a periodic scene job (every 4 s) that arrives while a chat question runs lets it run for at most `SIDE_GRACE_S` = 1.5 s from its arrival (D81, PROPOSED). Then `Analyzer._end_side` aborts it with `PREEMPTED`, "a scene job is waiting: monitoring comes first" (`src/sentinel/scene/analyzer.py:67`, `:374-398`). An enrichment job would abort it at once; a question that ends within the grace is left alone.
+     - **Why they are attributed to it:**
+       1. each cancelled question's own final reason is that text, which only `_end_side` passes;
+       2. the scene worker's counters at the last capture are consistent: `jobs_waited_for_side` 61 = `side_grace_started` 61 = `side_finished_in_grace` 57 + `side_preempted` 4, with `side_preempted_after_grace` 4 (all four through the grace's expiry, none by an enrichment job), and chat's own counter `cancelled` 4;
+       3. the largest wait of a scene job behind a question, 1,502.5 ms, is consistent with the grace plus an abort's time, and within D80's 2,000 ms.
+     - **Not shown:** no per-job record ties each cancellation to a particular scene job. `run.jsonl` has no scene-job lines, and the counters are cumulative, so the attribution rests on the reason texts and the counters, which agree.
+     - **Why long questions:** all four were long ones. Long answers took a median 3,563 ms (largest 5,255) against 2,163.5 ms (largest 3,989) for short ones. With a scene job every 4 s (median run about 2.44 s), a long answer more often outlasts a job's arrival plus the grace. 57 of the 61 questions a scene job waited for ended by themselves within the grace.
+     - **The earlier checks:** 9 and 5 such cancellations, with the live view (descriptive; other pins and days).
+   - **The fifth cancellation: the run's own stop.**
+     - **When:** asked at T0+477.91 s, after the 470 s stop cue. The cue is for the operator, and the load tool asks until the page is gone, by design. The question was still answering when the guard's duration stop came at T0+480.12 s.
+     - **How it ended:** `Analyzer.stop()` aborts a running side request with "the runtime is stopping" (`src/sentinel/scene/analyzer.py:305`); the question ended 0.52 s after the stop request.
+     - **Why the counters miss it:** it came after the last capture (T0+465.03 s), so the status counters there do not include it. There, 77 accepted = 73 answered + 4 cancelled; the tool's records add 2 answers (asked at T0+465.91 and +471.91 s) and this cancellation.
+   - **Defects:** none demonstrated by these questions. Every refusal and cancellation carries the runtime's documented reason; every count reconciles between the load records, the runtime's counters and the reading. Monitoring was never delayed beyond the declared bound.
+
+6. **Recognition behaviour, described only (the runtime's decisions; never accuracy, retention, false acceptance or F2).**
+   - **Results:** the identity records hold 456 applied results (442 at the last capture), none failed, from T0+2.4 s to T0+478.7 s. One person track (track 1) on all 457 ticks.
+   - **Faces and votes:** 258 results had a face, each assigned to the person and voting `match`; 198 had no face.
+   - **Transitions:** `unresolved → known` once, at T0+7.6 s ("2 consistent matches"). Then 95 `known → known` basis changes (47 to fresh, 48 to retained). No clear and no UNKNOWN or UNCERTAIN transition through the last record.
+   - **Processing:** p50 975.5 ms, p95 1,026.1 ms. For comparison only, 972.8 and 1,031.3 ms in `f2c-20261018T155424Z` without chat (another pin, day and light).
+   - **What this does not show:** one session in daylight, with the account saying nobody else was in view. It does not show that recognition is accurate, that it retains or clears correctly, or that it would reject another person (no non-enrolled data exists). Nor does it show that the intermittent KNOWN loss seen in ordinary use (sessions 89 and 91: single non-matching votes, vote expiry when no face is found) is resolved. Those were other sessions and conditions, and no comparison here is causal.
+
+7. **Memory (the guard's samples; one run under the page-cache-drop condition, reported apart, never pooled).**
+   - **The run's figures:** peak pressure 4,203,548,672 B (the steady maximum the same; 2,821 samples, 1,820 steady from 120 s after readiness); lowest MemFree 2,443,522,048 B (+1,369,780,224 B over the guard's floor); lowest MemAvailable 3,786,457,088 B. Largest sampling gap 0.204 s.
+   - **The chat gate never closed:** open at every capture, 0 misses, its peak 4.20 GB below its 4.7 GB stop-new limit.
+   - **Against session 102's estimate (4.25-4.75 GB peak, 1.8-2.0 GB lowest MemFree):** both figures fell on the favourable side. That is one run; the estimate is not revised from it.
+   - **Not measured:** the full alpha configuration (face, chat, scene, the live view and snapshots together), behaviour without the drop, and anything beyond 8 minutes.
+
+8. **What this establishes, what remains untested about user-facing chat answers, and the recommended next test.**
+   - **Established, within this run only:** on this device, at `aaca744`, after one page-cache drop, production face recognition (the original enrollment through a working copy) and the VLM serving both scene analysis and chat ran together for 8 minutes. Within the guard's and the alpha's memory limits: chat answered real questions bound to identified frames and yielded to scene jobs within the declared bound; scene deadlines held; face results kept being applied; monitoring stayed first.
+   - **Not established:** F2, recognition accuracy, retention or false acceptance; "validated together" (the combined run still needs a validated F2); chat's admission; any answer's correctness; stability beyond 8 minutes or without the drop; the full alpha configuration; other light, framing or people. The alpha is not complete.
+   - **Untested about user-facing chat answers:**
+     1. **Content.** No sealed run has ever kept an answer's text: `alpha_load` records lengths, times and frames only, by design, and `alpha_check` judges form only (frame named, ages, historical mark, length). So it is untested whether answers describe the frame they name, assert absent objects, invent unreadable details or claim knowledge beyond one picture, with or without face. Also untested: whether an answer keeps chat's rule that it cannot identify anyone while face recognizes the person. The only content evidence is session 65's unverified operator report.
+     2. **What the operator sees.** Here the questions came from the load tool over HTTP with the live view off. The dashboard's chat panel beside the recognition panel has not been observed with face running. Two documented limits then shape every answer the operator reads:
+        - **The historical mark:** 59 of the 75 answers were marked historical (their frame was 2,000 ms or older when answered: all 35 long, 24 of the 40 short).
+        - **The token limit:** 29 of the 35 long answers were cut short at the 120-token limit (`CHAT_MAX_TOKENS`); no short one was.
+
+        These are the existing limits working as documented, not defects; how they read to a user is untested.
+     3. **Breadth.** Only two fixed questions in one scene, light and session; nothing in the operator's own words.
+   - **Recommended next test (one step): G in a re-pinned integration run.** One more `fci` session, identical to `fci-20261020T110028Z` except for two things:
+     - four of the load tool's slots ask session 65's G1-G4 instead of that slot's fixed question, in fixed wording, each once, with no earlier exchange;
+     - their answers' text is kept only in G's own file in the sealed private folder (outside Git, 0700, covered by the privacy counts).
+
+     The rest of G comes unchanged from session 65's design (its log, section 5):
+     - **The staging, declared before the launch:** a water bottle at the seat, and no cosmetic products in the room, checked in the room itself.
+     - **The reading:** G's predeclared categories as DESCRIPTIVE lines, judged after the run against the staging.
+     - **The rest of the run:** the four integration parts, their items, the configuration and every limit.
+
+     Proposed slots: the first questions asked at or after T0+60, 150, 240 and 330 s. A G question that is cancelled or refused is recorded as such and never re-asked; the run is never extended.
+     - **Why this one:**
+       - It changes one thing in a configuration that has just passed on the device.
+       - G is the only designed instrument for answer content, with its reading predeclared.
+       - It needs neither F2 nor a browser, and it keeps every answer's text private.
+     - **What it can establish:** whether, at that pin and in that scene, these four answers asserted an absent object, invented a detail the picture cannot show or claimed knowledge of another moment, each tied to its frame, while face recognition ran. Any answer that names or guesses who someone is would be a finding against chat's rule.
+     - **What it cannot:**
+       - a rate (four correlated answers);
+       - a failure's cause (the model, the 480×360 picture, the prompt or the token limit);
+       - other scenes, the dashboard's presentation, the operator's own wording, or admission.
+
+       A non-reproduction means "not reproduced under these conditions".
+     - **The decision it needs (the maintainer's):** G was designed for the combined package, which runs after a validated F2. Running it in the validation-only integration run extends session 103's exception; F2's status, the combined run's prerequisite and admission stay unchanged. A reply that would let Claude implement: `APPROVE G in fci: session 65's G1-G4, staging and reading, slots as proposed in session 104`, or the terms changed.
+     - **Its cost:**
+       - **The code change, and so a new pin:** the load tool's G slots and private file, the evidence profile and the privacy counts covering that file, the DESCRIPTIVE reading lines, and portable tests that the regular records stay text-free. `fci-aaca744`'s i-B then refuses at the new head, and a note goes beside it.
+       - **Optional, presentation only:** the reading's "chat load" line could count questions before readiness apart, with its numbers unchanged.
+       - **The operator:** about 30 min as before, plus the staging.
+     - **Left after it:** the dashboard's presentation (the live view on, the operator reading answers beside the recognition panel) remains for the combined run or a separate decision.
+
+9. **Release documents.** `docs/ALPHA_CANDIDATE_NOTES.md`, `docs/REQUIREMENTS_TRACE.md` (the as-of lines, the sources, the V2-25 and D-3 rows and the memory gate), `README.md` (the callout, two table rows, the CI note) and the alpha.1 release notes' dated pointer now carry this run with its conditions and limits.
+   - **Corrected where sessions 96-103 had made them false:** the code's last change (`aaca744`, not `f547d4b`); the latest local test results (2,761 passed, 2 skipped at `aaca744` under Python 3.10.14 and 3.12.3, session 103; not CI); and the review (scope A and its follow-up ran, sessions 96-101; the other scopes have not).
+   - **Unchanged:** no class changed in the trace, so its section 5 counts stand; the wiki is not updated (it needs a push).
+
+10. **Not changed.** No code, test, package, decision file, sealed session, preparation record, enrollment, admission, threshold, guard limit, launch floor or criterion. No suite was run (documents only). Nothing launched, pushed or published; no review started.
+
+**Next (the maintainer):** decide section 8: approve G in a re-pinned integration package (with the terms as proposed or changed), or not. Without it, the next step for the face-plus-chat goal remains a validated F2.
 
 ## Session 103 log (Claude, 2026-10-20): the validation-only face + VLM chat integration run, on the maintainer's approval: implemented (`aaca744`), packaged (`fci-aaca744`) and dry-run checked; the track-expiry boundary recorded as unresolved; not launched; nothing pushed
 

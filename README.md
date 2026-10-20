@@ -30,10 +30,12 @@ face recognition and scene analysis under validation*
 > chat with the vision-language model. Neither is done:
 > - face recognition's formal validation (F2) has never passed, and there is no false-acceptance data;
 > - chat is not admitted;
-> - the two have never run together.
+> - the two have run together only once, in an eight-minute validation-only integration check (20 October). It
+>   passed, but it judged no answer's correctness or recognition accuracy, it is not the combined validation (which
+>   still needs a passing F2), and it admits nothing.
 >
 > Face recognition is shown only as an experimental demonstration in guarded validation runs. Later work (validation
-> diagnostics and their device sessions, through 19 October) is unreleased: the version is still `2.0.0a1`. See the
+> diagnostics and their device sessions, through 20 October) is unreleased: the version is still `2.0.0a1`. See the
 > [alpha notes](docs/ALPHA_CANDIDATE_NOTES.md).
 >
 > - **Known limitations:** [Status and limitations](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Status-and-limitations)
@@ -107,8 +109,8 @@ its configuration checks and its tests run on any machine.
 | Validation-only diagnostics (tracking, landmarks, a launch-memory check for operator packages) | yes | each ran in device sessions, descriptive only | not features; guarded validation runs only |
 | Identity continuity rule (proposed) | yes | ran in one session; not validated | **no** (validation runs only) |
 | Feature controls (pause and resume lanes) | yes | partly exercised; not validated | opt-in flag |
-| Chat about the live frame (local VLM) | yes | runtime checks passed in two earlier runs | **no**: admission, factual accuracy and combined face/VLM validation pending |
-| Scene analysis (local VLM) | yes | earlier scene checks; not with face recognition | needs an admitted adapter |
+| Chat about the live frame (local VLM) | yes | runtime checks passed in two earlier runs, and with face recognition in one validation-only integration run (answers judged for form only) | **no**: admission, factual accuracy and combined face/VLM validation pending |
+| Scene analysis (local VLM) | yes | earlier scene checks; loaded beside face recognition in its validation runs and the integration run, not validated together | needs an admitted adapter |
 
 The [known limitations](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Status-and-limitations) list
 everything still unresolved; none of it is waived by this pre-release.
@@ -118,7 +120,8 @@ everything still unresolved; none of it is waived by this pre-release.
 ### Portable development (CI runs on every push)
 
 Python 3.10 or newer. No camera, GPU or model is needed. The unreleased commits after `65df7f3` have not been pushed,
-so they have not run in CI; the same three steps passed locally on Python 3.12 on the device at `df8d9bc` (not CI).
+so they have not run in CI; the portable suite and the configuration check passed locally on Python 3.10 and 3.12 on
+the device at `aaca744` (not CI).
 
 ```bash
 git clone --branch v2.0.0-alpha.1 https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance.git

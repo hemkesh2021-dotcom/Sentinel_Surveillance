@@ -8,13 +8,17 @@ carries the pre-release; the tag is `v2.0.0-alpha.1` and the package version `2.
 [`RELEASE_NOTES_v2.0.0-alpha.1.md`](RELEASE_NOTES_v2.0.0-alpha.1.md)). `docs/IMPLEMENTATION_STATUS.md` is the source of
 every result named here, by session; where the two differ, the status record governs.
 
-**Since v2.0.0-alpha.1 (sessions 75–93; these notes updated 2026-10-19, session 94).**
+**Since v2.0.0-alpha.1 (sessions 75–104; these notes updated 2026-10-20, session 104).**
 - **Where the work is:** the local `v2-ui-refresh`, more than 30 commits past the tag. The code last changed at
-  `f547d4b` (session 90); later commits are records and documents.
+  `aaca744` (session 103: the face + chat integration run's readiness and reading, operator tooling only), after
+  review scope A's fixes (sessions 96–101); later commits are records and documents.
 - **Not published or released:** nothing pushed after `65df7f3` (14 October, a README change after the tag); the
   package version is still `2.0.0a1`; no new pre-release decided.
 - **Unchanged since the tag:** face recognition stays `PENDING_VALIDATION`; chat is not admitted; no threshold,
-  gallery, identity rule, admission or memory-guard limit has changed.
+  gallery, identity rule, admission or memory-guard limit has changed. The review fixes of sessions 96–101 corrected
+  defects: redaction, gallery and audit consistency, purge, enrollment errors, and face votes counted only within a
+  track's current life and recognition's current activation, as the identity rules already stated (session 97). None
+  changed a threshold, a criterion or admission.
 
 **The alpha's goal is not met.** On 12 October the maintainer set the October 20 alpha's centre as working face
 recognition and real local chat with the vision-language model, as one plan. Neither part is done:
@@ -22,17 +26,21 @@ recognition and real local chat with the vision-language model, as one plan. Nei
   and two not validated;
 - there is no false-acceptance data;
 - chat is not admitted;
-- face recognition and the VLM have never run together.
+- face recognition and the VLM have run together only once, in a validation-only integration run
+  (`fci-20261020T110028Z`, 20 October, session 104). It passed, but it is not the combined run, which still needs a
+  validated F2. It judged no answer's correctness and no recognition accuracy, and it admits nothing.
 
 Under the recorded readiness rule, face is shown only as the experimental demonstration until an F2 actually validates.
 
 **Readiness of the unreleased candidate (session 93): not ready to call the alpha complete.** No release-blocking code
-defect is established: none is recorded open, and an independent review is still to come. The blocking items:
-1. the release documents, which this revision brings up to session 93;
-2. no CI run on the unpushed commits (the last recorded CI result is at `b33c2f3`). A local Python 3.12 run of the
-   portable checks passed at `df8d9bc` (session 95): local validation on the device, not CI;
+defect is established: none is recorded open. Review scope A (identity) and a follow-up review of its fixes ran
+(sessions 96–101: the findings fixed, two deferred with their reasons); the other proposed scopes have not run. The
+blocking items:
+1. the release documents, which this revision brings up to session 104;
+2. no CI run on the unpushed commits (the last recorded CI result is at `b33c2f3`). The portable suite passed locally
+   at `aaca744` under Python 3.10.14 and 3.12.3 (session 103): local validation on the device, not CI;
 3. the alpha goal above, a decision gate rather than a defect;
-4. the full alpha configuration's memory, still unmeasured.
+4. the full alpha configuration's memory, still unmeasured (the integration run had no live view or snapshots).
 
 Device: one Jetson Orin Nano (JetPack 6, L4T 36.4.7) with one camera, reached from a Mac over SSH. Portable tests run
 on any machine without a camera, GPU or model; browser tests use headless Chromium when one is installed.
@@ -77,9 +85,11 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
   - **The proposed identity continuity rule (D97) and the feature controls (D99), not fully validated on the device.**
     The rule ran in one device session without changing any vote; the controls' face session ran with its switch
     items not exercised, and their scene session has not run.
-  - **Chat: its earlier runtime checks passed (two device runs); admission, factual accuracy and combined face/VLM
-    validation remain pending** (one unverified operator report of a wrong answer). Chat is not admitted.
-  - **Face recognition and the scene model (VLM) together: unvalidated.** No combined run has taken place.
+  - **Chat: its runtime checks passed (two chat device runs, and one validation-only integration run with face
+    recognition); admission, factual accuracy and combined face/VLM validation remain pending.** No run has kept or
+    read an answer's text, and there is one unverified operator report of a wrong answer. Chat is not admitted.
+  - **Face recognition and the scene model (VLM) together: unvalidated.** One validation-only integration run passed
+    its execution, chat-completion, face-execution and memory items (session 104); no combined run has taken place.
 
 ## What has been shown on the device (each within its own bounded scope)
 
@@ -94,7 +104,8 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
 | Ten-minute tracking diagnostic (validation only, never an F2 attempt) | `trk-20261017T103831Z` (session 84): execution complete; one tracker number on the seated person through a face-hidden hold; the identity retained by its 30 s rule, then unresolved | One session, daylight; descriptive; a 1.9 s input stall cleared the identity once (re-earned in 3 s) |
 | F2 on the normal path after a one-time page-cache drop (D103, a changed test condition, reported apart) | `f2c-20261018T155424Z` (session 88): completed, **not validated** (the account's `other_faces_in_view` answer `unknown`; A NOT_EXERCISED: one non-matching vote just after the 4:00 cue ended KNOWN). The attempt before it, `f2n-20261018T104038Z` (session 86), was stopped by the memory guard before any cue | One session, under lamps; K1 and K2 passed but unstable (7 of 62 and 6 of 58 votes did not match); **face recognition stays pending validation** |
 | Landmark diagnostic in ordinary use (validation only, never an F2 attempt) | `lmk-20261019T105756Z` (session 91): execution complete; its predeclared outcome **inconclusive** (39 usable evaluation votes against 100 required, no misses among them, the reference band unstable); kept as the result, never extended or repeated | One session, daylight, after a one-time page-cache drop (reported apart); landmark numbers are proxies, never angles; the recognition figures above come from its identity records |
-| Advisory chat about the live frame, answered by the local scene model | Two passing device runs: `alpha-20261012T040450Z` (`f6ced5e`) and `alpha-20261013T084310Z` (`c3a37f0`), runtime and browser results | **Chat is not admitted.** Answers' accuracy is not evaluated (one unverified operator report of a wrong answer); never with face recognition running |
+| Advisory chat about the live frame, answered by the local scene model | Two passing device runs: `alpha-20261012T040450Z` (`f6ced5e`) and `alpha-20261013T084310Z` (`c3a37f0`), runtime and browser results | **Chat is not admitted.** Answers' accuracy is not evaluated (one unverified operator report of a wrong answer); with face recognition running only in the integration run below |
+| Face recognition and chat with the VLM together (validation only; never F2 or the combined run) | `fci-20261020T110028Z` (session 104): all four parts passed. Execution; chat completion (75 answers to the load tool's two fixed questions, 4 ended by scene jobs after the 1.5 s grace, the largest scene wait 1,502.5 ms); face executed alongside (442 results applied, none failed); memory (peak pressure 4,203,548,672 B, lowest MemFree 2,443,522,048 B) | Eight minutes, one session, daylight, after a one-time page-cache drop (reported apart); no live view or snapshots; answers judged for form only (their text never kept); recognition described, not judged; **face recognition stays pending validation and chat is not admitted** |
 
 ## Implemented and portable-tested, not validated on the device
 
@@ -117,7 +128,8 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
   preferences kept in the browser only (D100). Their two-session operator check `features`: the face session ran with
   its switch items not exercised (session 69); the scene session has not run.
 - Chat cancellation, the memory-pressure response and the scene-job grace (D77, D81); the combined face-and-chat
-  reading (D80) and a grounding check (G, designed for the combined package, not implemented).
+  reading (D80) and a grounding check (G, designed for the combined package, not implemented; session 104 proposes it
+  for a re-pinned integration run).
 - **Validation-only diagnostics and operator tooling since the tag:**
   - the tracking diagnostic (`--tracking-diagnostic`, sessions 79–81);
   - F2's corrected retention reading (session 85);
@@ -125,7 +137,9 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
     drop and an empirical launch floor with no reserve;
   - the landmark diagnostic (`--face-landmark-diagnostic`, session 90): derived landmark proxies of the native-scale
     face, associated one to one with the vote's own frame and person, read with a predeclared, association-only
-    analysis.
+    analysis;
+  - the face + chat integration run's readiness (`--require-ready face_chat`) and reading (`alpha_check.py
+    integration`, session 103), which reports execution, chat completion, recognition behaviour and memory apart.
 
   None changes production detection, votes, thresholds, enrollment or admission.
 - **PROPOSED, not implemented (session 92):** a complete-coverage variant of the existing shadow comparison (D87).
@@ -202,9 +216,13 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
 
    No detection, threshold, identity rule, enrollment or admission changed. Face remains the experimental
    demonstration until an F2 actually validates.
-2. Chat: its earlier runtime checks passed; admission (operator-run resource and interference checks; the maintainer's
-   decision) and factual accuracy (the grounding check G is designed, not implemented) remain pending.
-3. Face and chat (the VLM) together: no combined run yet.
+2. Chat: its runtime checks passed; admission (operator-run resource and interference checks; the maintainer's
+   decision) and factual accuracy (the grounding check G is designed, not implemented) remain pending. The integration
+   run judged answers' form only; no run has kept an answer's text.
+3. Face and chat (the VLM) together: one validation-only integration run passed (`fci-20261020T110028Z`, session 104:
+   eight minutes, after a one-time page-cache drop, no live view). The combined run still needs a validated F2.
+   Untested: answer content, the dashboard's presentation of answers with face running, and the full alpha
+   configuration.
 4. The feature controls on the device and in Safari (`features`, two sessions: the face session ran once with its switch
    items not exercised, session 69; the scene session pending), departure and return on the dashboard, and resource
    use with face and the live view together (the dashboard check ran; session 68).
@@ -222,12 +240,15 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
      4,389,052,416 B (face, the scene model loaded, no chat or live view).
    - **The floor's reference exceeded:** in the second run, one unattributed 11 s transient took consumption from
      launch 221 MB past the launch floor's reference run. The floor carries no reserve.
+   - **Face, chat and the scene model together (session 104):** after the one-time drop and the launch check, one
+     eight-minute integration run had peak pressure 4,203,548,672 B and lowest MemFree 2,443,522,048 B, within the
+     limits; it had no live view or snapshots, so the full alpha configuration is still unmeasured.
 8. Release readiness (session 93):
-   - **CI:** no CI run on the unreleased commits. Local validation only: Python 3.12.3 at `df8d9bc` passed the
-     portable workflow's three steps on the device (session 95), which does not stand in for CI.
-   - **Review:** an independent code review is still to come. Six review scopes are proposed; no single comparison
-     base fits the review tool's size limit without omitting critical earlier work.
-   - **Release documents:** brought up to session 93 in this revision.
+   - **CI:** no CI run on the unreleased commits. Local validation only: the portable suite passed at `aaca744` under
+     Python 3.10.14 and 3.12.3 on the device (2,761 passed, 2 skipped; session 103), which does not stand in for CI.
+   - **Review:** scope A (identity) of the six proposed scopes ran, with a follow-up review of its fixes (sessions
+     96–101: the findings fixed, two deferred with their reasons); scopes B–F have not run.
+   - **Release documents:** brought up to session 104 in this revision.
 7. Not started for the alpha: a two-hour soak (V2-24), real API, sessions and screens (V2-17, V2-18), clips (V2-21).
 
 ## Data and privacy in this repository
@@ -251,13 +272,11 @@ sentinel config validate config/default.yaml
 ```
 
 **Latest recorded results:**
-- the full portable suite at `f547d4b` (the unreleased code): 2,578 passed and 2 skipped (`torch`, `cv2` absent), on
-  Python 3.10 on the device (session 90);
-- local validation on Python 3.12.3 at `df8d9bc` (session 95; not CI), following `.github/workflows/v2-portable.yml`
-  in a new isolated environment on the device (aarch64):
-  - the editable install with the pinned dependencies;
-  - 2,578 passed, 0 failed and 2 skipped (`torch`, `cv2` absent), with warnings as errors;
-  - `config/default.yaml` validated;
+- the full portable suite at `aaca744` (the unreleased code): 2,761 passed, 0 failed and 2 skipped (`cv2`, `torch`
+  absent), under the device's Python 3.10.14 `.venv` and then the isolated Python 3.12.3 environment, with
+  `config/default.yaml` valid under both (session 103; local, not CI);
+- the isolated 3.12.3 environment was set up in session 95 following `.github/workflows/v2-portable.yml` (the editable
+  install with the pinned dependencies, warnings as errors; 2,578 passed at `df8d9bc` then);
 - the last recorded CI result: at `b33c2f3`, on Python 3.10 and 3.12;
 - not covered since:
   - CI itself on either Python (GitHub's x86_64 runners; earlier 3.12-only CI failures were timing-dependent tests);
