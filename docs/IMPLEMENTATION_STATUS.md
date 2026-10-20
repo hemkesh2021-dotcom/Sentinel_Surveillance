@@ -1,6 +1,34 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-20, session 102 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **A short face-recognition + VLM chat integration test: not permitted under the recorded decisions while F2 is unvalidated; a minimal validation-only path PROPOSED with the exact decision it needs; nothing implemented, packaged or launched (session 102 log).**
+Last updated 2026-10-20, session 103 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **On the maintainer's approval of session 102's exception: the validation-only face + VLM chat integration run implemented (`aaca744`), packaged as `~/sentinel-prep/fci-aaca744/` (manifest SHA-256 `8857eeb4ce69fc433716d2730f572662342b70821a2cba06a0c5319e7e8f18a4`, 18 files) and dry-run checked; not launched (session 103 log).**
+- **The approval (the maintainer):** implementation, tests, package preparation and dry runs only, no live session yet. The terms:
+  - normal face and chat admission and F2's unvalidated status unchanged; thresholds, guard limits, the original enrollment (a working copy) and cleanup preserved;
+  - actual chat requests and responses while face and the VLM run together, with `face_chat` readiness verified before T0;
+  - execution, chat completion, recognition behaviour and memory reported separately, never implying accuracy or F2;
+  - the cache drop and the existing launch floor kept, noted as giving no guaranteed headroom;
+  - the track-expiry boundary documented as unresolved.
+- **The code (`aaca744`):**
+  - **Readiness:** `step5_guard --require-ready face_chat`, with `guard_verdict` and `face_evidence` updated.
+  - **The reading:** `alpha_check.py integration`, in four separately reported parts; only "face executed alongside" is judged for recognition.
+  - **The account:** `face_account` format 11.
+  - **Tests:** 15 new cases; the real-runtime run builder moved to `tests/support/chat_runs.py`. No runtime or admission change.
+- **Tests at `aaca744`:** the full portable suite gave 2,761 passed, 2 skipped (`cv2`, `torch`), 0 failed, under the existing Python 3.10.14 `.venv` and then the isolated 3.12.3 environment; `config/default.yaml` valid under both. Local runs, not CI.
+- **The package:** 12 blocks, i-R through i-H, from landmarks-f547d4b's.
+  - **The run:** 8 minutes of `--scene --face --face-validation --chat --chat-validation`, with alpha_load asking every 6 s.
+  - **Not added:** no live view, snapshots or zone.
+  - **Memory:** D103's drop and floor (5,569,835,008 B, with its no-headroom note); the guard's limits unchanged.
+- **The dry run:** 37 cases plus R7 rerun, in private namespaces with stand-ins.
+  - **The whole session:** passed all four parts.
+  - **A failing face worker:** failed recognition behaviour alone.
+  - **Chat not available:** refused before T0.
+  - **Every failure path:** the intended next step.
+  - **Every session:** sealed, one drop at most, no synthetic secret.
+  - **First attempt:** refused at i-B for the session's own uncommitted correction, as designed.
+- **Corrected:** session 102's record had written the exact track-expiry boundary off as unreachable. It is unresolved (`08e0e27`).
+- **Not changed:** admission, acceptance, thresholds, guard limits, F2 criteria, real enrollment data and the review copies. Nothing pushed, published or launched; no review started.
+- **Next (the maintainer):** verify the two manifests (session 103 log, section 7), then after a reboot run the session from i-R (about 28-32 min).
+
+Session 102's summary: **A short face-recognition + VLM chat integration test: not permitted under the recorded decisions while F2 is unvalidated; a minimal validation-only path PROPOSED with the exact decision it needs; nothing implemented, packaged or launched (session 102 log).**
 - **The code permits it:**
   - `face_admission_problem` (`src/sentinel/adapters.py:465`) lets a `--face-validation` run use the `PENDING_VALIDATION` face admission.
   - `DemoRuntime` lets chat reach the scene model when `chat_validation and chat_admission.validation_allowed` (`src/sentinel/demo_runtime.py:403`; `CHAT_ADMISSION.validation_allowed=True`, `scene/chat.py:101-106`).
@@ -605,6 +633,9 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 ## Next concrete task
 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
+   - **Done (session 103):** on the maintainer's approval, the validation-only face + chat integration run implemented (`aaca744`), packaged (`~/sentinel-prep/fci-aaca744/`, manifest `8857eeb4...`) and dry-run checked; the track-expiry boundary recorded as unresolved (session 103 log).
+   - **Maintainer (session 103):** verify the two manifests; then, after a reboot, the fci session from i-R (about 28-32 min); send back the folder's name and `iv/check.txt`.
+   - **Claude, next (session 103):** record the returned session read only.
    - **Done (session 102):** a short face + VLM chat integration test assessed: the code permits a validation run with both, the recorded decisions do not while F2 is unvalidated (`combined=not_in_this_package`: "it needs its own package after an F2 validates"); the validation-only `fci` path PROPOSED with its decision (session 102 log).
    - **Maintainer (session 102):** approve the `fci` exception and its four terms (session 102 log, section 6), change them, or keep the rule.
    - **Claude, next (session 102):** on approval only, the reading, the readiness, their tests and the pinned, dry-run package.
@@ -964,6 +995,144 @@ Notes on partial and in-progress rows:
   - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Session 50: Step 5 ran it on the device (camera, detector, scene server, Telegram; see the session 50 log). Not done: the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 103 log (Claude, 2026-10-20): the validation-only face + VLM chat integration run, on the maintainer's approval: implemented (`aaca744`), packaged (`fci-aaca744`) and dry-run checked; the track-expiry boundary recorded as unresolved; not launched; nothing pushed
+
+From `c1c4da9` (clean), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`.
+
+1. **The approval (the maintainer, after session 102).**
+   - **What it allows:** preparing an eight-minute, validation-only face + VLM chat integration test before F2 validates, as an exception to `combined=not_in_this_package`. It covers implementation, tests, package preparation and dry runs only; the live session is not to be launched yet.
+   - **Unchanged:** normal face and chat admission, F2's unvalidated status, thresholds, guard limits, the original enrollment (use a working copy) and the cleanup requirements.
+   - **The run:** it must exercise actual chat requests and responses while face recognition and the VLM run together. Verify `face_chat` readiness before the timed session starts.
+   - **The reading:** report execution, chat completion, recognition behaviour and memory separately; an integration pass must not imply recognition accuracy or F2 acceptance.
+   - **Memory:** keep the one-time cache drop and the existing launch floor, noting that the floor rests on earlier workloads and guarantees no headroom for the combined run.
+   - **The boundary:** document the exact track-expiry boundary as unresolved, not dismissed as impossible because it needs an exact timestamp.
+   - **Before operator execution:** present the configuration, timed actions, criteria, stop conditions, cleanup and the verified manifest.
+   - **Do not:** push, publish or start another review.
+
+2. **The code (`aaca744`; operator tooling and tests only).**
+   - **`step5_guard --require-ready face_chat`:** the starting line must show:
+     - no detector, face or scene problem;
+     - face exactly `{"validation_run": true, "identities_enrolled": 1}` (the normal path: no candidate, comparison, experiment, continuity rule or diagnostic marker);
+     - the scene server ready (17/17 layers, vision on the GPU);
+     - chat `available` with exactly its validation-run reason (paused, unavailable or admitted chat is not this run).
+
+     Otherwise the runtime is stopped at once and no cue is printed. `guard_verdict` accepts the value, and `face_evidence` declares it: without that, the real privacy counts found `result.json` nonconforming, which a test now ties.
+   - **`alpha_check.py integration RUN_DIR`:** four separately reported parts, each with its own verdict line, then `alpha integration check: passed|not passed` with the scope (not F2, not the combined run, no accuracy, nothing admitted):
+     - **Execution, 23 items:** supervision, the 480 s and the `face_chat` readiness, the memory policy and startup, face, scene and chat at startup and every capture, listeners, scene deadlines, monitoring first, the identity records, a clean stop with the face worker, the format-11 account, no userinfo, and the privacy counts.
+     - **Chat completion, 3 items:** the chat-induced delay against D80's 2000 ms with D81's 1500 ms grace, cancellation, and real answers.
+     - **Recognition behaviour, 1 item:** face executed alongside (at least 30 applied results, D63's minimum, reused; no failed result; no worker error). Everything else is descriptive: results by outcome, votes, the worker's counters and time, transitions (identity clears as `cleared`) and the account's answers.
+     - **Memory, 1 item:** the existing 5.0 and 5.4 GB alpha limits, with the floor's basis described.
+
+     `read_chat` was factored into helpers; its output is identical, compared line by line on a run made by the real runtime.
+   - **`face_account` format 11:** format 6's four questions under this run's own header.
+   - **Tests:** 15 new cases (14 in `test_integration_check.py`, 1 in `test_step5_guard.py`); the builder moved to `tests/support/chat_runs.py`, with a face mode.
+     - **Readiness:** checked against `assemble()`'s real face fields and the runtime's real chat entry; a paused chat is refused before T0.
+     - **Each part failing alone on its own evidence:** a failing face worker, memory over the limit, no chat load, and the decided configuration and account.
+     - **Accuracy is not judged:** a run that never recognizes anyone still passes.
+     - **Updated:** the format-12 example.
+
+3. **Tests.**
+   - **Before committing:** every test file using the changed modules gave 768 passed and 1 failed (the format example, updated); then the edited files gave 135 passed under 3.10 and 100 under 3.12.
+   - **At `aaca744`, the full portable suite:** 2,761 passed, 2 skipped (`cv2`, `torch`), 0 failed, under 3.10.14 (1416.41 s, 09:38:01-10:01:39 UTC) and then 3.12.3 (1297.59 s, 10:01:39-10:23:19 UTC); `config/default.yaml` valid under both. Boot ID, HEAD and an empty code diff were the same before, between and after. Local runs, not CI.
+
+4. **The package `~/sentinel-prep/fci-aaca744/`** (manifest SHA-256 `8857eeb4ce69fc433716d2730f572662342b70821a2cba06a0c5319e7e8f18a4`, 18 files): PROTOCOL.md, DECISIONS.md, CHECKLIST.md, SOURCE.txt, DRYRUN.txt, hostprep.py, and the blocks i-R, i-D, i-B, i-C, i-P, i-F, i-M, i-O, i-V, iv-D, iv-E, i-H.
+   - **Renamed only from landmarks-f547d4b:** i-C, i-P, i-F, i-M, i-O, i-H and hostprep.py.
+   - **New:**
+     - **i-R:** the pin, the `fci-` sessions, the cues and the tools.
+     - **i-D:** 13 decisions, approved on the typed line `APPROVE aaca744 fci integration_before_f2 cache_drop`.
+     - **i-B:** 54 checksums at the pin, `tracks.py`, `contracts.py` and `association.py` added; the decision lines; the prerequisite and the floor with its note.
+     - **i-V:** the launch.
+     - **iv-D:** the account, format 11.
+     - **iv-E:** the counts, the launch-memory report with `--block I`, the condition line and the reading.
+   - **The configuration (exactly what i-V launches):**
+     ```
+     step5_guard.py --out $W/iv --step4-headroom --require-ready face_chat --duration-s 480 --ready-timeout-s 300 \
+         --status-at 60:c1 --status-at 240:c2 --status-at 465:end --cue-at 0:t0:<T0 cue> --cue-at 470:stop:<stop cue> -- \
+       sentinel run $W/face.yaml --data-dir $DATA/iv --engine ~/yolov8n.engine --workload-thp-disable --post-load-release \
+         --scene --face --face-validation --identity-dir $DATA/identity --chat --chat-validation
+     alpha_load.py chat $W/iv-chat-load.jsonl --wait-s 400   # started just before, in the background; i-V ends it after the run
+     ```
+     - **Face:** production detection, the original enrollment through i-F's working copy, D97 off, the thresholds and track expiry unchanged.
+     - **The scene model:** under the accepted profile's policies.
+     - **Chat:** in its validation run, two fixed protocol questions alternately every 6 s; an answer's text is never kept.
+     - **Not added:** no live view, snapshots, zone, Telegram or feature controls.
+   - **The timed actions:**
+     - **Before the launch:** i-V's framing and light questions.
+     - **While the models load, about 1-2 min:** stay seated.
+     - **At T0:** work at the Mac as usual, in the camera's view; keep others out of view; type nothing in the i-V window; do not ask your own questions.
+     - **At 7:50:** the stop cue; stay seated. The run stops by itself at 8:00.
+     - **Afterwards:** read nothing until iv-D's account is saved, then iv-E and i-H.
+   - **Pass and fail:**
+     - **The launch's verdict first:** `IV_exit=0` only for a duration stop, the runtime's exit 0, no guard trigger or forced stop, readiness met, both cues and cleanup clear.
+     - **Then the reading's 28 judged items in four parts:** each part passes or not on its own, and the integration passes only if all four do. MISSING never passes.
+   - **Stop conditions:**
+     - **Before launch:** step 4's headroom (pressure below 2.0 GB, MemFree at least 3.5 GB, MemAvailable at least 4.0 GB), then the launch floor of 5,569,835,008 B MemFree. Either one refuses, and nothing launches.
+     - **During the run, the guard (unchanged, every 0.2 s):** pressure at least 4,800,000,000 B; MemFree below 1,073,741,824 B; MemAvailable below 2,147,483,648 B; any swap-counter change; missing telemetry; a sampling gap over 0.5 s. The runtime then gets SIGINT, and SIGTERM then SIGKILL if it has not exited 90 s later.
+     - **Readiness:** not ready within 300 s, or `face_chat` refused.
+     - **Chat's own gate (unchanged):** no new question at 4.7 GB; a running one cancelled at 5.0 GB; paused after 2 scene-deadline misses in 60 s.
+     - **Never retried within a session.**
+   - **Cleanup (i-H):**
+     1. checks the original enrollment unchanged;
+     2. deletes the working copy;
+     3. counts the camera URL's userinfo in the top-level files;
+     4. seals the session;
+     5. starts the display manager and unsets the passphrase, URL and names.
+   - **Memory, known before the run** (session 102's table, from the sealed sessions):
+     - **Measured peaks:** scene + chat + live view 3.722-3.773 GB; scene + face 4.197-4.659 GB without the drop and 4.217-4.389 GB with it.
+     - **Expected for face + chat:** about 4.25-4.75 GB peak and about 1.8-2.0 GB lowest MemFree. An estimate.
+     - **The floor:** based on earlier workloads without chat, so it guarantees no headroom for this run.
+
+5. **The track-expiry boundary: UNRESOLVED (and session 102 corrected).**
+   - **The two rules:** `TrackTable.current()` drops a track whose age reaches `track_expiry_s` = 1.0 s (`contracts._assess`: `age_ns >= ttl_ns`). `TrackTable.update()` starts a new life only after a gap greater than 1.0 s (`tracks.py`: `> expiry_ns`).
+   - **Where they disagree:** a re-measurement exactly 1.0 s later is the same life when the frame's `update()` runs first, and a new life (its earlier votes, note and break dropped) when a step's `current()` ran at that instant first. The outcome depends on step order, not on the person.
+   - **Session 102's error:** it wrote this off as unreachable because it needs an exact timestamp. That record is corrected in place (`08e0e27`, documents only), including a second claim: the status exposes no track drops; identity clears show as transitions to `cleared`.
+   - **This package:** documents the boundary in DECISIONS.md (item 12) and PROTOCOL.md, records `track_expiry_boundary=unresolved_documented_dropped_at_age_ge_1s_new_life_after_gap_gt_1s` in the decisions file, and judges nothing that depends on it.
+   - **Not done:** no code change was made to the boundary.
+
+6. **The dry run** (`~/sentinel-prep/dryrun-harness-aaca744-fci`, from session 90's harness; the package's DRYRUN.txt has every case).
+   - **How:** each case in a private user, mount and PID namespace, with the stand-ins sudo, sync, sysctl, systemctl, the camera probe and the guard's `supervise()`.
+   - **What was real:** every block as pasted, step5_guard's parser and readiness check, guard_verdict, launch_memory, alpha_load, hostprep, face_account, face_counts and the reading, on runs made by the real runtime with face, scene and chat together.
+   - **The stand-in guard's one addition:** it places the prebuilt run's chat-load record where alpha_load writes it, because no status page exists in a dry run.
+   - **dry1:** every case stopped at i-B with `tracked changes present`, from this session's uncommitted correction, as designed.
+   - **dry2:**
+     - **B, the whole session:** all four parts passed and the integration passed; the repeats were refused.
+     - **S (new):** only recognition behaviour not passed.
+     - **X (new):** readiness refused, `chat_not_available_as_validation_run:unavailable`, with no cue.
+     - **Y:** an unknown answer, and still passed.
+     - **The failure paths** (C, E, F, G, I, J, K, L, M, N, Q1, Q2, D1-D7, R1-R6, R8, P1, P2, T, U): each with its intended next step.
+     - **R7:** refused by the harness's own safety check (its HOME lay inside the harness), then rerun alone outside it: `refused:evidence:reference_result_missing`, with nothing launched.
+   - **Every session:** sealed; one drop call at most; no synthetic secret or stand-in answer text in the 79 dry folders.
+   - **Untouched:** the real `~/sentinel-runs`, `~/sentinel-data` and host-memory have no `fci` entry.
+
+7. **Verification before operator execution (commands and results).**
+   ```
+   cd ~/sentinel-prep/fci-aaca744 && sha256sum SHA256SUMS && sha256sum -c SHA256SUMS            # 8857eeb4...; 18 OK
+   cd ~/sentinel-prep/host-memory-observation && sha256sum SHA256SUMS && sha256sum -c SHA256SUMS # 74887d42...; OK
+   git -C ~/sentinel-worktrees/v2-ui diff --quiet aaca744 HEAD -- benchmarks src tests config pyproject.toml   # equal
+   <i-B's 54 checksums> | sha256sum -c --quiet -                                                  # 54 OK at the worktree
+   ~/sentinel-validation/fci-aaca744/run.sh   # the full suites as in section 3; logs in ~/sentinel-validation/fci-aaca744/logs/
+   ~/sentinel-prep/dryrun-harness-aaca744-fci/all.sh .../dry2 && python3 verify103.py .../dry2   # section 6
+   ~/sentinel-prep/dryrun-harness-aaca744-fci/r7.sh ~/sentinel-prep/dryrun-fci-aaca744-r7b       # R7, section 6
+   ```
+
+8. **What the run can and cannot establish.**
+   - **It can establish:** that on this device, at this pin, after one page-cache drop, face recognition and the VLM serving both scene analysis and chat ran together for 8 minutes. Within that run: within the memory guard's limits; chat answered real questions bound to identified frames and yielded to scene jobs; scene deadlines held; face results kept being applied; monitoring stayed first.
+   - **It cannot establish:**
+     - F2, recognition accuracy, retention or false acceptance;
+     - "validated together";
+     - chat's admission or answer accuracy;
+     - stability beyond 8 minutes, or behaviour without the cache drop;
+     - the full alpha configuration (live view, snapshots, zones);
+     - other light, framing or people.
+
+9. **Not changed.** Runtime code, admission, acceptance, thresholds, guard limits, F2 criteria, the tracker and identity rules, real enrollment data, every earlier package and sealed session, and both review repositories. Nothing pushed, published or launched; no review started.
+
+**Next (the maintainer):**
+1. verify the two manifests (section 7);
+2. reboot;
+3. `ssh villain8001@192.168.55.1` from the Mac's Terminal;
+4. paste `~/sentinel-prep/fci-aaca744/i-R.sh` (first command), then i-D once, then the blocks in PROTOCOL.md's order.
 
 ## Session 102 log (Claude, 2026-10-20): a short face + VLM chat integration test assessed; not permitted under the recorded decisions while F2 is unvalidated; a minimal validation-only path PROPOSED with the exact decision it needs; nothing implemented or launched
 
