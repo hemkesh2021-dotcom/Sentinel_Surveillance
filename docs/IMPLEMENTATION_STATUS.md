@@ -1,6 +1,23 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-20, session 101 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Follow-up review A (the cloud review of review A's fixes): its eight findings checked through their callers; 1, 2, 5, 6, 7 and 8 reproduced and fixed (`508103d`); 3 and 4 confirmed and deferred (session 101 log).**
+Last updated 2026-10-20, session 102 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **A short face-recognition + VLM chat integration test: not permitted under the recorded decisions while F2 is unvalidated; a minimal validation-only path PROPOSED with the exact decision it needs; nothing implemented, packaged or launched (session 102 log).**
+- **The code permits it:**
+  - `face_admission_problem` (`src/sentinel/adapters.py:465`) lets a `--face-validation` run use the `PENDING_VALIDATION` face admission.
+  - `DemoRuntime` lets chat reach the scene model when `chat_validation and chat_admission.validation_allowed` (`src/sentinel/demo_runtime.py:403`; `CHAT_ADMISSION.validation_allowed=True`, `scene/chat.py:101-106`).
+  - `cli._run` and `assemble` refuse no combination of the two.
+- **The recorded decisions do not:**
+  - **The approved decision files** say `combined=after_validated_f2_at_this_pin` (`f2-normal-decisions-b10b877.txt`, decision 5: "launches only after a sealed F2 session at this pin ... whose F2 reading validated") and `combined=not_in_this_package` (`f2-normal-decisions-d754976.txt`, `f2-cache-decisions-890af72.txt`). Decision 10 of the latest package: "it needs its own package after an F2 validates".
+  - **The other records agree:** `ALPHA_CANDIDATE_NOTES.md:144`, "the combined run launches only after a validated F2", and session 84's "the combined run stays unavailable until an F2 validates" (its log, item 12).
+  - **Not covered:** no record defines a face-with-chat run other than that combined run, and no sealed session has started face and chat together (the 34 sealed runs with a startup line under `~/sentinel-runs/d1-checklist`, checked).
+- **Proposed (not implemented):**
+  - **The run:** one 8-minute validation-only run, `fci`: production detection, the original enrollment through a working copy, `--scene --face --face-validation --chat --chat-validation`, the chat load tool asking every 6 s.
+  - **Its reading:** a new `alpha_check integration`, the chat check's items plus face-execution items and no F2 reading.
+  - **Readiness and memory:** a `--require-ready face_chat` readiness, D103's drop and unchanged launch floor; the guard, thresholds and admission unchanged.
+- **The decision needed:** the maintainer's approval of the exception and its four terms (session 102 log, section 6).
+- **Review issues:** none blocks this test (session 102 log, section 5).
+- **Not changed:** code, packages, admission, thresholds, F2 criteria, enrollment and memory limits. The sealed sessions were read only. Nothing pushed, published or launched; no review started.
+
+Session 101's summary: **Follow-up review A (the cloud review of review A's fixes): its eight findings checked through their callers; 1, 2, 5, 6, 7 and 8 reproduced and fixed (`508103d`); 3 and 4 confirmed and deferred (session 101 log).**
 - **The review:** `/ultrareview` of `~/sentinel-review/a-fixes-df8d9bc-24f7fc1` (`review-a-fixes` against `review-base`, 37 files) gave 8 findings. 3 normal: 1 redaction, 2 purge, 3 hard links. 2 nits: 4 Basic, 5 audit read errors. 3 marked pre-existing: 6 capture record, 7 earlier-life reason, 8 purge during enrollment. Both review repositories are unchanged.
 - **Reproduced on `9b31b13`,** each through its caller with synthetic data and fault injection:
   - **1:** `password=ab;cd`, `api_key=x,y` and `Authorization: Digest …` values kept part of the secret, in the outbox's stored rows and an adapter's load reason.
@@ -588,6 +605,9 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 ## Next concrete task
 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
+   - **Done (session 102):** a short face + VLM chat integration test assessed: the code permits a validation run with both, the recorded decisions do not while F2 is unvalidated (`combined=not_in_this_package`: "it needs its own package after an F2 validates"); the validation-only `fci` path PROPOSED with its decision (session 102 log).
+   - **Maintainer (session 102):** approve the `fci` exception and its four terms (session 102 log, section 6), change them, or keep the rule.
+   - **Claude, next (session 102):** on approval only, the reading, the readiness, their tests and the pinned, dry-run package.
    - **Done (session 101):** follow-up review A's findings 1, 2, 5, 6, 7 and 8 reproduced through their callers and fixed (`508103d`); 3 and 4 confirmed and deferred with their reachability (session 101 log).
    - **Maintainer (session 101):** review `508103d`; decide whether revoke may go ahead with its audit reported incomplete and how a torn audit log is repaired.
    - **Claude, next (session 101):** none until asked.
@@ -944,6 +964,125 @@ Notes on partial and in-progress rows:
   - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Session 50: Step 5 ran it on the device (camera, detector, scene server, Telegram; see the session 50 log). Not done: the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 102 log (Claude, 2026-10-20): a short face + VLM chat integration test assessed; not permitted under the recorded decisions while F2 is unvalidated; a minimal validation-only path PROPOSED with the exact decision it needs; nothing implemented or launched
+
+From `8bcacd3` (clean; code as at `508103d`), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`.
+
+1. **The request (the maintainer).**
+   - **The goal:** prepare the next functional milestone, a short combined face-recognition + VLM chat integration test. First inspect admission, the runtime, the chat path and the operator packages.
+   - **Determine:** whether a validation-only combined run is permitted while F2 is unvalidated, citing the code and the documented restriction, without bypassing it or changing normal admission.
+   - **If permitted:** a pinned, dry-run-checked package for a short supervised run that exercises a real chat request and response with face and the VLM loaded together. It keeps the guard's limits, readiness checks, the original enrollment (through a working copy) and cleanup and sealing.
+   - **If not permitted:** a concrete minimal proposal and the exact decision needed.
+   - **Do not:** deferred cleanup and unsupported filesystems; rerunning unchanged suites; pushing, publishing, launching or another review.
+
+2. **Read (read only):**
+   - `cli.py`'s run options and checks, `demo_runtime.assemble` and `DemoRuntime`, and `adapters.py`'s face admission and resource profile;
+   - `scene/chat.py` and `tracking/tracks.py` with `contracts._assess`;
+   - the runner tools: `step5_guard`, `operator_check`, `launch_memory`, `alpha_check`, `alpha_load`;
+   - the packages `f2-normal-b10b877`, `f2-cache-890af72` and `landmarks-f547d4b`, with the recorded decision files;
+   - every sealed run's startup line, guard samples and result under `~/sentinel-runs/d1-checklist`. Their seals were not rewritten and nothing was written there.
+
+3. **Permitted? The code: yes. The recorded decisions: no.**
+   - **The code allows the combination:**
+     - **Face:** `face_admission_problem` (`src/sentinel/adapters.py:456-470`) returns no problem for the `PENDING_VALIDATION` record when `validation_run` is set (`--face-validation`).
+     - **Chat:** `DemoRuntime` sets `chat_allowed = chat_admission.admitted or (chat_validation and chat_admission.validation_allowed)` (`src/sentinel/demo_runtime.py:403`), and `CHAT_ADMISSION` is `admitted=False, validation_allowed=True` (`src/sentinel/scene/chat.py:101-106`, D77).
+     - **No refusal:** `cli._run` (lines 752-810) and `assemble` refuse no combination of `--face --face-validation` with `--chat --chat-validation`. `--chat` needs the status page and, for the model, `--scene`.
+   - **The decisions:**
+     - **The F2 package `f2-normal-b10b877` (approved `APPROVE b10b877 …`):** decision 5, "The combined run (f-C) is conditional. It launches only after a sealed F2 session at this pin, under these same decisions, whose F2 reading validated" (`DECISIONS.md:22-28`). It is recorded as `combined=after_validated_f2_at_this_pin` (`f2-normal-decisions-b10b877.txt:13`), and f-C enforces it (`STOP: … the combined run's prerequisite is not met`).
+     - **The later packages `f2-normal-d754976` and `f2-cache-890af72` (the latest F2, approved and run):** `combined=not_in_this_package` (line 21 of each decision file). Decision 10: "The combined run is not in this package: it needs its own package after an F2 validates" (`f2-cache-890af72/DECISIONS.md:59-60`).
+     - **Restated:** `docs/ALPHA_CANDIDATE_NOTES.md:144` ("the combined run launches only after a validated F2"); session 77, items 7 and 19, implementing the maintainer's "Make the combined run conditional on its prerequisites"; and session 84's log, item 12 ("the combined run stays unavailable until an F2 validates").
+   - **Why that blocks this test:** no record defines a face-with-chat run other than that combined run, and none has run. Of the 34 sealed runs with a startup line, none started face and chat together. The diagnostics that ran while F2 was unvalidated (tracking, landmarks) had face and the scene model but no chat, and each was recorded as "neither an F2 attempt nor a combined run".
+   - **So:** preparing this test as permitted would read a gap as permission. It needs the maintainer's decision first, and no package is prepared.
+
+4. **The proposal, `fci` (face-chat integration):** validation-only, never F2, never the combined run, admitting and validating nothing.
+   - **The run:**
+     - **The command:** `sentinel run face.yaml --engine … --workload-thp-disable --post-load-release --scene --face --face-validation --identity-dir <working copy> --chat --chat-validation`.
+     - **Configuration:** production detection, D97 off, no diagnostic, candidate, comparison or experiment; no live view, snapshots or zone. The status page stays on 127.0.0.1:18090, which `--chat` needs.
+     - **The guard:** `step5_guard --step4-headroom --require-ready face_chat --duration-s 480 --ready-timeout-s 300`, captures at 60, 240 and 470 s, and cues at 0 (T0) and 470 (stop).
+     - **The chat load:** `alpha_load.py chat --every-s 6 --wait-s 400`, the two fixed protocol questions alternated. The answer's text is never kept.
+   - **What has to be built (operator tooling only; runtime, admission and limits untouched):**
+     1. **`alpha_check.py integration RUN_DIR`:** the chat check's items over a run with face, plus face-execution items, and no F2 reading. Its final line: `alpha integration check: passed|not passed (validation-only integration run: not F2, not the combined run; admits nothing)`.
+     2. **`step5_guard --require-ready face_chat`, with `guard_verdict` support,** as for the tracking and landmark diagnostics. The `starting` line must report no detector problem, face `{"validation_run": true, "identities_enrolled": 1}` with no face problem and no diagnostic, candidate or experiment marker, the scene server ready (17/17 layers, vision on the GPU) and chat `available` with the validation reason. Otherwise the runtime is stopped at once (`readiness_refused`), with no cue and nothing counted.
+     3. **Portable tests** for both.
+     4. **The package `~/sentinel-prep/fci-<pin>/`,** built from `landmarks-f547d4b`'s blocks:
+        - **Set-up:** i-R, i-D (the decisions, once), i-B (the code is the pin), i-C (close optional processes), i-P (a 10 s camera probe), i-F (the working copy and config validation);
+        - **Memory:** i-M (D103's sudo + `DROP`, once), i-O (the prepared record);
+        - **The run:** i-V (two questions, the F1 gate, D103's launch check, the guard with the chat load, the verdict);
+        - **Afterwards:** iv-D (the account), iv-E (the counts and the reading), i-H (seal, remove the working copy, the original unchanged, the display manager back);
+        - **Checked:** a dry run in a throwaway HOME with the established stand-ins (sessions 77 and 90).
+   - **Duration and operator actions (about 28-32 min, after a reboot):**
+     - **Before the run:** SSH in from the Mac's Terminal (~4). Then i-R and i-B (~1); i-C (read the list, type `CLOSE`; ~2); i-P (sudo, the camera URL; ~2); i-F (the passphrase; ~1); i-M (sudo, type `DROP`; <1); i-O (<1); i-V (framing and light answers; the models load in about 1-2 min).
+     - **The run: 8 min.** Sit at the Mac as usual, in the camera's view, with nobody else in view. Type nothing in the window and ask nothing yourself: the load tool asks.
+     - **The stop:** at most about 1.5 min (shutdown is bounded at about 66 s).
+     - **Afterwards:** iv-D, two answers (seated in view throughout: yes, no or unsure; anyone else in view: yes, no or unknown; ~1); iv-E (~2); i-H (~1).
+   - **Pass or fail (predeclared; every judged item must PASS; MISSING never passes):**
+     - **Supervision:** a duration stop, runtime exit 0, no guard or forced stop, nothing left behind (no listener, llama-server or runtime group), clean shutdown, every stdout line JSON.
+     - **Readiness and startup:** the readiness above; the memory policy (THP disabled in the workload and verified, the post-load releases returned 0); the detector loaded.
+     - **Every capture:** scene available, video fresh, chat in its validation run, face available with no problem; listeners on loopback only.
+     - **Memory (the existing alpha limits):** every sample from 120 s after readiness at most 5,000,000,000 B, every sample at most 5,400,000,000 B (MemTotal - MemAvailable).
+     - **Scene:** no deadline missed and no enrichment skipped; the largest scene wait behind a question at most 2000 ms, with the 1500 ms grace (D80, D81, as in the chat checks).
+     - **Chat:**
+       - cancellation verified (a scene job ended a running question; the question says why);
+       - at least one real answer, every answer naming its frame and ages, historical exactly when its frame was 2000 ms or older when answered, and 1-600 characters long.
+     - **Face executed alongside:** at least 30 face results applied over the run (D63's minimum, reused) and no error result from the face worker.
+     - **Monitoring first:** no incident signal lost and no detector failure.
+     - **Privacy:** no URL with userinfo in any saved file, and the secret and name counts (`face_counts.sh`) 0.
+     - **Original enrollment:** byte-identical before and after (i-H).
+     - **Descriptive, never judged:** the guard figures; capture and processing rates; chat answers and cancellations by kind; answer times; scene run times; face processing time against the earlier face-only runs; identity states and transitions; tracks dropped and new lives (stalls); the chat gate's counters.
+   - **What it can establish:** that on this device, at the pin, after one page-cache drop, face recognition (production path, original enrollment) and the VLM serving both scene analysis and chat ran together for 8 minutes. Within that run: within the memory guard's limits; chat answered real questions bound to identified frames and yielded to scene jobs; scene deadlines held; face results kept being applied; monitoring was kept first.
+   - **What it cannot establish:**
+     - F2 or any face acceptance (recognition correctness, retention, false acceptance), and "validated together" (the combined run still needs a validated F2);
+     - chat admission, or chat's accuracy and grounding (the answers' text is never read; G is not implemented);
+     - stability or leaks beyond 8 minutes, and behaviour without the page-cache drop;
+     - the full alpha configuration (the live view, snapshots and zones are excluded);
+     - other light, framing or people.
+   - **Memory, measured (sealed runs, read only; pressure = MemTotal - MemAvailable from the guard's samples):**
+
+     | Configuration | Runs | Peak pressure | Lowest MemFree | MemFree used from launch |
+     |---|---|---|---|---|
+     | scene alone (`step5-20261007T153831Z/scene`) | 1 | 3.695 GB | 2.62 GB | 2.90 GB |
+     | scene + chat (validation) + live view (`alpha-20261012T040450Z`, `alpha-20261013T084310Z`) | 2 | 3.722-3.773 GB | 2.33-2.50 GB | 3.42 GB (the latter) |
+     | scene + face, no cache drop (11 F2 attempts and alpha face checks, 5 tracking diagnostics) | 16 | 4.197-4.659 GB | 1.04-1.68 GB | 4.45-4.50 GB (`alpha-20261012T201549Z`, `trk-20261017T103831Z`) |
+     | scene + face after D103's drop (`f2c-20261018T155424Z`, `lmk-20261019T105756Z`) | 2 | 4.217-4.389 GB | 2.28-2.48 GB | 4.52-4.72 GB |
+
+     - **Guard stops so far:** three runs without the drop stopped at the MemFree floor (`trki-20261016T133527Z`, `trk-20261016T100149Z`, `f2n-20261018T104038Z`: 1.04-1.07 GB).
+     - **The estimate:** chat and the live view added about 0.03-0.08 GB of peak pressure and about 0.5 GB of MemFree use over scene alone (different pins and days). With face, the expected peak pressure is about 4.25-4.75 GB and, after the drop (launch MemFree about 7.0 GB), the lowest MemFree about 1.8-2.0 GB.
+     - **The margin:** close to the chat gate (4.7 GB) and the guard (4.8 GB) if the worst observed face runs recur (4.64-4.66 GB: `f2n-20261015T125427Z`, an F2 attempt, and `trk-20261016T100149Z`, a tracking diagnostic); it is not a measurement.
+   - **Stop conditions:**
+     - **Before launch:** step-4 headroom (pressure below 2.0 GB, MemFree at least 3.5 GB, MemAvailable at least 4.0 GB); D103's launch floor of 5,569,835,008 B MemFree, unchanged (it was derived from a face run without chat and has no reserve).
+     - **During the run (the guard, unchanged, every 0.2 s):** pressure at least 4,800,000,000 B; MemFree below 1,073,741,824 B; MemAvailable below 2,147,483,648 B; any swap-counter change; missing telemetry; a sampling gap over 0.5 s.
+     - **Readiness:** not ready within 300 s, or `readiness_refused`.
+     - **The runtime's own chat gate (unchanged):** no new question at 4.7 GB or more for 3 samples; a running question cancelled at 5.0 GB; chat paused after 2 scene-deadline misses within 60 s.
+     - **Afterwards:** a guard stop is reported, never retried within the session.
+     - **The chance cancellation goes unexercised** (judged MISSING): about 2-3% (the chat check's 5 pre-emptions in 10 minutes, as a Poisson rate over 7-7.5 minutes of asking).
+
+5. **Review issues and the track-expiry boundary: none blocks this test.**
+   - **Follow-up review A:**
+     - **Findings 1, 2, 5, 6, 7 and 8:** fixed at `508103d`; the pin would include them.
+     - **Finding 3:** not reachable here (the working copy is under `~/sentinel-data`, ext4).
+     - **Finding 4:** only over-redacts diagnostic words; no chat text is logged.
+     - **The open decisions** (revoke behind the audit log, repairing a torn log) and session 98's crash limitations concern gallery changes, and this run changes no gallery.
+   - **Chat:** the one unverified report of a wrong answer concerns accuracy, which this test does not claim.
+   - **The boundary:**
+     - **A track is dropped** from `current()` when its age reaches `track_expiry_s` = 1.0 s (`_assess`, `src/sentinel/contracts.py:249`, `age_ns >= ttl_ns`).
+     - **A re-measurement starts a new life** only when its gap from the last one is greater than 1.0 s (`TrackTable.update`, `src/sentinel/tracking/tracks.py:66-69`, `>`). Its earlier votes, notes and breaks are then dropped (`IdentityResolver.retain_only`; the earlier note and break since `508103d`).
+     - **At exactly 1.0 s** it is the same life when the frame's `update()` comes first, which it does within a frame's step; a `tick()`'s `current()` at that same nanosecond would drop it first, making it a new life. That cannot be arranged on the device's clock.
+     - **In practice:** any loop stall of 1.0 s or more (session 84 saw a 1.86 s input stall) clears the identity and starts a new life by design. Chat adds CPU and GPU load, so such clears may happen. They are described (tracks dropped, new lives), never judged here.
+
+6. **The decision needed before anything is implemented (the maintainer's):**
+   - **An exception to the recorded rule** (`combined=not_in_this_package`: "it needs its own package after an F2 validates"): one validation-only face + VLM chat integration run (`fci`) may be prepared and run while F2 is unvalidated. It is never the combined run or F2, counts toward neither, and changes no admission, acceptance, threshold, criterion or memory limit.
+   - **Its terms:**
+     1. the configuration and the 8-minute duration in section 4;
+     2. the predeclared reading in section 4, including the reuse of D80's 2000 ms, D81's 1500 ms and D63's 30 applied results;
+     3. D103's page-cache drop and launch check extended to this package, the floor unchanged;
+     4. the new readiness `face_chat`.
+   - **A reply that would let Claude implement:** `APPROVE fci integration before F2: terms 1-4 as proposed in session 102`, or the terms changed.
+   - **After approval, before any device use:** Claude adds the reading, the readiness and their tests, commits, builds and dry-runs the package pinned to that commit, and returns it for the maintainer's check.
+
+7. **Not changed.** No code, test, package, decision file, sealed session, enrollment, admission, threshold, criterion or memory limit. No suite was run (nothing changed). Nothing pushed, published or launched; no review started.
+
+**Next (the maintainer):** decide section 6: approve the exception with its terms, change them, or keep the rule (then the next step remains a validated F2).
 
 ## Session 101 log (Claude, 2026-10-20): follow-up review A's eight findings checked through their callers; 1, 2, 5, 6, 7 and 8 reproduced and fixed; 3 and 4 confirmed and deferred with their reachability; nothing pushed
 
