@@ -1,6 +1,6 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-21, session 110 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **The one-hour live-dashboard trial `dtr-20261021T065058Z` recorded read only (USER-SUPPLIED; 29 sealed files verified, manifest SHA-256 `950f41c2679c4f6c5d4639ef316802f8f05063b63db9c5f4a7eb3040b21ab812`): all five parts passed. Then, on the maintainer's instruction, this branch prepared as the v2.0.0-alpha.2 candidate for the 24 October review checkpoint (`622ea61`: version `2.0.0a2`, release notes, release documents); the outgoing content scanned; the push and tagging plan written. Nothing pushed or tagged (session 110 log).**
+Last updated 2026-10-21, session 111 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 111: after the device's power loss (USER-REPORTED), the candidate `64d702a`, the tree, `git fsck` and the trial's seal rechecked, unchanged. The push stopped before its first step: 17 of the 67 outgoing commits (sessions 96-99 and `24f7fc1`) carry a `Claude-Session:` trailer, which session 110's scan patterns did not cover; removing it means a history rewrite, the maintainer's decision. Nothing pushed, tagged or published (session 111 log).** Session 110: **The one-hour live-dashboard trial `dtr-20261021T065058Z` recorded read only (USER-SUPPLIED; 29 sealed files verified, manifest SHA-256 `950f41c2679c4f6c5d4639ef316802f8f05063b63db9c5f4a7eb3040b21ab812`): all five parts passed. Then, on the maintainer's instruction, this branch prepared as the v2.0.0-alpha.2 candidate for the 24 October review checkpoint (`622ea61`: version `2.0.0a2`, release notes, release documents); the outgoing content scanned; the push and tagging plan written. Nothing pushed or tagged (session 110 log).**
 - **The trial (validation only; never F2 or the combined run):**
   - 3,600 s from readiness on 21 October (T0 12:37:55 IST), daylight, after one D103 page-cache drop (reported apart); face recognition, scene analysis, the live view and the operator's own chat questions in the dashboard; no snapshots;
   - `HV_verdict=complete`, `HV_check_exit=0` and `alpha dashboard trial: passed` in the seal; `HH_exit=0` the maintainer's report (h-H prints it after the seal);
@@ -765,6 +765,9 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 ## Next concrete task
 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
+   - **Done (session 111):** the state rechecked after the power loss, unchanged; the first h-V paste's stop and the power loss recorded (USER-REPORTED); the scan's one message match is prose; the push stopped before step 1 because 17 outgoing commits carry a `Claude-Session:` trailer (session 111 log).
+   - **Maintainer (session 111):** decide how the 17 trailers are handled (session 111 log, section 6): remove them in a history rewrite (by the maintainer, as on 2026-10-08), or publish them as they are. Then name the candidate to push.
+   - **Claude, next (session 111), only on the maintainer's instruction:** the plan's steps 1-4 (session 110 log, section 7) on the named candidate, with every trailer key of the outgoing range read again before step 1.
    - **Done (session 110):** `dtr-20261021T065058Z` recorded read only (all five parts passed; 8 questions accepted, 5 answered, 3 cancelled; the operator's report recorded apart); the branch prepared as the v2.0.0-alpha.2 candidate (`622ea61` and this record); the outgoing content scanned; v2.0.0-alpha.2 free (session 110 log).
    - **Maintainer (session 110):** review `docs/RELEASE_NOTES_v2.0.0-alpha.2.md` and the push and tagging plan (session 110 log, section 7); say whether to push. Recognition-distance and VLM chat improvements are deferred until after the 24 October review.
    - **Claude, next (session 110), only on the maintainer's instruction:** push the candidate as a fast-forward of `alpha-candidate-2026-10`; read CI; tag `v2.0.0-alpha.2` on that commit only if both workflows pass; then the pre-release.
@@ -1152,6 +1155,64 @@ Notes on partial and in-progress rows:
   - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Session 50: Step 5 ran it on the device (camera, detector, scene server, Telegram; see the session 50 log). Not done: the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 111 log (Claude, 2026-10-21): the state rechecked after the device's power loss (unchanged); the first h-V paste's stop and the power loss recorded (USER-REPORTED); the scan's one message match shown to be prose; the push stopped before step 1 because 17 outgoing commits carry a `Claude-Session:` trailer; nothing pushed, tagged or published
+
+From `64d702a` (clean), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`.
+
+1. **The request (the maintainer).**
+   - Recheck HEAD `64d702a0b2f017be4549792a1870854e78f9d70f`, the clean tree, `git fsck` and the seal of `dtr-20261021T065058Z`; on any difference, stop and report.
+   - Record as user-reported: why the first h-V paste stopped, and the power loss after session 110 with nothing lost.
+   - Show the commit message that session 110's scan matched for co-authored-by or generated-with, with the matching line. If it is a real attribution trailer, stop and report.
+   - Keep the `2.0.0a2` version.
+   - Then the plan (session 110 log, section 7): confirm that `alpha-candidate-2026-10` is still `65df7f3`; push `64d702a` to it as a fast-forward, without force; report both CI run IDs. Tag `v2.0.0-alpha.2` and create the GitHub pre-release (not latest) only after both workflows pass on that commit. If CI fails, stop with no tag.
+
+2. **The power loss (USER-REPORTED).** The device lost power after session 110 finished and rebooted. The maintainer verified, read only, the HEAD, the clean tree, `git fsck` and the trial's seal, and reports that nothing was lost.
+   - **Rechecked in this session (read only):**
+     - the boot: 2026-10-21 15:53:45 IST (`uptime -s`);
+     - HEAD `64d702a0b2f017be4549792a1870854e78f9d70f`; `git status --porcelain --untracked-files=all` empty;
+     - `git fsck --full`: exit 0; 20 dangling objects (unreachable commits, trees and blobs) and no other line;
+     - `dtr-20261021T065058Z`: folder 0700; `sha256sum -c SHA256SUMS` 29 OK, 0 otherwise; no unlisted or missing file; manifest SHA-256 `950f41c2...`, as recorded;
+     - the package `~/sentinel-prep/dash-trial-4e1d4f5/`: 20 OK, manifest `1477af40...`; its NOTE file present.
+   - **Cleared by the boot, by design:** session 110's scan scripts (`scan/outgoing_scan.py`, `scan/refine.py`) were in that session's scratch directory under `/tmp`, which the boot clears. Their results are in session 110's log; a later scan is written again.
+
+3. **The first h-V paste (USER-REPORTED).** It stopped with `HV_exit=1` because the light answer was mistyped (`dayight`); nothing launched. Session 110 recorded the stop with its reason not recorded. The sealed provenance shows the stop before the launch check, with no launch-check line and no `hv` folder from that paste (session 110 log, section 2). It does not hold the reason, which is the maintainer's. The second paste's answer was `daylight`.
+
+4. **The commit message session 110's scan matched.** Every message in `65df7f3..64d702a` (67 commits), read with `git log -1 --format=%B`, against `co-authored-by|generated[ -]with` (case-insensitive): one line.
+   - **The commit:** `3703243dd074a7a197f080ac0b670b3dbe2c3724`, session 77's record; line 1, the subject.
+   - **The line:** "Record session 77, continued: the still posture confirmed by the maintainer (the face hidden behind a book or sheet, the body still; user-reported) and f2-normal-b10b877 regenerated with its 4:00 cue at the same pin, dry-run again; occlusion only, chair-swivel retention unresolved; nothing launched".
+   - **Prose in a record,** not a trailer: the words are "regenerated with", about the package. No message in the range has a `Co-Authored-By` trailer.
+
+5. **The trailer check: 17 commits carry a `Claude-Session:` trailer.** Every outgoing commit's trailers were read (`%(trailers:only,unfold)`), not only the two patterns.
+   - **The only trailer key in the range is `Claude-Session`,** in 17 of the 67 commits. Each has the same value, a link to one claude.ai Claude Code session (not reproduced here).
+   - **The 17 commits are contiguous** (the range has no merge): every commit of sessions 96-99, from `3dbc05f` (2026-10-19 21:50 IST), and session 100's code commit `24f7fc1` (2026-10-20 11:12 IST). That is review scope A's fixes and the session 96-99 records. Session 95's record `027c800` before them, session 100's record `9b31b13` after them and every later commit carry none.
+   - **None is on GitHub:**
+     - no remote-tracking branch or tag contains `3dbc05f`;
+     - no published ref reaches a `Claude-Session` trailer (the refs fetched in session 110);
+     - `git ls-remote` this session: the branch still at `65df7f3`.
+   - **What added them is not established.** The repository has no hook, `core.hooksPath`, commit template or trailer configuration.
+   - **Other mentions of Claude in the outgoing messages:** two, in records (`adf656f`, `6ce01af`), saying who judges or reads the grounding answers. They are records, not attribution.
+   - **Published history:** its seven `Co-Authored-By` trailers (June 2026) name a teammate, not Claude, and are already on GitHub. None is in the outgoing range.
+   - **Session 110's scan:** its "no co-author trailer or 'generated with' text" holds for those two patterns. It read no other trailer, so it missed these.
+   - **Why the push stopped.** The maintainer's rule (2026-10-04) is no Claude attribution in commits; it is why the maintainer rewrote `v2-beta` on 2026-10-08. A `Claude-Session:` trailer links its commit to a Claude session. The push would put 17 of them on the public repository, and a push cannot be taken back: the commits may stay cached even if later replaced. Removing them means rewriting history, which only the maintainer does. So the plan stopped before step 1: no push, no CI run, no tag and no release.
+
+6. **The decision (the maintainer's).**
+   - **Remove the trailers** (by the maintainer, as on 2026-10-08):
+     - every commit from `3dbc05f` on gets a new hash, the candidate among them; the trees stay identical;
+     - the sealed sessions and records since session 96 name the old hashes: `dtr-20261021T065058Z` (`commit=2477e36`, `pin_commit=4e1d4f5`), `fcg-20261020T154003Z` (`2004725`) and `fci-20261020T110028Z` (`aaca744`) among them;
+     - so the records need an old-to-new map and a local backup branch of the old tip, as in session 50 part 8;
+     - CI then runs on the new candidate, and the tag goes there.
+   - **Publish them as they are:** the maintainer's explicit decision. The hashes the sealed sessions name stay the published ones.
+
+7. **Not changed.**
+   - The version `2.0.0a2` (kept), the release notes and the release documents.
+   - `alpha-candidate-2026-10` on GitHub, still `65df7f339e77df29bc167e7b9de7201e15f05847`; no `v2.0.0-alpha.2` tag there.
+   - Runtime code, every sealed session and package.
+   - Nothing pushed, tagged or published.
+
+   This record's commit is local, on top of the candidate. The candidate stays `64d702a`; its tree differs from this commit's only in this file.
+
+**Next (the maintainer):** decide section 6, then name the candidate. Claude then carries out the plan's steps 1-4 (session 110 log, section 7) on it, with every trailer key of the outgoing range read again before step 1.
 
 ## Session 110 log (Claude, 2026-10-21): the one-hour live-dashboard trial `dtr-20261021T065058Z` recorded read only (all five parts passed; the operator's report recorded apart); the branch prepared as the v2.0.0-alpha.2 candidate for the 24 October review checkpoint (`622ea61`); the outgoing content scanned; the push and tagging plan written; nothing pushed or tagged
 
