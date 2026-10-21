@@ -293,7 +293,9 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
   alpha.2 candidate (counts only).
 - **Test fixtures:** synthetic, using reserved documentation addresses and, in refusal and redaction tests, synthetic
   private-range addresses. The exceptions are three fixtures derived from sealed device runs (sessions 81, 85 and 87):
-  they hold memory figures, times and fixed labels only, with no identity ID, similarity, box or image.
+  they hold memory figures, times and fixed labels only, with no identity ID, similarity, box or image. Session 108
+  added session 107's grounding staging and judgments and its check section: fixed answers, categories, labels and
+  non-text metadata only, never an answer's text.
 - The status record names device runs, packages and some machine identifiers (the device's user name, the USB tether's
   default address, boot IDs), as earlier published records already do; they hold no credential.
 - Face recognition is context only: it never grants or denies anything, and no page, record or log shows a name.

@@ -1,6 +1,24 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-21, session 109 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **On the maintainer's authorization (before F2 validates): the one-hour live-dashboard trial prepared. The code is `4e1d4f5`: the guard's one-hour bound and the reading `alpha_check trial`, operator tooling and tests only. The package is `~/sentinel-prep/dash-trial-4e1d4f5/` (manifest SHA-256 `1477af4045325524b2dba137607f4b261734f7109d87f983abf6280908eaac14`, 20 files), dry-run in 36 cases; not launched (session 109 log).**
+Last updated 2026-10-21, session 110 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **The one-hour live-dashboard trial `dtr-20261021T065058Z` recorded read only (USER-SUPPLIED; 29 sealed files verified, manifest SHA-256 `950f41c2679c4f6c5d4639ef316802f8f05063b63db9c5f4a7eb3040b21ab812`): all five parts passed. Then, on the maintainer's instruction, this branch prepared as the v2.0.0-alpha.2 candidate for the 24 October review checkpoint (`622ea61`: version `2.0.0a2`, release notes, release documents); the outgoing content scanned; the push and tagging plan written. Nothing pushed or tagged (session 110 log).**
+- **The trial (validation only; never F2 or the combined run):**
+  - 3,600 s from readiness on 21 October (T0 12:37:55 IST), daylight, after one D103 page-cache drop (reported apart); face recognition, scene analysis, the live view and the operator's own chat questions in the dashboard; no snapshots;
+  - `HV_verdict=complete`, `HV_check_exit=0` and `alpha dashboard trial: passed` in the seal; `HH_exit=0` the maintainer's report (h-H prints it after the seal);
+  - **chat:** 8 questions accepted, **5 answered, 3 cancelled** (each ended by a periodic scene job after the 1.5 s grace); the largest scene wait behind a question 1,502.6 ms; no question's or answer's text exists in any file;
+  - **live view:** 64,808 pictures sent to the dashboard; **face:** 2,911 results applied, none failed;
+  - **memory:** peak pressure 4,370,120,704 B, lowest MemFree 2,200,756,224 B, within the 5.0/5.4 GB limits.
+- **The operator's report (USER-REPORTED, after the run; OBSERVATIONS.md's item-by-item answers not supplied):** smooth video, reliable recognition at the tested distance (the distance not supplied), and generally useful chat. Impressions, not measurements: no recognition accuracy, false acceptance or answer correctness is established.
+- **Deferred until after the review (the maintainer):** recognition-distance and VLM chat improvements.
+- **Unchanged:** F2 unvalidated and face `PENDING_VALIDATION`; chat not admitted; the combined run still needs a validated F2. Also thresholds, guard limits, the launch floor, criteria, enrollment, and every sealed session.
+- **The candidate:**
+  - the branch head after this record, on `v2-ui-refresh`; the code is `4e1d4f5`'s apart from the version string;
+  - **destination:** a fast-forward of `alpha-candidate-2026-10` from `65df7f3`, 67 commits;
+  - **the scan:** no credential value, enrollment or gallery file, similarity value, real identity ID or answer text in the outgoing content (section 4);
+  - **checks:** `sentinel --version` and the configuration check under Python 3.10.14 and 3.12.3; the full suite left to CI, which is the tag's gate (section 5).
+- **v2.0.0-alpha.2:** free. Not a tag locally or on GitHub, and no published release by that name (a draft would not be visible without signing in).
+- **Next (the maintainer):** review the release notes and the plan (section 7), then say whether to push. Tag only after CI passes on the pushed commit.
+
+Session 109's summary: **On the maintainer's authorization (before F2 validates): the one-hour live-dashboard trial prepared. The code is `4e1d4f5`: the guard's one-hour bound and the reading `alpha_check trial`, operator tooling and tests only. The package is `~/sentinel-prep/dash-trial-4e1d4f5/` (manifest SHA-256 `1477af4045325524b2dba137607f4b261734f7109d87f983abf6280908eaac14`, 20 files), dry-run in 36 cases; not launched (session 109 log).**
 - **The trial:**
   - 3,600 s from readiness of face recognition, scene analysis, the live view and chat, used in the dashboard from the Mac through an SSH tunnel (`http://127.0.0.1:18090/dashboard`);
   - the operator works normally, leaves and returns, and asks chat in their own words;
@@ -747,6 +765,9 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 ## Next concrete task
 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
+   - **Done (session 110):** `dtr-20261021T065058Z` recorded read only (all five parts passed; 8 questions accepted, 5 answered, 3 cancelled; the operator's report recorded apart); the branch prepared as the v2.0.0-alpha.2 candidate (`622ea61` and this record); the outgoing content scanned; v2.0.0-alpha.2 free (session 110 log).
+   - **Maintainer (session 110):** review `docs/RELEASE_NOTES_v2.0.0-alpha.2.md` and the push and tagging plan (session 110 log, section 7); say whether to push. Recognition-distance and VLM chat improvements are deferred until after the 24 October review.
+   - **Claude, next (session 110), only on the maintainer's instruction:** push the candidate as a fast-forward of `alpha-candidate-2026-10`; read CI; tag `v2.0.0-alpha.2` on that commit only if both workflows pass; then the pre-release.
    - **Done (session 109):** the one-hour live-dashboard trial prepared: the code `4e1d4f5`, the package `~/sentinel-prep/dash-trial-4e1d4f5/` (manifest `1477af40...`, 20 files) and its dry run (session 109 log). Not launched.
    - **Maintainer (session 109):**
      1. verify the package's and the helper's manifests;
@@ -1131,6 +1152,190 @@ Notes on partial and in-progress rows:
   - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Session 50: Step 5 ran it on the device (camera, detector, scene server, Telegram; see the session 50 log). Not done: the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 110 log (Claude, 2026-10-21): the one-hour live-dashboard trial `dtr-20261021T065058Z` recorded read only (all five parts passed; the operator's report recorded apart); the branch prepared as the v2.0.0-alpha.2 candidate for the 24 October review checkpoint (`622ea61`); the outgoing content scanned; the push and tagging plan written; nothing pushed or tagged
+
+From `2477e36` (clean), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`.
+
+1. **The request (the maintainer).**
+   - **Prepare the current tested version for an October 24 review checkpoint on GitHub.** Defer recognition-distance and VLM chat improvements until after the review.
+   - **Record `dtr-20261021T065058Z`:** all five trial checks passed, `HH_exit=0`, and the operator reported smooth video, reliable recognition at the tested distance, and generally useful chat. Preserve the measured five answers and three cancellations from eight accepted questions; keep F2, accuracy and admission limitations explicit.
+   - **Identify** the exact candidate commit, working-tree state, destination branch and outgoing diff; check that private evidence, credentials, enrollment data and answer text are excluded; reuse completed validation and run additional checks only where changes justify them.
+   - **Check** whether v2.0.0-alpha.2 is available, and draft concise prerelease notes distinguishing this candidate from alpha.1.
+   - **Report** the exact push and tagging plan. **Do not push or tag yet.** The tag must ultimately identify the candidate commit that passes GitHub CI.
+
+2. **The trial `dtr-20261021T065058Z`, recorded read only.** Sources are labelled: the sealed files, the maintainer's message (USER-SUPPLIED or USER-REPORTED) and Claude's retrospective count.
+   - **The seal:** `sha256sum -c SHA256SUMS` gave 29 OK, 0 otherwise; no unlisted file; manifest SHA-256 `950f41c2679c4f6c5d4639ef316802f8f05063b63db9c5f4a7eb3040b21ab812`. Folder 0700 under `~/sentinel-runs/d1-checklist/`. No file in it holds a question's or an answer's text (the trial records none, and `hv/check.txt` says so).
+   - **Provenance (sealed):** `commit=2477e36...`, `pin_commit=4e1d4f5...`, the prerequisites `trk-20261017T103831Z` and `fci-20261020T110028Z` with their manifests, `session_kind=dashboard_trial_validation_only`, `live_view=on`, `chat_questions=operator_own`, `f2=not_an_f2_attempt`, `combined_run=not_the_combined_run`, `test_condition=page_cache_dropped_once`.
+   - **Preparation (sealed):**
+     - a fresh boot (12:18:23 IST; the session began 12:23:40 IST), over SSH;
+     - `HB_exit=0`, `HC_exit=0`; the display manager stopped after `display_manager_before=active`; the camera probe passed first time (`camera_probe_exit=0`);
+     - h-F: no development, VS Code, v1, llama-server or ollama process (`HF_exit=0`);
+     - **one D103 page-cache drop** (`HM_attempt=1`): MemFree +1,272,487,936 B, Cached −1,173,512,192 B; `HO_prepared=complete`;
+     - **the launch check passed:** MemFree 6,977,290,240 B, **1,407,455,232 B above the floor** (5,569,835,008 B), 117.4 s after the drop and 38.5 s after h-O;
+     - h-V's questions: framing `none` since the capture, light `daylight`;
+     - the original enrollment unchanged afterwards and the working copy removed (`original_enrollment_unchanged=yes`, `working_copy_removed=yes`).
+   - **An earlier h-V paste ended with `HV_exit=1`** before the launch check: its line precedes `HV_launch_check=` in the provenance. That paste wrote no launch-check line and no `hv` folder (the second paste's checks for both passed), so nothing launched. Why it stopped was printed to the terminal only; it is **not recorded**. The second paste launched.
+   - **The run:**
+     - launched 07:06:40 UTC (12:36:40 IST); `face_chat` readiness met after 74.9 s, so T0 was 12:37:55 IST;
+     - stopped by the guard's duration at 3,600 s from readiness; the runtime exited 0, 5.4 s after the stop request, not forced;
+     - `HV_guard_exit=0`, `HV_status=duration_stop`, `HV_readiness=met`, `HV_cues_printed=2/2`, `HV_cleanup=clear`, **`HV_verdict=complete`**, `HV_exit=0`, **`HV_check_exit=0`**.
+   - **`HH_exit=0`** is the maintainer's report (USER-SUPPLIED): h-H prints it after the seal, so it is not in the sealed files.
+   - **The account (format 11, saved and locked before any result; SHA-256 `4b0fc854...`):** `worked_as_usual=yes`, `stayed_seated=no`, `looked_at_camera_on_purpose=no`, **`other_faces_in_view=yes`**.
+   - **The reading (`alpha_check trial`, `hv/check.txt`): all five parts passed;** `alpha dashboard trial: passed`.
+     1. **Execution: passed.**
+        - `duration_stop`, return code 0, no guard trigger, no forced stop, cleanup clear; THP and post-load releases as designed; scene server 17/17 layers with the vision encoder on the GPU.
+        - At all seven captures (60 s to 3,585 s): video fresh, scene analysis, face, chat's validation run and the live view all on.
+        - Listeners loopback only (18081, 18090) at every capture.
+        - 0 scene deadlines missed, 0 enrichments skipped, 0 frames failed, 0 incident signals lost.
+        - Identity records schema 3, none dropped: 2,926 results, 3,388 ticks and 831 transitions, 7,145 against the cap of 10,000 (session 109 projected about 7,800).
+        - 7,267 stdout lines, all JSON; the privacy counts all 0.
+        - **Descriptive:** captured 14.90-15.02 fps and processed 12.92-14.92 fps; the newest frame's age 32-101 ms. The scene was `empty` at the c3 capture (T0+1,200 s) and `occupied` at the other six.
+     2. **Live view: passed.** 64,808 pictures sent to a viewer (64,877 requests) and the encoder stopped with the runtime. The encoder started twice, the second time between c5 and c6 (T0+2,400-3,000 s); why is not recorded. The encode time over its last 64 frames: median 5.36 ms, max 6.38 ms.
+     3. **Chat: passed.** From the status counters only, at the last capture (T0+3,585 s):
+        - **8 accepted, 5 answered, 3 cancelled.** All three ended for a periodic scene job after the 1.5 s grace (`side_preempted_after_grace` 3). Four questions finished within the grace while a job waited.
+        - **The scene wait behind a question:** n 7, median 1,125.4 ms, max 1,502.6 ms, within the 2,000 ms bound.
+        - **The counters over the hour:**
+
+          | Capture | Accepted | Answered | Cancelled |
+          |---|---|---|---|
+          | c1 | 1 | 0 | 1 |
+          | c2 | 4 | 2 | 2 |
+          | c3 | 5 | 3 | 2 |
+          | c4 | 5 | 3 | 2 |
+          | c5 | 7 | 4 | 3 |
+          | c6 | 7 | 4 | 3 |
+          | end | 8 | 5 | 3 |
+
+          The first question was cancelled.
+        - No error, `no_fresh_frame` or refusal counter appears.
+        - Chat's memory gate stayed open, with 0 misses; its peak pressure was 4,369,833,984 B, against the 4.7 GB stop for new questions.
+        - **Not covered:** a question asked after the end capture (5-15 s before the stop) would not be counted.
+     4. **Recognition behaviour: passed** (only "face executed alongside" is judged).
+        - 2,911 results applied, none failed, no worker error, 1 rejected for age.
+        - **Votes:** 1,311 match and 470 unknown, of 1,781 faces assigned; 1,921 person results without a face.
+        - **Face processing:** p50 1,023.5 ms, p95 1,086.9 ms.
+     5. **Memory: passed.**
+        - Steady and peak alike 4,370,120,704 B, over 18,297 samples (17,328 steady), against 5.0/5.4 GB.
+        - Lowest MemFree 2,200,756,224 B, 1,127,014,400 B above the guard's floor; lowest MemAvailable 3,619,889,152 B.
+        - The guard's 4.8 GB pressure stop was never reached; its largest sampling gap was 0.205 s.
+        - **The first hour-long measurement** of face, chat, scene analysis and the live view together. Snapshots were off, and the drop makes it a separate condition.
+   - **Recognition over the hour (Claude's retrospective count from the 831 transition records; times, states and reasons only, read with `python3 -I`; descriptive):**
+     - **KNOWN 2,673.9 s of the 3,600 s,** in 44 intervals: the first at T0+7.9 s, median 35.9 s, the longest 247.8 s.
+     - **Tracks:** 3 were KNOWN at some time, never two at once; 8 had transitions.
+     - **The longest stretch without KNOWN:** 555.1 s.
+     - **Exits from KNOWN:** 33 to UNCERTAIN (contradictory face evidence); 7 to UNRESOLVED (no face visible) and 1 more (reason `face matched`); 2 cleared (the track no longer current).
+     - **Returns to KNOWN:** 33 from UNCERTAIN and 11 from UNRESOLVED, each on 2 consistent matches.
+     - **At c1 (T0+60 s):** two persons tracked, one KNOWN and one UNKNOWN.
+
+     The account says the operator left the seat and that other faces were in view. The records do not say whose face was assigned or matched. So these figures are not per person, and they establish no recognition accuracy, no retention and no false acceptance (UNKNOWN is never a stranger). Which absences were the operator's is not recorded.
+   - **The operator's report (USER-REPORTED, in the maintainer's message after the run).** The three statements are recorded as given:
+     - smooth video;
+     - reliable recognition at the tested distance;
+     - generally useful chat.
+
+     **Not supplied:** OBSERVATIONS.md's item-by-item answers, including the distance itself, the number of questions counted, the useful, partly useful and not useful counts, any answer naming a person or inventing something, reloads, leavings and returns, and anything slow late in the hour. Also the Safari version and the tunnel's behaviour.
+
+     These are impressions. "Generally useful chat" is not answer accuracy, and "reliable recognition at the tested distance" is not recognition accuracy, retention, false acceptance or F2.
+   - **Not established by this session:** F2 (face stays `PENDING_VALIDATION`); recognition accuracy and false acceptance; answer correctness (no answer's text was kept); chat admission; the combined run, which still needs a validated F2; the alpha configuration with snapshots; anything at another time, light, distance or duration.
+   - **Deferred until after the 24 October review (the maintainer):** recognition-distance improvements and VLM chat improvements.
+
+3. **The release preparation (`622ea615100a9b65222894aea5b527ea551896f8`).**
+   - **The version:** `2.0.0a2` in `pyproject.toml` and `sentinel.__version__`. Only `sentinel --version` reads it; no test does.
+   - **`docs/RELEASE_NOTES_v2.0.0-alpha.2.md` (new):** concise prerelease notes. They cover:
+     - what is new since alpha.1 (`b33c2f3`): face and chat together in guarded validation runs; the two integration runs and this trial; review scope A's fixes; validation-only tooling; the version;
+     - what is still pending: F2, false acceptance, accuracy, chat admission, the combined run, the deferrals and alpha.1's open items;
+     - the CI rule for the tag.
+   - **Updated to session 110:**
+     - the README: version badge, callout, release links, feature rows, CI paragraph, clone tag and `--version` output;
+     - the alpha notes: intro, since-the-tag block, goal, readiness items, status, a device-table row, gates 3, 6 and 8, scans, latest results;
+     - the trace: header, the D-3 and memory rows, sources;
+     - the alpha.1 notes' dated pointer.
+   - **In this record's commit:** the alpha notes' data-and-privacy line also names session 108's grounding fixtures (fixed answers, categories, labels and non-text metadata only).
+   - **Corrected:** "the last recorded CI result at `b33c2f3`" now reads `65df7f3`. GitHub's API shows both workflows passed there on 14 October (runs 38578907656 and 38578907924).
+   - **Outside Git:** `~/sentinel-prep/dash-trial-4e1d4f5.NOTE.txt` (0600). From `622ea61`, the package's h-B refuses at the head ("code differs from 4e1d4f5"), by design. The package is unchanged: its manifest `1477af40...` verifies, 20 OK.
+
+4. **The outgoing content scan,** over `65df7f3..` the candidate. Scripts in the session scratchpad (`scan/outgoing_scan.py`, `scan/refine.py`, run with `python3 -I`). They print counts, key names, repo paths and line numbers only; no credential value or private note's word is printed. Run on `622ea61` before this record, and again on this record's commit (the same results apart from this file's own lines).
+   - **The range:** 67 commits, 77 files, 17,460 added lines.
+     - Every author and committer is `Hemkesh <hemkesh.2021@gmail.com>`.
+     - No co-author trailer or "generated with" text. One earlier match was "regenerated with", a false positive.
+     - No binary file.
+     - None of the local-only documents is tracked (`LOCAL_NOTES`, the guide, the audit).
+   - **Files identical to private or sealed files:** every blob at the target hashed with SHA-256 (251), against two sets of references:
+     - every hash in the 53 sealing manifests under `~/sentinel-runs`;
+     - every readable file under `~/sentinel-runs` and `~/sentinel-data` (the enrollment data among them), 669 hashes in all.
+
+     `grounding*.jsonl` files are never opened: their hashes come from the seals only. One unreadable file under `analysis/` was skipped.
+
+     **Matches:** four, all deliberate verbatim fixtures recorded when they were added (sessions 81, 87 and 108):
+     - the two `tv/result.json` copies (memory figures, times and fixed labels);
+     - session 107's `grounding-judgments.txt` and `grounding-staging.txt`: categories and fixed labels only, re-read here; no answer text.
+
+     **No blob is identical** to any sealed answer file, any enrollment or gallery file, or any private analysis file.
+   - **Credential values** from `~/.env` (5 keys) and the v1 camera configuration (5 keys, with each URL's user, password and host apart), compared as fixed strings with the added lines, the messages and the whole tree:
+     - the camera URLs, their passwords and hosts, the bot token and the chat ID: **0 everywhere**;
+     - every other value was judged by its position (an assignment, a URL's userinfo, beside its key): **no credential disclosure.** How each was judged is not recorded in Git.
+   - **Patterns in the added lines and messages:**
+     - **private IPv4:** only `192.168.55.1`, in three records of the Mac's tunnel and SSH commands (sessions 103, 105 and 109). This is the USB tether's default address with the device's user name, already published in 9 lines at `65df7f3`; nothing new.
+     - **URLs with userinfo:** only the synthetic redaction examples.
+     - **identity IDs:** synthetic test IDs only (`idn-000000000001`, `idn-00000000000a`). The enrolled identity's real ID occurs nowhere in the tree.
+     - **similarity values, private-key blocks, GitHub or Telegram tokens:** 0.
+   - **Answer text:**
+     - no outgoing path is a `grounding*.jsonl`;
+     - no blob equals a sealed one;
+     - the trial kept no text;
+     - the words of the operator's post-seal note beside `fcg-20261020T154003Z` were compared without printing them. Of its 10 words absent from both the published base and the system dictionary, **2 occur nowhere in the outgoing content.** Only the other 8 were printed, because they are already in it: the records' and the grounding check's own words (a manifest hash's fragment, the session's name, `S1-S5`, `G3's`, `grounding-judgments`, `operator-reported`, `person-identification`, `colour-or-shape`).
+   - **Limits:** a fixed-string and hash scan finds exact copies and listed values only. It cannot rule out a paraphrase of an answer the scan never saw. The maintainer's answers were never opened.
+
+5. **Validation reused and checks run.**
+   - **Reused (recorded results, not rerun):**
+     - the full portable suite at `2004725` (session 106): 2,778 passed, 2 skipped, 0 failed, under Python 3.10.14 and 3.12.3, with `config/default.yaml` valid under both;
+     - the focused suites at `1231d7e` (599 passed) and `4e1d4f5` (741 passed, 3.10.14; 112 passed, 3.12.3; sessions 108-109).
+
+     Local runs, not CI.
+   - **What changed since:** only the version string (code) and documents. No test reads the version or the documents (checked with `grep` over `tests/`).
+   - **Run in this session:**
+     - `PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m sentinel.cli --version` printed `sentinel 2.0.0a2` (Python 3.10.14), and `... config validate config/default.yaml` printed valid, core monitoring only, exit 0;
+     - the same two under the isolated 3.12.3 environment, with the same results;
+     - `git diff --check`: no whitespace errors.
+   - **Not run:** the full suite at the candidate. CI runs it on the push under Python 3.10 and 3.12, with the Dashboard checks, and **CI is the tag's gate.**
+   - **The first CI run for these commits:** the tests added since `65df7f3` have never run on GitHub's x86_64 runners. Their only git use is `rev-parse HEAD` in tooling, which works in the shallow checkout. The device-only module `test_tracking_diagnostic_installed.py` skips there.
+
+6. **v2.0.0-alpha.2 is available.**
+   - **Local tags:** only `v2.0.0-alpha.1` among the v2 tags.
+   - **On GitHub** (`git ls-remote --tags origin`): `V1.0`, `v0.1.0`, `v1.0.0`, `v1.1.0` and `v2.0.0-alpha.1` (`c342a93` → `b33c2f3`).
+   - **Published releases** (anonymous API): v1.0.0, v1.1.0 and v2.0.0-alpha.1 (pre-release). A draft release would not be visible anonymously.
+   - **`origin` fetched this session:**
+     - `alpha-candidate-2026-10` is still `65df7f3`, an ancestor of the candidate, so the push is a fast-forward;
+     - `master` moved to `c9e1fb6` (a traffic-report workflow, #5), and a `traffic-log` branch appeared. Neither affects this branch, and nothing is merged into `master`.
+
+7. **The push and tagging plan** (not carried out; each step on the maintainer's explicit instruction).
+   - **The candidate:** the branch head after this record, its full hash printed by `git rev-parse HEAD` with a clean tree. Its tree differs from `622ea61` only in this file.
+   - **Destination:** `refs/heads/alpha-candidate-2026-10`, a fast-forward from `65df7f339e77df29bc167e7b9de7201e15f05847`, without force. `v2-beta`, `master`, the backup and `wip/*` branches are not pushed.
+   - **Step 1, the push** (authenticated through VS Code's askpass when run from Claude's shell):
+     ```
+     cd ~/sentinel-worktrees/v2-ui
+     test -z "$(git status --porcelain --untracked-files=no)" && C=$(git rev-parse HEAD) && echo "$C"
+     GIT_TERMINAL_PROMPT=0 git ls-remote origin refs/heads/alpha-candidate-2026-10   # must print 65df7f339e77df29bc167e7b9de7201e15f05847
+     GIT_TERMINAL_PROMPT=0 git push origin "$C":refs/heads/alpha-candidate-2026-10
+     ```
+   - **Step 2, CI.** Both workflows run on the push: "Dashboard checks" and "v2 portable checks" (Python 3.10 and 3.12). Read them with `https://api.github.com/repos/hemkesh2021-dotcom/Sentinel_Surveillance/actions/runs?head_sha=$C`.
+
+     **The gate:** both runs `completed` with conclusion `success` at `$C`. A failure, a cancellation or a rerun that changes the commit means no tag.
+   - **Step 3, the tag** (only after step 2 passes):
+     ```
+     git tag -a v2.0.0-alpha.2 "$C" -F <message file>   # title, one paragraph, and the two CI run IDs, as for alpha.1
+     test "$(git rev-parse 'v2.0.0-alpha.2^{commit}')" = "$C"
+     GIT_TERMINAL_PROMPT=0 git push origin refs/tags/v2.0.0-alpha.2
+     GIT_TERMINAL_PROMPT=0 git ls-remote origin 'refs/tags/v2.0.0-alpha.2*'   # the ^{} line must be $C
+     ```
+   - **Step 4, the GitHub pre-release:** from the existing tag (never letting GitHub create one), marked pre-release, not latest. The body is `docs/RELEASE_NOTES_v2.0.0-alpha.2.md` with its links pinned to the tag. The maintainer creates it in the web UI, or Claude through the API on instruction, as in session 74.
+   - **If CI fails:** no tag. Reproduce the failure, fix it in a new commit on `v2-ui-refresh` and push it as another fast-forward. Tag that commit once its CI passes. The tag never goes on a commit without passing CI, and no pushed commit is amended or force-pushed.
+   - **Not in this plan:** the wiki (it still describes alpha.1), merging into `v2-beta` or `master`, and any later push.
+
+8. **Not changed.** Runtime code apart from the version string, the chat prompt and bounds, face and chat admission, thresholds, guard limits, the launch floor, F2's criteria and status, the identity rules, the enrollment, and every earlier package and sealed session. Nothing launched, pushed, tagged or published; no review started.
+
+**Next (the maintainer):** review `docs/RELEASE_NOTES_v2.0.0-alpha.2.md` and section 7, then say whether to push (step 1). After CI passes on the pushed commit, the tag and the pre-release follow (steps 3-4). The improvements deferred until after the review stay deferred.
 
 ## Session 109 log (Claude, 2026-10-21): the one-hour live-dashboard trial prepared on the maintainer's authorization (validation only, before F2 validates): the guard's one-hour bound, the trial's reading and its tests (4e1d4f5), the package `dash-trial-4e1d4f5` and its dry run; nothing launched; nothing pushed
 
