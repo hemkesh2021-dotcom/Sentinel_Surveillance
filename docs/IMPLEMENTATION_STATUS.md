@@ -1,6 +1,6 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-21, session 111 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 111: after the device's power loss (USER-REPORTED), the candidate `64d702a`, the tree, `git fsck` and the trial's seal rechecked, unchanged. The push stopped before its first step: 17 of the 67 outgoing commits (sessions 96-99 and `24f7fc1`) carry a `Claude-Session:` trailer, which session 110's scan patterns did not cover; removing it means a history rewrite, the maintainer's decision. Nothing pushed, tagged or published (session 111 log).** Session 110: **The one-hour live-dashboard trial `dtr-20261021T065058Z` recorded read only (USER-SUPPLIED; 29 sealed files verified, manifest SHA-256 `950f41c2679c4f6c5d4639ef316802f8f05063b63db9c5f4a7eb3040b21ab812`): all five parts passed. Then, on the maintainer's instruction, this branch prepared as the v2.0.0-alpha.2 candidate for the 24 October review checkpoint (`622ea61`: version `2.0.0a2`, release notes, release documents); the outgoing content scanned; the push and tagging plan written. Nothing pushed or tagged (session 110 log).**
+Last updated 2026-10-21, session 111 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 111, continued: on the maintainer's decision, the maintainer's history rewrite (R1-R3, all `status=0`, USER-SUPPLIED) removed the 17 `Claude-Session:` trailers. Verified again read only: of the 68 commits after `65df7f3`, 33 unchanged and 35 rewritten from `3dbc05f` on, with identical trees, authors and committers and no trailer left. The candidate is now `27d6308` (formerly `64d702a`, the same tree); the old tip `88dce49` stays on the local branch `backup/v2-ui-refresh-before-rewrite-2026-10-21`. Hashes in this record from `3dbc05f` on, written before the session 111 log's section 10, name the pre-rewrite history; the sealed evidence keeps them, and that section holds the map. The outgoing content and the remote rechecked: the agreed state. This shell holds no GitHub credential, so nothing is pushed, tagged or published yet (session 111 log, sections 8-14).** **Session 111: after the device's power loss (USER-REPORTED), the candidate `64d702a`, the tree, `git fsck` and the trial's seal rechecked, unchanged. The push stopped before its first step: 17 of the 67 outgoing commits (sessions 96-99 and `24f7fc1`) carry a `Claude-Session:` trailer, which session 110's scan patterns did not cover; removing it means a history rewrite, the maintainer's decision. Nothing pushed, tagged or published (session 111 log).** Session 110: **The one-hour live-dashboard trial `dtr-20261021T065058Z` recorded read only (USER-SUPPLIED; 29 sealed files verified, manifest SHA-256 `950f41c2679c4f6c5d4639ef316802f8f05063b63db9c5f4a7eb3040b21ab812`): all five parts passed. Then, on the maintainer's instruction, this branch prepared as the v2.0.0-alpha.2 candidate for the 24 October review checkpoint (`622ea61`: version `2.0.0a2`, release notes, release documents); the outgoing content scanned; the push and tagging plan written. Nothing pushed or tagged (session 110 log).**
 - **The trial (validation only; never F2 or the combined run):**
   - 3,600 s from readiness on 21 October (T0 12:37:55 IST), daylight, after one D103 page-cache drop (reported apart); face recognition, scene analysis, the live view and the operator's own chat questions in the dashboard; no snapshots;
   - `HV_verdict=complete`, `HV_check_exit=0` and `alpha dashboard trial: passed` in the seal; `HH_exit=0` the maintainer's report (h-H prints it after the seal);
@@ -655,7 +655,7 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 
 | | |
 |---|---|
-| Branch | `v2-beta`, created from `master`. At session 11 start, HEAD was `f60652903ef6cf7656f6711e29b81c13e598cfb0`, and the local `origin/v2-beta` reference was the same commit (reflog: pushed 2026-10-03 21:31 +0530, after session 9). This session's commit is one ahead and was not pushed. No fetch or remote query ran; this is local repository evidence, not a freshly verified remote state. **Session 50, part 8:** on 2026-10-08 the maintainer rewrote this branch's history and pushed it. The Claude co-author trailers were removed from 36 messages, and all 108 commits after `2b2d639` have new hashes, with identical trees and metadata. Hashes in this record before part 8 are pre-rewrite; the map is in the part 8 log. The pre-rewrite history is on the local branch `backup/v2-beta-before-rewrite` (tip `559cd4d`). At part 8's start, HEAD and the local `origin/v2-beta` were both `7989b03`. |
+| Branch | `v2-beta`, created from `master`. At session 11 start, HEAD was `f60652903ef6cf7656f6711e29b81c13e598cfb0`, and the local `origin/v2-beta` reference was the same commit (reflog: pushed 2026-10-03 21:31 +0530, after session 9). This session's commit is one ahead and was not pushed. No fetch or remote query ran; this is local repository evidence, not a freshly verified remote state. **Session 50, part 8:** on 2026-10-08 the maintainer rewrote this branch's history and pushed it. The Claude co-author trailers were removed from 36 messages, and all 108 commits after `2b2d639` have new hashes, with identical trees and metadata. Hashes in this record before part 8 are pre-rewrite; the map is in the part 8 log. The pre-rewrite history is on the local branch `backup/v2-beta-before-rewrite` (tip `559cd4d`). At part 8's start, HEAD and the local `origin/v2-beta` were both `7989b03`. **Session 111, continued (2026-10-21), on `v2-ui-refresh`:** the maintainer removed a `Claude-Session:` trailer from 17 messages. The 35 commits after `027c800` have new hashes, with identical trees and metadata; none had been pushed. Hashes in this record from `3dbc05f` on, written before the session 111 log's section 10, are pre-rewrite; the map is in that section. The pre-rewrite history is on the local branch `backup/v2-ui-refresh-before-rewrite-2026-10-21` (tip `88dce49`). |
 | CI | Maintainer report, 2026-09-29: GitHub Actions passed at `32985c2`: "v2 portable checks" (run #2) and "Dashboard checks" (run #5). Earlier runs at `6578ded` also passed. |
 | Base commit | `2b2d639621e8c043cc58a126f47b1b8ab6c22135`, the commit the audit verified, confirmed as HEAD before starting |
 | Session 1 commits | `ec6698d` CLAUDE.md · `b52920f` package skeleton and portable tests · `e9f959d` clock · `bc42248` frame identity · `3b47f5f` evidence/track applicability · `ee50275` config and CLI · `6a9e71d` CI workflow · `6578ded` status record |
@@ -765,6 +765,9 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 ## Next concrete task
 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
+   - **Done (session 111, continued):** the maintainer's history rewrite verified read only; its map recorded (session 111 log, section 10); the sealed evidence and the packages unchanged, with their original hashes; the outgoing content of `65df7f3..27d6308` and the remote rechecked, the agreed state (sections 8-12). Nothing pushed: this shell holds no GitHub credential.
+   - **Maintainer (session 111, continued):** a GitHub credential for the push, the tag and the pre-release: run Claude from a VS Code terminal, as before, or push `27d6308` yourself (section 13).
+   - **Claude, next (session 111, continued), with a credential:** the plan's steps 1-4 on `27d6308` (section 13). Push it alone as a fast-forward of `alpha-candidate-2026-10`. Tag `v2.0.0-alpha.2` and create the pre-release (not latest) only after Dashboard checks and both portable jobs pass on it.
    - **Done (session 111):** the state rechecked after the power loss, unchanged; the first h-V paste's stop and the power loss recorded (USER-REPORTED); the scan's one message match is prose; the push stopped before step 1 because 17 outgoing commits carry a `Claude-Session:` trailer (session 111 log).
    - **Maintainer (session 111):** decide how the 17 trailers are handled (session 111 log, section 6): remove them in a history rewrite (by the maintainer, as on 2026-10-08), or publish them as they are. Then name the candidate to push.
    - **Claude, next (session 111), only on the maintainer's instruction:** the plan's steps 1-4 (session 110 log, section 7) on the named candidate, with every trailer key of the outgoing range read again before step 1.
@@ -1156,7 +1159,7 @@ Notes on partial and in-progress rows:
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
 
-## Session 111 log (Claude, 2026-10-21): the state rechecked after the device's power loss (unchanged); the first h-V paste's stop and the power loss recorded (USER-REPORTED); the scan's one message match shown to be prose; the push stopped before step 1 because 17 outgoing commits carry a `Claude-Session:` trailer; nothing pushed, tagged or published
+## Session 111 log (Claude, 2026-10-21): the state rechecked after the device's power loss (unchanged); the first h-V paste's stop and the power loss recorded (USER-REPORTED); the scan's one message match shown to be prose; the push stopped before step 1 because 17 outgoing commits carry a `Claude-Session:` trailer; nothing pushed, tagged or published. Continued: the maintainer's history rewrite verified read only and its map recorded; the sealed evidence unchanged; the outgoing content and the remote rechecked; the push waits for a GitHub credential
 
 From `64d702a` (clean), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`.
 
@@ -1213,6 +1216,140 @@ From `64d702a` (clean), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-r
    This record's commit is local, on top of the candidate. The candidate stays `64d702a`; its tree differs from this commit's only in this file.
 
 **Next (the maintainer):** decide section 6, then name the candidate. Claude then carries out the plan's steps 1-4 (session 110 log, section 7) on it, with every trailer key of the outgoing range read again before step 1.
+
+### Session 111, continued (Claude, 2026-10-21): the maintainer's history rewrite verified read only and its map recorded; the sealed evidence unchanged, with its original hashes; the outgoing content and the remote rechecked (the agreed state); the push waits for a GitHub credential
+
+From `1751aba` (clean; the rewritten `88dce49`), in the same worktree.
+
+8. **The request (the maintainer).**
+   - **Reported (USER-SUPPLIED):** R1, R2 and R3 completed, all `status=0`. R3 verified 68 commits: 33 unchanged, 35 rewritten, 17 trailers removed, none remaining, the trees and the author and committer details identical. The new tip `1751aba77eb41ebf2f42c3594512e6ce515f3172`; the release candidate `27d630896e3754ca095cb88d947271e623f4c021`; the map `~/sentinel-prep/rewrite-v2-ui-refresh-2026-10-21/map.txt`.
+   - **Continue the plan** from `~/sentinel-worktrees/v2-ui`:
+     1. record the map and update session 111 in a new documentation commit, keeping the sealed evidence and its original hashes;
+     2. recheck the outgoing content and the remote; push only `27d6308` to `alpha-candidate-2026-10`, fast-forward only; never the backup branch;
+     3. require Dashboard checks and v2 portable checks on Python 3.10 and 3.12 to pass on that exact commit;
+     4. only then the tag `v2.0.0-alpha.2` and its GitHub pre-release, not latest. Stop if the tag exists or the remote differs from the agreed state.
+   - Keep `master` and alpha.1 unchanged and the validation limitations in the release notes. Recognition-range and chat improvements stay deferred until after the 24 October review.
+
+9. **The rewrite (the maintainer's), verified again read only.**
+   - **The kit** (`~/sentinel-prep/rewrite-kit-2026-10-21/`, read here): `sha256sum -c SHA256SUMS`, 10 OK (`R1.sh`, `R2.sh`, `R3.sh` and `test/`).
+     - R1 created the backup branch `backup/v2-ui-refresh-before-rewrite-2026-10-21` at the old tip `88dce49e95c669ea352e8ed0208b60665fe8d2d4` and installed `rewrite_tool.py` (SHA-256 `582dca38c39b45e4d4c4055d17971ed010fff980f2eaccc293d5ef415ad24397`).
+     - R2 rebuilt every commit after `027c800` (session 95, part 2's record) with `git commit-tree`: the same tree and the same author and committer (name, e-mail, time, zone); only the message's final `Claude-Session:` trailer dropped. It moved `v2-ui-refresh` from `88dce49` to the rebuilt tip and refused any other starting state. `git filter-repo` is not installed.
+     - R3 checked the result.
+   - **Rerun in this session:** `python3 -I rewrite_tool.py verify` with the kit's pinned arguments, against `v2-ui-refresh` and `map.txt`: `VERIFY_ok pairs=68 unchanged=33 rewritten=35 trailers_dropped=17 trailer_lines=0 candidate=27d630896e3754ca095cb88d947271e623f4c021`, exit 0. It checks each pair's parent, tree, author and committer, and that each new message is the old one less the trailer.
+   - **Also checked:**
+     - `27d6308^{tree}` and `64d702a^{tree}` are both `c511b8c2dc1477737fa90ed4a42a811e5f969118`;
+     - `65df7f3..27d6308`: 67 commits, no merge, no trailer of any key (`%(trailers:only,unfold)`); no `Claude-Session`, `Co-Authored-By` or `Signed-off-by` line, `claude.ai` link, "anthropic" or "generated with" in any message. "Claude" occurs in two messages (`d709c4c`, `530fb2e`, formerly `adf656f` and `6ce01af`): the session 111 log's section 5 already judged them records, not attribution;
+     - `map.txt` and `map.built` identical; `map.txt` has 35 lines, SHA-256 `0ad884e920d92ffb8d78337e5703188f3ff533b28a66664b5ddfb4fcb193b18d` (outside Git);
+     - no remote-tracking ref or tag contains `3dbc05f` or `99a6de1`.
+   - **The backup branch** `backup/v2-ui-refresh-before-rewrite-2026-10-21` is local only, at `88dce49`; it is never pushed. `backup/v2-beta-before-rewrite` (`559cd4d`) is unchanged.
+
+10. **The map.** The 33 commits `65df7f3..027c800` keep their hashes. The 35 after them have new ones, with identical trees, authors and committers.
+
+    **Hashes in this record from `3dbc05f` on, written before this section, name the pre-rewrite history.** They are not edited, as in session 50, part 8. They resolve locally through the backup branch, and the map gives each one's rewritten equivalent. Every 7-character form in the map is unique in the repository.
+
+    <details>
+    <summary>Pre-rewrite → rewritten commits (35, oldest first; T: the trailer removed)</summary>
+
+    | # | Pre-rewrite | Rewritten | T | What |
+    |---|---|---|---|---|
+    | 1 | `3dbc05f665ec24e6298ed8c337ba72fde344c886` | `99a6de12b714cf38a26e0585e2ef623cfbb31291` | T | redaction: prefixed keys, userinfo with `/` or `@` (review A, 1) |
+    | 2 | `2700240ee38a6c1cf91651bc143e2fb3471e9ca0` | `f088916a810aaed0fef1ea660a2286e91f089cdc` | T | a redaction test case's line length (review A, 1) |
+    | 3 | `19e7cbcb413c3761c1f0abbef49e5ef1f0efc9ec` | `52296c9d5cb372704c5b5152fc247b36c92b7241` | T | galleries committed after read-back and audit (review A, 2) |
+    | 4 | `836a7a5b2f68455425656365cd479f8d70d5c204` | `f0b916956c75bac272fcb31a20b87c2a684f30e2` | T | consent dates checked before capture or enrollment (review A, 3) |
+    | 5 | `893246182a5f0c1e73c612686c375bb43d13c0cb` | `517f76541f7ace0278035c97b2b7598b5cdad1a1` | T | `config/default.yaml`'s match threshold, 0.70 (review A, 5) |
+    | 6 | `692f5f40c41abd25cc977ffeb6dd1058645d53c2` | `dc7ed4142a0c3a2fb3eeb8b95506407a51c1a50b` | T | the capture tests' store commit (review A) |
+    | 7 | `925f3ac7f14b46bac3e608a758e6b7bfd3a870b7` | `be44a8550b5e3aa29848b5095d90409ac78580c8` | T | the face worker's error counters declared (review A, 4) |
+    | 8 | `89a396ab0815de9242d9de4d794e61fa4eeba15f` | `196139e9a9ec69f399e21ed277304a965c9e2dfe` | T | session 96's record |
+    | 9 | `a2d4e96d3fe90a8be9b9c388219dba96bb4d9633` | `1d8e621375d78edc6b4bf02c66a7126bab2fc069` | T | face votes within the track's current life (review A, 6-7) |
+    | 10 | `466cb588f4cfe6b6c090f679eddacaa880724ae3` | `e0d2e0e1a0fc7b1a901e4b29dd91b7c63ffc77e0` | T | the `before_expiry` vote label's test |
+    | 11 | `cde3563723d2d89350158a5224588caee727af8f` | `4d526cd2f92c392afe9a6ca57343879e03f29fb0` | T | session 97's record |
+    | 12 | `d50d163bcdb84ca2bbb425d297f92c7d3abba923` | `c0cd13161ce30780fbb30219418b77e2c4e9933d` | T | one gallery change at a time, audited (session 98) |
+    | 13 | `a09167c913acf6d4af7de2ca2d4dc55245d4d2ff` | `ae7565a75306ba5dc41cd2ff73040c7b39453ab5` | T | session 98's record |
+    | 14 | `0d5b9aa54e13687dba5ef59e09825b439ca997b2` | `d623de261bb5b182268da88876327a1fd8bac4ec` | T | enrollment provider failures as labels (review A, 8) |
+    | 15 | `aaee2395c84551740b7788df5bb67d97176348a8` | `9413fae2280bb98ac94e79147d622fe262b07764` | T | Authorization, Bearer and Basic redaction (session 99) |
+    | 16 | `d4eddbb0c548a048b27eba7e52de9005c7b271a5` | `8f22707862823cec6838b7d98f13e5cee6b7b6e1` | T | session 99's record |
+    | 17 | `24f7fc186468bf967757430cb74da4433ffa05ce` | `327b9cf88394053c8aaaae9ee678d43ec745593b` | T | one IoU, normalization, cosine and YuNet threshold (review A, 9-10) |
+    | 18 | `9b31b1304e1e5d4bd3ed7360e7a7bf9e522b4f6a` | `a3c0b817c1221e2196ad7a803252bbc2576bcdb0` |  | session 100's record |
+    | 19 | `508103d7768b5191add1c64f4092785656ab5047` | `0ce52a0be629e11cf2fa128b701f520b711c24fd` |  | follow-up review A's fixes |
+    | 20 | `8bcacd3295c38073376b02a61aa6973449b7895d` | `17a21a9503d8eae8bc20a6762bdd45097a396873` |  | session 101's record |
+    | 21 | `c1c4da985e778471f16173e335a1642db455f6b6` | `4d46501109074953a7a3a7bc73af5e7178034483` |  | session 102's record |
+    | 22 | `aaca7443ea0f4ae4429f7c547d871725ccc1947c` | `e5b3bf28a97f47b9b166ef551d369ce7527544da` |  | the face + chat integration run (code) |
+    | 23 | `08e0e27fe32723ae7307dc173255bc4f157444dc` | `ad1f662e3ca3adaf2f59af5f0ec1edd3fd55f518` |  | session 102's record corrected |
+    | 24 | `dc94834c6acbd7e35261a6d46b5dd51c9eef49ac` | `225825bb7255054662b2f76bbdece4e2f268973b` |  | session 103's record |
+    | 25 | `90989cf62afa0ab55d43c5e757ea6e27dd96683f` | `82a1e7a2f4fe7482e5a36c9b0160a8aef24a891e` |  | session 104's record |
+    | 26 | `6ce01af9017289a0dc7da00cef0503f4dffa9351` | `530fb2e73beb69e90ecd213d37fb7122bdb7a3f9` |  | session 105's record |
+    | 27 | `2004725841dfbfcd759b255eef028b829229c2e5` | `c0bfecefedd542ac9003d87c5ac98f8d85217cc0` |  | the grounding check G (code) |
+    | 28 | `adf656f87f5a37f087c05e7f26d0ee8208636bf6` | `d709c4c6fbb7ce2e1ed751a3c6238962eb512aff` |  | session 106's record |
+    | 29 | `086e9b0bca15e5af6d79ecd3e8ff6f7fccaeec24` | `b1062d846d2a91c34544426d91622eaff14a9a4a` |  | session 107's record |
+    | 30 | `1231d7e47a6aea1c2c71f0dffc2167db00170749` | `02f21d4c4ea0c3f67c5ad9f0795ff414de640132` |  | session 108 |
+    | 31 | `4e1d4f544630cb4de09406f91cbf9c8133e09537` | `584be0fb0d84d9f6134406c911b4f3b382e5fe6c` |  | the one-hour trial (code) |
+    | 32 | `2477e3634f70b3cce5a8c01f5ed7488550e1728c` | `e01908eb4a05ff1ee790f6c86de42a8b68b377b9` |  | session 109's record |
+    | 33 | `622ea615100a9b65222894aea5b527ea551896f8` | `e7801e4e1bdb0001fabdea54bb623d0efa0cfa51` |  | v2.0.0-alpha.2 prepared (version, release notes) |
+    | 34 | `64d702a0b2f017be4549792a1870854e78f9d70f` | `27d630896e3754ca095cb88d947271e623f4c021` |  | session 110's record: **the candidate** |
+    | 35 | `88dce49e95c669ea352e8ed0208b60665fe8d2d4` | `1751aba77eb41ebf2f42c3594512e6ce515f3172` |  | session 111's record: the tip |
+
+    </details>
+
+11. **The sealed evidence keeps its original hashes.** Nothing under `~/sentinel-runs` or `~/sentinel-prep` was edited. Sessions and packages sealed since `3dbc05f` that name a pre-rewrite commit:
+
+    | Sealed | Pre-rewrite commits named | Rewritten |
+    |---|---|---|
+    | `dtr-20261021T065058Z` (`commit=`, `pin_commit=`) | `2477e36`, `4e1d4f5` | `e01908e`, `584be0f` |
+    | `fcg-20261020T154003Z` | `2004725`, `adf656f` | `c0bfece`, `d709c4c` |
+    | `fci-20261020T110028Z` | `aaca744`, `dc94834` | `e5b3bf2`, `225825b` |
+    | package `dash-trial-4e1d4f5` | `2004725`, `4e1d4f5`, `aaca744` | `c0bfece`, `584be0f`, `e5b3bf2` |
+    | package `fcg-2004725` | `2004725`, `aaca744` | `c0bfece`, `e5b3bf2` |
+    | package `fci-aaca744` | `08e0e27`, `aaca744` | `ad1f662`, `e5b3bf2` |
+
+    The three `hm-*` host-memory folders of those sessions name none. Sealed files before `3dbc05f` (19 October, 21:50 IST) cannot name a rewritten commit.
+   - **The packages' pins resolve only through the backup branch** (or the reflog). So the branch stays as long as any package pins a pre-rewrite commit; deleting it would be the maintainer's decision, not proposed.
+   - **The seals, rechecked read only (`sha256sum -c` on every `SHA256SUMS`):**
+     - under `~/sentinel-runs`: 53 manifests, all OK;
+     - under `~/sentinel-prep`, outside dry-run folders: 53, all OK;
+     - `dtr-20261021T065058Z`: folder 0700; 29 OK; no unlisted or missing file; manifest SHA-256 `950f41c2679c4f6c5d4639ef316802f8f05063b63db9c5f4a7eb3040b21ab812`, as recorded;
+     - the dry runs' stand-in copies (356 manifests under `~/sentinel-prep/dryrun-*`): 10 mismatches, all inside the stand-in trees of sessions 103, 106 and 109's dry runs (`hostprep.py`, a host-memory `README.txt`, one `provenance.txt`). The files are dated 20-21 October, before the rewrite. Why each differs from its stand-in manifest was not investigated; they are not sealed evidence;
+     - nothing under `~/sentinel-runs` or `~/sentinel-prep` is newer than the kit's `R1.sh`, apart from the kit, the rewrite's own folder and the `~/sentinel-prep` directory entry that holds them.
+   - **The published documents at `27d6308` name pre-rewrite hashes,** because the candidate is fixed: the README 3 times, the alpha notes 14, `docs/RELEASE_NOTES_v2.0.0-alpha.2.md` 4 (`2004725`, `1231d7e`, `4e1d4f5`), the trace 15 and this record 262. They are published as they are, and the map translates them. The pre-release body adds the notes' three: `2004725` → `c0bfece`, `1231d7e` → `02f21d4`, `4e1d4f5` → `584be0f`.
+
+12. **The outgoing content and the remote, rechecked** (a script in this session's scratchpad, `scan/outgoing_scan.py`, run with `python3 -I`; counts, key names, paths and line numbers only, never a value).
+   - **The range `65df7f3..27d6308`:** the same figures as session 110's scan:
+     - 67 commits, 0 merges, 77 files, 17,460 added lines, no binary file;
+     - one identity, `Hemkesh <hemkesh.2021@gmail.com>`, as author and committer;
+     - no local-only document, no `grounding*.jsonl` path, no image, model, database, archive, key or environment-file path.
+   - **Blobs:** the 251 at `27d6308`, hashed with SHA-256, against 1,190 reference hashes. The references: every hash in the sealing manifests under `~/sentinel-runs`, and every readable file under `~/sentinel-runs` and `~/sentinel-data`; `grounding*.jsonl` never opened. **4 matches:** the deliberate fixtures, as in session 110 (the two `tv/result.json` copies; `grounding-judgments.txt` and `grounding-staging.txt`).
+   - **Credential values** as fixed strings against the added lines, the messages and the whole tree. The sources: `~/.env` (5 keys), and the 6 distinct RTSP URLs in the device's v1 sources (`~/.env`, `~/onvif_env/configs/`, the v1 scripts), each URL's user, password and host apart.
+     - **0 everywhere:** the camera URLs, their passwords and hosts, the bot token and the chat ID.
+     - **Every other value was judged by its position** (next to a credential key, inside a URL's userinfo, after `-u`): **no credential disclosure.** Its only such positions are synthetic redaction examples on reserved hosts and generic placeholders already published at `65df7f3`. How each was judged is not recorded in Git, as in session 110.
+   - **Patterns in the added lines and messages:**
+     - **private IPv4:** only `192.168.55.1`, as in session 110;
+     - **URLs with userinfo:** only the synthetic examples (hosts `127.0.0.1`, `192.0.2.10`, `host`, `s`);
+     - **private-key blocks, GitHub, Telegram, AWS or Hugging Face tokens:** 0;
+     - **identity IDs:** only the synthetic `idn-000000000001` and `idn-00000000000a`. The enrolled identity's real ID is in no added line, message or tracked file.
+   - **The remote** (`git ls-remote origin`, this session):
+     - `alpha-candidate-2026-10` at `65df7f339e77df29bc167e7b9de7201e15f05847`, an ancestor of `27d6308` (a fast-forward);
+     - `master` `c9e1fb6`, `v2-beta` `7989b03`, `traffic-log` `f7ea469`;
+     - tags `V1.0`, `v0.1.0`, `v1.0.0`, `v1.1.0` and `v2.0.0-alpha.1` (`c342a93` → `b33c2f3`); **no `v2.0.0-alpha.2`**.
+     - **Releases** (anonymous API): v1.1.0 (the latest), v1.0.0 and v2.0.0-alpha.1 (pre-release); none for v2.0.0-alpha.2. A draft would not be visible anonymously.
+
+     **The agreed state; nothing to stop for.**
+
+13. **The publication: agreed, not yet carried out.**
+   - **What is pushed:** only `C=27d630896e3754ca095cb88d947271e623f4c021`, by its full hash, to `refs/heads/alpha-candidate-2026-10`, without `+` or `--force`. Not pushed: this record's commit, `v2-ui-refresh`, either backup branch, `v2-beta`, `master` or `wip/*`.
+   - **Immediately before it:** `git ls-remote` must show the branch at `65df7f3` and no `v2.0.0-alpha.2` tag, or the sequence stops.
+   - **The gate:** "Dashboard checks" and "v2 portable checks" (its Python 3.10 and 3.12 jobs) `completed` with `success` at `head_sha` `C`. Otherwise no tag.
+   - **Then the tag:** annotated `v2.0.0-alpha.2` on `C`, its message laid out as alpha.1's (title, one paragraph, the CI runs).
+   - **Then the pre-release,** from that tag (never letting GitHub create one), pre-release and not latest:
+     - its title: the notes' title;
+     - its body: the notes at `C` without the title, links pinned to the tag, the CI runs, and the three hashes of section 11;
+     - the notes' pending items and limitations unchanged.
+   - **Blocked in this shell: it holds no GitHub credential.** `GIT_TERMINAL_PROMPT=0 git push --dry-run` stopped at the username prompt (exit 128), so nothing was sent. The shell has no VS Code askpass in its environment (sessions 73-110 pushed from VS Code's terminal), no credential helper, no `gh` and no SSH key for GitHub.
+   - The results go in the next local record.
+
+14. **Not changed.** `27d6308` and its tree; the version `2.0.0a2`; the release notes and the release documents. `master`, `v2-beta`, `alpha-candidate-2026-10` and every tag and release on GitHub, alpha.1's among them. Both backup branches; every sealed session and package; the runtime code. The deferred recognition-range and chat improvements. Nothing pushed, tagged or published.
+
+**Next:** with a GitHub credential, the plan's steps 1-4 on `27d6308` (section 13). Two ways:
+- Claude is run from a VS Code terminal, as before;
+- or the maintainer pushes `27d6308`, and Claude reads CI anonymously, then tags and creates the pre-release once a credential is available.
 
 ## Session 110 log (Claude, 2026-10-21): the one-hour live-dashboard trial `dtr-20261021T065058Z` recorded read only (all five parts passed; the operator's report recorded apart); the branch prepared as the v2.0.0-alpha.2 candidate for the 24 October review checkpoint (`622ea61`); the outgoing content scanned; the push and tagging plan written; nothing pushed or tagged
 
