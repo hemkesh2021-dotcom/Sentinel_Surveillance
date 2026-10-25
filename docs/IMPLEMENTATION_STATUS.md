@@ -1,6 +1,8 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-26, session 114, part 4 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 114, part 4: shorter text on phones, in the approved style; the restyle's before/after comparisons repaired; local only.** The code is `485f3f6`; this record follows it. At most 599 px wide, the freshness bar is one short line with its time in either state (NOT CURRENT at once, with its words), and how the page stays current is a closed, labelled disclosure; on an incident page the snapshot note, why there is no snapshot (a short line stays in the picture's place) and the command-line acknowledgment are labelled disclosures holding the full text, while the title, severity, status, the event, the acknowledgment's state and every failure stay in view. On phones the picture starts 53-131 px sooner, inside the first screen at 320×640. Wider screens keep every full text; the desktop layout and computed styles were checked identical; colours, fonts, tokens, shadows, motion, navigation and controls unchanged. Part 3's 10 "side-by-side pairs" were HTTP 404 pages: rebuilt directly from the PNG files and looked at, the claim corrected in the part 3 log; the mobile comparisons kept beside them, outside Git. 14 new browser tests; 7 of 7 mutations caught; the 25 page-rendering modules: 877 passed, 1 skipped. Synthetic data only; nothing run on the device, pushed or published.
+Last updated 2026-10-26, session 115 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+
+**Session 114, part 4: shorter text on phones, in the approved style; the restyle's before/after comparisons repaired; local only.** The code is `485f3f6`. At most 599 px wide, the freshness bar is one short line with its time in either state (NOT CURRENT at once, with its words), and how the page stays current is a closed, labelled disclosure; on an incident page the snapshot note, why there is no snapshot (a short line stays in the picture's place) and the command-line acknowledgment are labelled disclosures holding the full text, while the title, severity, status, the event, the acknowledgment's state and every failure stay in view. On phones the picture starts 53-131 px sooner, inside the first screen at 320×640. Wider screens keep every full text; the desktop layout and computed styles were checked identical; colours, fonts, tokens, shadows, motion, navigation and controls unchanged. Part 3's 10 "side-by-side pairs" were HTTP 404 pages: rebuilt directly from the PNG files and looked at, the claim corrected in the part 3 log; the mobile comparisons kept beside them, outside Git. 14 new browser tests; 7 of 7 mutations caught; the 25 page-rendering modules: 877 passed, 1 skipped. Synthetic data only; nothing run on the device, pushed or published.
 
 **Session 114, part 3: the maintainer's approved preview (v5) applied to the dashboard; local only.** The code is `7597fc6`. Carbon & Cream's dark mode is v5's deep black with ivory text and a gold highlight; every control answers as in session 114 (one trace on hover and focus, then a glow; an inset press with a pulse; a thin selected line; a pending edge only while its request runs; disabled never glows); navigation items show no ring or outline in any state, and keyboard focus changes nothing on them (the maintainer's decision; the accessibility trade-off is in the part 3 log); every light colour and the six other presets' dark colours unchanged, pinned by test. Before/after screenshots taken locally, never in Git (its side-by-side images were 404 pages, rebuilt in part 4). Nothing run on the device, pushed or published.
 
@@ -800,6 +802,9 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
    - **Answered (session 114, part 3; the maintainer, 2026-10-26):** the compact sidebar's tooltips, the visible switch borders, the orange dark warnings and the palette choices stay; no further design changes for now. The review screenshots are kept in `~/sentinel-design/sentinel-ui-review/` (outside Git; part 3 log, section 7).
    - **Done (session 114, part 4):** shorter text on phones (`485f3f6`): the freshness bar one line with its time, the incident page's explanations behind labelled disclosures, the essentials and every failure in view, wider screens unchanged; 14 browser tests, 7 of 7 mutations caught, the 25 page-rendering modules 877 passed, 1 skipped. Part 3's comparisons, which were 404 pages, rebuilt from the PNG files; the mobile comparisons added beside them (session 114 log, part 4).
    - **Maintainer (session 114, part 4):** look at `mobile-text/before-after/` and the rebuilt `before-after/` in the review folder; say whether the short lines and the disclosures' labels read well, and whether the 320 px phone's picture (only its top 26 px in the first screen) or the blank line under the current line at 360 and 320 px needs a layout change (part 4 log, section 7).
+   - **Done (session 115):** LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL the rollback (`378ae85`); step 4 can measure a set (`f77b0ff`); the files verified against the Hub; guarded smoke tests with a synthetic picture passed for both sets; D46 unchanged, so `--scene` refuses LFM2.5-VL until a profile admits it (D104; session 115 log).
+   - **Maintainer (session 115):** when convenient, after a reboot, the step-4 candidate measurement of LFM2.5-VL (`~/sentinel-prep/step4cand-lfm25-f77b0ff/`, blocks LCa-LCf; about 20 min; session 115 log, section 10); then the acceptance decision; until then runs keep `--scene-model-set lfm2-vl`.
+   - **Claude, next (session 115):** record the measurement read only; after an acceptance, the profile entry and `profiled=True` in a separate commit, then a face + scene + chat validation package with LFM2.5-VL.
    - **Claude, next (session 114):** on instruction: the chat change's device validation package, or a read-only plan toward the requested range (the camera facts first; then session 113's steps 3-4, thresholds unchanged), or changes to the applied style or the phone text.
    - **Done (session 112):** v2.0.0-alpha.2 published: `27d6308` pushed alone as a fast-forward of `alpha-candidate-2026-10`; Dashboard checks and both portable jobs passed on it; the tag `v2.0.0-alpha.2` and the pre-release (not latest) created (session 112 log).
    - **Maintainer (session 112):** the action in the session 112 section of `docs/LOCAL_NOTES.md` (excluded). The 24 October review checkpoint on the pre-release. Whether to update the wiki (it still describes alpha.1) and when to push this record's local commits are your decisions.
@@ -1197,6 +1202,183 @@ Notes on partial and in-progress rows:
   - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Session 50: Step 5 ran it on the device (camera, detector, scene server, Telegram; see the session 50 log). Not done: the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 115 log (Claude, 2026-10-26): LFM2.5-VL-1.6B made the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; the model downloaded and verified; guarded smoke tests of both sets with a synthetic picture; step 4 able to measure a set, and its candidate package for LFM2.5-VL prepared, not launched
+
+1. **The request (the maintainer, 2026-10-26).** After session 114, part 4: migrate scene analysis and VLM chat to `LiquidAI/LFM2.5-VL-1.6B`, keeping the UI work in separate commits.
+   - Establish the real configuration (paths, binary and revision, launch arguments, chat template, preprocessing, sampling), never from a comment or the files present.
+   - Download the official GGUF files at an immutable revision into `~/models/lfm2.5-vl/`, check disk space and integrity against upstream metadata; keep `~/models/lfm2-vl/` intact; use the new model's own projector; weights outside Git.
+   - A reversible migration: compatibility with the installed llama.cpp (a newer build only separately, pinned, never replacing the working binary); scene and chat consistently on the new model; an explicit rollback; model identifiers, templates, image inputs, response parsing and the chat budget's timing metadata checked; sampling and preprocessing differences explained. Monitoring priority, deadlines, cancellation, memory guards, token caps and context limits preserved; no limit raised; no timing estimate carried over. No change to face recognition, thresholds, enrollment, UI styling or admission decisions; historical evidence and pinned packages kept.
+   - Focused tests; then, once other jobs finish, a bounded smoke test with a synthetic picture, one model server and the existing guards. A local commit; then the next short face + scene + chat validation step prepared, not launched. Public model downloads authorized; nothing pushed, uploaded or published.
+   - **Asked and answered:**
+     - *Admission:* LFM2.5-VL has no accepted profile and D46 allows no bypass. The maintainer chose **"Keep D46, new default"**, recorded as **D104 (maintainer decision, 2026-10-26): LFM2.5-VL-1.6B is the default scene and chat model set; D46 unchanged**: LFM2.5-VL is the configured default; `sentinel run --scene` refuses it, and chat with it, until a step-4 profile run measures it and they accept that profile; the next step is that measurement's package; `--scene-model-set lfm2-vl` keeps today's admitted runs. A `--scene-validation` option drafted before the answer was removed.
+     - *Smoke-test memory:* MemFree was about 2.95 GB (this session's reads filled the page cache), too low for the guard's 1 GiB floor during a model load. The maintainer ran the D37 cache drop (`/proc/vmstat` `drop_pagecache` 0 → 1 confirmed before the run; their first answer came before the counter showed it).
+2. **The configuration before the change (traced from code, runs and the binary).**
+   - `sentinel run --scene` took `--llama-server ~/llama.cpp/build/bin/llama-server`, `--scene-model ~/models/lfm2-vl/LFM2-VL-1.6B-Q4_0.gguf`, `--scene-mmproj ~/models/lfm2-vl/mmproj-LFM2-VL-1.6B-Q8_0.gguf` from the CLI defaults; the one-hour trial's package (`dash-trial-4e1d4f5`) passed none of these, with the manifest `model_revision: lfm2-vl-1.6b-q4_0` and `resource_profile_id: step4cand-demo-20261007T090339Z`.
+   - The launch (`scene/llama_server.py`): `--model M --mmproj P --host 127.0.0.1 --port 18081 --n-gpu-layers 999 --ctx-size 2048 --parallel 1 --cache-ram 0`; `LD_PRELOAD` L4T libcuda, `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1`, no `LLAMA_ARG_*`. Ready only with every layer and the vision encoder on CUDA0, L4T libcuda only, and every llama/ggml/mtmd library from the binary's own directory.
+   - The binary: llama.cpp `98dc1418ea0491d62948f712ed534ece3b773564` (2026-04-25, `version: 8932`), GNU 13.3.0, CUDA 12.6 (`nvcc` 12.6.68), `CMAKE_CUDA_ARCHITECTURES=87`, Release, `GGML_NATIVE=ON`; `llama-server` SHA-256 `3d6cbfe0…` equal to the accepted profile's pin; L4T R36.4.7.
+   - The chat template: none passed; b8932's server enables Jinja by default (`common.h`: `use_jinja = true`, reasoning format `deepseek`), so it applies the GGUF's own template.
+   - Image input: the runtime's 480×360 JPEG at quality 60 (`opencv_jpeg`), then the `lfm2` projector's bilinear smart resize within 64-256 image tokens (b8932's `clip.cpp`, which already cites LFM2.5-VL-1.6B's `processor_config.json`).
+   - Sampling: scene temperature 0.05, at most 200 tokens, the SceneReport JSON schema as `response_format`; chat temperature 0.2, at most 120 tokens; everything else the server's defaults (b8932 `common.h`: top-k 40, top-p 0.95, min-p 0.05, repetition penalty 1.00, i.e. off).
+   - Admission: the accepted profile pins the model and projector (name, size, time, SHA-256), the binary and seven libraries, the flags, the scene interval and the scene request's fingerprint `3057dacd…` (which includes the request's model name `lfm2-vl`).
+3. **The model files.**
+   - Repository `LiquidAI/LFM2.5-VL-1.6B-GGUF`, pinned at `36fc16bc95133424921bcc3da009e83b2f23ffb5` (`main` on 2026-10-26; last modified 2026-08-24; not gated); licence LFM Open License v1.0; base model card `LiquidAI/LFM2.5-VL-1.6B` read at `919fde3d022e3f90a4716006f993938ee8c2eb97`.
+   - The two candidate names were verified against the revision's file list (the projector's `1.6b` is lower case).
+   - Drive 2 (`~/models` is its bind mount) had 215,652,126,720 B free. Each file was downloaded from `resolve/<revision>/` to a `.part` name and renamed only after its size and SHA-256 matched the Hub's LFS record:
+
+     | File | Bytes | SHA-256 (upstream = local) |
+     |---|---|---|
+     | `LFM2.5-VL-1.6B-Q4_0.gguf` | 695,752,480 | `8186364a4e7c3ad30f6dd3d3b7a4e0074c77dd91eed6cad5d8be9090ce285804` |
+     | `mmproj-LFM2.5-VL-1.6b-Q8_0.gguf` | 583,109,888 | `2ce89e610c56f3198ece2b86cf61743a08b9307279c89125eb2412ebb908689d` |
+
+   - `~/models/lfm2-vl/` is untouched: its five GGUF hashes were recorded before the download (the Q4_0 and Q8_0 projector equal the accepted profile's pins).
+4. **Compatibility with b8932: no new build.**
+   - GGUF metadata (llama.cpp's own `gguf-py`, read only): the text model is the same architecture with the same 148 tensors; it differs in names, tags, languages, a dropped `add_eos_token` key and its embedded chat template. The projector is the same type (`lfm2`), image size 256, patch 16, width 1152, scale factor 2, but has 27 vision blocks (441 tensors) where LFM2-VL's has 26 (427).
+   - b8932 loads it fully offloaded (17/17 layers, the vision encoder on CUDA0) and answers (section 8). The working binary and its libraries are unchanged; no build was made.
+5. **Template, preprocessing and sampling.**
+   - *Template:* LFM2.5's is 2,553 characters (LFM2-VL's 434); both are ChatML. For Sentinel's two requests (a system string, then one user turn with the picture and text; chat's history is inside the user text) both render the same; LFM2.5's extra branches (tools, a list-valued system message, `</think>` trimming of earlier assistant turns) are never reached. The server applies the model's own template (`/props`: SHA-256 `013eed60…`, equal to the file's). No answer contained a `<think>` tag.
+   - *Preprocessing:* identical in this build (the same projector type and settings; 325 prompt tokens for a scene request and 310 for a chat question with either model).
+   - *Sampling:* no change is required. LiquidAI's LFM2.5-VL card recommends temperature 0.1, min-p 0.15 and repetition penalty 1.05; Sentinel keeps its own values (above). Whether that recommendation differs from LFM2-VL's was not checked (the local copy of the old card has none). Any sampling change would be a separate, measured decision.
+6. **What changed (`378ae85`; the UI work stays in its own commits).**
+   - `sentinel.scene.models`: two scene model sets, each a model with its own projector, the model name its requests carry, the `model_revision` its manifest must declare, its files' name, size, time and SHA-256, and its source. `lfm2-vl` is exactly the accepted profile's files and request (fingerprint `3057dacd…`, unchanged); `lfm2.5-vl` is the pinned download, `profiled=False`.
+   - `sentinel run --scene-model-set` (default `lfm2.5-vl`; `lfm2-vl` restores the earlier defaults exactly). Scene and chat requests carry the set's model name from one source (`SceneOptions`, passed to both request factories), so the two can never differ.
+   - Admission, D46 unchanged: `--scene` refuses a set that no accepted profile measured, before any process, with its reason; a declared `model_revision` must be the set's; a profile's request fingerprint is compared with the selected set's (the same value for `lfm2-vl`), so a future acceptance needs data only (a profile entry and `profiled=True`).
+   - Unchanged for both sets: the binary and flags, prompts, sampling, token caps, deadlines, the scene interval and job timeout, the chat gate's memory limits, `SIDE_GRACE_S`, and the chat pace, which starts from its fallback in every run (no measured pace is kept across runs; the fallback is a deliberately slow assumption, not a measurement of either model).
+   - `benchmarks/runner/scene_smoke.py`: a bounded smoke test of one set with a synthetic picture through the runtime's own server class, request classes and parsers.
+7. **Step 4 can measure a set (`f77b0ff`).** `operator_check --scene-model-set` (with `--step4-identity` and `--execute-workload step4`, `step4plr` or `step4cand` only) passes the set's `--model`, `--mmproj` and `--scene-request-model` to the profiler, which passes the last to the replay workload; the identity snapshot covers the set's files. Without a set every command line, identity file set and request is unchanged.
+8. **Verified locally.**
+   ```
+   T = PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m pytest -q -p no:cacheprovider   # Python 3.10.14, in the worktree
+   T tests/unit/test_scene_models.py tests/unit/test_scene_admission.py tests/unit/test_llama_server.py \
+     tests/unit/test_scene_server.py tests/unit/test_scene_chat.py tests/unit/test_demo_runtime.py \
+     tests/unit/test_memory_policy.py tests/unit/test_face_runtime.py tests/unit/test_adapters.py   # 402 passed
+   T tests/unit/test_chat_budget.py tests/unit/test_chat_gate.py tests/unit/test_cli_stdout.py tests/unit/test_config.py \
+     tests/unit/test_scene_analyzer.py tests/unit/test_scene_completion.py tests/unit/test_scene_report.py \
+     tests/unit/test_step4.py tests/unit/test_step5_guard.py   # 366 passed
+   T $(grep -l "operator_check\|demo_profile\|demo_workload\|step4_criteria" tests/unit/*.py)   # the 16 modules that use the runners: 1071 passed in 650.87 s; exit 0
+   ```
+   - Mutations: 10 of 10 for the runtime change, 9 of 9 for step 4's (each in a scratch copy).
+   - The full suite was not run.
+   - **Guarded smoke tests** (`step5_guard --from-launch --duration-s 600`, without `--step4-headroom`: this session's tools held about 2.4 GB; one server at a time; the synthetic picture only; results in `~/sentinel-runs/smoke/`):
+
+     | Run | Verdict | Ready | First scene job | First chat answer | Guard |
+     |---|---|---|---|---|---|
+     | `lfm25-smoke-20261025T211006Z` | failed: the tool's release check | 3.56 s, 17/17 | 2.59 s (325 prompt tokens in 1,145 ms; 87 tokens at 16.3 ms) | 0.92 s | no stop; peak pressure 4.48 GB, min MemFree 1.90 GB |
+     | `lfm25-smoke-20261025T211548Z` | passed | 2.53 s, 17/17 | 2.14 s (325 in 786 ms; 82 at 16.2 ms) | 0.96 s (310 in 453 ms; 32 at 14.8 ms) | no stop; 4.51 GB, 1.58 GB |
+     | `lfm2-rollback-smoke-20261025T211632Z` | passed | 2.79 s, 17/17 | 2.52 s (325 in 706 ms; 111 at 16.0 ms) | 0.81 s (310 in 443 ms; 23 at 14.7 ms) | no stop; 4.52 GB, 1.43 GB |
+
+     - Each run: `/props` showed the image modality and `b8932-98dc1418e`, and the model file's own template; both requests rendered as ChatML; 3 of 3 scene reports passed the lane's strict parser (0 persons, no fire, no threat); 3 of 3 chat answers passed chat's checks, with timings and a pace sample; the stop was clean (return code 0, no server left, the port closed).
+     - The first run's only problem was a defect in the smoke tool: it judged the release record with the wrong helper (`files_not_eligible`), although the release had worked (MemFree rose 1.93 → 3.07 GB). Fixed, and the rerun passed.
+     - Repeated identical requests reused the server slot's prompt cache (`cache_n` 321 of 325), so only the first of each kind stands for a new frame.
+     - With the synthetic picture, both models' answers named the red and the blue shape every time and every report counted 0 persons; LFM2.5-VL's answers named the EXIT text 6 of 6 times over its two runs, LFM2-VL's 1 of 3. One synthetic picture: not a quality comparison.
+     - **An unexplained memory observation:** after the first run ended (no process left), MemAvailable stayed about 1 GiB lower than before it, and CmaFree fell from 128 MB to 23 MB; it had not recovered by the later runs, whose guard baselines were about 3.44 GB. The cause was not established (reading the GPU driver's pools needs root).
+   - **Not established:** quality or accuracy of either model; anything under the detector and face load (the smoke tests ran the model alone); memory, timing or stability of the combined workload; any camera or live input.
+9. **Switch and rollback.**
+   - Today (D46): `sentinel run … --scene` refuses the default `lfm2.5-vl`; add `--scene-model-set lfm2-vl` (manifest `model_revision: lfm2-vl-1.6b-q4_0`) for the admitted configuration, byte-identical in files, binary, flags and requests to before.
+   - After an acceptance: the default needs no flag; the manifest names `model_revision: lfm2.5-vl-1.6b-q4_0` and the new profile.
+   - Code: `git revert` of `378ae85` and `f77b0ff`, or a checkout of `6c6d814`; files: none (`~/models/lfm2-vl/` untouched; `~/models/lfm2.5-vl/` may be removed); the binary is the same for both sets.
+10. **The next step: the step-4 candidate measurement of LFM2.5-VL (prepared, not launched).** The D58 candidate procedure (the one behind the accepted profile `step4cand-demo-20261007T090339Z`, D59), unchanged except `--scene-model-set lfm2.5-vl`: the profiler loads the set's model and own projector, and the replay workload's scene requests name `lfm2.5-vl`. A pass makes the run eligible for the maintainer's review only; nothing is admitted (D46). Chat is not part of it. Blocks LCa-LCf follow session 45's CDa-CDf, run in this worktree. They use the repository's venv with `PYTHONPATH=src` (the worktree has no venv of its own), read the clip's recorded hash from the main checkout's local notes, and pass the set to the identity snapshot, the measurement and the rehash. LCb also checks that the snapshot's model hashes are the set's pins.
+   - **Before you launch (D50):**
+     - *Duration:* about 20 minutes: LCb's identity snapshot about 1-2 min; LCd about 17 min, bounded at about 26 min.
+     - *Position:* anywhere. A recorded clip is replayed: no camera, nobody needs to be in view.
+     - *Timed actions:* none. Type nothing while LCd runs.
+     - *Finish:* `LCd_exit=` is printed; then paste LCe and LCf.
+     - *Prerequisites:* a fresh reboot; a plain SSH session from the Mac (not VS Code's terminal); VS Code, Claude Code and other development tools closed (the run records them and is not eligible otherwise); no other Sentinel run or llama-server. LCc stops the display manager and drops the page cache (D37); `sudo` asks for your password there.
+   - **LCa** (the session's variables):
+     ```bash
+     cd /home/villain8001/sentinel-worktrees/v2-ui && set -o pipefail
+     PIN=f77b0ff14d9f2292a993c67237a186fc6a6aecd5
+     SET=lfm2.5-vl
+     RUN="step4cand-lfm25-$(date -u +%Y%m%dT%H%M%SZ)"
+     D="$HOME/sentinel-runs/d1-checklist/$RUN"
+     CLIP="$HOME/clips/two_people_doorway_60s_2026-09-29.mp4"
+     NOTES="$HOME/sentinel-surveillance/docs/LOCAL_NOTES.md"
+     OC=(env PYTHONPATH=src /home/villain8001/sentinel-surveillance/.venv/bin/python benchmarks/runner/operator_check.py)
+     mkdir -p -m 700 "$HOME/sentinel-runs/d1-checklist" && mkdir -m 700 "$D" && echo "artifacts: $D"
+     ```
+   - **LCb** (the checks and the identity snapshot, before the cache drop):
+     ```bash
+     ( set -euo pipefail
+       [ "$(git status --porcelain --untracked-files=no | wc -l)" -eq 0 ] || { echo "tracked changes present"; exit 1; }
+       git merge-base --is-ancestor "$PIN" HEAD || { echo "HEAD does not contain $PIN"; exit 1; }
+       git diff --quiet "$PIN" HEAD -- benchmarks src tests config pyproject.toml || { echo "code differs from $PIN"; exit 1; }
+       printf '%s  %s\n' \
+         71945cf4a6a27dbc3d4ed0077f1cca644681f9b1a7a281c8a5850689e7af27d4 benchmarks/runner/demo_profile.py \
+         0eea67ae2db0e71cd6e0bf967cfae1dd2fc5dbf8f8a46fa891cb093077b14577 benchmarks/runner/demo_workload.py \
+         39f81ea81d6aae207d0e66e8b8328facfed1ad954c4ba6e6ff897fec75f9352a benchmarks/runner/operator_check.py \
+         a1a356010c60ab4b0222161fa912b83adb5aa75b7e2c2381e6e398e5d3499da8 benchmarks/runner/step4_criteria.py \
+         855367147069b240933e8c243101dca0185b94a389e5dfbf6314e1d97a58a735 benchmarks/runner/gpu_alloc_probe.py \
+         645b13b2c935640bec0948db96ce7df3667c5dda8bd7acbec79886d222d72822 src/sentinel/memory_policy.py \
+         99f7f983a0626f4ca2edfdc3cf960b3676d2eb47155160cbf49507db0587e095 src/sentinel/scene/models.py \
+         338ec601f630e3804a9ebe597f1777e474f211231c6e0b0b6091b35216e10b98 src/sentinel/scene/llama_server.py \
+         | sha256sum -c --quiet - || { echo "runner checksum mismatch"; exit 1; }
+       SHELL_THP="$(awk '/^THP_enabled:/ {print $2}' /proc/self/status)"
+       [ "$SHELL_THP" = 1 ] || { echo "this shell's THP_enabled is ${SHELL_THP:-unreadable}, not 1: open a new SSH session"; exit 1; }
+       { echo "utc=$(date -u +%FT%TZ)"; echo "boot_id=$(cat /proc/sys/kernel/random/boot_id)"; echo "boot_started=$(uptime -s)"
+         echo "commit=$(git rev-parse HEAD)"; echo "pin_commit=$PIN"; echo "scene_model_set=$SET"; echo "runner_sha256=verified"
+         echo "tracked_changes=$(git status --porcelain --untracked-files=no | wc -l)"
+         echo "shell_thp_enabled=$SHELL_THP"
+         echo "display_manager=$(systemctl is-active display-manager || true)"; } > "$D/provenance.txt"
+       CLIP_SHA="$(grep -F 'room_static_60s_2026-09-29.mp4' "$NOTES" | grep -oE '[0-9a-f]{64}' || true)"
+       [ "${#CLIP_SHA}" -eq 64 ] || { echo "recorded clip hash not found in $NOTES"; exit 1; }
+       "${OC[@]}" --step4-identity --step4-clip "$CLIP" --step4-clip-sha256 "$CLIP_SHA" --scene-model-set "$SET" \
+         | tee "$D/identity.json"
+       python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["status"] == "complete"; print(r["result_file"])' \
+         "$D/identity.json" > "$D/identity.path"
+       cp "$(cat "$D/identity.path")" "$D/identity-result.json"
+       python3 -c 'import json,sys; f=json.load(open(sys.argv[1]))["step4_identity"]["files"]; assert (f["model:llm"]["sha256"], f["model:mmproj"]["sha256"]) == (sys.argv[2], sys.argv[3]), "not the pinned LFM2.5-VL files"' \
+         "$D/identity-result.json" 8186364a4e7c3ad30f6dd3d3b7a4e0074c77dd91eed6cad5d8be9090ce285804 \
+         2ce89e610c56f3198ece2b86cf61743a08b9307279c89125eb2412ebb908689d
+       echo "model_files_sha256=pinned" >> "$D/provenance.txt"
+       echo "identity_finished_utc=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["finished_utc"])' "$D/identity.json")" >> "$D/provenance.txt"
+       echo "LCb passed"
+     ); echo "LCb_exit=$?" | tee -a "$D/provenance.txt"
+     ```
+   - **LCc** (headless, then the D37 cache drop):
+     ```bash
+     sudo -v
+     sudo systemctl stop display-manager
+     sync
+     sudo sysctl -w vm.drop_caches=1
+     echo "d37_drop_utc=$(date -u +%FT%TZ)" | tee -a "$D/provenance.txt"
+     ```
+   - **LCd** (Check 9, then the measurement):
+     ```bash
+     ( set -euo pipefail
+       grep -qx 'LCb_exit=0' "$D/provenance.txt" || { echo "LCb did not pass in this directory: start again at LCa"; exit 1; }
+       grep -q '^d37_drop_utc=' "$D/provenance.txt" || { echo "d37_drop_utc not recorded: run LCc's last line first"; exit 1; }
+       echo "LCd started $(date -u +%T) UTC: about 17 min, bounded at about 26 min; type nothing until LCd_exit= appears"
+       "${OC[@]}" --execute-workload check9 --operator-dropped-caches | tee "$D/check9.json"
+       CHECK9="$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["check9"]["status"] == "bounded_smoke_complete"; print(r["result_file"])' "$D/check9.json")"
+       echo "check9_result=$CHECK9" >> "$D/provenance.txt"
+       timeout -s TERM --kill-after=30s 1440s "${OC[@]}" \
+         --execute-workload step4cand --check9-report "$CHECK9" --identity-report "$(cat "$D/identity.path")" \
+         --step4-clip "$CLIP" --confirm-step4cand-prerequisites --operator-dropped-caches --scene-model-set "$SET" \
+         | tee "$D/step4cand.json"
+       echo "LCd passed: the D58 candidate procedure measured $SET and the run is eligible for maintainer review under step4cand-wtd-plr-combined-cache-off-v2 (never accepted here: admission needs a separate maintainer-approved commit, D46)"
+     ); echo "LCd_exit=$?" | tee -a "$D/provenance.txt"
+     ```
+   - **LCe** (copy the evidence beside the provenance):
+     ```bash
+     for f in check9 step4cand; do
+       [ -s "$D/$f.json" ] && python3 -c 'import json,os,sys; print(os.path.dirname(json.load(open(sys.argv[1]))["result_file"]))' "$D/$f.json" || true
+     done | while read -r dir; do cp -a "$dir" "$D/"; done; ls -l "$D"
+     ```
+   - **LCf** (the identity rehash: the files are unchanged since the snapshot):
+     ```bash
+     ( set -euo pipefail
+       CLIP_SHA="$(grep -F 'room_static_60s_2026-09-29.mp4' "$NOTES" | grep -oE '[0-9a-f]{64}' || true)"
+       "${OC[@]}" --step4-identity --step4-clip "$CLIP" --step4-clip-sha256 "$CLIP_SHA" --scene-model-set "$SET" \
+         | tee "$D/identity-rehash.json"
+       NEW="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["result_file"])' "$D/identity-rehash.json")"
+       python3 -c 'import json,sys; a,b=(json.load(open(p))["step4_identity"]["files"] for p in sys.argv[1:3]); c=sorted(k for k in set(a)|set(b) if (a.get(k) or {}).get("sha256")!=(b.get(k) or {}).get("sha256")); print("rehash equal" if not c else "CHANGED: %s" % c); sys.exit(1 if c else 0)' \
+         "$D/identity-result.json" "$NEW" | tee -a "$D/provenance.txt"
+     )
+     ```
+11. **For the maintainer:**
+   - review the migration and the step-4 package; when convenient, run the package (section 10) after a reboot, from a plain SSH session with VS Code and Claude Code closed;
+   - then decide on acceptance (a separate commit: the profile entry and `profiled=True`), and only after that on a face + scene + chat validation run with LFM2.5-VL (chat stays a validation run under D77);
+   - note the unexplained memory observation (section 8).
 
 ## Session 114 log (Claude, 2026-10-25): chat answers sized to the time before the next periodic scene job (session 113's step 1), the image sent checked live when a question starts, shortened answers labelled, the question kept in the page; portable tests, mutations and the full suite; the camera and distance questions and two later requirements recorded as pending; nothing launched, pushed or published
 
