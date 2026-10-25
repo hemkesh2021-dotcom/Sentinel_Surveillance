@@ -249,8 +249,13 @@ on any machine without a camera, GPU or model; browser tests use headless Chromi
    live view and the operator's own questions together, validation only, daylight) passed its five parts: 8 questions
    accepted, 5 answered, 3 ended by scene jobs; the operator reported the chat generally useful (user-reported, not
    judged). Untested: answer content beyond G's three answers and the operator's impression, chat about another
-   moment (G4), and the alpha configuration with snapshots on. Recognition-distance and chat improvements are
-   deferred until after the 24 October review (the maintainer, session 110).
+   moment (G4), and the alpha configuration with snapshots on. Recognition-distance and chat improvements were
+   deferred until after the 24 October review (the maintainer, session 110). After it (session 114, 25 October,
+   local, after alpha.2; portable tests only, not run on the device): chat answers are sized to the time before the
+   next periodic scene job's grace, from chat's own measured pace, and labelled when shortened; the image sent is
+   checked live when a question starts; a question that ends unanswered stays in the page. Its effect on
+   cancellations is unmeasured. The recognition range requested since (about 4-5 m) is a requirement, not a
+   validated capability.
 4. The feature controls on the device and in Safari (`features`, two sessions: the face session ran once with its switch
    items not exercised, session 69; the scene session pending), departure and return on the dashboard, and resource
    use with face and the live view together (the dashboard check ran; session 68).

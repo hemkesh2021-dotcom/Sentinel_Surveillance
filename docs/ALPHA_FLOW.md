@@ -131,35 +131,67 @@ flow. Without them, nothing below exists and the outputs are as before.
   `sentinel.db*`, `snapshots/` and `snap-*.jpg`.
 - **Not measured:** the CPU, memory and disk cost of either on the device.
 
-## Chat about the live picture (D74; opt-in, unavailable in this build)
+## Chat about the live picture (D74; opt-in, not admitted in this build)
 
 `--chat` adds a panel beside the live view (below the incidents on a narrow
-window) for questions about the picture the camera is showing. In this build it
-says `Unavailable` and why: chat is not admitted, because concurrent scene
+window) for questions about the picture the camera is showing. In a normal run
+it says `Unavailable` and why: chat is not admitted, because concurrent scene
 analysis and chat have not passed the operator-run resource and interference
 checks. Ask stays disabled, the runtime keeps no frames for it, and no question
-reaches a model. Without `--chat` the panel says chat is off.
+reaches a model. Without `--chat` the panel says chat is off. A guarded
+validation run (`--chat-validation`, D77) asks the model to make those checks,
+and the page says so; it does not admit chat.
 
-Once admitted (a recorded decision after those checks; it also needs `--scene`):
+When chat may ask (admitted, or a validation run; it also needs `--scene`):
 
-- a question goes to the same scene model, on the scene worker, only while that
-  worker is idle. Scene jobs go first; one question at a time, one per 4 s,
-  never queued: a busy system says so;
-- it is about one identified frame, the newest live one. The answer names its
-  stream epoch, frame and ingest time, with its age when asked and when
-  answered, and is marked historical once that frame was no longer live. With
-  no live frame, the answer says so and the model is not asked;
-- it is advisory: chat cannot acknowledge incidents, change rules, control the
+- **Monitoring first.** A question goes to the same scene model, on the scene
+  worker. Scene jobs go first: a question asked during one waits for it, one
+  question at a time, one per 4 s, never queued. An incident's scene job ends a
+  running question at once. A periodic one lets it finish within a 1.5 s grace
+  (D81), then ends it; a cancelled question says why and is not retried.
+- **An answer sized to its time (session 114).** When a question could start,
+  the worker knows how long it has before the next periodic scene job's grace
+  would end it. Its answer limit is set from that time and from chat's own
+  measured pace (the time before the first answer token, and per token, from
+  the server's timings for earlier answers), never above the 120-token cap.
+  Until a pace has been measured, or after an answer ran past its planned end
+  (the load changed), a deliberately slow assumed pace is used. With a
+  measured pace, a time too short for a useful answer makes the question wait
+  for the next gap, for at most 5 s after it was accepted; after that it ends
+  as busy, without reaching the model. The grace and its cut-off are
+  unchanged, so a wrong estimate ends as a cancelled question, as before.
+- **Shortened answers say so.** An answer stopped by its smaller limit shows
+  its complete sentences and says that it was shortened and may have said
+  more; the unfinished rest is shown apart, marked as left unfinished. With no
+  complete sentence, the question ends as `Incomplete`, never as an empty
+  answer.
+- **About one identified, live frame.** A question takes the newest live
+  frame. When it starts, the frame sent must still be live: the one asked
+  about if it still is; otherwise (it waited, or the camera reconnected) the
+  newest frame if that one is live, which the answer then names with its own
+  stream epoch, frame and age when sent, saying that it replaced the one asked
+  about. With neither, the question ends as `No fresh frame` and the model is
+  not asked. The answer gives its frame's ingest time and its age when asked
+  (or sent) and when answered, and is marked historical once that frame was no
+  longer live.
+- **The question is kept.** One that ends without an answer (cancelled, busy,
+  incomplete, no fresh frame) comes back into the question box if it is empty,
+  to send again without retyping.
+- It is advisory: chat cannot acknowledge incidents, change rules, control the
   camera, run commands or say who anyone is. Text in the question, the picture
-  or an answer is treated as data;
-- only this page can ask (same origin, a token from the server that sent the
+  or an answer is treated as data.
+- Only this page can ask (same origin, a token from the server that sent the
   page). The conversation stays in the browser tab, and after a runtime
   restart the page asks for a reload before the next question.
-- **Not yet:** cancelling a question that is already running (a running one is
-  bounded by 120 tokens and the 20 s request timeout), and stopping new
-  questions under memory pressure (V2-29). The guide requires both, or chat
-  disabled where the latency target cannot tolerate it; both are conditions for
-  admitting it.
+- The runtime status gets counters and numbers only: the pace in use, the
+  wait for the worker apart from the time on the model, and the answer limits
+  and tokens of recent questions. No question or answer is logged.
+- Memory pressure stops new questions above 4.7 GB (three samples) and ends a
+  running one above 5.0 GB (D77).
+- **Not yet measured on the device:** the pace, how often answers are now
+  shortened or cancelled, the waits for the next gap and the scene jobs' waits
+  behind a question. The slow assumed pace, the 30-token minimum and the
+  0.5 s reserve are proposed values, not measurements.
 
 ## Limits
 

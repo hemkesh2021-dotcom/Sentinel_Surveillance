@@ -1,6 +1,26 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-21, session 112 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 112: v2.0.0-alpha.2 published.** `27d6308` pushed alone to `alpha-candidate-2026-10` as a fast-forward from `65df7f3` (no force), from VS Code's terminal. CI at `27d6308`: Dashboard checks success (run 39602379851); v2 portable checks success on Python 3.10 and 3.12 (run 39602380041; 2794 passed, 2 skipped in each). Then the annotated tag `v2.0.0-alpha.2` (`c5fd3b7`) on `27d6308`, and the GitHub pre-release, not latest (the latest is still v1.1.0): https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.2. Its body is the notes at the tag, word for word, with the old-to-new hashes of the notes' three pre-rewrite commits. `master`, `v2-beta`, alpha.1 and both backup branches unchanged; nothing else pushed (session 112 log). **Session 111, continued: on the maintainer's decision, the maintainer's history rewrite (R1-R3, all `status=0`, USER-SUPPLIED) removed the 17 `Claude-Session:` trailers. Verified again read only: of the 68 commits after `65df7f3`, 33 unchanged and 35 rewritten from `3dbc05f` on, with identical trees, authors and committers and no trailer left. The candidate is now `27d6308` (formerly `64d702a`, the same tree); the old tip `88dce49` stays on the local branch `backup/v2-ui-refresh-before-rewrite-2026-10-21`. Hashes in this record from `3dbc05f` on, written before the session 111 log's section 10, name the pre-rewrite history; the sealed evidence keeps them, and that section holds the map. The outgoing content and the remote rechecked: the agreed state. This shell holds no GitHub credential, so nothing is pushed, tagged or published yet (session 111 log, sections 8-14).** **Session 111: after the device's power loss (USER-REPORTED), the candidate `64d702a`, the tree, `git fsck` and the trial's seal rechecked, unchanged. The push stopped before its first step: 17 of the 67 outgoing commits (sessions 96-99 and `24f7fc1`) carry a `Claude-Session:` trailer, which session 110's scan patterns did not cover; removing it means a history rewrite, the maintainer's decision. Nothing pushed, tagged or published (session 111 log).** Session 110: **The one-hour live-dashboard trial `dtr-20261021T065058Z` recorded read only (USER-SUPPLIED; 29 sealed files verified, manifest SHA-256 `950f41c2679c4f6c5d4639ef316802f8f05063b63db9c5f4a7eb3040b21ab812`): all five parts passed. Then, on the maintainer's instruction, this branch prepared as the v2.0.0-alpha.2 candidate for the 24 October review checkpoint (`622ea61`: version `2.0.0a2`, release notes, release documents); the outgoing content scanned; the push and tagging plan written. Nothing pushed or tagged (session 110 log).**
+Last updated 2026-10-25, session 114 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 114: chat answers sized to the time before the next periodic scene job (session 113's step 1); local, portable tests only.** The code is `e5d8306`; this record follows it. Nothing run on the device, pushed or published.
+- **Chat:**
+  - each question's answer limit comes from the time until the next periodic scene job's grace would end it and from chat's own measured pace (a slow fallback until measured, and after an overrun), never above 120 tokens;
+  - a time too short waits for the next gap within the question's 5 s to start, then ends as busy;
+  - a shortened answer is labelled, with its unfinished rest shown apart; `incomplete` replaces an empty answer;
+  - the image sent is checked live when the question starts: the newest live frame, with its own facts, when the one asked about went stale; nothing sent when neither is live;
+  - the page keeps a question that ends unanswered; the status holds numbers only.
+  - **Unchanged:** scene priority, the incident preemption, the grace, deadlines, memory limits and thresholds.
+- **Tests:** 15 of 15 mutations caught. The full suite on Python 3.10.14: 1 failed (a test stand-in, fixed), 2852 passed, 2 skipped. Python 3.12.3 at `e5d8306`: 2853 passed, 2 skipped (torch, cv2), exit 0.
+- **Not established:** the device's pace and timings; any change in the cancellation rate (no reduction claimed); scene waits, deadlines and memory under the change.
+- **Recorded for later work (requirements, not implemented):**
+  - a recognition range target: the seat about 2-3 ft; the front door, about 4-5 m, primary; a configurable extended target beyond it; requested, not validated; never by lowering thresholds;
+  - a UI redesign direction with an interactive motion treatment, starting with a local component preview for the maintainer's review.
+- **Pending (the maintainer):**
+  - the PROPOSED values and decisions (session 114 log, section 6);
+  - the camera and distance questions (section 11);
+  - whether to prepare a device validation of the chat change (section 9).
+
+Session 113's summary (2026-10-25, after Review 1): read only, no commit. Why chat questions are cancelled, what limits recognition distance, and a proposed order (recorded in the session 114 log, section 1).
+
+Session 112's summary (2026-10-21): **Session 112: v2.0.0-alpha.2 published.** `27d6308` pushed alone to `alpha-candidate-2026-10` as a fast-forward from `65df7f3` (no force), from VS Code's terminal. CI at `27d6308`: Dashboard checks success (run 39602379851); v2 portable checks success on Python 3.10 and 3.12 (run 39602380041; 2794 passed, 2 skipped in each). Then the annotated tag `v2.0.0-alpha.2` (`c5fd3b7`) on `27d6308`, and the GitHub pre-release, not latest (the latest is still v1.1.0): https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.2. Its body is the notes at the tag, word for word, with the old-to-new hashes of the notes' three pre-rewrite commits. `master`, `v2-beta`, alpha.1 and both backup branches unchanged; nothing else pushed (session 112 log). **Session 111, continued: on the maintainer's decision, the maintainer's history rewrite (R1-R3, all `status=0`, USER-SUPPLIED) removed the 17 `Claude-Session:` trailers. Verified again read only: of the 68 commits after `65df7f3`, 33 unchanged and 35 rewritten from `3dbc05f` on, with identical trees, authors and committers and no trailer left. The candidate is now `27d6308` (formerly `64d702a`, the same tree); the old tip `88dce49` stays on the local branch `backup/v2-ui-refresh-before-rewrite-2026-10-21`. Hashes in this record from `3dbc05f` on, written before the session 111 log's section 10, name the pre-rewrite history; the sealed evidence keeps them, and that section holds the map. The outgoing content and the remote rechecked: the agreed state. This shell holds no GitHub credential, so nothing is pushed, tagged or published yet (session 111 log, sections 8-14).** **Session 111: after the device's power loss (USER-REPORTED), the candidate `64d702a`, the tree, `git fsck` and the trial's seal rechecked, unchanged. The push stopped before its first step: 17 of the 67 outgoing commits (sessions 96-99 and `24f7fc1`) carry a `Claude-Session:` trailer, which session 110's scan patterns did not cover; removing it means a history rewrite, the maintainer's decision. Nothing pushed, tagged or published (session 111 log).** Session 110: **The one-hour live-dashboard trial `dtr-20261021T065058Z` recorded read only (USER-SUPPLIED; 29 sealed files verified, manifest SHA-256 `950f41c2679c4f6c5d4639ef316802f8f05063b63db9c5f4a7eb3040b21ab812`): all five parts passed. Then, on the maintainer's instruction, this branch prepared as the v2.0.0-alpha.2 candidate for the 24 October review checkpoint (`622ea61`: version `2.0.0a2`, release notes, release documents); the outgoing content scanned; the push and tagging plan written. Nothing pushed or tagged (session 110 log).**
 - **The trial (validation only; never F2 or the combined run):**
   - 3,600 s from readiness on 21 October (T0 12:37:55 IST), daylight, after one D103 page-cache drop (reported apart); face recognition, scene analysis, the live view and the operator's own chat questions in the dashboard; no snapshots;
   - `HV_verdict=complete`, `HV_check_exit=0` and `alpha dashboard trial: passed` in the seal; `HH_exit=0` the maintainer's report (h-H prints it after the seal);
@@ -765,6 +785,13 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
 ## Next concrete task
 
 1. **The October 20 alpha (sessions 63-67): chat and face, as one plan.**
+   - **Done (session 114):** chat answers sized to their window; the image sent checked live at the start; shortened answers labelled; the question kept in the page (`e5d8306`; portable tests; the full suite on 3.10 and 3.12; session 114 log). The requested recognition range and the UI direction recorded (section 10); the camera and distance questions pending (section 11).
+   - **Maintainer (session 114):**
+     - decide the PROPOSED values and decisions (session 114 log, section 6);
+     - answer section 11 when convenient;
+     - say whether a device validation of the chat change should be prepared (section 9);
+     - review the local UI component preview before any dashboard change.
+   - **Claude, next (session 114):** the local UI component preview, for review only. Then, on the maintainer's instruction, either the chat change's device validation package, or a read-only plan toward the requested range (the camera facts first; then session 113's steps 3-4, thresholds unchanged).
    - **Done (session 112):** v2.0.0-alpha.2 published: `27d6308` pushed alone as a fast-forward of `alpha-candidate-2026-10`; Dashboard checks and both portable jobs passed on it; the tag `v2.0.0-alpha.2` and the pre-release (not latest) created (session 112 log).
    - **Maintainer (session 112):** the action in the session 112 section of `docs/LOCAL_NOTES.md` (excluded). The 24 October review checkpoint on the pre-release. Whether to update the wiki (it still describes alpha.1) and when to push this record's local commits are your decisions.
    - **Claude, next (session 112):** after the review, only on the maintainer's instruction. The recognition-distance and VLM chat improvements stay deferred until then; F2, false acceptance, accuracy, chat admission and the combined run stay pending.
@@ -1161,6 +1188,140 @@ Notes on partial and in-progress rows:
   - D-1: demo form, portable part (session 15, D43): `sentinel run` wiring, the scene server owner (D44), status snapshot, bounded shutdown, startup refusals. Session 50: Step 5 ran it on the device (camera, detector, scene server, Telegram; see the session 50 log). Not done: the confirming combined profile (D41), and everything D-1 leaves to V2-11/V2-19/V2-29 (runtime/core split, supervision, admission control).
   - D-2: demo form, portable part (session 15, D45): the loopback-only, read-only page and `/status.json`, served by `sentinel run`. Session 50: served on the device during Step 5 (loopback only; four `/status.json` captures saved by the guard). Session 51: a read-only incident detail view, `/incidents/<id>` and `.json` (D67), and the stopped-runtime acknowledgment (D68). Session 52: both checked on the device (`incident-page-20261009T112754Z`, USER-SUPPLIED), including viewing over the SSH forward (the maintainer's report). Also session 52: the opt-in live view (D69: JPEG pictures of the frames the runtime already reads, only while live) and incident snapshots (D70: the opening observation's own frame, with retention), portable. Session 53: their device check passed its saved-evidence checks (`preview-snapshot-20261009T131931Z`, USER-SUPPLIED); a run 2 screenshot showed green `LIVE` and `All components working` banners beside a picture marked `NOT CURRENT`. D71 (session 53) makes every current claim on the page last 5 s after the browser shows it, by CSS alone, with a headless-browser regression; the corrected display on the device is PENDING. Session 54: the restyled pages (D72), in-place updates (D73) and an advisory chat panel (D74, unavailable until admitted), portable; the Review 1 rehearsal package (PENDING). Not done: it stands in for, and does not replace, V2-17/V2-18/V2-21/V2-22 (no sessions, roles, API, web actions, compressed live video, clips, user-selected retention or backup).
   - V2-54: one job at a time, timeout and cancel exist in the scene lane; unload and memory are not done. **Open issue U19:** +0.983 GB remained after every check 8 process had stopped.
+
+## Session 114 log (Claude, 2026-10-25): chat answers sized to the time before the next periodic scene job (session 113's step 1), the image sent checked live when a question starts, shortened answers labelled, the question kept in the page; portable tests, mutations and the full suite; the camera and distance questions and two later requirements recorded as pending; nothing launched, pushed or published
+
+From `044b308` (clean), in the worktree `~/sentinel-worktrees/v2-ui` on `v2-ui-refresh`. Selected package: the chat parts of V2-54 and D-3 (portable). Face recognition's production path is unchanged.
+
+1. **Session 113 (Claude, 2026-10-25, after Review 1; read only, no commit, recorded here).**
+   - **Why questions are cancelled (supported by the code and the counters).** Chat and periodic scene analysis share one model slot and one worker. A periodic job that comes due while a question answers gives it the 1.5 s grace (D81), then ends it; it is not retried. In `dtr-20261021T065058Z`'s hour: 877 scene jobs (run time median 2.7 s, longest 4.2 s); of 8 accepted questions, 5 waited for a running scene job before starting, 7 were still answering when a periodic job came due, 4 finished within the grace and 3 were cut off. A question that starts as a scene job ends has about (4.0 - 2.7) + 1.5 = 2.8 s; after a job longer than the interval, only the grace, 1.5 s (session 113 said 1.3 s, counting the grace from the next job's due time; the code counts it from the job's arrival, which waits for the long job's result). Session 104's long answers took a median 3.6 s, including their wait.
+   - **Ruled out by the counters:** memory pressure (peak 4.37 GB, below 4.7 GB), scene deadline misses (0) and errors. **Not known:** each question's model time and answer length (`answer_ms` included the wait; tokens were not kept).
+   - **Also found:** the page cleared a question once it was accepted, so a cancelled one had to be retyped; `docs/ALPHA_FLOW.md`'s chat section still described the pre-D77 behaviour.
+   - **Face range (read only; supported findings):** faces come from the 640×480 substream (about 50-62 px wide at the seat; the 2304×1296 main stream is unused); detection runs at half scale (DeepFace pads to 1280×960, its YuNet wrapper shrinks to 640 px; installed source), and kept faces scored 0.90-0.93 against the 0.9 cut-off; in the trial, the full-resolution diagnostic pass found a face on 807 of 2,925 results where production found none (sizes only; the missed faces were as large as the found ones, median 56 against 57 px); live faces of about 57 px are enlarged about 2.8× to the model's 160×160, against enrollment faces of 559-858 px; recognition needs two agreeing once-a-second votes; a face votes only inside a person box. **Unknown:** the field of view, the face size at which detection or matching stops on this camera, whether the extra faces would match, false acceptance, and whether both streams show the same field of view. Session 113's own comparison of unknown-vote face sizes was withdrawn (other faces were in view).
+   - **Proposed order:** 1. window-sized chat answers; 2. the camera and distance facts (the maintainer's); 3. full-resolution face detection in production (reusing D88, the 0.9 cut-off and the 0.70 threshold unchanged); 4. face crops from the main stream.
+
+2. **The request (the maintainer, 2026-10-25).** Implement step 1 conservatively; record the camera and distance questions as pending; leave production face recognition unchanged:
+   - preserve scene priority, the incident preemption, the grace, deadlines, memory limits and the 120-token maximum;
+   - keep the wait for the worker apart from the time on the model; keep only bounded numeric timing and token metadata, never a question or an answer, in new diagnostics;
+   - count the prompt's processing and the cancellation or release time in the budget, without taking scene jobs' decoding speed as chat's;
+   - a conservative fallback for a cold start, missing or malformed timings and changing load;
+   - bound any waiting by the existing time a question has to start, never wait indefinitely, and check freshness again before the model is asked;
+   - label shortened answers honestly: no empty successful answer, no qualification dropped silently;
+   - keep the question in the page so that a cancellation needs no retyping;
+   - focused tests, the existing validation, the outdated chat documentation updated; report what the tests establish and what needs the device; claim no reduced cancellation rate;
+   - local only: no push, upload, camera or model workload, threshold or model change, or new diagnostic package; alpha.2 and the sealed evidence preserved.
+   - **Added during the session:**
+     - two requirements to record for later work (section 10), the chat change to be finished first;
+     - **a review of the first version's freshness check (the maintainer):** it assessed the newest frame and compared streams, but sent the retained image. Enforce the rule on the image actually sent, with that image's exact frame facts, and handle stream restarts; test a question that waits until its image is stale while the camera keeps producing frames (section 5).
+
+3. **What changed.**
+   - **`src/sentinel/scene/analyzer.py`:** given the lane's interval (`periodic_interval_s`), the worker knows when the next periodic job is due (the last one's arrival plus the interval, or now if that has passed or none came yet). A side request offered with a `plan` is asked, each time it could start, with its `SideWindow`: the time to the end of that job's grace, or None while no periodic job is expected (no interval, or scene analysis paused through `set_periodic_paused`, which the runtime's scene switch now calls). The plan starts it, gives it up (`finished` gets `SideGivenUp`) or has it wait for the next gap. A waiting request is asked again after the next scene job, a change of schedule, or its `wait_limit_s`; past that a wait gives it up (counted). The plan runs outside the worker's lock; a scene job that arrives meanwhile goes first. Counters: `side_waits`, `side_wait_limit`, `side_given_up`, `side_plan_failed`. Scene jobs still go first; the incident's immediate preemption, the grace, its timer and its cut-off are unchanged.
+   - **`src/sentinel/scene/chat_budget.py` (new; portable, no device code):** `plan_answer` (the window less RELEASE_RESERVE_MS and the measured time before decoding, divided by the measured time per token, never above the cap), `ChatPace` (the largest overhead and time per token of the latest 8 samples, or the fallback), `server_timing` and `pace_sample` (llama-server's `timings`, checked; the overhead never less than the server's own prompt time), `overran`, `complete_sentences`.
+   - **`src/sentinel/scene/chat.py`:** the question's plan; `LlamaChatRequest` sends the plan's limit and returns `ChatReply` (text, cut short, stopped by its limit, the checked timings); `chat_request_body` refuses any limit outside 1-120; the send-time freshness rule (section 5); shortened answers, `incomplete`, timing samples and the overrun reset in `_finish`; the job document's `wait_ms`, `run_ms`, `max_tokens`, `tokens`, `shortened`, `unfinished`, `frame_replaced` and `asked_frame`; the status's numeric `timing` block; the new states, reasons and counters.
+   - **`src/sentinel/demo_runtime.py`:** the scene worker built with the configured `scene.interval_s`; the scene switch tells it when scene analysis is paused.
+   - **`src/sentinel/web/dashboard.js`, `dashboard.css`:** a shortened answer says so ("Answered, shortened: it had to stop before the next scene check and may have said more.") and shows its unfinished rest apart; `Incomplete`; an answer about a newer frame says it replaced the frame asked about, with its own facts; a question that ends unanswered comes back into an empty box (never over something typed meanwhile).
+   - **`benchmarks/runner/face_evidence.py`, `alpha_load.py`:** the evidence reader's closed vocabularies now declare the status's `timing` fields, the new counters, the three new reasons and the `incomplete` state; the load tool records `incomplete` instead of `unreadable`. Records already sealed contain none of these fields, so their readings are unchanged.
+   - **`src/sentinel/status_page.py`:** its docstring says chat is not admitted but may ask in a guarded validation run.
+   - **Docs:** `docs/ALPHA_FLOW.md`'s chat section rewritten for the current behaviour (D77, D81 and this change); the trace's V2-54 and D-3 rows.
+
+4. **The behaviour, as implemented.**
+   - **The budget:** `max_tokens = min(120, floor((window_ms - 500 - overhead_ms) / ms_per_token))`, where the window runs to the end of the next periodic job's grace and the overhead is everything on the worker besides decoding (encoding the picture, processing the prompt with it, the transfer), measured from chat's own answered questions. Scene jobs are never a measure.
+   - **Too short (measured pace):** fewer than 30 tokens makes the question wait for the next gap, while it is within `CHAT_START_S` (5 s) of being accepted; after that it ends as `busy` ("there was no time to answer before the next scene check; monitoring comes first, so ask again"), never started only to be cut off. The scene worker's own limit (5 s from the offer) gives it up if a plan still asks to wait.
+   - **Fallback (no sample: a cold start, or timings missing, malformed, inconsistent or under 8 tokens):** an assumed 1,500 ms before decoding and 30 ms a token, never below 30 tokens, started at once so that a sample can be taken.
+   - **Changing load:** a sized question still running at its planned end (the window less the reserve) and ended for a scene job discards the samples; the next question uses the fallback.
+   - **No periodic job expected (scene analysis paused):** the full 120 tokens; a stop at 120 is labelled as before ("cut short at the answer limit"), untrimmed.
+   - **Shortened answers:** one stopped by a limit below 120 shows its complete sentences, `shortened: true`, and the unfinished rest in `unfinished`, shown apart on the page; with no complete sentence the question ends as `incomplete`, without an answer.
+   - **Diagnostics:** the status's `components.chat.timing` holds the pace in use and, for the latest 32 questions that started, the wait before starting, the time on the model, the limits and the tokens: numbers and two fixed labels only. Nothing new is logged.
+   - **Unchanged:** `SIDE_GRACE_S` 1.5 s, `MAX_CHAT_DELAY_MS` 2000 ms, the 4 s interval, the 8 s deadline, the memory gate's thresholds, `CHAT_MAX_TOKENS` 120, `CHAT_START_S`, `CHAT_DEADLINE_S`, the scene request (`SCENE_REQUEST_SHA256`), the models and every recognition setting.
+
+5. **The freshness rule on the image sent (the maintainer's review).**
+   - **The defect in the first version:** `work()` passed the retained image, but checked only that the newest frame was fresh and from the question's stream. A question that waited past 2 s while the camera kept producing frames would have sent its stale image.
+   - **Now:** when the question starts, the image sent must pass ask()'s rule itself (connected stream, younger than `stale_after_s`):
+     - the frame asked about, if it still does: sent with its facts unchanged;
+     - otherwise (it waited, or the stream restarted) the newest frame, if that one passes. Its image and its facts come from one stored pair; the answer names that frame (`stream_epoch`, `frame_seq`, `ingest_utc`, `age_ms_when_sent`), `frame_replaced: true`, the asked frame in `asked_frame`;
+     - otherwise `no_fresh_frame` ("the camera was no longer live when the question could start, so the model was not asked; ..."), and the model is not asked.
+   - **Tests:**
+     - a question that waits 2.5 s behind a scene job while frames 1-5 arrive is sent frame 5's image with frame 5's exact facts;
+     - one that waits 1.5 s is sent its own frame unchanged;
+     - after a restart the new epoch's frame is sent with epoch 2's facts;
+     - a restart with no frame yet, and a stall, end unasked.
+   - **The mutation that restores the first version fails exactly the stale-frame test.**
+   - **Interpretation (for the maintainer):** replacing a stale frame with the newest live one keeps waiting questions answerable; the alternative is to end them as `no_fresh_frame`.
+
+6. **PROPOSED values and open decisions (the maintainer's; they shape answers, not monitoring).**
+   - `CHAT_MIN_TOKENS` 30 (about one or two short sentences, a quarter of the cap); `RELEASE_RESERVE_MS` 500 (D81's allowance for an abort: `MAX_CHAT_DELAY_MS` less the grace); `FALLBACK_OVERHEAD_MS` 1,500 and `FALLBACK_MS_PER_TOKEN` 30 (a full answer would take 5.1 s, about the longest recorded chat answer, 5,255 ms in session 104, which includes its wait).
+   - Internal bounds: 8 pace samples; samples need at least 8 tokens; a 50 ms slack between the server's time and the worker's; the worker rechecks a waiting request's limit every 0.01-0.1 s; 32 timing rows in the status.
+   - **Decisions:** (a) the stale-frame replacement (section 5); (b) the waiting is bounded by `CHAT_START_S` (5 s), not `CHAT_DEADLINE_S`; (c) a cold start uses the slow fallback and starts at once, never waits; (d) trimming keeps the unfinished rest visible instead of dropping it.
+
+7. **Verification: exact commands and results.** See the block below.
+
+8. **What the tests establish, and what they do not.**
+   - **Established (portable, on deterministic fixtures):** the window arithmetic and the schedule's states (no job yet, after a job, overdue, paused, an incident's job); the budget from a measured pace, the cap, the fallback, the wait for the next gap with the scene job first, the wait limit, a broken or giving-up plan, the incident preemption and the grace's cut-off unchanged with windows on; the timings checked and sampled; the overrun reset; trimming without an empty answer or a lost rest; the send-time freshness rule, including stream restarts; the page's labels and the kept question in a real browser; the status's numbers bounded and free of question and answer text; the readers' declared vocabularies against the runtime's real output.
+   - **Not established:** the real pace on the device, what llama-server b8932 actually returns for chat requests (its source has `timings`; no device response was read), the prompt time with history, how often answers are shortened, wait or are given up, any change in the cancellation rate (**no reduction is claimed**), the scene jobs' waits behind questions, deadlines and memory under this change, and whether shortened answers are useful.
+
+9. **Device validation (PENDING; not prepared, not run; a later run needs the maintainer's approval).**
+   - **Expected evidence:**
+     - the chat counters `limit_*`, `waits_for_gap`, `gave_up_no_time`, `shortened`, `incomplete`, `overran`, `pace_reset`, `frame_replaced` and `timing_*`;
+     - the status's `timing` block;
+     - `scene_waits_behind_chat`: `max_ever_ms` at most 2,000 ms, with the 1,500 ms grace;
+     - no scene deadline missed, and memory within the limits.
+   - **Gap before such a run:** `alpha_load`'s per-question records do not carry `wait_ms`, `run_ms`, `max_tokens`, `tokens`, `shortened` or `frame_replaced` (only the status aggregates them), and `alpha_check` describes the new counters without judging them. Adding them would be a reading change for a new package, which this session did not make.
+
+10. **Recorded for later work (the maintainer, 2026-10-25; requirements, not implemented; nothing validated).**
+    - **Recognition range:**
+      - the seat is about 2-3 ft (0.6-0.9 m) from the camera (USER-SUPPLIED);
+      - the primary recognition target is the front door, about 4-5 m from the camera (USER-SUPPLIED);
+      - a configurable extended target beyond the doorway, which the camera sees when the door is open;
+      - a user-configurable target range that keeps the requested range apart from the experimentally validated one;
+      - this is a requested capability, not a validated range. Never reached by lowering matching thresholds (nor, by the earlier decisions, by longer retention or weaker ownership).
+    - **Geometry, not a measurement:** if face width scales inversely with distance and both streams show the same field of view, a face of about 57 px at 0.6-0.9 m would be about 7-13 px at 4-5 m on the substream (production's detector sees half of that), and about 25-47 px on the main stream. Session 113's steps 3 and 4 and the camera facts (section 11) bear on this first.
+    - **UI direction (two messages; the second gives a reference image on the maintainer's Mac, not on the device and not in Git):**
+      - a deep black page, subtly raised charcoal controls, recessed panels, readable ivory text and warm metallic-gold accents; minimal, with subtle neumorphic surfaces; a complementary ivory (light) theme;
+      - idle: understated edge highlights and clear labels;
+      - hover and focus: a gold highlight travels once around the control's edge, then settles into a restrained glow;
+      - press: the control depresses slightly, its shadow turns inset and a short gold pulse acknowledges it; release: a smooth return with minimal overshoot;
+      - selected or toggled: a steady thin gold outline, distinct from hover;
+      - loading: a restrained moving edge highlight only while work is really pending; success shown only from the operation's real result, never from the click;
+      - about 120-180 ms for a press and 200-350 ms for hover and release;
+      - no continuous sparks, large bloom or glowing body text; nothing over the camera video; warning and error states kept distinct;
+      - keyboard-visible focus, readable contrast and reduced-motion support; lightweight CSS and SVG, no graphics framework;
+      - **first a local component preview** (a primary button, a toggle, a navigation item and the chat input in their states, synthetic content) for the maintainer's review, before the style is applied anywhere in the dashboard.
+
+11. **Camera and distance questions (PENDING, the maintainer's; no code; nothing run).**
+    1. The measured seat distance, and how it was measured (now approximately 2-3 ft, USER-SUPPLIED), and the distance to the front door (approximately 4-5 m, USER-SUPPLIED).
+    2. The lens's horizontal field of view (from the camera's specification, or measured).
+    3. One empty-room still from each stream (main 2304×1296, substream 640×480), compared privately: the same field of view, or a crop?
+    4. Whether the substream's resolution can be set higher in the camera's own settings.
+    5. The main stream's bitrate and frame rate.
+
+12. **Unchanged.** Nothing launched on the camera or a model; nothing pushed, uploaded, published or shared. The tag `v2.0.0-alpha.2` and its pre-release untouched; every sealed session and package untouched; no diagnostic package. `master`, `v2-beta` and the backup branches unchanged. No threshold, guard limit, admission, enrollment or model changed.
+
+### Verification: exact commands and results
+
+```
+T = PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m pytest -q -p no:cacheprovider   # Python 3.10.14, in the worktree
+T tests/unit/test_scene_analyzer.py tests/unit/test_scene_chat.py tests/unit/test_chat_gate.py tests/unit/test_status_page_chat.py   # first run on the change: 2 failed, 85 passed (the request's new return type; a model stand-in without max_tokens): both updated
+T tests/unit/test_scene_analyzer.py   # 30 passed (7 new)
+T tests/unit/test_chat_budget.py   # 33 passed (a new file; one expected value of mine corrected first, 1330 -> 1300 ms)
+T tests/unit/test_scene_chat.py   # 56 passed (19 new)
+T tests/unit/test_demo_runtime.py tests/unit/test_status_page_chat.py tests/unit/test_features_check.py tests/unit/test_face_check.py   # 4 failed, 406 passed in 710.52 s: the evidence reader flagged the new status fields as undeclared; after declaring them, the 4 passed
+T tests/unit/test_demo_runtime.py -k "admitted_scene_server_that_is_ready or scene_analysis_turned_off or chat"   # 1 failed (its exact counters now include limit_unbounded and timing_missing: updated), 7 passed
+node --check src/sentinel/web/dashboard.js   # ok
+T tests/unit/test_status_page_chat_browser.py   # 7 passed (1 new), headless Chromium (the snap's)
+<15 mutations, each on a fresh scratch copy of src, run against the focused files>   # 15 of 15 caught by the intended test:
+  # the first version's freshness check restored; no reserve; never wait; no wait limit; no trimming; an empty answer; the
+  # unfinished rest dropped; no reset after an overrun; no 120 check; the asked frame's facts kept for a newer image; the
+  # fallback able to wait; a plan's start under an arriving scene job; no pause signal (runtime test); the page's restore
+  # removed; the page's unfinished line removed (browser tests)
+T --junitxml=<scratch>/full-310-junit.xml   # the full suite, Python 3.10.14, the tree of e5d8306 less one test line: 1 failed, 2852 passed, 2 skipped (torch, cv2) in 1488.48 s (14:59:25-15:24:15 UTC). The failure: test_alpha_check's load-tool test, whose model stand-in did not accept max_tokens, so every question ended as an error; the stand-in fixed (in e5d8306)
+T tests/unit/test_alpha_check.py   # 17 passed
+git commit   # e5d8306 (code and tests; no trailer; no amend)
+PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m sentinel.cli config validate config/default.yaml   # valid; exit 0
+VIRTUAL_ENV=~/sentinel-validation/py312-df8d9bc/venv PATH=<its bin>:$PATH python -m pytest -p no:cacheprovider --junitxml=<scratch>/full-312-junit.xml   # Python 3.12.3 at e5d8306, the code tree identical to it before and after: 2853 passed, 2 skipped (torch, cv2) in 1384.93 s (15:25:38-15:48:44 UTC); exit 0
+# Local runs on the device's portable environments, not CI; nothing pushed, so CI did not run
+```
+
+**Next (the maintainer):** decide section 6's values and decisions; answer section 11 when convenient; say whether a device validation of this change should be prepared (section 9).
 
 ## Session 112 log (Claude, 2026-10-21): v2.0.0-alpha.2 published: `27d6308` pushed alone to `alpha-candidate-2026-10` as a fast-forward; Dashboard checks and both portable jobs passed on it; the annotated tag and the GitHub pre-release (not latest) created; nothing else pushed
 
