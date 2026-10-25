@@ -795,7 +795,7 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
      - review the local UI component preview before any dashboard change.
    - **Done (session 114, part 2):** the local UI component preview, `docs/design/ui-motion-preview.html`, checked in headless Chromium (45 of 45 checks), for review only.
    - **Done (session 114, part 3):** the maintainer's approved preview (v5) applied to the dashboard as its own slice (`7597fc6`): Carbon & Cream's dark mode the deep black, the controls' states in every palette, navigation items without a ring, every light colour unchanged; browser tests, 14 of 14 mutations caught, before/after screenshots (session 114 log, part 3).
-   - **Maintainer (session 114, part 3):** look at the screenshots; say whether the compact rail's name tooltip should also stop appearing on keyboard focus, and whether the six other palettes stay in the Appearance panel (part 3 log, section 6).
+   - **Answered (session 114, part 3; the maintainer, 2026-10-26):** the compact sidebar's tooltips, the visible switch borders, the orange dark warnings and the palette choices stay; no further design changes for now. The review screenshots are kept in `~/sentinel-design/sentinel-ui-review/` (outside Git; part 3 log, section 7).
    - **Claude, next (session 114):** on instruction: the chat change's device validation package, or a read-only plan toward the requested range (the camera facts first; then session 113's steps 3-4, thresholds unchanged), or changes to the applied style.
    - **Done (session 112):** v2.0.0-alpha.2 published: `27d6308` pushed alone as a fast-forward of `alpha-candidate-2026-10`; Dashboard checks and both portable jobs passed on it; the tag `v2.0.0-alpha.2` and the pre-release (not latest) created (session 112 log).
    - **Maintainer (session 112):** the action in the session 112 section of `docs/LOCAL_NOTES.md` (excluded). The 24 October review checkpoint on the pre-release. Whether to update the wiki (it still describes alpha.1) and when to push this record's local commits are your decisions.
@@ -1461,6 +1461,13 @@ VIRTUAL_ENV=~/sentinel-validation/py312-df8d9bc/venv PATH=<its bin>:$PATH python
    - say whether the compact rail's tooltip should stop appearing on keyboard focus;
    - say whether the six other palettes stay in the Appearance panel;
    - say whether anything should change before the style settles.
+   - **Answered (the maintainer, 2026-10-26):** keep the compact sidebar's name tooltips (on keyboard focus too), the visible switch borders, the orange warnings in Carbon & Cream's dark mode and the existing palette choices; no further design changes for now.
+7. **The review screenshots, kept (the maintainer's request).** Copied to `~/sentinel-design/sentinel-ui-review/`, which is outside Git and readable by its owner only: 38 files, 12 MB:
+   - `final/`: the after set at `e4afdf1`;
+   - `before/`: the full-size set at `684e095`;
+   - `before-after/`: the 10 side-by-side pairs;
+   - `README.txt` and `SHA256SUMS`, all checksums verified.
+   - Synthetic data only. Downloaded to the maintainer's Mac with a command given in the session, never committed. Never published or shared without approval.
 
 ## Session 112 log (Claude, 2026-10-21): v2.0.0-alpha.2 published: `27d6308` pushed alone to `alpha-candidate-2026-10` as a fast-forward; Dashboard checks and both portable jobs passed on it; the annotated tag and the GitHub pre-release (not latest) created; nothing else pushed
 
