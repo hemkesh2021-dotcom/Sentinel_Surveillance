@@ -3,11 +3,18 @@
 Contrast is computed from the stylesheet's own tokens (WCAG 2.x relative luminance): text at least 4.5:1, focus
 rings and control borders at least 3:1, in both themes. States carry a text label and an icon, never colour alone.
 Images are never filtered or recoloured. Reduced motion turns transitions off and keeps the D71 watchdog.
+
+Session 114 (the maintainer's approved preview v5): Carbon & Cream's dark mode is the deep black with a gold
+highlight; every light mode and the six other presets' dark modes keep every earlier colour (pinned here); no state
+looks like the gold; the controls' motion lives only where reduced motion is not asked for, and none runs without end.
 """
 
 from __future__ import annotations
 
+import hashlib
 import http.client
+import json
+import math
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,11 +35,11 @@ from sentinel.status_page import (
     render_incident_html,
     theme_from_query,
 )
-from sentinel.web import ICONS, csp_hash, stylesheet
+from sentinel.web import GRAIN, ICONS, SPRITE, csp_hash, stylesheet
 
 NOW = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
 SURFACES = ("canvas", "sidebar", "panel", "raised", "sunken")
-TEXT_PAIRS = [(fg, s) for fg in ("ink", "muted", "link") for s in SURFACES] + \
+TEXT_PAIRS = [(fg, s) for fg in ("ink", "muted", "link", "hl") for s in SURFACES] + \
     [("accent-ink", "accent"), ("ok-ink", "ok-bg"), ("warn-ink", "warn-bg"), ("crit-ink", "crit-bg"),
      ("off-ink", "off-bg"), ("done-ink", "done-bg"), ("stale-ink", "stale-bg")]
 UI_PAIRS = [(fg, s) for fg in ("focus", "border", "marker") for s in SURFACES]
@@ -90,16 +97,29 @@ def test_text_and_controls_meet_their_contrast_in_every_palette_and_mode(mode: s
         assert not weak, (preset.key, weak)
 
 
-def test_carbon_and_cream_is_the_default_with_the_maintainers_colours() -> None:
-    """The maintainer's Carbon & Cream: carbon #2E302F and cream #EDDCC9; dark slightly deeper, canvas #1C1D1C and
-    sidebar #181918, panels #232423, raised #2E302F, sunken #191A19 (D82, D96). Both dark blocks agree."""
+def test_carbon_and_cream_is_the_default_light_as_before_and_dark_the_approved_deep_black() -> None:
+    """The maintainer's Carbon & Cream: carbon #2E302F and cream #EDDCC9 in light, as before (D82, D96). Its dark mode
+    is the maintainer's approved deep black (session 114, preview v5's [data-black="deep"]): page #060605, recessed
+    panels #0E0D0B, charcoal keys #2E2C28 / #23221F / #1B1A17 on a #000000 edge, ivory text, a gold highlight, and the
+    look's shadows and grain, set there only. Both dark blocks agree."""
+    from sentinel.web import palettes
+
     found = {mode: {k: v.lower() for k, v in block.items()} for mode, block in blocks("carbon-cream").items()}
     light, auto, dark = found["light"], found["auto"], found["dark"]
     assert (light["ink"], light["accent"], light["accent-ink"], light["brand"]) == ("#2e302f", "#2e302f", "#eddcc9",
                                                                                    "#2e302f")
-    assert {k: dark[k] for k in SURFACES} == {"canvas": "#1c1d1c", "sidebar": "#181918", "panel": "#232423",
-                                              "raised": "#2e302f", "sunken": "#191a19"}
-    assert (dark["ink"], dark["accent"]) == ("#eddcc9", "#eddcc9")
+    assert {k: dark[k] for k in SURFACES} == {"canvas": "#060605", "sidebar": "#060605", "panel": "#0e0d0b",
+                                              "raised": "#23221f", "sunken": "#060605"}
+    assert (dark["key-top"], dark["key-bottom"]) == ("#2e2c28", "#1b1a17") and "#000000" in dark["deep-raised"]
+    assert (dark["ink"], dark["muted"], dark["faint"]) == ("#efe7d6", "#b9af9d", "#8a8170")  # ivory
+    assert (dark["marker"], dark["focus"], dark["hl"], dark["hl-hi"], dark["hl-lo"]) == (
+        "#f2c45a", "#f2c45a", "#f2c45a", "#fde58a", "#c98a2e")  # v5's gold
+    assert dark["glow-selected"] == "0 0 12px rgba(242, 196, 90, 0.34), 0 0 28px rgba(214, 140, 46, 0.24)"
+    assert (dark["hl-ring"], dark["hl-glow"], dark["marker-line"]) == (
+        "rgba(242, 196, 90, 0.34)", "rgba(214, 140, 46, 0.3)", "rgba(242, 196, 90, 0.9)")
+    assert {k: dark[k] for k in palettes.DEEP} == {k: v.lower() for k, v in palettes.DEEP.items()}
+    assert dark["deep-grain"] == 'url("/assets/grain.svg")'
+    assert all(light[k] == "initial" for k in (*palettes.DEEP, *palettes.DEEP_COLOURS))  # light: the earlier look
     assert auto == dark  # the browser's dark preference and the chosen dark theme set the same values
     assert stylesheet(5).index(":root, :root[data-palette=carbon-cream] {") < stylesheet(5).index(
         ":root[data-palette=sesame-mango] {")  # the default first, so a chosen palette overrides it
@@ -114,11 +134,86 @@ def test_the_stylesheet_carries_every_palette_exactly_as_derived_and_states_are_
         found = blocks(preset.key)
         for mode, block in (("light", "light"), ("dark", "dark"), ("dark", "auto")):
             assert found[block] == palettes.tokens(preset.key, mode), (preset.key, block)
-        for mode in ("light", "dark"):  # states keep one meaning in every palette
+        for mode in ("light", "dark"):  # states keep one meaning in every palette, and their colours, except
+            expected = dict(palettes.STATES[mode])  # Carbon & Cream's dark mode: orange beside its gold (session 114)
+            if (preset.key, mode) == ("carbon-cream", "dark"):
+                expected.update({"warn-ink": "#ff8a3d", "warn-bg": "#261a10", "stale-bg": "#ff8a3d"})
             assert {k: v for k, v in palettes.tokens(preset.key, mode).items() if k in palettes.STATES[mode]} == \
-                palettes.STATES[mode]
+                expected
         for i, colour in enumerate(preset.colours, 1):  # each swatch shows the palette's own colours
             assert f".sw-{preset.key} .d{i} {{ background: {colour.lower()}; }}" in stylesheet(5)
+
+
+# Every token the presets had before session 114, and the SHA-256 of their values then (at 684e095).
+EARLIER_TOKENS = ("accent", "accent-ink", "border", "brand", "brand-ink", "canvas", "crit-bg", "crit-ink", "done-bg",
+                  "done-ink", "focus", "ink", "line", "line-strong", "link", "marker", "muted", "off-bg", "off-ink",
+                  "ok-bg", "ok-ink", "panel", "raised", "shadow-hi", "shadow-lo", "sidebar", "stale-bg", "stale-ink",
+                  "sunken", "warn-bg", "warn-ink")
+EARLIER_LIGHT = "d6f1eb45f5add4893ca98eeea915573017e01a4c490338db610751194a51d368"
+EARLIER_SIX_DARK = "113d996b46e3d2cbe51a1b6ecf9537c1c844957b45d80c951eb0c30935e69e22"
+EARLIER_SWATCHES = "70bfce08cef025d7ba52f395224dab7b0b9988601ea5490e41897f21c6b25e40"
+
+
+def test_every_light_mode_and_the_six_other_dark_modes_keep_every_earlier_colour() -> None:
+    """Session 114, the maintainer's rule: the light theme's colours do not change at all, in any of the seven presets,
+    and only Carbon & Cream's dark mode takes the deep black; so every earlier token of every light mode, of the six
+    other presets' dark modes, and the swatches are exactly as recorded before the change."""
+    from sentinel.web import palettes
+
+    def digest(values: dict[str, str]) -> str:
+        return hashlib.sha256(json.dumps(sorted(values.items())).encode()).hexdigest()
+
+    assert [p.key for p in palettes.PRESETS][0] == "carbon-cream"
+    light = {f"{p.key}:{k}": palettes.tokens(p.key, "light")[k] for p in palettes.PRESETS for k in EARLIER_TOKENS}
+    dark = {f"{p.key}:{k}": palettes.tokens(p.key, "dark")[k] for p in palettes.PRESETS[1:] for k in EARLIER_TOKENS}
+    assert digest(light) == EARLIER_LIGHT and digest(dark) == EARLIER_SIX_DARK
+    assert hashlib.sha256(palettes.swatch_css().encode()).hexdigest() == EARLIER_SWATCHES
+    assert palettes.tokens("carbon-cream", "light")["canvas"] == "#f7efe5"  # one of them, readable
+
+
+def oklab_distance(a: str, b: str) -> float:
+    from sentinel.web import palettes
+
+    return math.dist(palettes._oklab(a), palettes._oklab(b))
+
+
+def test_no_state_looks_like_the_gold_highlight() -> None:
+    """Session 114: in Carbon & Cream's dark mode the warnings, errors, success and the not-current banner are told
+    apart from its gold (OKLab distance at least 0.1; the earlier warning amber #f2c76e was 0.018 from it). Every state
+    also keeps its words and icon."""
+    from sentinel.web import palettes
+
+    dark = palettes.tokens("carbon-cream", "dark")
+    assert oklab_distance("#f2c76e", dark["hl"]) < 0.02  # why the warning colour had to change there
+    for state in ("warn-ink", "crit-ink", "ok-ink", "stale-bg"):
+        assert oklab_distance(dark[state], dark["hl"]) >= 0.1, state
+
+
+def test_the_controls_motion_is_bounded_and_only_where_reduced_motion_is_not_asked_for() -> None:
+    """Session 114: the trace (once), the pending edge (a bounded number of turns, longer than any request's limit),
+    the pulse and the press's movement are only in the no-preference block; reduced motion keeps the states, a still
+    dotted edge for pending, and no animation of its own (the D71 watchdog runs either way)."""
+    motion = STYLE.index("@media (prefers-reduced-motion: no-preference)")
+    reduced = STYLE.index("@media (prefers-reduced-motion: reduce)")
+    for rule in ("animation: trace var(--t-trace) var(--ease-trace) 1;",
+                 "animation: orbit var(--t-orbit) linear 40;", "animation: pulse var(--t-pulse) ease-out 1;",
+                 "transform: translateY(1px) scale(.985);"):
+        assert STYLE.count(rule) == 1 and motion < STYLE.index(rule) < reduced, rule
+    assert "infinite" not in STYLE and "forwards" not in STYLE
+    assert "[aria-busy=true] > .edge rect { opacity: .85; stroke-dasharray: 2 3; }" in STYLE[reduced:]
+    timings = {name: re.search(rf"--t-{name}: ([^;]+);", STYLE).group(1)
+               for name in ("press", "pulse", "trace", "settle", "release", "orbit")}
+    assert timings == {"press": "140ms", "pulse": "160ms", "trace": "320ms", "settle": "240ms", "release": "260ms",
+                       "orbit": "1600ms"}  # the approved preview's, unchanged
+
+
+def test_the_trace_metal_and_the_grain_need_no_inline_style_and_load_from_this_origin_only() -> None:
+    """The trace's gradient stops take their colours from stylesheet classes (the CSP allows no inline style); the deep
+    black's grain is a same-origin image (img-src 'self'), used only through Carbon & Cream's dark tokens."""
+    assert '<linearGradient id="hl-metal"' in SPRITE and "style=" not in SPRITE
+    assert all(f'class="hl-{part}"' in SPRITE for part in "abc")
+    assert STYLE.count('url("/assets/grain.svg")') == 2  # the chosen dark block and the browser's dark preference
+    assert b"<script" not in GRAIN and b"href" not in GRAIN and b"0 0 0 .03 0" in GRAIN  # white noise at alpha .03
 
 
 def test_every_palette_meets_its_contrast_floors_in_both_modes() -> None:
@@ -262,6 +357,19 @@ def test_the_dashboard_is_served_at_its_own_name_and_at_the_root(tmp_path: Path)
         assert '<a class=seg href="/dashboard" data-set=theme data-value=auto>' in dashboard[2].decode()
         assert '<a class=seg href="/" data-set=theme data-value=auto aria-current="true">' in root[2].decode()
         assert get(server, "/dashboard/")[0] == 404 and get(server, "/Dashboard")[0] == 404
+    finally:
+        assert server.stop(3.0)
+
+
+def test_the_grain_is_served_read_only_on_the_loopback_host(tmp_path: Path) -> None:
+    server = StatusServer(0, lambda: {"runtime": {"state": "running"}}, tmp_path / "sentinel.db")
+    server.start()
+    try:
+        status, headers, body = get(server, "/assets/grain.svg")
+        assert (status, headers["Content-Type"], headers["X-Content-Type-Options"]) == (200, "image/svg+xml", "nosniff")
+        assert body == GRAIN and headers["Cache-Control"] == "no-store"
+        assert get(server, "/assets/grain.svg", method="POST")[0] == 405
+        assert get(server, "/assets/grain.svg", host="evil.example")[0] == 421
     finally:
         assert server.stop(3.0)
 

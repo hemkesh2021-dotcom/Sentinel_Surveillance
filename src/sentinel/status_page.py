@@ -149,7 +149,7 @@ from .scene.chat import ADVISORY, CHAT_MAX_BODY, CHAT_MAX_QUESTION, ChatRequestE
 from .scene.report import SceneReport
 from .scene.state import SCENE_STATE_KIND
 from .storage.database import connect_reader
-from .web import SPRITE, TAB_ICON, csp_hash, head_script, icon, script, stylesheet
+from .web import GRAIN, GRAIN_PATH, SPRITE, TAB_ICON, csp_hash, head_script, icon, script, stylesheet
 from .web.palettes import DEFAULT_PALETTE, PRESETS
 
 LOOPBACK_HOST = "127.0.0.1"
@@ -1704,8 +1704,8 @@ def render_html(status: Mapping[str, Any], *, theme: Look | str | None = None,
 <section id=incidents class="panel incidents" aria-labelledby=h-incidents>
 <div class=phead><h2 id=h-incidents>{icon("bell")}Incidents</h2><div data-region=incidents-meta>{regions["incidents-meta"]}</div></div>
 <div class="filters js-only" id=inc-filters role=group aria-label="Filter the loaded incidents">
-<label>Status<select id=f-status>{_options(STATUS_FILTERS, "Any status")}</select></label>
-<label>Severity<select id=f-severity>{_options(SEVERITY_FILTERS, "Any severity")}</select></label>
+<label>Status<span class=pick><select id=f-status>{_options(STATUS_FILTERS, "Any status")}</select></span></label>
+<label>Severity<span class=pick><select id=f-severity>{_options(SEVERITY_FILTERS, "Any severity")}</select></span></label>
 <p class=count id=f-count aria-live=polite></p>
 </div>
 <p class=empty id=f-empty hidden>{icon("filter")}<span>No loaded incident matches these filters. Only the latest incidents are loaded on this page; older ones are not searched.</span></p>
@@ -1719,7 +1719,7 @@ def render_html(status: Mapping[str, Any], *, theme: Look | str | None = None,
 <ol id=chat-log class=chat-log aria-live=polite></ol>
 <form id=chat-form class=chat-form autocomplete=off data-token="{_e(chat_token)}">
 <label for=chat-q>Your question <span class=muted>(at most {CHAT_MAX_QUESTION} characters)</span></label>
-<textarea id=chat-q name=question maxlength={CHAT_MAX_QUESTION} rows=2 placeholder="For example: is the door open?"></textarea>
+<div class=field><textarea id=chat-q name=question maxlength={CHAT_MAX_QUESTION} rows=2 placeholder="For example: is the door open?"></textarea></div>
 <div class=row><button type=submit class=button id=chat-ask disabled>{icon("send")}Ask</button><span id=chat-note class=muted role=status></span></div>
 </form>
 <noscript><p class=note>Chat needs JavaScript.</p></noscript>
@@ -1729,7 +1729,7 @@ def render_html(status: Mapping[str, Any], *, theme: Look | str | None = None,
 <p class=note>{_e(FEATURES_NOTE)}</p>
 <form id=controls-unlock class="unlock js-only" autocomplete=off data-token="{_e(chat_token)}" hidden>
 <label for=control-key>Control key <span class=muted>(this run's, in its data directory's <code>{CONTROL_KEY_NAME}</code> file on the device, readable only by its owner; never shown here)</span></label>
-<div class=row><input id=control-key name=key type=password inputmode=text autocomplete=off autocapitalize=characters spellcheck=false maxlength=40 required><button type=submit class=button>{icon("shield")}Unlock</button></div>
+<div class=row><span class=field><input id=control-key name=key type=password inputmode=text autocomplete=off autocapitalize=characters spellcheck=false maxlength=40 required></span><button type=submit class=button>{icon("shield")}Unlock</button></div>
 </form>
 <div class="row unlocked js-only" id=controls-unlocked hidden><span class=muted>Unlocked in this tab only; the key is kept in this tab's memory and forgotten on reload.</span><button type=button class=ghost id=controls-lock>Lock</button></div>
 <p class=note id=controls-note role=status aria-live=polite></p>
@@ -2212,6 +2212,9 @@ class _Handler(BaseHTTPRequestHandler):
         for_page = "page=1" in parts.query.split("&")[:8]  # a page updating itself (D73); exact, never echoed
         if path == TAB_ICON_PATH:
             self._send(200, "image/svg+xml", TAB_ICON)
+            return
+        if path == GRAIN_PATH:  # session 114: the deep black's noise (Carbon & Cream's dark mode)
+            self._send(200, "image/svg+xml", GRAIN)
             return
         if path == SCRIPT_PATH:
             self._send(200, "text/javascript; charset=utf-8", SCRIPT)

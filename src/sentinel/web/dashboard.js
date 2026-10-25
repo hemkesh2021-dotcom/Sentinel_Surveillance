@@ -30,7 +30,9 @@
      returns to the menu button); the camera's focus view shows the picture and recognition only; the loaded
      incidents can be filtered by status and severity (only what this page loaded, and it says so); theme, palette and
      density apply in place and are saved in this browser. None of these restarts a timer, reloads the page or touches
-     the conversation, the draft, the selected incident or an expanded section. */
+     the conversation, the draft, the selected incident or an expanded section.
+   - The controls' states (session 114): each control gets its edge and pulse ring when first used (decorations that
+     updates keep); a control is marked pending (aria-busy) only while its own request is in flight. */
 (() => {
   "use strict";
   const root = document.documentElement;
@@ -96,8 +98,14 @@
     return node.nodeType === 1 ? node.getAttribute("data-key") || node.id || null : null;
   }
 
+  // A control's decorations (session 114: its edge and pulse ring, added here) are never the server's: an update
+  // neither removes them nor makes one of them into a server node.
+  function deco(node) {
+    return node.nodeType === 1 && node.hasAttribute("data-deco");
+  }
+
   function same(a, b) {
-    return a.nodeType === b.nodeType && a.nodeName === b.nodeName && key(a) === key(b);
+    return !deco(a) && a.nodeType === b.nodeType && a.nodeName === b.nodeName && key(a) === key(b);
   }
 
   function morph(target, source) {
@@ -122,7 +130,7 @@
     }
     while (cursor) {
       const next = cursor.nextSibling;
-      target.removeChild(cursor);
+      if (!deco(cursor)) target.removeChild(cursor);
       cursor = next;
     }
   }
@@ -298,6 +306,85 @@
   function badge(kind, text, glyph, big) {
     return el("span", {class: `badge k-${kind}${big ? " big" : ""}`}, [svgIcon(glyph), text]);
   }
+
+  // ------------------------------------------------------------------ the controls' edge and pulse (session 114)
+
+  // A control gets, the first time it is hovered, focused or pending, one SVG rectangle on its own outline (its edge:
+  // hover and focus send the highlight once around it, the stylesheet's trace; it circles while the control's request
+  // is pending) and an empty ring for the press pulse. Both are decorations (aria-hidden, data-deco: updates keep
+  // them). The rectangle's corners are the control's own, measured each time, so a density or rail change never
+  // leaves them behind; a pill's corners are half its height, as the browser draws them.
+  const CONTROLS = ".button, .ghost, .peek, .plain, .seg, .swatch, .icon-btn, a.inc, .back, .nav a, .switch, .field, "
+    + ".pick";
+  const SVG = "http://www.w3.org/2000/svg";
+
+  function dress(control) {
+    let edge = control.querySelector(":scope > .edge");
+    if (!edge) {
+      edge = document.createElementNS(SVG, "svg");
+      for (const [name, value] of [["class", "edge"], ["aria-hidden", "true"], ["focusable", "false"],
+                                   ["data-deco", ""]]) {
+        edge.setAttribute(name, value);
+      }
+      const outline = document.createElementNS(SVG, "rect");
+      for (const [name, value] of [["x", "0"], ["y", "0"], ["width", "100%"], ["height", "100%"], ["pathLength", "100"]]) {
+        outline.setAttribute(name, value);
+      }
+      edge.append(outline);
+      control.append(edge, el("span", {class: "ring", "aria-hidden": "true", "data-deco": ""}));
+    }
+    const box = edge.getBoundingClientRect();
+    const corner = parseFloat(getComputedStyle(control).borderTopLeftRadius) || 0;
+    const radius = String(Math.round(Math.max(0, Math.min(corner, box.width / 2, box.height / 2)) * 10) / 10);
+    const outline = edge.firstElementChild;
+    if (outline.getAttribute("rx") !== radius) {
+      outline.setAttribute("rx", radius);
+      outline.setAttribute("ry", radius);
+    }
+  }
+
+  function controlOf(target) {
+    return target instanceof Element ? target.closest(CONTROLS) : null;
+  }
+
+  function busy(control, on) {  // pending: only while the control's own request is in flight
+    if (on) {
+      dress(control);
+      control.setAttribute("aria-busy", "true");
+    } else {
+      control.removeAttribute("aria-busy");
+    }
+  }
+
+  function pulse(control) {
+    if (control.disabled || control.getAttribute("aria-disabled") === "true"
+        || control.getAttribute("aria-busy") === "true" || control.matches(".field, .pick")) return;
+    dress(control);
+    control.classList.remove("pulse");
+    void control.offsetWidth;  // restarts the pulse
+    control.classList.add("pulse");
+  }
+
+  document.addEventListener("pointerover", (event) => {
+    const control = controlOf(event.target);
+    if (control && !(event.relatedTarget instanceof Node && control.contains(event.relatedTarget))) dress(control);
+  });
+  document.addEventListener("focusin", (event) => {
+    const control = controlOf(event.target);
+    if (control) dress(control);
+  });
+  document.addEventListener("pointerdown", (event) => {
+    const control = controlOf(event.target);
+    if (control) pulse(control);
+  });
+  document.addEventListener("keydown", (event) => {  // Enter presses a link or a button; Space, a button
+    if (event.repeat || (event.key !== "Enter" && event.key !== " ")) return;
+    const control = controlOf(event.target);
+    if (control && (event.key === "Enter" || control.tagName === "BUTTON")) pulse(control);
+  });
+  document.addEventListener("animationend", (event) => {
+    if (event.animationName === "pulse" && event.target.parentElement) event.target.parentElement.classList.remove("pulse");
+  });
 
   function median(values) {
     if (!values.length) return null;
@@ -844,6 +931,7 @@
       const restarted = state.instance !== servedBy;
       const text = box.value.trim();
       ask.disabled = chat.pending || !available || restarted || !text || text.length > LIMIT;
+      busy(ask, chat.pending);  // its edge circles while the question is on its way (session 114)
       const reason = restarted ? "The runtime restarted after this page was loaded: reload the page to ask."
         : !available ? "Chat is not available now: see the reason above."
           : chat.pending ? "One question at a time." : "";
@@ -1005,7 +1093,7 @@
     const note = document.getElementById("controls-note");
     const panel = document.querySelector('[data-region="features"]');
     const KEY = /^[A-Za-z2-7\s-]{24,40}$/;
-    const ctl = {key: null, servedBy: null, sending: false};
+    const ctl = {key: null, servedBy: null, sending: false, feature: null};
     const tell = (text) => {
       if (note.textContent !== text) note.textContent = text;
     };
@@ -1030,6 +1118,7 @@
       const live = current();
       for (const button of panel ? panel.querySelectorAll("button.switch") : []) {
         button.disabled = !(ctl.key && enabled && accepting && live && button.dataset.allowed === "1" && !ctl.sending);
+        busy(button, ctl.sending && button.dataset.feature === ctl.feature);  // again after an update re-renders it
       }
       if (ctl.key && enabled && !live) tell("This page is not current: the switches wait for a current update.");
       else if (ctl.key && enabled && !accepting) tell("The runtime accepts changes only while it is running.");
@@ -1065,7 +1154,10 @@
         return;
       }
       tell("Checking the key…");
+      const submit = unlockForm.querySelector("button[type=submit]");
+      busy(submit, true);
       const {status, doc} = await post("/features/unlock", {}, key);
+      busy(submit, false);
       if (status === 200 && doc.state === "unlocked") {
         ctl.key = key;
         ctl.servedBy = state.instance;
@@ -1091,10 +1183,12 @@
         const want = button.dataset.want;
         if (!/^[a-z_]{1,20}$/.test(feature) || (want !== "on" && want !== "off")) return;
         ctl.sending = true;
+        ctl.feature = feature;
         refreshControls();
         tell(`Asking the runtime to turn ${want} ${feature.replace("_", " ")}…`);
         const {status, doc} = await post("/features", {feature, state: want}, ctl.key);
         ctl.sending = false;
+        ctl.feature = null;
         if (status === 202) tell(`Requested: ${feature.replace("_", " ")} ${want} (change ${doc.change}). The actual `
           + "state below follows when the runtime applies it.");
         else if (status === 200) tell(`Already requested: ${feature.replace("_", " ")} ${want}.`);

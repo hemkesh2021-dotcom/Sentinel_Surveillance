@@ -9,9 +9,19 @@ and the tests check all of them for all presets in both modes.
 States keep one meaning in every preset: their colours (healthy and live green, warning amber, error red, the
 not-current banner) are fixed per mode and never derived from a palette, a palette's accent never marks a state, and
 every state is also given by its text and icon. Camera pictures and snapshots are never recoloured by any of this.
+The one exception (session 114): Carbon & Cream's dark mode shows warnings and the not-current banner in orange, so
+that no warning looks like its gold highlight.
 
-Carbon & Cream is the default; its dark surfaces are the maintainer's: canvas #1C1D1C, sidebar #181918, panels
-#232423, raised surfaces #2E302F. Portable: stdlib only.
+Carbon & Cream is the default. Its dark mode is the maintainer's approved deep black (session 114, preview v5's
+[data-black="deep"]): page #060605, recessed panels #0E0D0B, charcoal keys #2E2C28 / #23221F / #1B1A17 on a #000000
+edge, ivory text and a warm gold highlight; ``DEEP`` holds that look's shadows and grain, set only there. Every light
+mode and the six other presets' dark modes keep the colours they had before (their tokens are pinned in the tests).
+
+Every preset also carries the highlight of the controls' states (session 114): the hover label, the trace that runs
+once around a hovered or focused control, its rings and glows (``hl-*``, ``glow-selected``). In the light modes it is
+v5's ivory gold, in every preset (the maintainer's choice); in the dark modes, each preset's own marker (Carbon &
+Cream's gold). Focus rings and selected lines keep each preset's own colours (``focus``, ``marker-line``).
+Portable: stdlib only.
 """
 
 from __future__ import annotations
@@ -32,6 +42,37 @@ STATES = {
               "crit-bg": "#f8dad5", "crit-ink": "#a11d1d", "stale-bg": "#7a2e12", "stale-ink": "#fdf6e8"},
     "dark": {"ok-bg": "#1e3326", "ok-ink": "#8fd3a0", "warn-bg": "#3a2e19", "warn-ink": "#f2c76e",
              "crit-bg": "#3f2320", "crit-ink": "#ff9e94", "stale-bg": "#f2a65a", "stale-ink": "#1c1d1c"},
+}
+
+# Session 114: the controls' highlight in every light mode, v5's ivory gold (the hover label and the trace's middle,
+# the trace's light and deep ends, the glows' warmer tone); in the dark modes, each preset's marker (below).
+LIGHT_HIGHLIGHT = {"hl": "#8a5d0f", "hl-hi": "#b07a18", "hl-lo": "#6e4a0b", "hl-warm": "#b0781e"}
+HL_STEPS = (0.081, -0.160)  # a dark highlight's trace ends, in OKLab lightness (v5's gold: #fde58a, #c98a2e)
+
+# Session 114: v5's [data-black="deep"] look, set only where a mode's seeds ask for it (Carbon & Cream's dark mode):
+# its shadows and grain, the keys' gradient on a #000000 edge, and what the stylesheet's rules take in place of their
+# earlier look there. Everywhere else each is ``initial``, so every rule's own fallback (the earlier look) applies.
+# The look's own colours (a key's gradient ends, a disabled label) are given exactly by that mode's seeds.
+DEEP_COLOURS = ("key-top", "key-bottom", "faint")
+DEEP = {
+    "deep-grain": 'url("/assets/grain.svg")',  # status_page.GRAIN_PATH: a 160 px noise tile at alpha .03
+    "deep-key": "var(--deep-grain), linear-gradient(170deg, var(--key-top), var(--raised) 55%, var(--key-bottom))",
+    "deep-raised": "inset 0 1px 0 rgba(255, 244, 222, .08), inset 0 -1px 0 rgba(0, 0, 0, .6), 0 1px 0 0 #000000, "
+                   "0 0 0 1px #000000, 0 8px 18px rgba(0, 0, 0, .85)",
+    "deep-pressed": "inset 0 2px 7px rgba(0, 0, 0, .9), inset 0 -1px 0 rgba(255, 244, 222, .035), 0 0 0 1px #000000",
+    "deep-well": "inset 0 2px 7px rgba(0, 0, 0, .85), inset 0 -1px 0 rgba(255, 244, 222, .035), "
+                 "0 0 0 1px rgba(255, 244, 222, .03)",
+    "deboss": "0 1px 0 rgba(0, 0, 0, .6)",  # under a key's label
+    "deep-primary": "inset 0 0 0 1px var(--hl-edge)",  # a primary key's understated edge
+    "deep-clear": "transparent",  # borders: the shadows draw the edges
+    "deep-round": "12px",  # a key's corners (pills become keys)
+    "deep-stack": "8px",  # between stacked keys
+    "deep-ink": "var(--ink)",  # a key's label where the earlier control was filled with the accent
+    "deep-hl": "var(--hl)",  # its hover label
+    "deep-card": "var(--sunken)",  # cards are recessed, not raised
+    "deep-flat": "var(--panel)",  # a disabled key: flat and recessed, with a faint label
+    "deep-faint": "var(--faint)",
+    "deep-dim": "1",  # (the earlier look dims a disabled control instead)
 }
 
 
@@ -151,7 +192,8 @@ class Seeds:
     """One mode's starting colours. ``tint``: the surfaces' hue; ``accent``: fills of selected and primary controls;
     ``marker``: selection bars and focus rings; ``link``: link text (default: the marker); ``lift``: the accent's
     OKLab lightness in this mode, when the base colour itself is too dark or too light for it; ``surfaces``: exact
-    surfaces that replace the derived ones."""
+    surfaces that replace the derived ones; ``exact``: any other token given exactly (a state's colours included);
+    ``deep``: this mode takes the DEEP look."""
 
     tint: str
     ink: str
@@ -161,6 +203,8 @@ class Seeds:
     lift: float | None = None
     surfaces: dict[str, str] = field(default_factory=dict)
     accent_ink: str | None = None  # text on the accent, used when it reaches the floor (else the best of the rest)
+    exact: dict[str, str] = field(default_factory=dict)  # other tokens given exactly, in place of the derived ones
+    deep: bool = False  # session 114: this mode takes the DEEP look
 
 
 @dataclass(frozen=True)
@@ -177,9 +221,16 @@ class Preset:
 PRESETS: tuple[Preset, ...] = (  # in the maintainer's order; Carbon & Cream first (the default, emitted first)
     Preset("carbon-cream", "Carbon & Cream", ("#2E302F", "#EDDCC9"), "#2E302F", brand_ink="#EDDCC9",
            light=Seeds(tint="#EDDCC9", ink="#2E302F", accent="#2E302F", marker="#2E302F", accent_ink="#EDDCC9"),
-           dark=Seeds(tint="#2E302F", ink="#EDDCC9", accent="#EDDCC9", marker="#EDDCC9",
-                      surfaces={"canvas": "#1C1D1C", "sidebar": "#181918", "panel": "#232423", "raised": "#2E302F",
-                                "sunken": "#191A19"})),
+           # session 114: the maintainer's approved deep black (preview v5) with ivory text and a gold highlight;
+           # warnings and the not-current banner in orange, so that none looks like the gold
+           dark=Seeds(tint="#2E302F", ink="#efe7d6", accent="#f2c45a", marker="#f2c45a", link="#efe7d6",
+                      accent_ink="#060605", deep=True,
+                      surfaces={"canvas": "#060605", "sidebar": "#060605", "panel": "#0e0d0b", "raised": "#23221f",
+                                "sunken": "#060605"},
+                      exact={"muted": "#b9af9d", "faint": "#8a8170", "key-top": "#2e2c28", "key-bottom": "#1b1a17",
+                             "hl-hi": "#fde58a", "hl-lo": "#c98a2e", "hl-warm": "#d68c2e",
+                             "marker-line": "rgba(242, 196, 90, 0.9)",
+                             "warn-ink": "#ff8a3d", "warn-bg": "#261a10", "stale-bg": "#ff8a3d"})),
     Preset("sesame-mango", "Sesame & Mango", ("#1F1D1A", "#F4B54A"), "#F4B54A",
            light=Seeds(tint="#F4B54A", ink="#1F1D1A", accent="#F4B54A", marker="#1F1D1A", link="#F4B54A"),
            dark=Seeds(tint="#1F1D1A", ink="#F7EEDF", accent="#F4B54A", marker="#F4B54A")),
@@ -211,7 +262,8 @@ _DARK_SURFACES = {"canvas": (0.215, 0.012), "sidebar": (0.197, 0.012), "panel": 
 
 @lru_cache(maxsize=None)
 def tokens(key: str, mode: str) -> dict[str, str]:
-    """Every colour token of preset ``key`` in ``mode`` (light or dark)."""
+    """Every token of preset ``key`` in ``mode`` (light or dark): its colours, and the DEEP look's values (or
+    ``initial`` where a mode does not take it)."""
     preset = PALETTES[key]
     seeds = preset.light if mode == "light" else preset.dark
     lighter = mode == "dark"
@@ -219,8 +271,10 @@ def tokens(key: str, mode: str) -> dict[str, str]:
     out = {name: seeds.surfaces.get(name) or tone(seeds.tint, lightness, chroma)
            for name, (lightness, chroma) in plan.items()}
     surfaces = tuple(out[name] for name in SURFACES)
+    exact = seeds.exact
     out["ink"] = at_least(seeds.ink, surfaces, INK_FLOOR, lighter=lighter)
-    out["muted"] = at_least(mix(out["ink"], out["panel"], 0.42), surfaces, TEXT_FLOOR, lighter=lighter)
+    out["muted"] = exact.get("muted") or at_least(mix(out["ink"], out["panel"], 0.42), surfaces, TEXT_FLOOR,
+                                                  lighter=lighter)
     out["border"] = at_least(mix(out["ink"], out["panel"], 0.62), surfaces, UI_FLOOR, lighter=lighter)
     accent = tone(seeds.accent, seeds.lift, 0.12) if seeds.lift is not None else seeds.accent
     out["accent"] = accent
@@ -246,6 +300,29 @@ def tokens(key: str, mode: str) -> dict[str, str]:
     out["done-bg"] = out["raised"]
     out["done-ink"] = out["ink"]
     out.update(STATES[mode])
+    out.update({name: value for name, value in exact.items() if name in STATES[mode]})  # Carbon & Cream's dark only
+    # Session 114: the controls' highlight: in dark, the preset's marker; in light, v5's ivory gold
+    if lighter:
+        hl = at_least(out["marker"], surfaces, TEXT_FLOOR, lighter=True)
+        level = _oklab(hl)[0]
+        hi = exact.get("hl-hi") or tone(hl, level + HL_STEPS[0])
+        lo = exact.get("hl-lo") or tone(hl, level + HL_STEPS[1])
+        warm = exact.get("hl-warm") or mix(hl, lo, 0.6)
+        ring, glow = rgba(hl, 0.34), rgba(warm, 0.3)
+        selected = f"0 0 12px {rgba(hl, 0.34)}, 0 0 28px {rgba(warm, 0.24)}"
+    else:
+        hl = at_least(LIGHT_HIGHLIGHT["hl"], surfaces, TEXT_FLOOR, lighter=False)
+        hi, lo, warm = LIGHT_HIGHLIGHT["hl-hi"], LIGHT_HIGHLIGHT["hl-lo"], LIGHT_HIGHLIGHT["hl-warm"]
+        ring, glow = rgba(hl, 0.32), rgba(warm, 0.24)
+        selected = f"0 0 12px {rgba(warm, 0.36)}, 0 0 26px {rgba(warm, 0.22)}"
+    out.update({"hl": hl, "hl-hi": hi, "hl-lo": lo, "hl-warm": warm, "hl-ring": ring, "hl-glow": glow,
+                "hl-edge": rgba(hl, 0.16), "glow-selected": selected,
+                "marker-line": exact.get("marker-line") or out["marker"]})
+    if seeds.deep:
+        out.update({name: exact[name] for name in DEEP_COLOURS})
+        out.update(DEEP)
+    else:
+        out.update(dict.fromkeys((*DEEP_COLOURS, *DEEP), "initial"))
     return out
 
 
@@ -259,6 +336,12 @@ def contrast_report(key: str, mode: str) -> list[tuple[str, str, float, float]]:
     pairs += [("accent-ink", "accent", TEXT_FLOOR), ("brand-ink", "brand", UI_FLOOR), ("off-ink", "off-bg", TEXT_FLOOR),
               ("done-ink", "done-bg", TEXT_FLOOR)]
     pairs += [(f"{state}-ink", f"{state}-bg", TEXT_FLOOR) for state in ("ok", "warn", "crit", "stale")]
+    # session 114: the hover label on every surface; where keys are drawn (the DEEP look), a key's label, hover label
+    # and selected line on its gradient
+    pairs += [("hl", surface, TEXT_FLOOR) for surface in SURFACES]
+    for shade in ("key-top", "key-bottom") if t["key-top"] != "initial" else ():
+        pairs += [("ink", shade, INK_FLOOR), ("muted", shade, TEXT_FLOOR), ("hl", shade, TEXT_FLOOR),
+                  ("marker", shade, UI_FLOOR)]
     return [(fg, bg, round(contrast(t[fg], t[bg]), 2), floor) for fg, bg, floor in pairs]
 
 

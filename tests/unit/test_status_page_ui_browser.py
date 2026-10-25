@@ -2,8 +2,9 @@
 
 Covered: incidents beside the live view on desktop and below it on mobile; no horizontal overflow with long content;
 light and dark themes, from the browser's preference and from the page's own choice; keyboard reachability with a
-visible focus ring; reduced motion (transitions off, the D71 watchdog still running); and the watchdog failing closed
-when animations do not run at all. The page's self-reload is held off here (a long refresh interval), so that what is
+visible focus ring (except on the navigation items, which by the maintainer's decision show none, session 114);
+reduced motion (transitions off, the D71 watchdog still running); and the watchdog failing closed when animations do
+not run at all. The page's self-reload is held off here (a long refresh interval), so that what is
 on screen can be followed; how updates keep focus and reading state is tested with the partial-update increment.
 Screenshots can be saved for review with SENTINEL_TEST_SCREENSHOTS; they never decide a result.
 """
@@ -96,8 +97,8 @@ def test_recognition_is_beside_the_camera_incidents_below_and_nothing_scrolls_si
 
 
 @pytest.mark.parametrize(("preference", "query", "background"), [
-    ("light", "", "rgb(247, 239, 229)"), ("dark", "", "rgb(28, 29, 28)"),  # Carbon & Cream (D82)
-    ("light", "?theme=dark", "rgb(28, 29, 28)"), ("dark", "?theme=light", "rgb(247, 239, 229)"),
+    ("light", "", "rgb(247, 239, 229)"), ("dark", "", "rgb(6, 6, 5)"),  # Carbon & Cream (D82; dark: session 114's)
+    ("light", "?theme=dark", "rgb(6, 6, 5)"), ("dark", "?theme=light", "rgb(247, 239, 229)"),
 ])
 def test_light_and_dark_follow_the_browser_unless_the_page_chooses(
         browser: Browser, site: dict[str, Any], preference: str, query: str, background: str) -> None:
@@ -109,8 +110,8 @@ def test_light_and_dark_follow_the_browser_unless_the_page_chooses(
         assert seen["bg"] == background
         expected = {"": "Auto", "?theme=dark": "Dark", "?theme=light": "Light"}[query]
         assert seen["selected"] == [expected]  # the one marked choice, by its name
-        if background == "rgb(28, 29, 28)":  # dark: the slightly deeper sidebar the maintainer chose (D96)
-            assert seen["sidebar"] == "rgb(24, 25, 24)"
+        if background == "rgb(6, 6, 5)":  # dark: the approved deep black, the sidebar on the page's black (session 114)
+            assert seen["sidebar"] == "rgb(6, 6, 5)"
     finally:
         page.close()
 
@@ -142,7 +143,7 @@ def test_a_section_link_brings_its_section_into_view_on_a_phone(browser: Browser
 FOCUSED = """(() => { const e = document.activeElement; const s = getComputedStyle(e);
   return {tag: e.tagName, cls: e.className, text: (e.innerText || '').trim().slice(0, 60),
           outline: s.outlineStyle, width: parseFloat(s.outlineWidth), inLive: !!e.closest('#live'),
-          inIncidents: !!e.closest('#incidents')}; })()"""
+          inIncidents: !!e.closest('#incidents'), nav: !!e.closest('.nav')}; })()"""
 
 
 def test_every_control_is_reachable_by_keyboard_with_a_visible_focus_ring(browser: Browser, site: dict[str, Any]) -> None:
@@ -164,8 +165,12 @@ def test_every_control_is_reachable_by_keyboard_with_a_visible_focus_ring(browse
             if focus["tag"] == "BODY" or (seen and focus["cls"] == "skip"):
                 break
             seen.append(focus)
-            assert focus["outline"] != "none" and focus["width"] >= 2, focus  # a visible ring on every stop
+            if focus["nav"]:  # the maintainer's decision (session 114): navigation items show no focus ring at all
+                assert focus["outline"] == "none", focus
+            else:
+                assert focus["outline"] != "none" and focus["width"] >= 2, focus  # a visible ring on every other stop
         assert seen and seen[0]["cls"] == "skip" and len(seen) < 80
+        assert sum(1 for f in seen if f["nav"]) == 8  # still reachable, every one
         texts = [f["text"] for f in seen]
         assert {"Auto", "Light", "Dark"} <= set(texts) and "About this picture" in texts
         assert sum(1 for f in seen if f["cls"] == "inc") >= 10 and any(f["inIncidents"] for f in seen)
@@ -185,7 +190,7 @@ PLAYER = "document.getElementById('player-state').innerText.trim()"
 
 
 def test_reduced_motion_turns_transitions_off_and_keeps_the_freshness_watchdog(browser: Browser, site: dict[str, Any]) -> None:
-    for preference, transition in (("no-preference", "0.16s"), ("reduce", "0s")):
+    for preference, transition in (("no-preference", "0.26s"), ("reduce", "0s")):  # session 114: the release
         page = opened(browser, f"{site['url']}/", media={"prefers-reduced-motion": preference})
         try:
             started = time.monotonic()

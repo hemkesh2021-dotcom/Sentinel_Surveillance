@@ -6,7 +6,9 @@ that the D71 watchdog rules always arrive with the markup they govern; pages all
 and allow no other inline style. Two same-origin scripts: ``appearance.js`` in the head applies the viewer's saved
 appearance before the first paint, and ``dashboard.js`` (deferred) does everything else. Icons are simple stroked SVG
 symbols drawn for these pages on one 24-unit grid, referenced with ``<use>``, decorative only (every state and every
-control also has a text label). Portable: stdlib only.
+control also has a text label). Session 114: the sprite also holds the highlight's metal gradient (the trace that runs
+around a hovered or focused control), and ``GRAIN`` is the deep black's faint noise, a same-origin image (the CSP
+allows images from this origin only, so it cannot be inlined). Portable: stdlib only.
 """
 
 from __future__ import annotations
@@ -107,11 +109,26 @@ ICONS = {
            '<circle cx="12" cy="12" r="2.6"/>',
 }
 
+# Session 114: the trace's metal, from the highlight's light end through its middle to its deep end (the stops take
+# their colours from the stylesheet, which has the palette's tokens; no inline style)
+HL_METAL = ('<linearGradient id="hl-metal" x1="0" y1="0" x2="1" y2="1"><stop offset="0" class="hl-a"/>'
+            '<stop offset=".55" class="hl-b"/><stop offset="1" class="hl-c"/></linearGradient>')
+
 SPRITE = (
     '<svg class="sprite" aria-hidden="true" focusable="false"><defs>'
     + "".join(f'<symbol id="i-{name}" viewBox="0 0 24 24">{body}</symbol>' for name, body in ICONS.items())
-    + "</defs></svg>"
+    + HL_METAL + "</defs></svg>"
 )
+
+# Session 114 (preview v5's deep black): a 160 px tile of white noise at alpha .03, under the page, the panels and the
+# keys of Carbon & Cream's dark mode only (palettes.DEEP). Static and self-contained: no script, no link.
+GRAIN_PATH = "/assets/grain.svg"
+GRAIN = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160"><filter id="n">'
+    '<feTurbulence type="fractalNoise" baseFrequency=".85" numOctaves="2" stitchTiles="stitch"/>'
+    '<feColorMatrix values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .03 0"/></filter>'
+    '<rect width="100%" height="100%" filter="url(#n)"/></svg>'
+).encode("ascii")
 
 
 def icon(name: str, cls: str = "ic") -> str:
