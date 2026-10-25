@@ -1,6 +1,8 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-25, session 114 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 114: chat answers sized to the time before the next periodic scene job (session 113's step 1); local, portable tests only.** The code is `e5d8306`; this record follows it. Nothing run on the device, pushed or published.
+Last updated 2026-10-26, session 114, part 3 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 114, part 3: the maintainer's approved preview (v5) applied to the dashboard; local only.** The code is `7597fc6`; this record follows it. Carbon & Cream's dark mode is v5's deep black with ivory text and a gold highlight; every control answers as in session 114 (one trace on hover and focus, then a glow; an inset press with a pulse; a thin selected line; a pending edge only while its request runs; disabled never glows); navigation items show no ring or outline in any state, and keyboard focus changes nothing on them (the maintainer's decision; the accessibility trade-off is in the part 3 log); every light colour and the six other presets' dark colours unchanged, pinned by test. Before/after screenshots taken locally, never in Git. Nothing run on the device, pushed or published.
+
+**Session 114, part 1: chat answers sized to the time before the next periodic scene job (session 113's step 1); local, portable tests only.** The code is `e5d8306`.
 - **Chat:**
   - each question's answer limit comes from the time until the next periodic scene job's grace would end it and from chat's own measured pace (a slow fallback until measured, and after an overrun), never above 120 tokens;
   - a time too short waits for the next gap within the question's 5 s to start, then ends as busy;
@@ -12,7 +14,7 @@ Last updated 2026-10-25, session 114 (Claude), on branch `v2-ui-refresh` (worktr
 - **Not established:** the device's pace and timings; any change in the cancellation rate (no reduction claimed); scene waits, deadlines and memory under the change.
 - **Recorded for later work (requirements, not implemented):**
   - a recognition range target: the seat about 2-3 ft; the front door, about 4-5 m, primary; a configurable extended target beyond it; requested, not validated; never by lowering thresholds;
-  - a UI redesign direction with an interactive motion treatment. Its local component preview, `docs/design/ui-motion-preview.html`, is built for the maintainer's review (session 114 log, part 2); nothing is applied to the dashboard.
+  - a UI redesign direction with an interactive motion treatment. Its local component preview, `docs/design/ui-motion-preview.html`, was built for the maintainer's review (session 114 log, part 2); the maintainer approved a revised version, v5, and it is applied (part 3).
 - **Pending (the maintainer):**
   - the PROPOSED values and decisions (session 114 log, section 6);
   - the camera and distance questions (section 11);
@@ -792,7 +794,9 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
      - say whether a device validation of the chat change should be prepared (section 9);
      - review the local UI component preview before any dashboard change.
    - **Done (session 114, part 2):** the local UI component preview, `docs/design/ui-motion-preview.html`, checked in headless Chromium (45 of 45 checks), for review only.
-   - **Claude, next (session 114):** on the maintainer's approval of the preview (or the changes they ask for), apply the style to the dashboard as its own slice, with its browser tests. Or, on instruction: the chat change's device validation package, or a read-only plan toward the requested range (the camera facts first; then session 113's steps 3-4, thresholds unchanged).
+   - **Done (session 114, part 3):** the maintainer's approved preview (v5) applied to the dashboard as its own slice (`7597fc6`): Carbon & Cream's dark mode the deep black, the controls' states in every palette, navigation items without a ring, every light colour unchanged; browser tests, 14 of 14 mutations caught, before/after screenshots (session 114 log, part 3).
+   - **Maintainer (session 114, part 3):** look at the screenshots; say whether the compact rail's name tooltip should also stop appearing on keyboard focus, and whether the six other palettes stay in the Appearance panel (part 3 log, section 6).
+   - **Claude, next (session 114):** on instruction: the chat change's device validation package, or a read-only plan toward the requested range (the camera facts first; then session 113's steps 3-4, thresholds unchanged), or changes to the applied style.
    - **Done (session 112):** v2.0.0-alpha.2 published: `27d6308` pushed alone as a fast-forward of `alpha-candidate-2026-10`; Dashboard checks and both portable jobs passed on it; the tag `v2.0.0-alpha.2` and the pre-release (not latest) created (session 112 log).
    - **Maintainer (session 112):** the action in the session 112 section of `docs/LOCAL_NOTES.md` (excluded). The 24 October review checkpoint on the pre-release. Whether to update the wiki (it still describes alpha.1) and when to push this record's local commits are your decisions.
    - **Claude, next (session 112):** after the review, only on the maintainer's instruction. The recognition-distance and VLM chat improvements stay deferred until then; F2, false acceptance, accuracy, chat admission and the combined run stay pending.
@@ -1372,6 +1376,91 @@ VIRTUAL_ENV=~/sentinel-validation/py312-df8d9bc/venv PATH=<its bin>:$PATH python
    - whether the state sheet covers what the dashboard needs.
    - Nothing is applied to the dashboard until it is approved; the existing palettes stay (D96).
 7. **Unchanged:** backend behaviour, the dashboard's code and styles, every sealed session. Nothing launched, pushed, uploaded or shared.
+
+### Session 114, part 3 (Claude, 2026-10-25 to 26): the maintainer's approved preview (v5) applied to the dashboard: Carbon & Cream's dark mode is the deep black with a gold highlight, every control answers as in session 114, navigation items show no ring; every light colour unchanged
+
+1. **The request (the maintainer).** They reviewed part 2's preview and approved a revised version, `~/sentinel-design/sentinel-ui-motion-preview-deep-v5.html`. It is their file, outside Git: 48,939 bytes, SHA-256 `53147de7377f025d95aa8c88a7fd9fad208b42e7c7e6fa009f69a6b9d53d36af`. I read it in full, its `[data-black="deep"]` block and its "navigation items and the selected state" block first. Their decisions supersede the earlier direction where they conflict, focus rings on navigation items included:
+   - **Look:** the system font; deeper blacks, dark theme only: page `#060605`, recessed panels `#0E0D0B`, button edge `#000000`, button gradient `#2E2C28` / `#23221F` / `#1B1A17`, v5's raised, pressed and recessed shadows, background grain at alpha .03.
+   - **Navigation items** (Live view, Incidents, Features, Ask and the rest): no ring or outline in any state (no focus ring, no gold line inside or outside the edge, no press ring); keyboard focus changes nothing. Hover: the gold label, the edge trace and the glow. Selected: v5's two-layer `--glow-selected` alone, the label ivory.
+   - **Other controls:** selected buttons (segmented choices), primary buttons, toggles and the chat input keep session 114's behaviour; timings, motion and reduced motion unchanged; disabled buttons never glow.
+   - **Also:** no Black level switch on the dashboard (it belongs to the preview only); nothing drawn on the camera picture; warning, error and success colours distinct from gold.
+   - **Process:** record this trade-off in the session notes and update the direction note; local only; commit when the tests pass; before/after screenshots in dark and ivory, at desktop and phone width.
+   - **Their addition, before any code:** the light (ivory) theme's colours do not change at all, the seven presets' light values included; only the dark theme gets v5's deeper blacks; the navigation rules apply in both themes (they change state styling, not palette colours).
+   - **Asked and answered:**
+     - the deep black, ivory text and gold go to **Carbon & Cream's dark mode only** (the default palette). The six other presets keep their dark colours and take the new states in their own accent (their marker);
+     - in the light theme, **session 114's states in v5's light gold** for the trace, the glows and the hover label, with focus rings and selected lines in each palette's existing colours.
+2. **What changed.**
+   - **Palettes (`src/sentinel/web/palettes.py`):**
+     - Carbon & Cream's dark seeds are v5's: the surfaces above, with the sidebar and recessed cards on the page's black; ivory `#EFE7D6`, muted `#B9AF9D`, faint `#8A8170`; gold `#F2C45A`, its metal `#FDE58A` / `#C98A2E` and its warmer glow `#D68C2E`; the keys' gradient ends.
+     - `DEEP` holds v5's shadows and grain, and what the stylesheet takes in place of its earlier look there. Every other mode sets them to `initial`, so each rule's fallback, the earlier look, applies.
+     - Every preset gains the states' tokens (`hl`, `hl-hi`, `hl-lo`, `hl-warm`, `hl-ring`, `hl-glow`, `hl-edge`, `glow-selected`, `marker-line`): v5's light gold in every light mode (`#8A5D0F`, at least 4.57:1 on every light surface of every preset), and each preset's own marker in dark.
+     - **One exception to "a state's colours are fixed per mode":** Carbon & Cream's dark warnings and its not-current banner are orange (`#FF8A3D`; the warning background `#261A10`). The earlier amber `#F2C76E` is 0.018 from the gold in OKLab, indistinguishable from it.
+   - **Stylesheet (`dashboard.css`):**
+     - the deep look through the `--deep-*` tokens;
+     - the controls' states for every control. A resting shadow, a selected line and a halo combine in one box-shadow, so states never compete:
+       - hover and keyboard focus: the highlight's label, one trip around the edge (320 ms), then the glow (240 ms, from 60% of the trip);
+       - keyboard focus: also a 2 px ring 3 px off the edge, in the palette's focus colour;
+       - a press: 1 px down and 1.5% smaller, its shadow inset, with a 160 ms pulse; the release takes 260 ms with a small overshoot;
+       - selected: an inset 1 px line;
+       - pending: the edge circles only while the control's request is in flight (1.6 s a turn, at most 40 turns: no animation runs without end);
+       - disabled: never a halo;
+     - navigation items: the rules above;
+     - a switch's track keeps its border in every look. Found in the close-ups: on a recessed card, the track's own shade did not show where the knob was;
+     - the motion exists only under `prefers-reduced-motion: no-preference`. Reduced motion keeps every state, with a still dotted pending edge;
+     - forced colours: selection takes the system's highlight outline, the selected navigation item included, as in v5;
+     - the D71/D75 watchdog rules, the layout and the light look unchanged.
+   - **Script (`dashboard.js`):**
+     - a control gets its edge (one SVG rectangle on its outline, its corners measured on each use) and its pulse ring when first hovered, focused or pending;
+     - these decorations (`data-deco`) survive in-place updates: `morph` neither removes one nor makes one into a server node;
+     - `aria-busy` is set on the Ask button while its question is pending, on a feature switch while its request is (set again after each update re-renders the switch), and on Unlock while the key is checked.
+   - **Server (`status_page.py`, `web/__init__.py`):**
+     - `/assets/grain.svg`: a 160 px noise tile at alpha .03, served as a same-origin image because the CSP allows only this origin's images;
+     - the sprite's `hl-metal` gradient, its stops coloured by stylesheet classes (no inline style);
+     - the question box and the key box wrapped in `.field`, and the filters' selects in `.pick`, as hosts for their edges.
+     - Nothing else in the routes, the data or the runtime changed.
+3. **The accessibility trade-off (the maintainer's decision; recorded as they asked).** Navigation items have no visible keyboard focus indicator. A keyboard user tabbing through the sidebar's 8 links sees nothing change on the focused one, in both themes, in every palette, and in forced-colours mode (where only the selected item keeps the system's highlight outline). For those links this does not meet WCAG 2.2 success criterion 2.4.7 Focus Visible (level AA), nor 2.4.13 Focus Appearance (AAA).
+   - **What remains:**
+     - the links stay in the Tab order, in page order, each announced by its name;
+     - activating one brings its section into view and marks it selected (the glow);
+     - the phone drawer still moves focus into itself and gives it back;
+     - every other control keeps a visible 2 px ring.
+   - **On keyboard focus in the compact rail,** an item still shows its name beside it (D96's tooltip). That is not a ring on the item, but it does appear on keyboard focus; the maintainer may want it gone too.
+   - The earlier test that every Tab stop shows a ring now checks instead that navigation items show none, and that all 8 are still reached.
+4. **Verified locally.** Synthetic data only, in headless Chromium through the test harness; nothing on the device, no camera or model.
+   ```
+   T = PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m pytest -q -p no:cacheprovider   # Python 3.10.14, in the worktree
+   T tests/unit/test_status_page_ui.py            # 36 passed
+   T tests/unit/test_status_page_ui_browser.py tests/unit/test_dashboard_browser.py   # 21 passed
+   T tests/unit/test_dashboard_states_browser.py  # 10 passed (new)
+   T tests/unit/test_features_browser.py tests/unit/test_status_page_chat_browser.py \
+     tests/unit/test_viewing_preferences.py tests/unit/test_status_page_browser.py tests/unit/test_live_player_browser.py   # 33 passed
+   T                                              # the full suite at 7597fc6's code: 2868 passed, 2 skipped (torch, cv2) in 1531.50 s; exit 0 (18:34:33-19:00:06 UTC)
+   ```
+   - **The full suite** collected the tests before two last text-only edits (a reworded comment in `palettes.py`; long lines wrapped in `test_dashboard_states_browser.py` and in a docstring of `test_status_page_ui.py`). Those two test files were run again on their final text: 46 passed.
+   - **Contrast:** every pairing of `contrast_report` passes in every preset and mode: text 4.5:1, primary text 7:1, focus rings, borders and markers 3:1. The browser test computes them again for every palette in both modes, with the focus ring on a segmented choice. New pairings:
+     - the hover label on every surface (lowest 4.57:1: light, v5's gold on the light sunken surfaces);
+     - in the deep look, a key's label, hover label and selected line on its gradient.
+   - **Unchanged colours, pinned:** every earlier token of every light mode and of the six other presets' dark modes, and the swatches, are hash-equal to `684e095`'s (the SHA-256 of their values; the test lists the tokens).
+   - **Mutations:** 14 of 14 deliberate breakages caught by the intended tests:
+     - on navigation items: a focus ring back; the selected item drawn as a line; a hover ring; the focus look given to them;
+     - disabled controls glowing; selected controls glowing; no pending edge;
+     - updates dropping the decorations; the camera frame decorated; the trace under reduced motion;
+     - a light colour changed; the dark warning back to amber; the deep look in every palette; the pending edge without end.
+   - **Seen:**
+     - close-ups of the states in Carbon & Cream dark and light and in Teal & Coconut dark, with the computed shadows, outlines, colours and the edge's animation recorded beside them;
+     - the phone's drawer and the compact rail in dark and light.
+   - **Screenshots for the maintainer** (local, in the session scratchpad; never in Git): before at `684e095` and after, the dashboard and an incident page in dark and ivory at 1440×900 and 390×844 (full page and first screen), with side-by-side pairs.
+5. **Not checked; open.**
+   - Safari and Firefox, the maintainer's own browser, real devices; how the motion feels at full speed.
+   - **The light warning is near the light gold.** The light theme's warning colour `#734400` is 0.083 from v5's light gold `#8A5D0F` in OKLab. Warnings keep their badge background, icon and words, and gold appears in light only on hover and focus. Left unchanged, because light colours are frozen.
+   - **The six other presets' dark warnings.** They keep their warning amber beside their own accents; Sesame & Mango's `#F4B54A` and Charcoal & Sheen's `#D9CE52` are near it. Unchanged, because their dark colours are frozen; their highlight is the marker they already used for selection and focus.
+   - The compact rail's tooltip on keyboard focus (section 3).
+   - Without script there are no edges or pulses; the halos, rings and lines still apply.
+6. **For the maintainer:**
+   - look at the screenshots (paths in this session's report);
+   - say whether the compact rail's tooltip should stop appearing on keyboard focus;
+   - say whether the six other palettes stay in the Appearance panel;
+   - say whether anything should change before the style settles.
 
 ## Session 112 log (Claude, 2026-10-21): v2.0.0-alpha.2 published: `27d6308` pushed alone to `alpha-candidate-2026-10` as a fast-forward; Dashboard checks and both portable jobs passed on it; the annotated tag and the GitHub pre-release (not latest) created; nothing else pushed
 
