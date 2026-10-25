@@ -1,6 +1,8 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-26, session 114, part 3 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 114, part 3: the maintainer's approved preview (v5) applied to the dashboard; local only.** The code is `7597fc6`; this record follows it. Carbon & Cream's dark mode is v5's deep black with ivory text and a gold highlight; every control answers as in session 114 (one trace on hover and focus, then a glow; an inset press with a pulse; a thin selected line; a pending edge only while its request runs; disabled never glows); navigation items show no ring or outline in any state, and keyboard focus changes nothing on them (the maintainer's decision; the accessibility trade-off is in the part 3 log); every light colour and the six other presets' dark colours unchanged, pinned by test. Before/after screenshots taken locally, never in Git. Nothing run on the device, pushed or published.
+Last updated 2026-10-26, session 114, part 4 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 114, part 4: shorter text on phones, in the approved style; the restyle's before/after comparisons repaired; local only.** The code is `485f3f6`; this record follows it. At most 599 px wide, the freshness bar is one short line with its time in either state (NOT CURRENT at once, with its words), and how the page stays current is a closed, labelled disclosure; on an incident page the snapshot note, why there is no snapshot (a short line stays in the picture's place) and the command-line acknowledgment are labelled disclosures holding the full text, while the title, severity, status, the event, the acknowledgment's state and every failure stay in view. On phones the picture starts 53-131 px sooner, inside the first screen at 320×640. Wider screens keep every full text; the desktop layout and computed styles were checked identical; colours, fonts, tokens, shadows, motion, navigation and controls unchanged. Part 3's 10 "side-by-side pairs" were HTTP 404 pages: rebuilt directly from the PNG files and looked at, the claim corrected in the part 3 log; the mobile comparisons kept beside them, outside Git. 14 new browser tests; 7 of 7 mutations caught; the 25 page-rendering modules: 877 passed, 1 skipped. Synthetic data only; nothing run on the device, pushed or published.
+
+**Session 114, part 3: the maintainer's approved preview (v5) applied to the dashboard; local only.** The code is `7597fc6`. Carbon & Cream's dark mode is v5's deep black with ivory text and a gold highlight; every control answers as in session 114 (one trace on hover and focus, then a glow; an inset press with a pulse; a thin selected line; a pending edge only while its request runs; disabled never glows); navigation items show no ring or outline in any state, and keyboard focus changes nothing on them (the maintainer's decision; the accessibility trade-off is in the part 3 log); every light colour and the six other presets' dark colours unchanged, pinned by test. Before/after screenshots taken locally, never in Git (its side-by-side images were 404 pages, rebuilt in part 4). Nothing run on the device, pushed or published.
 
 **Session 114, part 1: chat answers sized to the time before the next periodic scene job (session 113's step 1); local, portable tests only.** The code is `e5d8306`.
 - **Chat:**
@@ -796,7 +798,9 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
    - **Done (session 114, part 2):** the local UI component preview, `docs/design/ui-motion-preview.html`, checked in headless Chromium (45 of 45 checks), for review only.
    - **Done (session 114, part 3):** the maintainer's approved preview (v5) applied to the dashboard as its own slice (`7597fc6`): Carbon & Cream's dark mode the deep black, the controls' states in every palette, navigation items without a ring, every light colour unchanged; browser tests, 14 of 14 mutations caught, before/after screenshots (session 114 log, part 3).
    - **Answered (session 114, part 3; the maintainer, 2026-10-26):** the compact sidebar's tooltips, the visible switch borders, the orange dark warnings and the palette choices stay; no further design changes for now. The review screenshots are kept in `~/sentinel-design/sentinel-ui-review/` (outside Git; part 3 log, section 7).
-   - **Claude, next (session 114):** on instruction: the chat change's device validation package, or a read-only plan toward the requested range (the camera facts first; then session 113's steps 3-4, thresholds unchanged), or changes to the applied style.
+   - **Done (session 114, part 4):** shorter text on phones (`485f3f6`): the freshness bar one line with its time, the incident page's explanations behind labelled disclosures, the essentials and every failure in view, wider screens unchanged; 14 browser tests, 7 of 7 mutations caught, the 25 page-rendering modules 877 passed, 1 skipped. Part 3's comparisons, which were 404 pages, rebuilt from the PNG files; the mobile comparisons added beside them (session 114 log, part 4).
+   - **Maintainer (session 114, part 4):** look at `mobile-text/before-after/` and the rebuilt `before-after/` in the review folder; say whether the short lines and the disclosures' labels read well, and whether the 320 px phone's picture (only its top 26 px in the first screen) or the blank line under the current line at 360 and 320 px needs a layout change (part 4 log, section 7).
+   - **Claude, next (session 114):** on instruction: the chat change's device validation package, or a read-only plan toward the requested range (the camera facts first; then session 113's steps 3-4, thresholds unchanged), or changes to the applied style or the phone text.
    - **Done (session 112):** v2.0.0-alpha.2 published: `27d6308` pushed alone as a fast-forward of `alpha-candidate-2026-10`; Dashboard checks and both portable jobs passed on it; the tag `v2.0.0-alpha.2` and the pre-release (not latest) created (session 112 log).
    - **Maintainer (session 112):** the action in the session 112 section of `docs/LOCAL_NOTES.md` (excluded). The 24 October review checkpoint on the pre-release. Whether to update the wiki (it still describes alpha.1) and when to push this record's local commits are your decisions.
    - **Claude, next (session 112):** after the review, only on the maintainer's instruction. The recognition-distance and VLM chat improvements stay deferred until then; F2, false acceptance, accuracy, chat admission and the combined run stay pending.
@@ -1449,7 +1453,7 @@ VIRTUAL_ENV=~/sentinel-validation/py312-df8d9bc/venv PATH=<its bin>:$PATH python
    - **Seen:**
      - close-ups of the states in Carbon & Cream dark and light and in Teal & Coconut dark, with the computed shadows, outlines, colours and the edge's animation recorded beside them;
      - the phone's drawer and the compact rail in dark and light.
-   - **Screenshots for the maintainer** (local, in the session scratchpad; never in Git): before at `684e095` and after, the dashboard and an incident page in dark and ivory at 1440×900 and 390×844 (full page and first screen), with side-by-side pairs.
+   - **Screenshots for the maintainer** (local, in the session scratchpad; never in Git): before at `684e095` and after, the dashboard and an incident page in dark and ivory at 1440×900 and 390×844 (full page and first screen). **Corrected in part 4:** first written as "with side-by-side pairs". Those 10 images were the browser's HTTP 404 page, not comparisons, and I had not looked at them; they were rebuilt from the PNG files in part 4 (part 4 log, section 2).
 5. **Not checked; open.**
    - Safari and Firefox, the maintainer's own browser, real devices; how the motion feels at full speed.
    - **The light warning is near the light gold.** The light theme's warning colour `#734400` is 0.083 from v5's light gold `#8A5D0F` in OKLab. Warnings keep their badge background, icon and words, and gold appears in light only on hover and focus. Left unchanged, because light colours are frozen.
@@ -1465,9 +1469,91 @@ VIRTUAL_ENV=~/sentinel-validation/py312-df8d9bc/venv PATH=<its bin>:$PATH python
 7. **The review screenshots, kept (the maintainer's request).** Copied to `~/sentinel-design/sentinel-ui-review/`, which is outside Git and readable by its owner only: 38 files, 12 MB:
    - `final/`: the after set at `e4afdf1`;
    - `before/`: the full-size set at `684e095`;
-   - `before-after/`: the 10 side-by-side pairs;
-   - `README.txt` and `SHA256SUMS`, all checksums verified.
+   - `before-after/`: 10 images, first recorded here as "the 10 side-by-side pairs". **Corrected in part 4:** they were the browser's HTTP 404 page (3 distinct images), not comparisons; replaced on 2026-10-26 by images built from the PNG files (part 4 log, section 2);
+   - `README.txt` and `SHA256SUMS`, all checksums verified. **Corrected in part 4:** the checksums showed only that the copies matched their originals, not what the images showed, and I had not looked at the pairs. The folder now also holds part 4's set, with a new `README.txt` and `SHA256SUMS` (part 4 log, section 5).
    - Synthetic data only. Downloaded to the maintainer's Mac with a command given in the session, never committed. Never published or shared without approval.
+
+### Session 114, part 4 (Claude, 2026-10-26): shorter text on phones, so the picture and the actions come sooner, in the approved style; the restyle's before/after comparisons repaired
+
+1. **The request (the maintainer).**
+   - **The comparisons:** part 3's 10 before/after images were HTTP 404 pages. Rebuild them directly from the PNG files, labelled before (left) and after (right), keeping proportions and detail, never by capturing a web page; look at every output; correct the earlier claim in this record; regenerate `SHA256SUMS`; keep `before/` and `final/`.
+   - **Shorter text on phones:**
+     - the freshness bar: a short status with its time, how the page refreshes in an expandable section; stale, stopped, unavailable and error states in view at once;
+     - an incident page: the title, severity, status, the event and actionable failures in view; the snapshot and retention explanation, the command-line instructions and provenance behind labelled disclosures; a short visible line where there is no snapshot;
+     - recognition's experimental status in view; every explanation still reachable; desktop as it is; the existing disclosures (keyboard-accessible, their open state kept through updates).
+   - **Unchanged:** the font, colours (the deep black and gold, every light colour), tokens, shadows, grain, motion and reduced motion, control states, navigation, tooltips and switch borders; no backend, recognition, chat, monitoring or threshold change; no new dependency; no layout redesign.
+   - **Deliver:** focused tests; narrow phones and desktop in dark and ivory with synthetic data, checked for clipping, overflow and how soon the picture comes; the repaired restyle comparisons kept apart from the new mobile ones, each labelled with its commits; a local commit; the reviewed screenshots kept under `~/sentinel-design/`, with manifests and checksums. The full suite only if the changes or focused failures justify it.
+2. **The comparisons: what went wrong, and the repair.**
+   - **What went wrong.** Part 3's comparison script (session scratchpad) wrote each comparison page into one folder and had the browser open it from another address, so every capture was the browser's 404 page. Its readiness check (every image on the page loaded) passed because there was no image on the page. I did not look at the outputs before recording them as side-by-side pairs, and `SHA256SUMS` confirmed only that the copies matched. The 10 files were 3 distinct images: the same 404 page at the script's three widths, visible as repeated checksums in the old `SHA256SUMS`.
+   - **The repair.** A new script builds each image with PIL directly from the two PNG files, with no browser or web page: before on the left and after on the right, at full size (1:1), top-aligned on grey, each side labelled with its commit. It then compares every pasted area with its source pixel for pixel and stops on any difference. The 10 restyle images were rebuilt this way from `before/` (`684e095`) and `final/` (`e4afdf1`, code `7597fc6`), and I looked at each one. Rebuilt again from the installed copies, all 10 are pixel-identical to the installed images.
+   - The part 3 log's claims are corrected in place (its sections 4 and 7).
+3. **What changed (`485f3f6`).** Only at most 599 px wide; wider screens show the same full texts as before.
+   - **Markup (`status_page.py`):**
+     - `_details` takes extra classes; `_narrow` gives a paragraph as before on wide screens and, on a phone, the same text behind a labelled `details.tech` disclosure;
+     - the freshness switch (D71): each layer keeps its full paragraph for wide screens and gains a phone line, "**This page is current** · generated <time>" or "**NOT CURRENT: this page has not refreshed for 5 s** · last report <time>". How the page stays current, in both states, is a closed disclosure ("How this page stays current") beside the switch, outside it, so it claims nothing about the state;
+     - an incident without a snapshot: "None was saved for this incident." in the picture's place, and why behind "Why there is no snapshot";
+     - the snapshot note behind "About snapshots: what is kept, and for how long";
+     - not acknowledged: the badge in view, the command-line text behind "How to acknowledge it (this page is read only)". An acknowledgment's own text stays in view.
+   - **Stylesheet (`dashboard.css`):**
+     - `.wide-only` is hidden at most 599 px wide and `.narrow-only` from 600 px, with `display: none`, so a screen reader meets one copy;
+     - the freshness disclosure sits 8 px below the bar;
+     - `.frame-empty` gains `max-width: 100%`. On a 320 px phone, its minimum height's 4:3 shape made it 293 px wide and the incident page without a snapshot scrolled sideways. Found in this work; it predates it.
+   - **As they were:**
+     - the disclosures are the existing `details.tech`: closed until opened, opened from the keyboard, kept as the reader left them through in-place updates (D73);
+     - in view and in full: NOT CURRENT, warnings, the runtime's state, unavailable and failed states, the alert-delivery error, recognition's "Experimental · pending validation", and the incident's title, severity, status, event and facts;
+     - colours, fonts, tokens, shadows, grain, motion, navigation and controls; the routes, data, runtime, recognition, chat, monitoring and thresholds.
+4. **Verified locally.** Synthetic data only, in headless Chromium through the test harness; nothing on the device, no camera or model.
+   ```
+   T = PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m pytest -q -p no:cacheprovider   # Python 3.10.14, in the worktree
+   T tests/unit/test_mobile_text_browser.py   # 14 passed (new)
+   T tests/unit/test_status_page_ui.py tests/unit/test_live_preview.py tests/unit/test_incident_snapshots.py \
+     tests/unit/test_status_page_updates.py tests/unit/test_incident_ack.py   # 138 passed, 1 skipped (cv2)
+   T $(grep -l "status_page\|render_html\|render_incident_html\|StatusServer" tests/unit/*.py)   # the 25 page-rendering modules, the new one included: 877 passed, 1 skipped in 1144.86 s; exit 0
+   ```
+   - **The new tests** (`test_mobile_text_browser.py`, 14):
+     - on 390 and 320 px phones, in both themes: the bar is the short line and the closed disclosure, at most 120 px (390) or 140 px (320) high; the picture starts within the first screen; recognition's experimental label is in view;
+     - the disclosure opens from the keyboard and stays open, with its focus, through two updates;
+     - at 320 px, NOT CURRENT shows at once with its words;
+     - at 1280 px, every full text and no disclosure;
+     - incident pages at 390, 360 and 320 px: the essentials in view, the three disclosures closed and labelled, each holding the full text;
+     - every wide paragraph is the body of a phone disclosure, and an open one survives updates;
+     - nothing scrolls sideways at 390, 360 or 320 px.
+   - **Mutations:** 7 of 7 caught by the intended tests, each made in a scratch copy of the worktree:
+     - phones showing the long texts; wide screens showing the phone items;
+     - no phone line for NOT CURRENT; the empty frame sticking out again;
+     - a disclosure losing its text; updates closing a disclosure; no short line without a snapshot.
+   - **The full suite was not rerun.** The change is confined to the page markup, the stylesheet and a new test module, and every module that renders the pages ran. Part 3's full suite (2868 passed, 2 skipped) covers the rest of the code, which is unchanged. The tests above ran on the committed code: nothing in `src/` or `tests/` changed between them and the commit.
+   - **Measured** before (`d2114ed`, dashboard code `7597fc6`) and after (`485f3f6`), in CSS px; the same in dark and ivory:
+
+     | Width | Picture starts at | Freshness bar | "What happened" on an incident (with / without a snapshot) |
+     |---|---|---|---|
+     | Desktop 1440×900 | 321 → 321 | 63 → 63 | 263 → 263 |
+     | Phone 390×844 | 570 → 517 | 169 → 116 | 1171 → 1055 / 805 → 746 |
+     | Phone 360×780 | 691 → 614 | 212 → 135 | 1141 → 1025 / 831 → 773 |
+     | Phone 320×640 | 745 → 614 | 234 → 135 | 1237 → 1079 / 967 → 867 |
+
+     At 320×640 the picture now starts inside the first screen (its top 26 px). The incident page without a snapshot no longer scrolls sideways at 320 px.
+   - **Desktop unchanged:**
+     - every measured position and height is identical;
+     - the dashboard's 964 visible elements have the same layout to 0.0001 px and the same computed styles, `::before` and `::after` included, in both themes. The only exceptions are run-dependent values: the loopback port in the grain's URL, and the freshness watchdog's timing and animation name;
+     - the only markup differences on a wide screen are the class on two freshness paragraphs and the hidden phone items;
+     - the screenshots differ only in generated times and IDs, plus, on the ivory full page, the edge pixels of some rounded chips. This repeats against a second capture of `485f3f6`. With the layout and every computed style the same, it is a difference in how the browser drew those edges, not in the page. The same kind of edge difference appears between two captures of identical code (dark, part 3's `final/` against this part's before). Its cause inside the browser was not investigated.
+   - **Looked at:** all 18 mobile comparisons and the 10 rebuilt restyle comparisons. The phones' first screens and full pages, the incident pages (390 px both kinds; 320 px and desktop without a snapshot) and the desktop pages were checked for clipping and overflow, and for what comes into view.
+5. **The review screenshots (outside Git, local only).** `~/sentinel-design/sentinel-ui-review/`, owner-only (directories 700, files 600), 124 files, 70 MB:
+   - **the restyle (part 3):** `before/` (`684e095`) and `final/` (`e4afdf1`), unchanged (their checksums matched the old `SHA256SUMS` before it was regenerated), and `before-after/`, the 10 rebuilt comparisons with `compose.json`;
+   - **shorter text on phones (part 4):** `mobile-text/before/` (`d2114ed`) and `mobile-text/after/` (`485f3f6`), 32 shots each at 1440×900, 390×844, 360×780 and 320×640, dark and light, each with `manifest.json` (commit, capture time, the measurements); `mobile-text/before-after/`, 18 comparisons with `compose.json`, all rebuilt again from the installed copies and pixel-identical;
+   - `README.txt`, rewritten: both sets, the correction, how the shots were taken, the measurements;
+   - `SHA256SUMS`, regenerated: 123 checksums, all verified. It shows that copies are complete, not what an image shows.
+   - Synthetic data only. Downloaded to the maintainer's Mac with a command given in the session, never committed; never published or shared without approval.
+6. **Not checked; open.**
+   - Safari and Firefox; a real phone; larger text settings; landscape.
+   - At 320×640, only the picture's top 26 px are in the first screen.
+   - Both freshness layers share one place, so the longer sets the bar's height. At 360 and 320 px the NOT CURRENT line wraps further than the current one, which leaves a blank line under the current line.
+   - The desktop ivory full page's edge pixels (section 4): not investigated further.
+7. **For the maintainer:**
+   - look at `mobile-text/before-after/` (`README.txt` describes it) and the rebuilt `before-after/`;
+   - say whether the short lines and the disclosures' labels read well;
+   - say whether the 320 px phone should bring the picture higher, or the blank line at 360 and 320 px should go. Either needs a layout decision, which this part avoided.
 
 ## Session 112 log (Claude, 2026-10-21): v2.0.0-alpha.2 published: `27d6308` pushed alone to `alpha-candidate-2026-10` as a fast-forward; Dashboard checks and both portable jobs passed on it; the annotated tag and the GitHub pre-release (not latest) created; nothing else pushed
 
