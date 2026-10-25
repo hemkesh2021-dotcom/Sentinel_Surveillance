@@ -1884,6 +1884,36 @@ def test_the_step4cand_cli_exit_status_reflects_eligibility_and_needs_its_own_co
             op.main(argv, backend=Backend())
 
 
+def test_the_step4cand_cli_measures_the_selected_scene_model_set_end_to_end(runners, tmp_path, monkeypatch,
+                                                                         capsys) -> None:
+    """Session 115: --scene-model-set reaches the profiler's command through main(), execute() and run_step4();
+    without it the command has none of the set's arguments (the profiler's defaults, the accepted profile's set)."""
+    from sentinel.scene.models import SCENE_MODEL_SETS
+
+    op = runners.operator
+    monkeypatch.setattr(op, "OUTPUT_ROOT", tmp_path)
+    prep = prepare(runners, tmp_path)
+    monkeypatch.setattr(op, "identity_files", lambda clip, model_set=None: prep.files)
+    new = SCENE_MODEL_SETS["lfm2.5-vl"]
+    common = ["--execute-workload", "step4cand", "--check9-report", str(prep.check9_path), "--identity-report",
+              str(prep.identity_path), "--step4-clip", str(prep.files["clip"]), "--operator-dropped-caches",
+              "--confirm-step4cand-prerequisites"]
+    commands = {}
+    for name, extra in (("default", []), ("lfm2.5-vl", ["--scene-model-set", "lfm2.5-vl"])):
+        b = Backend()
+        b.identity_hashes = {label: entry["sha256"] for label, entry in prep.identity["files"].items()}
+        b.plr_report = fake_plr_report(runners, tmp_path)
+        b.candidate_report = fake_candidate_report(runners, tmp_path)
+        assert op.main([*common, *extra], backend=b) == 0
+        report = json.loads(capsys.readouterr().out)
+        commands[name] = next(c.argv for c in b.children if any(str(a).endswith("demo_profile.py") for a in c.argv))
+        assert report.get("scene_model_set") == (None if name == "default" else "lfm2.5-vl")
+    assert not {"--model", "--mmproj", "--scene-request-model"} & set(commands["default"])
+    at = commands["lfm2.5-vl"].index("--model")
+    assert commands["lfm2.5-vl"][at:at + 6] == ["--model", str(new.model_path), "--mmproj", str(new.mmproj_path),
+                                                "--scene-request-model", "lfm2.5-vl"]
+
+
 # ---------------------------------------------------------------- startup identity checks
 
 

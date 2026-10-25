@@ -117,6 +117,7 @@ HOME = Path.home()
 L4T_LIBCUDA = "/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1"
 L4T_LIBCUDA_DIR = "/usr/lib/aarch64-linux-gnu/nvidia/"
 LLAMA_FLAGS = ["--n-gpu-layers", "999", "--ctx-size", "2048", "--parallel", "1"]  # start_sentinel.sh
+DEFAULT_SCENE_REQUEST_MODEL = "lfm2-vl"  # the profiled request's model name (sentinel.scene.llama_server.MODEL_NAME)
 # llama-server's host-RAM prompt cache (b8932 default 8192 MiB); the numbers in these lines are saved.
 PROMPT_CACHE_STARTUP = re.compile(r"prompt cache is (enabled, size limit: (?:(\d+) MiB|no limit)|disabled)")
 PROMPT_CACHE_STATE = re.compile(
@@ -1397,6 +1398,9 @@ def start_workload(args: argparse.Namespace, run_dir: Path) -> subprocess.Popen:
         argv += ["--clip", str(args.clip)]
     if args.scene_only:
         argv.append("--scene-only")
+    request_model = getattr(args, "scene_request_model", DEFAULT_SCENE_REQUEST_MODEL)
+    if request_model != DEFAULT_SCENE_REQUEST_MODEL:  # the default's command line is unchanged (session 115)
+        argv += ["--scene-request-model", request_model]
     releasing = [flag for flag, on in (("--mr1-release-check", getattr(args, "mr1_release_check", False)),
                                        ("--post-load-release", getattr(args, "post_load_release", False))) if on]
     attribution = ["--memory-attribution"] if getattr(args, "memory_attribution", False) else []  # MA1: counters only
@@ -3340,6 +3344,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--llama", type=Path, default=HOME / "llama.cpp/build/bin/llama-server")
     parser.add_argument("--model", type=Path, default=HOME / "models/lfm2-vl/LFM2-VL-1.6B-Q4_0.gguf")
     parser.add_argument("--mmproj", type=Path, default=HOME / "models/lfm2-vl/mmproj-LFM2-VL-1.6B-Q8_0.gguf")
+    # Session 115: the model name the workload's scene requests carry, the scene model set's whose --model and
+    # --mmproj these are (operator_check --scene-model-set passes all three); the default is the profiled request's.
+    parser.add_argument("--scene-request-model", default=DEFAULT_SCENE_REQUEST_MODEL)
     parser.add_argument("--engine", type=Path, default=HOME / "yolov8n.engine")
     parser.add_argument("--summarize", type=Path, metavar="RUN_DIR", help="only rebuild summary.txt and profile.json")
     return parser.parse_args(argv)

@@ -84,6 +84,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import select
 import sys
 import threading
@@ -121,6 +122,10 @@ VLM_JPEG_QUALITY = 60
 VLM_MAX_TOKENS = 200
 VLM_MAX_RESPONSE_BYTES = 1_000_000
 VLM_TIMEOUT_S = 30.0
+# The scene request's model name: the selected scene model set's (sentinel.scene.models; session 115). Set once by
+# --scene-request-model before any request; the default is the profiled request's, so earlier procedures are unchanged.
+SCENE_REQUEST_MODEL = "lfm2-vl"
+_REQUEST_MODEL = re.compile(r"^[a-z0-9][a-z0-9.-]{0,31}$")
 MR1_ACK_TIMEOUT_S = 60.0  # the orchestrator's release and samples take a few seconds
 MR1_DETECTOR_FRAMES = 15  # one second of the 15 fps replay, unpaced
 WINDOW_S = 10  # unique-frame throughput windows (step-4 criterion T1)
@@ -438,7 +443,7 @@ def scene_request_sha256() -> str | None:
         return None
     return request_fingerprint(system=SCENE_SYSTEM, prompt=SCENE_PROMPT, image_size=VLM_IMAGE_SIZE,
                                jpeg_quality=VLM_JPEG_QUALITY, max_tokens=VLM_MAX_TOKENS, temperature=0.05,
-                               model="lfm2-vl")
+                               model=SCENE_REQUEST_MODEL)
 
 
 def check_cuda_driver() -> bool:
@@ -747,7 +752,7 @@ def scene_request(port: int, frame) -> dict:
         raise ValueError("JPEG encoding failed")
     image = "data:image/jpeg;base64," + base64.b64encode(jpeg.tobytes()).decode("ascii")
     body = {
-        "model": "lfm2-vl",
+        "model": SCENE_REQUEST_MODEL,
         "max_tokens": VLM_MAX_TOKENS,
         "temperature": 0.05,
         "stream": False,
@@ -1014,6 +1019,7 @@ def run_scene_only(args, stats: Stats) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    global SCENE_REQUEST_MODEL
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--engine")
     parser.add_argument("--scene-only", action="store_true",
@@ -1039,7 +1045,13 @@ def main(argv: list[str] | None = None) -> int:
                              "transparent huge pages for this process alone (prctl PR_SET_THP_DISABLE) before the CUDA "
                              "driver, any model library or model loads; stop with status 5 unless the call, "
                              "PR_GET_THP_DISABLE and THP_enabled verify it")
+    parser.add_argument("--scene-request-model", default=SCENE_REQUEST_MODEL,
+                        help="session 115: the model name every scene request carries, the selected scene model "
+                             "set's (default lfm2-vl, the profiled request's)")
     args = parser.parse_args(argv)
+    if not _REQUEST_MODEL.match(args.scene_request_model):
+        parser.error("--scene-request-model must be a scene model set's request name")
+    SCENE_REQUEST_MODEL = args.scene_request_model  # once, before any request or thread
     if args.mr1_release_check and args.post_load_release:
         parser.error("--mr1-release-check and --post-load-release are separate procedures; pass one")
     if args.memory_attribution and (args.scene_only or args.mr1_release_check):

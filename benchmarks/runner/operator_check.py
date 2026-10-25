@@ -125,6 +125,9 @@ JOURNAL_ERRORS = (  # (fixed class, journalctl stderr pattern); first match wins
     ("no_journal_files", re.compile(r"no journal files", re.IGNORECASE)),
 )
 S1_ARMS = {"a": None, "b": 0}  # llama-server --cache-ram MiB; None keeps b8932's default (8192 MiB)
+# --scene-model-set (session 115): sentinel.scene.models.SCENE_MODEL_SETS's keys, kept equal by a test (this script
+# imports the package only when a set is used)
+SCENE_MODEL_SET_KEYS = ("lfm2-vl", "lfm2.5-vl")
 _DROPPED = object()
 DROP_CACHES_PROCEDURE = (
     "D37: operator-run `sync && sudo sysctl -w vm.drop_caches=1` before measurement runs only; "
@@ -686,9 +689,22 @@ def file_facts(path: Path) -> dict | None:
     return {"name": Path(path).name, "bytes": info.st_size, "mtime_utc": mtime}
 
 
-def identity_files(clip: Path) -> dict[str, Path]:
-    """Everything step 4 measures with: the replay clip, the llama.cpp build, the models and the engine."""
-    args = profile.parse_args([])
+def scene_model_args(model_set: str | None) -> list[str]:
+    """The profiler's --model, --mmproj and --scene-request-model for a scene model set (session 115). None adds
+    nothing, so every earlier command line is unchanged (the profiler's defaults are the accepted profile's set)."""
+    if model_set is None:
+        return []
+    from sentinel.scene.models import scene_model_set  # this script runs with the repository's venv
+
+    chosen = scene_model_set(model_set)
+    return ["--model", str(chosen.model_path), "--mmproj", str(chosen.mmproj_path),
+            "--scene-request-model", chosen.request_model]
+
+
+def identity_files(clip: Path, model_set: str | None = None) -> dict[str, Path]:
+    """Everything step 4 measures with: the replay clip, the llama.cpp build, the models and the engine; the
+    models of ``model_set`` when one is given (--scene-model-set)."""
+    args = profile.parse_args(scene_model_args(model_set))
     files = {"clip": Path(clip)}
     files.update({f"build:{label}": path for label, path in profile.llama_build_files(args.llama).items()})
     files.update({f"model:{label}": path for label, path in profile.model_files(args).items()})
@@ -929,7 +945,7 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
             s1_arm=None, confirm_s1=False, dropped_caches=False, interrupted=lambda: False,
             identity_report=None, clip=None, confirm_step4=False, explicit_check9=True, identity_files_fn=None,
             confirm_mr1=False, confirm_step4plr=False, confirm_ma1=False, confirm_ma1thp=False,
-            confirm_ma1wtd=False, confirm_step4cand=False) -> dict:
+            confirm_ma1wtd=False, confirm_step4cand=False, scene_model_set=None) -> dict:
     runner = ProcessRunner(backend, interrupted)
     report = {"schema_version": 1, "mode": mode or "inspection",
               "hardware_acceptance": "PENDING", "check9": {"status": "PENDING", "u18_acceptance": "PENDING",
@@ -937,6 +953,8 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
               "step4": {"status": "PENDING", "acceptance": "PENDING: only a maintainer-approved registry commit (D46)"},
               "preparation": {"drop_caches": "operator_declared" if dropped_caches else "not_declared",
                               "procedure": DROP_CACHES_PROCEDURE}}
+    if scene_model_set is not None:  # session 115: only when given, so earlier reports are unchanged
+        report["scene_model_set"] = scene_model_set
     if mode == "mr1":
         report["mr1"] = {"status": "PENDING", "scope": MR1_SCOPE}
     if mode == "step4plr":
@@ -977,7 +995,8 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
             if clip is None:
                 refusal.append(f"{mode}_clip_required")
             else:
-                files = (identity_files_fn or identity_files)(clip)
+                files = ((identity_files_fn or identity_files)(clip) if scene_model_set is None  # as before
+                         else identity_files(clip, scene_model_set))
                 problem, identity = identity_prerequisite(identity_report, current, check9_report, files)
                 if problem:
                     refusal.append(problem)
@@ -1059,12 +1078,13 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
                 report["u21"].update(child.diagnostic())
                 report["u21"]["operator_prerequisites_confirmed"] = True
             elif mode == "step4":
-                run_step4(report["step4"], runner, backend, guard, output, clip, identity, dropped_caches, interrupted)
+                run_step4(report["step4"], runner, backend, guard, output, clip, identity, dropped_caches, interrupted,
+                          model_set=scene_model_set)
             elif mode == "mr1":
                 run_mr1(report["mr1"], runner, backend, guard, output, clip, interrupted)
             elif mode == "step4plr":
                 run_step4(report["step4plr"], runner, backend, guard, output, clip, identity, dropped_caches, interrupted,
-                          plr=True)
+                          plr=True, model_set=scene_model_set)
             elif mode == "ma1":
                 run_ma1(report["ma1"], runner, backend, guard, output, clip, identity, dropped_caches, interrupted)
             elif mode == "ma1thp":
@@ -1075,7 +1095,7 @@ def execute(mode: str | None, backend, output: Path, *, check9_report=None, conf
                         thp=True, wtd=True)
             elif mode == "step4cand":
                 run_step4(report["step4cand"], runner, backend, guard, output, clip, identity, dropped_caches,
-                          interrupted, plr=True, candidate=True)
+                          interrupted, plr=True, candidate=True, model_set=scene_model_set)
             else:
                 cache_ram = S1_ARMS[s1_arm]
                 child = runner.run([
@@ -1122,19 +1142,20 @@ def guarded_child_with_kernel_evidence(section: dict, runner, backend, guard, ou
     return child, waited, manifest, prof, kernel
 
 
-def step4_argv(output: Path, clip: Path) -> list[str]:
-    """Step 4's reviewed child command (D47)."""
+def step4_argv(output: Path, clip: Path, model_set: str | None = None) -> list[str]:
+    """Step 4's reviewed child command (D47); with ``model_set`` (session 115), that set's models and request."""
     return [
         "/usr/bin/python3", str(profile.HERE / "demo_profile.py"), "--out", str(output), "--clip", str(clip),
         "--no-evict", "--sanitized-logs", "--llama-cache-ram", "0", "--face-hz", "1", "--scene-interval-s", "4",
         "--baseline-s", "30", "--settle-s", "15", "--warmup-s", "120", "--steady-s", str(int(step4_criteria.STEADY_S)),
-        "--llama-timeout-s", "60", "--load-timeout-s", "90", "--min-free-gb", "3.5",
+        "--llama-timeout-s", "60", "--load-timeout-s", "90", "--min-free-gb", "3.5", *scene_model_args(model_set),
     ]
 
 
-def step4plr_argv(output: Path, clip: Path) -> list[str]:
+def step4plr_argv(output: Path, clip: Path, model_set: str | None = None) -> list[str]:
     """Step 4's command unchanged, plus MR1's per-model release after each load and settle (D54)."""
-    return [*step4_argv(output, clip), "--post-load-release", "--release-settle-s", str(profile.MR1_RELEASE_SETTLE_S)]
+    return [*step4_argv(output, clip, model_set), "--post-load-release", "--release-settle-s",
+            str(profile.MR1_RELEASE_SETTLE_S)]
 
 
 def plr_release_inputs(excerpt: dict) -> dict:
@@ -1148,9 +1169,9 @@ def plr_release_inputs(excerpt: dict) -> dict:
     return {"releases_recorded": recorded, "release_calls_returned_0": returned}
 
 
-def step4cand_argv(output: Path, clip: Path) -> list[str]:
+def step4cand_argv(output: Path, clip: Path, model_set: str | None = None) -> list[str]:
     """The step-4 PLR command unchanged, plus the workload's THP disable and the D58 candidate's scope checks."""
-    return [*step4plr_argv(output, clip), "--workload-thp-disable", "--candidate"]
+    return [*step4plr_argv(output, clip, model_set), "--workload-thp-disable", "--candidate"]
 
 
 def candidate_excerpt(output: Path) -> dict:
@@ -1216,14 +1237,17 @@ def step4_run_inputs(child, manifest: dict | None, prof: dict | None, identity: 
 
 
 def run_step4(section: dict, runner, backend, guard, output: Path, clip: Path, identity: dict,
-              dropped_caches: bool, interrupted, *, plr: bool = False, candidate: bool = False) -> None:
+              dropped_caches: bool, interrupted, *, plr: bool = False, candidate: bool = False,
+              model_set: str | None = None) -> None:
     """The guarded combined profile: same guard and cleanup as U21/S1, full phases, then the post-run evidence.
 
     ``plr`` runs the step-4 PLR variant (D54): the same command plus the post-load releases, its own journal marker
     tag, its release record, and D47's criteria under PLR_CRITERIA_ID. ``candidate`` (with ``plr``) runs the D58
     candidate: PLR's command plus the workload's THP disable and its scope checks, its own marker tag and record,
-    and D47's criteria under CANDIDATE_CRITERIA_ID."""
-    argv = step4cand_argv(output, clip) if candidate else step4plr_argv(output, clip) if plr else step4_argv(output, clip)
+    and D47's criteria under CANDIDATE_CRITERIA_ID. ``model_set`` (session 115): that scene model set's models and
+    request instead of the profiler's defaults (the accepted profile's set)."""
+    argv = (step4cand_argv(output, clip, model_set) if candidate else step4plr_argv(output, clip, model_set) if plr
+            else step4_argv(output, clip, model_set))
     tag, prefix = ((STEP4CAND_MARKER_TAG, "step4cand") if candidate else (STEP4PLR_MARKER_TAG, "step4plr") if plr
                    else (STEP4_MARKER_TAG, "step4"))
     child, waited, manifest, prof, kernel = guarded_child_with_kernel_evidence(
@@ -1551,7 +1575,15 @@ def main(argv: list[str] | None = None, *, backend=None) -> int:
     parser.add_argument("--confirm-step4cand-prerequisites", action="store_true",
                         help="operator confirms the D58 candidate run's approval, headless preparation, the identity "
                              "snapshot, the cache drop, the same-boot Check 9 and unchanged THP settings")
+    parser.add_argument("--scene-model-set", choices=SCENE_MODEL_SET_KEYS,
+                        help="session 115: measure (and snapshot) this scene model set's models and request instead "
+                             "of the profiler's defaults; only with --step4-identity or --execute-workload step4, "
+                             "step4plr or step4cand, the same set for both")
     args = parser.parse_args(argv)
+    if args.scene_model_set is not None and not (args.step4_identity
+                                                 or args.execute_workload in ("step4", "step4plr", "step4cand")):
+        parser.error("--scene-model-set is only for --step4-identity and --execute-workload step4, step4plr or "
+                     "step4cand")
     if args.confirm_step4cand_prerequisites and args.execute_workload != "step4cand":
         parser.error("--confirm-step4cand-prerequisites is only for --execute-workload step4cand")
     if args.confirm_step4plr_prerequisites and args.execute_workload != "step4plr":
@@ -1565,7 +1597,7 @@ def main(argv: list[str] | None = None, *, backend=None) -> int:
     if args.mr1_clip is not None and args.execute_workload != "mr1":
         parser.error("--mr1-clip is only for --execute-workload mr1")
     if args.step4_identity and (args.execute_workload or not args.step4_clip or not args.step4_clip_sha256):
-        parser.error("--step4-identity takes only --step4-clip and --step4-clip-sha256")
+        parser.error("--step4-identity takes only --step4-clip, --step4-clip-sha256 and --scene-model-set")
     interrupted = False
 
     def request_stop(signum, frame):
@@ -1580,7 +1612,11 @@ def main(argv: list[str] | None = None, *, backend=None) -> int:
     if args.step4_identity:
         report = {"schema_version": 1, "mode": "step4_identity",
                   "step4_identity": step4_identity(backend, ProcessRunner(backend, lambda: interrupted), args.step4_clip,
-                                                   args.step4_clip_sha256, interrupted=lambda: interrupted)}
+                                                   args.step4_clip_sha256, interrupted=lambda: interrupted,
+                                                   files=None if args.scene_model_set is None  # as before
+                                                   else identity_files(args.step4_clip, args.scene_model_set))}
+        if args.scene_model_set is not None:  # session 115: only when given
+            report["scene_model_set"] = args.scene_model_set
     else:
         check9_report = latest_check9_report() if args.latest_check9_report else args.check9_report
         report = execute(args.execute_workload, backend, output,
@@ -1595,7 +1631,8 @@ def main(argv: list[str] | None = None, *, backend=None) -> int:
                          confirm_ma1=args.confirm_ma1_prerequisites,
                          confirm_ma1thp=args.confirm_ma1thp_prerequisites,
                          confirm_ma1wtd=args.confirm_ma1wtd_prerequisites,
-                         confirm_step4cand=args.confirm_step4cand_prerequisites)
+                         confirm_step4cand=args.confirm_step4cand_prerequisites,
+                         scene_model_set=args.scene_model_set)
     report["result_file"] = str(output / "result.json")
     report["finished_utc"] = profile.utc_now()
     report["metric"] = "MemTotal - MemAvailable, integer bytes; kB x1024; time.monotonic within boot"
