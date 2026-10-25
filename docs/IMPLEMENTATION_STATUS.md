@@ -1375,6 +1375,8 @@ Notes on partial and in-progress rows:
          "$D/identity-result.json" "$NEW" | tee -a "$D/provenance.txt"
      )
      ```
+   - **Prepared (2026-10-26), not launched:** `~/sentinel-prep/step4cand-lfm25-f77b0ff/` (outside Git, owner-only; nine files; `SHA256SUMS` itself has SHA-256 `b98ebfa61d35950fd7e3d99dce2df13a14e98153d7e9356bdc20759e5c83afd0`). The six blocks were extracted from this record at `7f79ac8`; a second `sed` extraction is byte-identical, and `bash -n` passes on each. LCd, driven from its own lines through a stub interpreter, made two calls (Check 9, then the candidate with 12 arguments ending `--scene-model-set lfm2.5-vl`) and wrote `LCd_exit=0`. The real `operator_check.main()` at the pin, with `execute()` replaced by a recorder, passed mode `step4cand`, both result paths, the clip, the cache-drop declaration, the candidate's confirmation and `scene_model_set=lfm2.5-vl`. LCb's read-only checks passed on the real worktree (tracked changes, pin, code difference, eight checksums, THP_enabled 1), and its clip-hash lookup finds the recorded hash, which the replay clip matches. Nothing on the device was run.
+   - **Check the package first:** `cd ~/sentinel-prep/step4cand-lfm25-f77b0ff && sha256sum SHA256SUMS && sha256sum -c SHA256SUMS` (the first hash must be `b98ebfa6…`, then nine OK).
 11. **For the maintainer:**
    - review the migration and the step-4 package; when convenient, run the package (section 10) after a reboot, from a plain SSH session with VS Code and Claude Code closed;
    - then decide on acceptance (a separate commit: the profile entry and `profiled=True`), and only after that on a face + scene + chat validation run with LFM2.5-VL (chat stays a validation run under D77);
