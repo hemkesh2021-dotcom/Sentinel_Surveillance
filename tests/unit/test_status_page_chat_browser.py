@@ -8,7 +8,9 @@ Covered: sending, waiting/answering and answered, with the frame the answer desc
 historical once that frame stopped being live); busy (the scene worker comes first), no fresh frame and unavailable,
 each said, with the draft kept; the draft, the conversation and keyboard focus kept across page updates; an answer
 never making a stale page current; a restarted runtime (a new token) asking for a reload; another origin unable to
-ask; and the panel on a phone.
+ask; and the panel on a phone. Session 114, from scripted server documents: a question that ends unanswered
+(cancelled, incomplete) comes back into an empty box; a shortened answer says so and shows its unfinished rest apart;
+an answer about a newer frame sent in place of the one asked about says so, with that frame's own facts.
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ from sentinel.jobs import AnalysisJob, JobPurpose, WorkerOutcome
 from sentinel.media.clock import NS_PER_SECOND
 from sentinel.media.health import assess_frame
 from sentinel.scene.analyzer import RecentImages, ThreadedSceneAnalyzer
-from sentinel.scene.chat import CHAT_ADMISSION, CHAT_MIN_INTERVAL_S, ChatAdmission, ChatService
+from sentinel.scene.chat import ADVISORY, CHAT_ADMISSION, CHAT_MIN_INTERVAL_S, ChatAdmission, ChatService
 from sentinel.status_page import PAGE_CURRENT_S, REFRESH_S, StatusServer
 
 ADMITTED = ChatAdmission(True, "admitted for this test", "a synthetic fixture")
@@ -55,7 +57,8 @@ class Model:
         self.release.set()
         self.questions: list[str] = []
 
-    def __call__(self, question: Any, image: Any, abort: Any = None) -> tuple[str, bool]:
+    def __call__(self, question: Any, image: Any, abort: Any = None,
+                 max_tokens: Any = None) -> tuple[str, bool]:
         self.questions.append(question.question)
         self.release.wait(20.0)
         return "One chair stands by the window; nobody is in the picture.", False
@@ -201,15 +204,15 @@ def test_busy_no_fresh_frame_and_unavailable_are_said_and_the_draft_is_kept(
         camera.clock.advance(5.5)  # longer than CHAT_START_S on the runtime's clock
         seen = wait_chat(page, lambda s: s["log"] and last(s)["state"] == "busy", 8.0)
         assert "Busy: the scene model stayed busy; monitoring comes first." in last(seen)["text"]
-        assert seen["draft"] == "" and served["model"].questions == []  # it was handed over, then given up
+        # Handed over, then given up: it comes back into the empty box, to send again without retyping (session 114).
+        assert seen["draft"] == "What is on the desk?" and served["model"].questions == []
         served["scene_hold"].set()
         assert wait_until(lambda: not analyzer.busy(), 5.0)
         # No fresh frame: the camera stops; the newest frame is old, and the model is not asked.
         served["stop"].set()
         time.sleep(0.5)  # the fake camera's last tick is over
         camera.clock.advance(3.0)
-        type_question(page, "What is on the desk?")
-        press_ask(page)
+        press_ask(page)  # the same question, as it came back
         seen = wait_chat(page, lambda s: len(s["log"]) == 2 and last(s)["state"] == "no_fresh_frame", 5.0)
         assert "No fresh frame: the newest frame is 3." in last(seen)["text"]
         assert "ask again when the camera is live" in last(seen)["text"] and " old when asked." in last(seen)["text"]
@@ -326,5 +329,70 @@ def test_the_chat_panel_works_on_a_phone(browser: Browser, served: dict[str, Any
                 reached = True
                 break
         assert reached and seen["draft"] == ""
+    finally:
+        page.close()
+
+
+class Scripted:
+    """A chat service that gives each question the next scripted server document (what the page shows of it)."""
+
+    def __init__(self, *documents: dict[str, Any]) -> None:
+        self.documents = list(documents)
+        self.jobs: dict[str, dict[str, Any]] = {}
+        self.asked: list[str] = []
+
+    def availability(self) -> dict[str, str]:
+        return {"state": "available", "reason": "ask about the picture the camera is showing now"}
+
+    def ask(self, question: Any) -> tuple[int, dict[str, Any]]:
+        self.asked.append(question.question)
+        job = f"{len(self.asked):016x}"
+        self.jobs[job] = {"job": job, "advisory": ADVISORY, **self.documents.pop(0)}
+        return 202, {"job": job, "state": "waiting", "frame": self.jobs[job]["frame"], "advisory": ADVISORY}
+
+    def poll(self, job_id: str) -> tuple[int, dict[str, Any]]:
+        return (200, self.jobs[job_id]) if job_id in self.jobs else (404, {"state": "unknown"})
+
+
+ASKED = {"stream_epoch": 1, "frame_seq": 3, "ingest_utc": "2026-01-01T00:00:00.200000Z", "age_ms_when_asked": 200}
+SENT = {"stream_epoch": 2, "frame_seq": 7, "ingest_utc": "2026-01-01T00:00:04.900000Z", "age_ms_when_asked": None,
+        "age_ms_when_sent": 300}
+
+
+def test_unanswered_questions_come_back_and_shortened_or_replaced_frame_answers_say_so(
+        browser: Browser, served: dict[str, Any]) -> None:
+    scripted = Scripted(
+        {"state": "cancelled", "reason": "a scene job is waiting: monitoring comes first", "frame": ASKED},
+        {"state": "answered", "answer": "A person stands by the door.", "cut_short": False, "shortened": True,
+         "unfinished": "It is hard to tell whether the door", "frame": SENT, "frame_replaced": True,
+         "asked_frame": ASKED, "age_ms_when_answered": 1500, "historical": False},
+        {"state": "incomplete", "reason": "the answer had to stop before the next scene check, before its first "
+                                          "sentence was complete; ask again", "frame": ASKED},
+    )
+    served["chat"]["service"] = scripted
+    page = opened(browser, f"{served['url']}/")
+    try:
+        type_question(page, "Who is at the door?")
+        press_ask(page)
+        seen = wait_chat(page, lambda s: s["log"] and last(s)["state"] == "cancelled", 8.0)
+        assert "Cancelled: a scene job is waiting: monitoring comes first." in last(seen)["text"]
+        assert seen["draft"] == "Who is at the door?" and not seen["ask_disabled"]  # back in the box, to send again
+        press_ask(page)  # sent again as it is: no retyping
+        seen = wait_chat(page, lambda s: len(s["log"]) == 2 and last(s)["state"] == "answered", 8.0)
+        text = last(seen)["text"]
+        assert "Answered, shortened: it had to stop before the next scene check and may have said more." in text
+        assert "A person stands by the door." in text
+        assert "Left unfinished when it stopped: “It is hard to tell whether the door…”" in text  # shown, not dropped
+        assert "(stream epoch 2, frame 7), sent in place of the frame asked about, which was no longer live: " in text
+        assert "0.3 s old when sent and 1.5 s old when answered." in text and "Historical" not in text
+        assert seen["draft"] == ""  # answered: the box stays clear
+        assert scripted.asked == ["Who is at the door?", "Who is at the door?"]
+        type_question(page, "Is the door open?")
+        press_ask(page)
+        wait_chat(page, lambda s: len(s["log"]) == 3 and last(s)["state"] == "waiting", 5.0)
+        type_question(page, "Something else?")  # typed while it waits: never replaced by the question coming back
+        seen = wait_chat(page, lambda s: len(s["log"]) == 3 and last(s)["state"] == "incomplete", 8.0)
+        assert "Incomplete: the answer had to stop before the next scene check" in last(seen)["text"]
+        assert "A person stands" not in last(seen)["text"] and seen["draft"] == "Something else?"
     finally:
         page.close()

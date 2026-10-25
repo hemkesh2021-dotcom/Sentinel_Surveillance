@@ -16,7 +16,14 @@ from sentinel.live_state import SceneStatus
 from sentinel.media.clock import FakeClock
 from sentinel.media.frames import FrameStamper
 from sentinel.runtime import EdgeCore
-from sentinel.scene.analyzer import INBOX_LIMIT, RecentImages, ThreadedSceneAnalyzer
+from sentinel.scene.analyzer import (
+    INBOX_LIMIT,
+    RecentImages,
+    SideGivenUp,
+    SidePlan,
+    SideWindow,
+    ThreadedSceneAnalyzer,
+)
 from sentinel.scene.llama_server import LlamaSceneRequest, TransportError
 
 REPORT = {
@@ -549,6 +556,202 @@ def test_submit_before_start_is_refused(stamper: FrameStamper, clock: FakeClock)
     with pytest.raises(RuntimeError, match="not running"):
         analyzer.submit(job_for(frame_at(stamper, clock)))
     assert analyzer.stop(0.1)
+
+
+# --- a side request's window and plan (session 114) ---------------------------------------------
+
+GRACE_NS = 1_500_000_000
+
+
+class Planned(Side):
+    """A side request with a plan: records each window it is offered and answers with ``decisions`` in turn (the
+    last one repeated)."""
+
+    def __init__(self, *decisions: SidePlan, log: list[object] | None = None, raises: bool = False,
+                 wait_limit_s: float = 5.0) -> None:
+        super().__init__(log)
+        self.decisions = list(decisions)
+        self.windows: list[SideWindow] = []
+        self.raises = raises
+        self.wait_limit_s = wait_limit_s
+
+    def plan(self, window: SideWindow) -> SidePlan:
+        self.windows.append(window)
+        if self.raises:
+            raise RuntimeError("plan bug at /home/user/secret")
+        return self.decisions.pop(0) if len(self.decisions) > 1 else self.decisions[0]
+
+    def submit(self, analyzer: ThreadedSceneAnalyzer) -> bool:
+        return analyzer.submit_side(self.work, started=self.on_started, finished=self.on_finished, plan=self.plan,
+                                    wait_limit_s=self.wait_limit_s)
+
+
+def windowed(run_job: Callable[[AnalysisJob, object], WorkerOutcome], images: RecentImages, clock: FakeClock,
+             **options: object) -> ThreadedSceneAnalyzer:
+    """A worker that knows the lane's 4 s interval, on the test's clock."""
+    analyzer = ThreadedSceneAnalyzer(run_job, images, revision="1+lfm2-vl", now=clock.monotonic_ns,
+                                     periodic_interval_s=4.0, **options)  # type: ignore[arg-type]
+    analyzer.start()
+    return analyzer
+
+
+def offered(analyzer: ThreadedSceneAnalyzer) -> SideWindow:
+    planned = Planned(SidePlan.START)
+    assert planned.submit(analyzer) and planned.finished.wait(2)
+    wait_for(lambda: not analyzer.busy())
+    return planned.windows[0]
+
+
+def test_a_side_requests_window_runs_to_the_end_of_the_next_periodic_jobs_grace(
+    stamper: FrameStamper, clock: FakeClock
+) -> None:
+    images = RecentImages()
+    analyzer = windowed(Gate(), images, clock)
+    assert offered(analyzer) == SideWindow(GRACE_NS)  # no periodic job yet: the lane submits one at once
+    analyzer.submit(job_for(held_frame(stamper, clock, images)))  # a periodic job arrives ...
+    drained(analyzer)
+    clock.advance(2.5)  # ... and has run: 1.5 s of the interval are left, then the grace
+    assert offered(analyzer) == SideWindow(1_500_000_000 + GRACE_NS)
+    analyzer.submit(job_for(held_frame(stamper, clock, images), "job-2", incident="inc-1"))  # an incident's job
+    drained(analyzer)
+    assert offered(analyzer).until_end_ns == 1_500_000_000 - 66_666_667 + GRACE_NS  # never moves the schedule
+    clock.advance(5.0)  # the next periodic job is overdue: it may come at any moment
+    assert offered(analyzer) == SideWindow(GRACE_NS)
+    analyzer.set_periodic_paused(True)  # scene analysis turned off: no periodic job is expected
+    assert offered(analyzer) == SideWindow(None)
+    analyzer.set_periodic_paused(False)  # on again: the lane checks the next live frame at once
+    assert offered(analyzer) == SideWindow(GRACE_NS)
+    assert analyzer.stop(2.0)
+    plain = make(Gate())  # without the lane's interval nothing is foreseen
+    assert offered(plain) == SideWindow(None)
+    assert plain.stop(2.0)
+    with pytest.raises(ValueError, match="positive"):
+        ThreadedSceneAnalyzer(Gate(), RecentImages(), revision="1", periodic_interval_s=0.0)
+
+
+def test_a_side_request_waiting_for_the_next_gap_lets_the_scene_job_go_first_then_is_asked_again(
+    stamper: FrameStamper, clock: FakeClock
+) -> None:
+    order: list[object] = []
+
+    def scene(job: AnalysisJob, image: object) -> WorkerOutcome:
+        order.append(job.job_id)
+        return WorkerOutcome.completed(job.job_id, json.dumps(REPORT))
+
+    images = RecentImages()
+    analyzer = windowed(scene, images, clock)
+    planned = Planned(SidePlan.WAIT, SidePlan.START, log=order)
+    assert planned.submit(analyzer)
+    wait_for(lambda: analyzer.counters["side_waits"] == 1)
+    time.sleep(0.25)  # longer than the worker's recheck: without a gap it is not asked again
+    assert len(planned.windows) == 1 and not planned.started.is_set() and analyzer.busy()  # pending, not running
+    assert Side().submit(analyzer) is False  # still one side request at a time
+    analyzer.submit(job_for(held_frame(stamper, clock, images)))
+    assert planned.finished.wait(2)
+    assert order == ["job-1", "side", "answer"] and len(planned.windows) == 2  # the scene job first, then it starts
+    assert analyzer.counters["side_given_up"] == 0
+    assert analyzer.stop(2.0)
+
+
+def test_a_side_request_is_never_left_waiting_past_its_limit(stamper: FrameStamper, clock: FakeClock) -> None:
+    analyzer = windowed(Gate(), RecentImages(), clock)
+    planned = Planned(SidePlan.WAIT)
+    assert planned.submit(analyzer)
+    wait_for(lambda: analyzer.counters["side_waits"] == 1)
+    clock.advance(5.0)  # no gap opened, and its limit is reached on the worker's clock
+    assert planned.finished.wait(2)
+    assert "side" not in planned.log and isinstance(planned.log[-1], SideGivenUp)  # it never ran
+    assert len(planned.windows) == 2  # asked once more at the limit: its wait then gave it up
+    assert (analyzer.counters["side_wait_limit"], analyzer.counters["side_given_up"]) == (1, 1)
+    wait_for(lambda: not analyzer.busy())
+    assert analyzer.stop(2.0)
+
+
+def test_a_side_request_its_plan_gives_up_or_whose_plan_fails_never_runs_and_scene_analysis_goes_on(
+    stamper: FrameStamper, clock: FakeClock
+) -> None:
+    images = RecentImages()
+    analyzer = windowed(Gate(), images, clock)
+    given_up, broken = Planned(SidePlan.GIVE_UP), Planned(SidePlan.START, raises=True)
+    for side in (given_up, broken):
+        assert side.submit(analyzer) and side.finished.wait(2)
+        assert "side" not in side.log and isinstance(side.log[-1], SideGivenUp) and not side.started.is_set()
+        wait_for(lambda: not analyzer.busy())
+    assert (analyzer.counters["side_given_up"], analyzer.counters["side_plan_failed"]) == (2, 1)
+    analyzer.submit(job_for(held_frame(stamper, clock, images)))
+    ((job_id, outcome),) = drained(analyzer)
+    assert (job_id, outcome.kind) == ("job-1", OutcomeKind.COMPLETED)  # scene analysis goes on
+    with pytest.raises(ValueError, match="wait limit"):
+        analyzer.submit_side(lambda: None, started=lambda: None, finished=lambda result: None,
+                             plan=lambda window: SidePlan.START)
+    assert analyzer.stop(2.0)
+
+
+def test_turning_scene_analysis_off_asks_a_waiting_side_request_again_with_no_window(
+    stamper: FrameStamper, clock: FakeClock
+) -> None:
+    analyzer = windowed(Gate(), RecentImages(), clock)
+    planned = Planned(SidePlan.WAIT, SidePlan.START)
+    assert planned.submit(analyzer)
+    wait_for(lambda: analyzer.counters["side_waits"] == 1)
+    analyzer.set_periodic_paused(True)
+    assert planned.finished.wait(2) and planned.log == ["side", "answer"]
+    assert planned.windows == [SideWindow(GRACE_NS), SideWindow(None)]
+    assert analyzer.stop(2.0)
+
+
+def test_a_scene_job_that_arrives_while_a_plan_decides_goes_first(stamper: FrameStamper, clock: FakeClock) -> None:
+    order: list[object] = []
+
+    def scene(job: AnalysisJob, image: object) -> WorkerOutcome:
+        order.append(job.job_id)
+        return WorkerOutcome.completed(job.job_id, json.dumps(REPORT))
+
+    images = RecentImages()
+    analyzer = windowed(scene, images, clock)
+    frame = held_frame(stamper, clock, images)
+    side = Side(order)
+    windows: list[SideWindow] = []
+
+    def plan(window: SideWindow) -> SidePlan:
+        windows.append(window)
+        if len(windows) == 1:
+            analyzer.submit(job_for(frame))  # arrives while the plan decides to start
+        return SidePlan.START
+
+    assert analyzer.submit_side(side.work, started=side.on_started, finished=side.on_finished, plan=plan,
+                                wait_limit_s=5.0)
+    assert side.finished.wait(2)
+    assert order == ["job-1", "side", "answer"] and len(windows) == 2  # it started only after, asked again
+    assert analyzer.stop(2.0)
+
+
+def test_with_windows_a_periodic_job_still_ends_a_running_side_request_after_the_grace_an_incidents_at_once(
+    stamper: FrameStamper, clock: FakeClock
+) -> None:
+    order: list[object] = []
+    timers = Timers()
+
+    def scene(job: AnalysisJob, image: object) -> WorkerOutcome:
+        order.append(job.job_id)
+        return WorkerOutcome.completed(job.job_id, json.dumps(REPORT))
+
+    images = RecentImages()
+    analyzer = windowed(scene, images, clock, schedule=timers)
+    for job_id, incident in (("job-1", None), ("job-2", "inc-1")):
+        side = Abortable(order)
+        assert analyzer.submit_side(side.work, started=side.on_started, finished=side.on_finished, abort=side.abort,
+                                    plan=lambda window: SidePlan.START, wait_limit_s=5.0)
+        assert side.started.wait(2)
+        analyzer.submit(job_for(held_frame(stamper, clock, images), job_id, incident=incident))
+        if incident is None:
+            assert [entry[0] for entry in timers.started] == [1.5] and side.aborted == []  # the grace first
+            timers.fire()
+        wait_for(lambda: order[-1:] == [job_id])
+        assert side.aborted == ["a scene job is waiting: monitoring comes first"]
+    counters = analyzer.counters
+    assert (counters["side_preempted"], counters["side_preempted_after_grace"]) == (2, 1)
+    assert analyzer.stop(2.0)
 
 
 # --- behind EdgeCore: on time, late, stale -------------------------------------------------------

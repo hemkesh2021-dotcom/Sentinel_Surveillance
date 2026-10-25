@@ -302,7 +302,14 @@ CHAT_ADVISORY = template(fixed(
 CHAT_COUNTERS = vocab(  # ChatService counters
     "refused_unavailable", "refused_paused", "busy_pending", "busy_interval", "no_frame", "no_fresh_frame",
     "busy_scene", "accepted", "gave_up_waiting", "timeouts", "answered", "errors", "cancelled",
-    "cancelled_operator_off")  # D99
+    "cancelled_operator_off",  # D99
+    # session 114: answers sized to their window (chat_budget), and the frame checked again when it is sent
+    "waits_for_gap", "limit_measured", "limit_fallback", "limit_unbounded", "gave_up_no_time",
+    "no_fresh_frame_at_start", "frame_replaced", "shortened", "incomplete", "overran", "pace_reset", "timing_sampled",
+    "timing_missing", "timing_too_short", "timing_inconsistent")
+CHAT_TIMING_GROUPS = ("wait_ms", "run_ms", "max_tokens", "tokens")  # ChatService._timing (session 114)
+CHAT_TIMING_LIMITS = {"max_tokens": INT, "min_tokens": INT, "release_reserve_ms": NUM, "fallback_overhead_ms": NUM,
+                      "fallback_ms_per_token": NUM}
 GATE_COUNTERS = vocab("samples", "closed", "reopened", "cancel_requests")  # ChatGate counters
 GATE_LIMITS = {"stop_new_bytes": INT, "stop_samples": INT, "cancel_bytes": INT, "readmit_bytes": INT,
                "readmit_s": NUM, "misses_window_s": NUM, "misses_to_stop": INT}
@@ -391,6 +398,12 @@ OPTIONAL_STATUS = {  # build_status's preview, and DemoRuntime's preview, snapsh
     "components.chat.scene_waits_behind_chat.grace_ms": INT,  # D81
     **{f"components.chat.scene_waits_behind_chat.run_ms.{group}.{k}": (INT if k == "n" else SECONDS)
        for group in ("behind_side", "others") for k in ("n", "median_ms", "max_ms")},
+    # session 114: numbers only, never a question or an answer
+    "components.chat.timing.pace.basis": vocab("measured", "fallback"), "components.chat.timing.pace.samples": INT,
+    "components.chat.timing.pace.overhead_ms": NUM, "components.chat.timing.pace.ms_per_token": NUM,
+    **{f"components.chat.timing.{group}.{k}": (INT if k == "n" else SECONDS)
+       for group in CHAT_TIMING_GROUPS for k in ("n", "median", "max")},
+    **{f"components.chat.timing.limits.{k}": v for k, v in CHAT_TIMING_LIMITS.items()},
 }
 OPTIONAL_STATUS_KEYS = {"features.items": vocab(*FEATURES), "features.counters": FEATURE_COUNTERS,
                         "components.preview.counters": PREVIEW_COUNTERS,
@@ -827,13 +840,19 @@ CHAT_JOB_REASON = Either((CHAT_REASON, template(
     r"the model could not be reached \(([A-Za-z0-9_:]+)\)", fixed("the model's answer was not usable"),
     fixed("the model gave an empty answer"), r"the frame could not be encoded \(([A-Za-z0-9_]+)\)",
     fixed("the question could not be answered"), fixed("only this page may ask"),
+    fixed("there was no time to answer before the next scene check; monitoring comes first, so ask again"),
+    fixed("the camera was no longer live when the question could start, so the model was not asked; ask again "
+          "when the camera is live"),
+    fixed("the answer had to stop before the next scene check, before its first sentence was complete; ask "
+          "again"),  # session 114: scene.chat's NO_TIME, NOT_LIVE and INCOMPLETE
     fixed("a Content-Length is required"), fixed("a JSON body is required"), fixed("request too large"),
     fixed("request is not JSON"), fixed("request has unexpected fields"), fixed("question missing"),
     fixed("question empty"), r"question longer than (\d+) characters",
     r"history must be a list of at most (\d+) exchanges", fixed("history items need a question and an answer"),
     fixed("the runtime is starting"), fixed("the question could not be taken"))))
 CHAT_FINAL = vocab("answered", "error", "timeout", "busy", "cancelled", "unavailable", "paused", "no_fresh_frame",
-                   "refused", "invalid", "off", "unknown", "unreadable")  # alpha_load.FINAL and its own unreadable
+                   "refused", "invalid", "off", "unknown", "incomplete",
+                   "unreadable")  # alpha_load.FINAL and its own unreadable
 LOAD_EVENT = {"event": vocab("started", "page_never_answered", "page_gone", "stopped_asking"), "mono_s": NUM,
               "questions.short": template(fixed("What is visible in this picture? Answer in one sentence.")),
               "questions.long": template(fixed("Describe everything visible in this picture in detail, object by "

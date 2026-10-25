@@ -74,8 +74,9 @@ no sessions, roles, API or media. It is reached over an SSH port forward.
   Sec-Fetch-Site same-origin when sent), a JSON body of at most
   CHAT_MAX_BODY bytes with a Content-Length, and the token this server put in
   its page (both chat routes); OPTIONS stays refused, so no cross-origin
-  preflight can pass. Chat is advisory (``sentinel.scene.chat``) and
-  unavailable in this build: no chat admission exists.
+  preflight can pass. Chat is advisory (``sentinel.scene.chat``) and not
+  admitted in this build: it is unavailable, except in a guarded validation
+  run (``--chat-validation``, D77), which says so.
 - **Bounded connections.** At most MAX_CONNECTIONS at once (more get 503 and
   are closed); each connection's reads and writes time out after
   HANDLER_TIMEOUT_S, and its kernel send buffer is fixed, so a slow or

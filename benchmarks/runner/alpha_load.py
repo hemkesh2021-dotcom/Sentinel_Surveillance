@@ -67,7 +67,7 @@ NOT_ASKED = {"page_never_answered": "the page never answered", "never_accepted":
 TOKEN = re.compile(rb'data-token="([0-9a-f]{32})"')
 FRAME = re.compile(r"[0-9]{1,9}-[0-9]{1,12}")
 FINAL = {"answered", "error", "timeout", "busy", "cancelled", "unavailable", "paused", "no_fresh_frame", "refused",
-         "invalid", "off", "unknown"}
+         "invalid", "off", "unknown", "incomplete"}  # incomplete: session 114
 
 
 class Page:

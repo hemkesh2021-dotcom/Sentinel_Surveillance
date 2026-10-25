@@ -365,7 +365,7 @@ html.js .peek[aria-pressed=true] { background: var(--sunken); box-shadow: var(--
   border: 1px solid var(--line); border-inline-start: 4px solid var(--marker); overflow-wrap: anywhere; }
 .exchange[data-state=answered] { border-inline-start-color: var(--border); }
 .exchange[data-state=busy], .exchange[data-state=no_fresh_frame], .exchange[data-state=timeout],
-.exchange[data-state=cancelled], .exchange[data-state=paused] {
+.exchange[data-state=cancelled], .exchange[data-state=paused], .exchange[data-state=incomplete] {
   border-inline-start-color: var(--warn-ink); }
 .exchange[data-state=unavailable], .exchange[data-state=off], .exchange[data-state=unknown] {
   border-inline-start-color: var(--off-ink); }
@@ -376,6 +376,7 @@ html.js .peek[aria-pressed=true] { background: var(--sunken); box-shadow: var(--
 .exchange[data-state=answered] .status { color: var(--ink); }
 .exchange .answer { white-space: pre-line; }
 .exchange .frame { color: var(--muted); font-size: .82rem; padding: 0; background: none; box-shadow: none; border: 0; }
+.exchange .unfinished { color: var(--muted); font-size: .86rem; font-style: italic; white-space: pre-line; }
 .chat-form { display: grid; gap: 8px; margin-top: 12px; }
 .chat-form label { font-weight: 680; }
 .chat-form textarea { width: 100%; min-height: 3.2em; padding: 10px 12px; border: 1px solid var(--border);

@@ -621,6 +621,7 @@ class DemoRuntime:
             return True
         if name == "scene" and self._scene is not None and on != self._core.scene_on:
             self._core.set_scene_analysis(on)
+            self._scene.analyzer.set_periodic_paused(not on)  # paused, no periodic job ends a question
             return True
         if name == "chat" and self._chat is not None and on == self._chat.operator_off:
             self._chat.set_operator_off(not on)
@@ -1660,7 +1661,9 @@ def assemble(
                             ops, "scene", {"llm": options.scene.model, "mmproj": options.scene.mmproj})}
                     images = RecentImages()
                     run_job = devices.scene_request(config.scene_server.port, config.scene_server.request_timeout_s)
-                    analyzer = ThreadedSceneAnalyzer(run_job, images, revision=revision or "unknown")
+                    # The lane's interval gives chat's questions their windows before the next periodic job (session 114).
+                    analyzer = ThreadedSceneAnalyzer(run_job, images, revision=revision or "unknown",
+                                                     periodic_interval_s=config.scene.interval_s)
                     scene = SceneRuntime(analyzer, images, server)
                 else:
                     scene_problem = f"server_{status.state.value}:{status.problem}"

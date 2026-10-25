@@ -756,6 +756,8 @@ def test_an_admitted_scene_server_that_is_ready_enables_scene_analysis(tmp_path,
     assert server.started == [99.0]
     assert assembly.runtime.core.lane is not None
     assert assembly.runtime.snapshot()["components"]["scene"]["state"] == "available"
+    # Session 114: the lane's interval reaches the scene worker, so chat's questions get their windows.
+    assert assembly.runtime._scene.analyzer._interval_ns == round(config.scene.interval_s * 1e9)  # type: ignore[union-attr]
     assembly.database.close()
 
 
@@ -1185,7 +1187,7 @@ def test_admitted_chat_asks_about_the_runtimes_newest_frame_on_the_scene_worker(
                                      revision="1+lfm2")
     asked: list[tuple[str, Any, str]] = []
 
-    def run(question: ChatQuestion, image: Any, abort: Any = None) -> tuple[str, bool]:
+    def run(question: ChatQuestion, image: Any, abort: Any = None, max_tokens: Any = None) -> tuple[str, bool]:
         asked.append((question.question, image, threading.current_thread().name))
         return "A person stands near the door.", False
 
@@ -1203,7 +1205,8 @@ def test_admitted_chat_asks_about_the_runtimes_newest_frame_on_the_scene_worker(
     assert [(q, image.label, thread) for q, image, thread in asked] == [
         ("Who is near the door?", "asked-about", "sentinel-scene")]  # the runtime's own frame, on the scene worker
     assert h.capture.connects == 1  # no camera connection of its own
-    assert h.runtime.snapshot()["components"]["chat"]["counters"] == {"accepted": 1, "answered": 1}
+    assert h.runtime.snapshot()["components"]["chat"]["counters"] == {  # the stand-in reports no server timings
+        "accepted": 1, "answered": 1, "limit_unbounded": 1, "timing_missing": 1}
 
 
 def test_a_chat_validation_run_asks_the_model_and_memory_pressure_cancels_a_running_question(tmp_path) -> None:
@@ -1214,7 +1217,7 @@ def test_a_chat_validation_run_asks_the_model_and_memory_pressure_cancels_a_runn
                                      revision="1+lfm2")
     release, ended = threading.Event(), []
 
-    def run(question: ChatQuestion, image: Any, abort: Any = None) -> tuple[str, bool]:
+    def run(question: ChatQuestion, image: Any, abort: Any = None, max_tokens: Any = None) -> tuple[str, bool]:
         while not release.wait(0.01):
             if abort is not None and abort.reason is not None:
                 ended.append(abort.reason)
@@ -1585,7 +1588,8 @@ def scene_and_chat(tmp_path: Path, **options: Any) -> tuple[Harness, ThreadedSce
     analyzer = ThreadedSceneAnalyzer(lambda job, image: WorkerOutcome.completed(job.job_id, REPORT), images,
                                      revision="1+lfm2")
     h = Harness(tmp_path, scene=SceneRuntime(analyzer, images), chat=True,
-                chat_run=lambda question, image, abort=None: ("A chair by the window.", False), chat_validation=True,
+                chat_run=lambda question, image, abort=None, max_tokens=None: ("A chair by the window.", False),
+                chat_validation=True,
                 feature_controls=True, **options)
     return h, analyzer
 
@@ -1614,6 +1618,7 @@ def test_scene_analysis_turned_off_submits_nothing_holds_no_report_and_keeps_the
         for _ in range(80):  # five seconds of frames: no scene check is submitted
             h.frame()
         assert analyzer.counters["submitted"] == submitted
+        assert analyzer._periodic_paused is True  # session 114: no periodic job is expected to end a question
         component = h.runtime.snapshot()["components"]["scene"]
         assert component["state"] == "disabled" and component["paused"] is True
         assert (item(h, "scene")["actual"], item(h, "scene")["why"]) == ("off", "turned_off")
@@ -1624,6 +1629,7 @@ def test_scene_analysis_turned_off_submits_nothing_holds_no_report_and_keeps_the
         assert controls.request("scene", "on")[0] == 202
         h.frame()
         wait_for(lambda: analyzer.counters["submitted"] > submitted)  # checks resume, from nothing
+        assert analyzer._periodic_paused is False
         h.idle(0.0)
         assert item(h, "scene")["actual"] == "running" and h.runtime.snapshot()["degraded"] == []
     finally:

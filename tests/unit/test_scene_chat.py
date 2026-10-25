@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -23,7 +24,7 @@ from sentinel.media.clock import NS_PER_SECOND, FakeClock
 from sentinel.media.frames import FrameStamper
 from sentinel.media.health import assess_frame
 from sentinel.media.recent import RecentFrames
-from sentinel.scene.analyzer import SIDE_GRACE_S, RecentImages, ThreadedSceneAnalyzer
+from sentinel.scene.analyzer import PREEMPTED, SIDE_GRACE_S, RecentImages, ThreadedSceneAnalyzer
 from sentinel.scene.chat import (
     ADVISORY,
     CHAT_ADMISSION,
@@ -31,7 +32,12 @@ from sentinel.scene.chat import (
     CHAT_MAX_HISTORY,
     CHAT_MAX_QUESTION,
     CHAT_MAX_TOKENS,
+    CHAT_START_S,
     CHAT_SYSTEM,
+    CHAT_TIMINGS_KEPT,
+    INCOMPLETE,
+    NO_TIME,
+    NOT_LIVE,
     ChatAdmission,
     ChatQuestion,
     ChatRequestError,
@@ -40,7 +46,14 @@ from sentinel.scene.chat import (
     chat_answer,
     chat_request_body,
     clean_text,
+    frame_facts,
     parse_chat_request,
+)
+from sentinel.scene.chat_budget import (
+    CHAT_MIN_TOKENS,
+    FALLBACK_MS_PER_TOKEN,
+    FALLBACK_OVERHEAD_MS,
+    RELEASE_RESERVE_MS,
 )
 from sentinel.scene.llama_server import IMAGE_SIZE, MODEL_NAME, AbortHandle, TransportError
 
@@ -64,10 +77,12 @@ class Socket:
 
 class Transport:
     """The model's stand-in. ``hold`` cleared: a request blocks until it is set, or until the request is aborted, which
-    then ends it as a shut-down connection ends the real one (LoopbackTransport)."""
+    then ends it as a shut-down connection ends the real one (LoopbackTransport). A reply given as (body, seconds)
+    takes that long on ``clock``."""
 
-    def __init__(self, *replies: Any) -> None:
+    def __init__(self, *replies: Any, clock: FakeClock | None = None) -> None:
         self.replies = list(replies)
+        self.clock = clock
         self.bodies: list[dict[str, Any]] = []
         self.hold = threading.Event()
         self.hold.set()
@@ -90,6 +105,10 @@ class Transport:
             if abort is not None:
                 abort.detach()
         reply = self.replies.pop(0)
+        if isinstance(reply, tuple):
+            reply, seconds = reply
+            assert self.clock is not None
+            self.clock.advance(seconds)  # the time on the model
         if isinstance(reply, Exception):
             raise reply
         return reply
@@ -100,17 +119,22 @@ class Rig:
 
     def __init__(self, *replies: Any, admission: ChatAdmission = ADMITTED, enabled: bool = True,
                  scene_job: Callable[[AnalysisJob, Any], WorkerOutcome] | None = None,
-                 grace_s: float = SIDE_GRACE_S) -> None:
+                 grace_s: float = SIDE_GRACE_S, interval_s: float | None = None, schedule: Any = None) -> None:
         self.clock = FakeClock()
         self.stamper = FrameStamper("cam-1", self.clock)
         self.stamper.connect()
         self.frames = RecentFrames()
-        self.transport = Transport(*replies)
+        self.transport = Transport(*replies, clock=self.clock)
         self.encoded: list[Any] = []
         self.gate = threading.Event()
         self.gate.set()
+        # With the lane's interval, the worker runs on the test's clock, so that windows are exact (session 114).
+        options: dict[str, Any] = {} if interval_s is None else {"periodic_interval_s": interval_s,
+                                                                  "now": self.clock.monotonic_ns}
+        if schedule is not None:
+            options["schedule"] = schedule
         self.analyzer = ThreadedSceneAnalyzer(scene_job or self.scene_job, RecentImages(), revision="test",
-                                              side_grace_s=grace_s)
+                                              side_grace_s=grace_s, **options)
         self.analyzer.start()
         started = self.clock.mono()
         self.service = ChatService(
@@ -173,7 +197,7 @@ def test_chat_is_unavailable_in_this_build_and_says_why_without_asking_the_model
                           clock=FakeClock(), run=None, stale_after_s=2.0)
     assert noscene.availability() == {"state": "unavailable",
                                       "reason": "the scene model is not running (start sentinel run with --scene)"}
-    assert set(off.service.summary()) == {"state", "reason", "counters", "advisory", "validation_run",
+    assert set(off.service.summary()) == {"state", "reason", "counters", "advisory", "validation_run", "timing",
                                           "scene_waits_behind_chat"}
 
 
@@ -299,10 +323,10 @@ def test_a_question_running_past_its_deadline_has_its_request_ended_and_frees_th
     assert code == 202 and r.answer(second["job"])["answer"] == "never used"  # the next reply in turn: nothing late
 
 
-def _scene_job_for(r: Rig, purpose: JobPurpose) -> AnalysisJob:
+def _scene_job_for(r: Rig, purpose: JobPurpose, job_id: str = "scene-1") -> AnalysisJob:
     frame = r.frames.latest()[0]
     r.analyzer._images.put(frame.key, object())  # type: ignore[attr-defined]  # the lane's job names a held frame
-    return AnalysisJob(job_id="scene-1", frame=frame, purpose=purpose,
+    return AnalysisJob(job_id=job_id, frame=frame, purpose=purpose,
                        incident_id="inc-1" if purpose is JobPurpose.ENRICHMENT else None,
                        deadline_mono_ns=frame.ingest_mono_ns + 8 * NS_PER_SECOND)
 
@@ -612,7 +636,8 @@ def test_the_request_uses_the_admitted_scene_picture_size(monkeypatch) -> None:
 
     monkeypatch.setitem(__import__("sys").modules, "cv2", CV2)
     transport = Transport(completion("ok"))
-    assert LlamaChatRequest(transport)(ChatQuestion("q"), object()) == ("ok", False)
+    reply = LlamaChatRequest(transport)(ChatQuestion("q"), object())
+    assert (reply.answer, reply.cut_short, reply.stopped_at_limit, reply.timing) == ("ok", False, False, None)
     assert sizes == [IMAGE_SIZE]
 
 
@@ -628,3 +653,320 @@ def test_poll_ids_are_validated_and_old_answers_are_not_kept(rig) -> None:
     assert r.service.poll(jobs[0])[0] == 404 and r.service.poll(jobs[-1])[0] == 200  # at most four kept
     r.clock.advance(121.0)
     assert r.service.poll(jobs[-1])[0] == 404  # and only for two minutes
+
+
+# --- an answer sized to its window; the frame checked again when it is sent (session 114) ---------------------------
+
+SLOW = (600.0, 30.0)  # a measured pace: 600 ms before decoding, then 30 ms a token
+
+
+def timed(content: str, *, finish: str = "stop", prompt_ms: float = 300.0, decode_ms: float = 900.0,
+          tokens: int = 30, run_s: float = 1.5) -> tuple[bytes, float]:
+    """A completion with llama-server's own timings, and the time the model takes on the test's clock."""
+    payload = json.loads(completion(content, finish=finish))
+    payload["timings"] = {"prompt_n": 400, "prompt_ms": prompt_ms, "predicted_n": tokens, "predicted_ms": decode_ms}
+    return json.dumps(payload).encode(), run_s
+
+
+def windowed(rig: Callable[..., Rig], *replies: Any, pace: tuple[float, float] | None = SLOW, **options: Any) -> Rig:
+    """A rig whose scene worker knows the lane's 4 s interval; ``pace`` as if an earlier answer had been measured."""
+    r = rig(*replies, interval_s=4.0, **options)
+    if pace is not None:
+        r.service._pace.add(pace)  # type: ignore[attr-defined]
+    r.frame()
+    return r
+
+
+def periodic(r: Rig, job_id: str) -> None:
+    """A periodic scene job arrives now; it has ended when this returns."""
+    done = r.analyzer.counters["delivered"]
+    r.analyzer.submit(_scene_job_for(r, JobPurpose.PERIODIC, job_id))
+    _until(lambda: r.analyzer.counters["delivered"] > done)
+
+
+def tokens_for(window_ms: float, pace: tuple[float, float] = SLOW) -> int:
+    overhead, per_token = pace
+    return min(CHAT_MAX_TOKENS, math.floor((window_ms - RELEASE_RESERVE_MS - overhead) / per_token))
+
+
+def counters(r: Rig) -> dict[str, int]:
+    return r.service.summary()["counters"]
+
+
+class Timers:
+    """The scene worker's grace timers, fired by the test."""
+
+    def __init__(self) -> None:
+        self.started: list[list[Any]] = []
+
+    def __call__(self, delay_s: float, call: Callable[[], None]) -> Callable[[], None]:
+        entry = [delay_s, call, False]
+        self.started.append(entry)
+        return lambda: entry.__setitem__(2, True)
+
+    def fire(self) -> None:
+        _, call, cancelled = self.started[-1]
+        if not cancelled:
+            call()
+
+
+def test_the_first_answer_is_sized_by_the_slow_fallback_and_its_own_timings_size_the_next(rig) -> None:
+    r = windowed(rig, timed("A chair stands by the window.", decode_ms=900.0, tokens=30, run_s=1.5),
+                 timed("Two chairs.", decode_ms=300.0, tokens=10, run_s=1.0), pace=None)
+    assert r.service.summary()["timing"]["pace"] == {"basis": "fallback", "samples": 0,
+                                                     "overhead_ms": FALLBACK_OVERHEAD_MS,
+                                                     "ms_per_token": FALLBACK_MS_PER_TOKEN}
+    periodic(r, "scene-1")
+    r.frame(1.0)  # 3 s of the interval left, then the 1.5 s grace: a 4.5 s window
+    code, first = r.service.ask(ChatQuestion("What is by the window?"))
+    document = r.answer(first["job"])
+    fallback = math.floor((4500 - RELEASE_RESERVE_MS - FALLBACK_OVERHEAD_MS) / FALLBACK_MS_PER_TOKEN)
+    assert r.transport.bodies[0]["max_tokens"] == fallback == 83  # a cold start: the slow fallback, at once
+    assert (document["state"], document["max_tokens"], document["tokens"]) == ("answered", 83, 30)
+    assert (document["wait_ms"], document["run_ms"], document["answer_ms"]) == (0, 1500, 1500)
+    pace = r.service.summary()["timing"]["pace"]
+    assert (pace["basis"], pace["overhead_ms"], pace["ms_per_token"]) == ("measured", 600.0, 30.0)  # 1500 - 900
+    r.frame(2.5)
+    periodic(r, "scene-2")
+    r.frame(1.5)  # 2.5 s left, then the grace: a 4 s window
+    code, second = r.service.ask(ChatQuestion("How many chairs?"))
+    assert r.answer(second["job"])["state"] == "answered"
+    assert r.transport.bodies[1]["max_tokens"] == tokens_for(4000) == 96  # from its own measured pace
+    assert (counters(r)["limit_fallback"], counters(r)["limit_measured"], counters(r)["timing_sampled"]) == (1, 1, 2)
+
+
+def test_a_window_too_short_for_a_useful_answer_waits_for_the_next_gap_and_the_scene_job_goes_first(rig) -> None:
+    ran: list[str] = []
+    r = windowed(rig, timed("The door is closed.", run_s=1.2), scene_job=_recorder(ran))
+    periodic(r, "scene-1")
+    r.frame(3.6)  # 0.4 s left, 1.9 s with the grace: under 30 tokens at the measured pace
+    assert tokens_for(1900) < CHAT_MIN_TOKENS
+    code, accepted = r.service.ask(ChatQuestion("Is the door closed?"))
+    assert code == 202
+    _until(lambda: counters(r).get("waits_for_gap") == 1)
+    assert r.transport.bodies == [] and r.encoded == []  # not started: no model time, no picture encoded
+    assert r.service.poll(accepted["job"])[1]["state"] == "waiting"
+    r.frame(0.4)
+    periodic(r, "scene-2")  # the next periodic job, then a whole gap
+    document = r.answer(accepted["job"])
+    assert document["state"] == "answered" and ran == ["scene-1", "scene-2"]
+    assert r.transport.bodies[0]["max_tokens"] == tokens_for(4000 + 1500) == CHAT_MAX_TOKENS
+    assert (document["wait_ms"], document["run_ms"], document["answer_ms"]) == (400, 1200, 1600)  # wait apart from run
+
+
+def test_a_question_that_never_gets_a_long_enough_window_is_given_up_and_never_reaches_the_model(rig) -> None:
+    r = windowed(rig, timed("unused"))
+    periodic(r, "scene-1")
+    r.frame(3.6)
+    code, accepted = r.service.ask(ChatQuestion("Is the door closed?"))
+    _until(lambda: counters(r).get("waits_for_gap") == 1)
+    r.clock.advance(CHAT_START_S)  # no gap opened (no scene job came): its time to start is over
+    _until(lambda: r.analyzer.counters["side_given_up"] == 1)
+    document = r.service.poll(accepted["job"])[1]
+    assert (document["state"], document["reason"]) == ("busy", NO_TIME)
+    assert r.transport.bodies == [] and r.encoded == [] and not r.analyzer.busy()
+    assert counters(r)["gave_up_no_time"] == 1 and "answered" not in counters(r) and "wait_ms" not in document
+
+
+def test_an_answer_its_window_stopped_shows_its_complete_sentences_says_so_and_keeps_the_rest_apart(rig) -> None:
+    text = "A person stands by the door. It is hard to tell whether the door is open because the"
+    r = windowed(rig, timed(text, finish="length"), timed(text, finish="stop"), timed(text, finish="length"))
+    periodic(r, "scene-1")
+    r.frame(1.0)
+    code, accepted = r.service.ask(ChatQuestion("Who is at the door?"))
+    document = r.answer(accepted["job"])
+    assert r.transport.bodies[0]["max_tokens"] == tokens_for(4500) == 113  # below the cap: sized
+    assert (document["state"], document["answer"]) == ("answered", "A person stands by the door.")
+    assert (document["shortened"], document["cut_short"]) == (True, False)
+    assert document["unfinished"] == "It is hard to tell whether the door is open because the"  # never dropped
+    r.frame(3.0)
+    periodic(r, "scene-2")
+    r.frame(1.0)
+    code, accepted = r.service.ask(ChatQuestion("Who is at the door?"))
+    natural = r.answer(accepted["job"])  # it ended by itself: nothing trimmed, nothing said
+    assert (natural["answer"], natural["shortened"], "unfinished" in natural) == (text, False, False)
+    r.analyzer.set_periodic_paused(True)  # scene analysis off: the full cap, and its limit is today's
+    r.frame(4.0)
+    code, accepted = r.service.ask(ChatQuestion("Who is at the door?"))
+    capped = r.answer(accepted["job"])
+    assert r.transport.bodies[2]["max_tokens"] == CHAT_MAX_TOKENS
+    assert (capped["answer"], capped["cut_short"], capped["shortened"]) == (text, True, False)
+    assert (counters(r)["shortened"], counters(r)["limit_unbounded"]) == (1, 1)
+
+
+def test_an_answer_stopped_before_its_first_sentence_is_complete_is_never_an_empty_answer(rig) -> None:
+    r = windowed(rig, timed("It is hard to tell whether the", finish="length"))
+    periodic(r, "scene-1")
+    r.frame(1.0)
+    code, accepted = r.service.ask(ChatQuestion("Is the door open?"))
+    document = r.answer(accepted["job"])
+    assert (document["state"], document["reason"]) == ("incomplete", INCOMPLETE)
+    assert "answer" not in document and "unfinished" not in document
+    assert counters(r)["incomplete"] == 1 and "answered" not in counters(r)
+
+
+def test_a_sized_question_running_past_its_planned_end_is_still_cut_after_the_grace_and_the_pace_is_reset(rig) -> None:
+    ran: list[str] = []
+    timers = Timers()
+    r = windowed(rig, timed("never used"), scene_job=_recorder(ran), schedule=timers)
+    periodic(r, "scene-1")
+    r.frame(1.0)  # a 4.5 s window, so a planned end at 4 s
+    r.transport.hold.clear()  # the model is slower than measured: the load changed
+    code, accepted = r.service.ask(ChatQuestion("What is on the table?"))
+    assert r.transport.running.wait(5.0)
+    r.clock.advance(3.0)
+    r.analyzer.submit(_scene_job_for(r, JobPurpose.PERIODIC, "scene-2"))  # due: its grace starts, unchanged
+    assert [entry[0] for entry in timers.started] == [SIDE_GRACE_S] and r.transport.aborted == []
+    r.clock.advance(SIDE_GRACE_S)  # 4.5 s on the model, past its planned end
+    timers.fire()
+    _until(lambda: ran == ["scene-1", "scene-2"])
+    document = r.service.poll(accepted["job"])[1]
+    assert (document["state"], document["reason"]) == ("cancelled", PREEMPTED)
+    assert r.transport.aborted == [PREEMPTED] and r.analyzer.counters["side_preempted_after_grace"] == 1
+    assert (counters(r)["overran"], counters(r)["pace_reset"]) == (1, 1)
+    assert r.service.summary()["timing"]["pace"]["basis"] == "fallback"  # back to the slow fallback
+
+
+def test_an_incidents_job_still_ends_a_sized_question_at_once_and_that_is_no_overrun(rig) -> None:
+    ran: list[str] = []
+    r = windowed(rig, timed("never used"), scene_job=_recorder(ran))
+    periodic(r, "scene-1")
+    r.frame(1.0)
+    r.transport.hold.clear()
+    code, accepted = r.service.ask(ChatQuestion("What is on the table?"))
+    assert r.transport.running.wait(5.0)
+    r.analyzer.submit(_scene_job_for(r, JobPurpose.ENRICHMENT, "scene-2"))
+    _until(lambda: ran == ["scene-1", "scene-2"])
+    assert r.service.poll(accepted["job"])[1]["state"] == "cancelled" and r.transport.aborted == [PREEMPTED]
+    assert "overran" not in counters(r) and r.service.summary()["timing"]["pace"]["basis"] == "measured"
+
+
+def test_answers_without_usable_timings_give_no_sample_and_the_fallback_stays(rig) -> None:
+    malformed = json.loads(completion("A chair."))
+    malformed["timings"] = {"prompt_ms": "fast", "predicted_ms": 900.0, "predicted_n": 30}
+    r = windowed(rig, completion("A lamp."), json.dumps(malformed).encode(),
+                 timed("A table.", decode_ms=5000.0, run_s=1.0), timed("A rug.", tokens=4, decode_ms=100.0),
+                 pace=None)
+    r.analyzer.set_periodic_paused(True)
+    for _ in range(4):
+        code, accepted = r.service.ask(ChatQuestion("What is there?"))
+        assert r.answer(accepted["job"])["state"] == "answered"
+        r.frame(4.0)
+    assert (counters(r)["timing_missing"], counters(r)["timing_inconsistent"], counters(r)["timing_too_short"]) == (
+        2, 1, 1)
+    assert r.service.summary()["timing"]["pace"]["basis"] == "fallback"
+
+
+def test_the_runtime_status_gets_bounded_numbers_only_never_a_question_or_an_answer(rig) -> None:
+    replies = [timed(f"Answer number {n}.", prompt_ms=100.0, decode_ms=300.0, tokens=10, run_s=0.5)
+               for n in range(CHAT_TIMINGS_KEPT + 2)]
+    r = windowed(rig, *replies)
+    r.analyzer.set_periodic_paused(True)
+    for n in range(CHAT_TIMINGS_KEPT + 2):
+        code, accepted = r.service.ask(ChatQuestion(f"Secret question {n}?"))
+        assert code == 202 and r.answer(accepted["job"])["state"] == "answered"
+        r.frame(4.0)
+    summary = r.service.summary()
+    assert "Secret question" not in json.dumps(summary) and "Answer number" not in json.dumps(summary)
+    timing = summary["timing"]
+    assert timing["wait_ms"]["n"] == timing["run_ms"]["n"] == CHAT_TIMINGS_KEPT  # bounded
+    assert (timing["run_ms"]["median"], timing["max_tokens"]["max"], timing["tokens"]["max"]) == (500.0, 120.0, 10.0)
+
+    def leaves(value: Any) -> list[Any]:
+        if isinstance(value, dict):
+            return [leaf for item in value.values() for leaf in leaves(item)]
+        return [value]
+
+    assert all(isinstance(leaf, (int, float)) or leaf is None for leaf in leaves(timing) if leaf != "measured")
+
+
+@pytest.mark.parametrize("limit", [0, CHAT_MAX_TOKENS + 1, True, 30.0])
+def test_no_request_asks_for_more_than_the_120_token_cap(limit: Any) -> None:
+    with pytest.raises(ValueError, match="max_tokens"):
+        chat_request_body(b"\xff\xd8jpeg\xff\xd9", ChatQuestion("q"), limit)
+    assert json.loads(chat_request_body(b"\xff\xd8jpeg\xff\xd9", ChatQuestion("q"), 30))["max_tokens"] == 30
+
+
+def _behind_a_scene_job(r: Rig) -> threading.Event:
+    """Keeps the worker in a scene job until the returned event is set, so that a question asked now waits."""
+    hold = threading.Event()
+    r.scene_hold = hold  # type: ignore[attr-defined]
+    r.analyzer.submit(_scene_job_for(r, JobPurpose.PERIODIC, "scene-1"))
+    _until(lambda: r.analyzer.busy())
+    return hold
+
+
+def held_scene(r_holder: list[Rig]) -> Callable[[AnalysisJob, Any], WorkerOutcome]:
+    def scene_job(job: AnalysisJob, image: Any) -> WorkerOutcome:
+        r_holder[0].scene_hold.wait(10.0)  # type: ignore[attr-defined]
+        return WorkerOutcome.completed(job.job_id, "{}")
+
+    return scene_job
+
+
+def waiting_rig(rig: Callable[..., Rig], *replies: Any) -> tuple[Rig, threading.Event]:
+    holder: list[Rig] = []
+    r = rig(*replies, scene_job=held_scene(holder))
+    holder.append(r)
+    r.frame()
+    return r, _behind_a_scene_job(r)
+
+
+def test_a_question_whose_frame_is_still_live_when_it_starts_is_sent_that_frame_with_its_own_facts(rig) -> None:
+    r, hold = waiting_rig(rig, completion("A person stands by the door."))
+    code, accepted = r.service.ask(ChatQuestion("Who is at the door?"))
+    for _ in range(3):
+        r.frame(0.5)  # the camera goes on, 1.5 s: newer frames, and the one asked about is still live
+    hold.set()
+    document = r.answer(accepted["job"])
+    assert r.encoded == ["image-0"] and document["frame"] == accepted["frame"]  # exactly the frame asked about
+    assert "frame_replaced" not in document and "asked_frame" not in document
+
+
+def test_a_question_that_waited_until_its_frame_went_stale_is_sent_the_newest_live_frame_never_the_stale_one(
+        rig) -> None:
+    r, hold = waiting_rig(rig, completion("A person stands by the door."))
+    code, accepted = r.service.ask(ChatQuestion("Who is at the door?"))
+    assert code == 202 and accepted["frame"]["frame_seq"] == 0
+    for _ in range(5):
+        r.frame(0.5)  # the camera goes on: 2.5 s later the frame asked about is stale, frame 5 is live
+    newest = r.frames.latest()[0]
+    hold.set()
+    document = r.answer(accepted["job"])
+    assert r.encoded == ["image-5"]  # the image sent is the newest live one
+    assert document["frame"] == {**frame_facts(newest, None), "age_ms_when_sent": 0}  # its own exact facts
+    assert document["frame"]["frame_seq"] == 5 and document["frame"]["stream_epoch"] == 1
+    assert document["frame_replaced"] is True and document["asked_frame"] == accepted["frame"]
+    assert (document["age_ms_when_answered"], document["historical"]) == (0, False)
+    assert counters(r)["frame_replaced"] == 1
+
+
+def test_after_a_stream_restart_a_waiting_question_is_sent_the_new_streams_live_frame_or_nothing(rig) -> None:
+    r, hold = waiting_rig(rig, completion("A person stands by the door."))
+    code, accepted = r.service.ask(ChatQuestion("Who is at the door?"))
+    r.stamper.disconnect()
+    r.stamper.connect()  # the camera reconnected: stream epoch 2, its frame asked about from epoch 1
+    r.clock.advance(0.2)
+    restarted = r.stamper.stamp(native_width=640, native_height=480, pixel_format=PixelFormat.BGR)
+    r.frames.put(restarted, "image-after-the-restart")
+    hold.set()
+    document = r.answer(accepted["job"])
+    assert r.encoded == ["image-after-the-restart"]
+    assert document["frame"]["stream_epoch"] == 2 and document["asked_frame"]["stream_epoch"] == 1
+    assert document["frame"] == {**frame_facts(restarted, None), "age_ms_when_sent": 0}
+
+
+@pytest.mark.parametrize("change", ["restarted, no frame yet", "stalled"])
+def test_a_waiting_question_whose_camera_is_no_longer_live_never_reaches_the_model(rig, change: str) -> None:
+    r, hold = waiting_rig(rig, completion("never used"))
+    code, accepted = r.service.ask(ChatQuestion("Who is at the door?"))
+    if change == "stalled":
+        r.clock.advance(2.5)  # no frame for 2.5 s: the newest is stale too
+    else:
+        r.stamper.disconnect()
+        r.stamper.connect()  # a new stream that has not delivered a frame yet
+    hold.set()
+    document = r.answer(accepted["job"])
+    assert (document["state"], document["reason"]) == ("no_fresh_frame", NOT_LIVE)
+    assert r.transport.bodies == [] and r.encoded == [] and counters(r)["no_fresh_frame_at_start"] == 1
+    assert document["frame"] == accepted["frame"] and "frame_replaced" not in document

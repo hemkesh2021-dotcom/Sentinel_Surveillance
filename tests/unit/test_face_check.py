@@ -178,7 +178,7 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
         opened = store.open()
         extra = dict(live_preview=True, encode=lambda *a, **k: EncodedJpeg(b"\xff\xd8p\xff\xd9", 8, 8),
                      snapshots=SnapshotWriter(store, clock), chat=True, chat_admission=CHAT_ADMISSION,
-                     chat_validation=True, chat_run=lambda question, image, abort=None: ("A chair.", False),
+                     chat_validation=True, chat_run=lambda question, image, abort=None, max_tokens=None: ("A chair.", False),
                      pressure=lambda: 2_500_000_000)
     elif preview:
         from sentinel.media.jpeg import EncodedJpeg

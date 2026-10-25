@@ -163,7 +163,8 @@ def test_the_load_tool_asks_and_watches_a_real_page_and_keeps_numbers_and_labels
                           scene=analyzer, latest=camera.frames.latest,
                           assess=lambda f: assess_frame(f, camera.stamper.current_stream, camera.clock.mono(), started,
                                                         FreshnessConfig()),
-                          clock=camera.clock, run=lambda q, image, abort=None: ("A secret-free answer.", False),
+                          clock=camera.clock,
+                          run=lambda q, image, abort=None, max_tokens=None: ("A secret-free answer.", False),
                           stale_after_s=2.0)
     server = StatusServer(0, lambda: {"runtime": {"state": "running", "camera_id": "cam-1",
                                                   "updated_utc": NOW.isoformat()}, "degraded": [], "components": {}},

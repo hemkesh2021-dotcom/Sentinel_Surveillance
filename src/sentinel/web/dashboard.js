@@ -828,11 +828,11 @@
     };
     const TITLES = {busy: "Busy", unavailable: "Unavailable", off: "Chat is off", no_fresh_frame: "No fresh frame",
                     timeout: "No answer in time", invalid: "Not sent", refused: "Refused", unknown: "Lost",
-                    cancelled: "Cancelled", paused: "Paused"};
+                    cancelled: "Cancelled", paused: "Paused", incomplete: "Incomplete"};
     const REASONS = {unknown: "the server no longer has this question; it may have restarted"};
     const GLYPHS = {sending: "clock", waiting: "clock", answering: "clock", answered: "check", busy: "warn",
                     no_fresh_frame: "warn", timeout: "warn", unavailable: "off", off: "off", unknown: "off",
-                    cancelled: "warn", paused: "clock"};
+                    cancelled: "warn", paused: "clock", incomplete: "warn"};
 
     const chatState = () => {
       const element = document.querySelector("[data-chat-state]");
@@ -876,15 +876,20 @@
     const seconds = (ms) => (Number.isSafeInteger(ms) && ms >= 0 ? `${(ms / 1000).toFixed(1)} s` : "an unknown time");
 
     // Which frame an answer describes, and how old it was. Historical unless the server says it was still live when
-    // the answer was ready: an answer is never about the scene now.
+    // the answer was ready: an answer is never about the scene now. When the frame asked about was no longer live by
+    // the time the question could start, the server sent the newest live one instead, and the label says so.
     const label = (document_) => {
       const frame = document_.frame;
       if (!frame || typeof frame !== "object") return "";
+      const replaced = document_.frame_replaced === true;
       const which = `the frame received at ${clock(frame.ingest_utc)} (stream epoch ${number(frame.stream_epoch)}, `
-        + `frame ${number(frame.frame_seq)})`;
-      if (document_.state !== "answered") return `About ${which}, ${seconds(frame.age_ms_when_asked)} old when asked.`;
+        + `frame ${number(frame.frame_seq)})`
+        + (replaced ? ", sent in place of the frame asked about, which was no longer live:" : ",");
+      const age = replaced ? `${seconds(frame.age_ms_when_sent)} old when sent`
+        : `${seconds(frame.age_ms_when_asked)} old when asked`;
+      if (document_.state !== "answered") return `About ${which} ${age}.`;
       const lead = document_.historical === false ? "About" : "Historical: about";
-      return `${lead} ${which}, ${seconds(frame.age_ms_when_asked)} old when asked and `
+      return `${lead} ${which} ${age} and `
         + `${seconds(document_.age_ms_when_answered)} old when answered. It describes that frame only, not the scene now.`;
     };
 
@@ -896,9 +901,15 @@
         return false;
       }
       if (state_ === "answered" && typeof document_.answer === "string") {
-        status(exchange, "answered",
-          document_.cut_short === true ? "Answered (cut short at the answer limit)." : "Answered.");
+        // Shortened: its time before the next scene check ran out, so it shows its complete sentences and may have
+        // said more; what was left unfinished is shown apart, never dropped.
+        status(exchange, "answered", document_.shortened === true
+          ? "Answered, shortened: it had to stop before the next scene check and may have said more."
+          : document_.cut_short === true ? "Answered (cut short at the answer limit)." : "Answered.");
         line(exchange, "answer", document_.answer.slice(0, 1200));
+        if (typeof document_.unfinished === "string" && document_.unfinished) {
+          line(exchange, "unfinished", `Left unfinished when it stopped: “${document_.unfinished.slice(0, 600)}…”`);
+        }
         line(exchange, "frame", label(document_));
         chat.history.push({question, answer: document_.answer.slice(0, 400)});
         chat.history = chat.history.slice(-2);
@@ -949,7 +960,9 @@
         let document_ = await request("/chat", {method: "POST", headers: {"Content-Type": "application/json",
           "X-Sentinel-Token": token}, body: JSON.stringify({question, history: chat.history})}, 8000);
         const job = typeof document_.job === "string" && JOB.test(document_.job) ? document_.job : null;
-        if (job) box.value = "";  // handed over; a question that was not taken stays in the box, to send again
+        // Handed over, the box is cleared for the next question; one that was not taken stays in it, and one that
+        // ends without an answer (cancelled, busy, ...) comes back into an empty box, to send again without retyping.
+        if (job) box.value = "";
         const started = performance.now();
         for (;;) {
           if (document_.lost && job) {  // a poll that got no answer: the question may still be answered
@@ -968,6 +981,7 @@
           document_ = await request(`/chat/${job}`, {headers: {"X-Sentinel-Token": token}}, 5000);
         }
       } finally {
+        if (exchange.dataset.state !== "answered" && !box.value.trim()) box.value = question;
         chat.pending = false;
         refreshAsk();
       }

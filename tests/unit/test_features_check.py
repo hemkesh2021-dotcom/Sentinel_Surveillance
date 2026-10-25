@@ -152,7 +152,7 @@ def run_session(root: Path, session: str, startup: dict, *, changes, captures, s
         opened = store.open()
         extra = dict(scene=SceneRuntime(analyzer, images, ReadyServer()), snapshots=SnapshotWriter(store, clock),
                      chat=True, chat_admission=CHAT_ADMISSION, chat_validation=True,
-                     chat_run=lambda question, image, abort=None: ("A chair by the window.", False),
+                     chat_run=lambda question, image, abort=None, max_tokens=None: ("A chair by the window.", False),
                      pressure=lambda: 2_500_000_000)
     runtime = DemoRuntime(config, clock, capture=capture, slot=slot,
                           incidents=IncidentService(db, clock, incidents=config.incidents,

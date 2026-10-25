@@ -94,7 +94,8 @@ class Model:
         self.holding = threading.Event()
         self.answers = answers or {}  # session 106: synthetic answers by question (text, cut short)
 
-    def __call__(self, question: ChatQuestion, image: Any, abort: Any = None) -> tuple[str, bool]:
+    def __call__(self, question: ChatQuestion, image: Any, abort: Any = None,
+                 max_tokens: Any = None) -> tuple[str, bool]:
         if not self.hold_next:
             return self.answers.get(question.question, ("A chair stands by the window.", False))
         self.hold_next = False

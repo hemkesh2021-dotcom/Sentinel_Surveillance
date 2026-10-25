@@ -46,6 +46,18 @@ to ``EdgeCore.on_scene_outcome()``, so the core stays single-threaded.
   those jobs and of the others, since llama-server's own cancellation (it
   notices a closed request about once a second) shows in the next job's run
   time, not in its wait.
+- **A side request's window (session 114).** Given the lane's periodic
+  interval, the worker knows when the next periodic job is due: the last one's
+  arrival plus the interval, or now if that has passed or none has come yet.
+  When a side request could start, a ``plan`` it was offered with is told how
+  long it may run before that job's grace would end it (SideWindow; None while
+  no periodic job is expected: no interval given, or scene analysis paused,
+  set_periodic_paused). The plan starts it, gives it up, or has it wait for the
+  next gap: it is then asked again after the next scene job, a change of
+  schedule, or its wait limit, and past that limit it is given up, never left
+  waiting. An incident's job can still arrive at any time and ends it at once;
+  no window foresees it. Nothing about scene jobs changes: they go first, and
+  the grace and its cut-off stay as above.
 """
 
 from __future__ import annotations
@@ -55,10 +67,13 @@ import threading
 import time
 from collections import Counter, OrderedDict, deque
 from collections.abc import Callable
+from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 from ..contracts import FrameKey
 from ..jobs import AnalysisJob, JobPurpose, OutcomeKind, WorkerOutcome
+from ..media.clock import NS_PER_SECOND
 
 SIDE = "side"  # what _running holds while a side request runs; never a job ID
 IMAGES_KEPT = 4  # 640x480 BGR: 921,600 B each, plus at most one waiting and one running job's image
@@ -71,6 +86,42 @@ PREEMPTED = "a scene job is waiting: monitoring comes first"
 # The wait it causes is judged against alpha_check.MAX_CHAT_DELAY_MS (2000 ms, also PROPOSED): the grace plus the
 # time an abort takes to end the request.
 SIDE_GRACE_S = 1.5
+# While a side request waits for a gap, the worker looks at its wait limit at least this often (never sooner than
+# RECHECK_MIN_S): cheap, since its plan is asked again only when a gap opens or the limit is reached.
+RECHECK_MIN_S = 0.01
+RECHECK_MAX_S = 0.1
+
+
+class SidePlan(str, Enum):
+    """What a side request's plan decides when the worker could start it."""
+
+    START = "start"
+    WAIT = "wait"  # not in this gap: asked again after the next scene job, a change of schedule or the wait limit
+    GIVE_UP = "give_up"
+
+
+class SideGivenUp(Exception):
+    """What ``finished`` receives for a side request given up before it started (by its plan or its wait limit)."""
+
+
+@dataclass(frozen=True)
+class SideWindow:
+    """How long a side request that starts now may run before the next periodic job's grace ends it (ns, on the
+    worker's clock); None while no periodic job is expected. An incident's job is not foreseen."""
+
+    until_end_ns: int | None
+
+
+@dataclass(eq=False)
+class _Side:
+    work: Callable[[], Any]
+    started: Callable[[], None]
+    finished: Callable[[Any], None]
+    abort: Callable[[str], bool] | None
+    plan: Callable[[SideWindow], SidePlan] | None
+    wait_limit_ns: int | None
+    offered_ns: int
+    waiting_since: int | None = None  # the gap count when its plan chose to wait for the next gap
 
 
 def _timer(delay_s: float, call: Callable[[], None]) -> Callable[[], None]:
@@ -120,15 +171,25 @@ class ThreadedSceneAnalyzer:
         now: Callable[[], int] = time.monotonic_ns,
         side_grace_s: float = SIDE_GRACE_S,
         schedule: Callable[[float, Callable[[], None]], Callable[[], None]] = _timer,
+        periodic_interval_s: float | None = None,
     ) -> None:
         if side_grace_s < 0:
             raise ValueError("side_grace_s must not be negative")
+        if periodic_interval_s is not None and not periodic_interval_s > 0:
+            raise ValueError("periodic_interval_s must be positive")
         self._run_job = run_job
         self._images = images
         self._revision = revision
         self._now = now  # waits are measured on this monotonic clock (ns)
         self._side_grace_s = side_grace_s
         self._schedule = schedule  # starts the grace's timer; must not call back before it returns
+        # The lane's periodic schedule, for side requests' windows: its interval (None: unknown), when the last periodic
+        # job arrived, whether scene analysis is paused, and a count of the gaps that opened (a scene job ended, or the
+        # schedule changed), which a side request waiting for the next gap compares.
+        self._interval_ns = None if periodic_interval_s is None else round(periodic_interval_s * NS_PER_SECOND)
+        self._periodic_at: int | None = None
+        self._periodic_paused = False
+        self._gaps = 0
         self._side_run = 0  # numbers side requests as they start, so a late timer cannot end a later one
         self._grace: tuple[int, Callable[[], None] | None] | None = None  # (side run, cancel) while a grace runs
         self._side_ended_by: str | None = None  # how the running side request was ended, if it was
@@ -138,8 +199,7 @@ class ThreadedSceneAnalyzer:
         self._wake = threading.Condition(self._lock)
         self._waiting: tuple[AnalysisJob, Any] | None = None
         self._waiting_since: tuple[int, bool] | None = None  # when the waiting job came, and whether a side request ran
-        self._side: tuple[Callable[[], Any], Callable[[], None], Callable[[Any], None],
-                          Callable[[str], bool] | None] | None = None
+        self._side: _Side | None = None
         self._running_abort: Callable[[str], bool] | None = None  # the running side request's abort
         self._side_waits_ms: deque[float] = deque(maxlen=SIDE_WAITS_KEPT)
         self._side_wait_max_ms: float | None = None  # over the whole run, not only the waits kept
@@ -177,6 +237,8 @@ class ThreadedSceneAnalyzer:
             behind_side = self._running == SIDE
             self._waiting = (job, image)
             self._waiting_since = (self._now(), behind_side)
+            if job.purpose is JobPurpose.PERIODIC:
+                self._periodic_at = self._waiting_since[0]
             self.counters["submitted"] += 1
             self._wake.notify()
             abort, grace, run = None, None, self._side_run
@@ -220,7 +282,8 @@ class ThreadedSceneAnalyzer:
             return self._running is not None or self._waiting is not None or self._side is not None
 
     def submit_side(self, work: Callable[[], Any], *, started: Callable[[], None],
-                    finished: Callable[[Any], None], abort: Callable[[str], bool] | None = None) -> bool:
+                    finished: Callable[[Any], None], abort: Callable[[str], bool] | None = None,
+                    plan: Callable[[SideWindow], SidePlan] | None = None, wait_limit_s: float | None = None) -> bool:
         """Offer one lower-priority request (D74); whether it was accepted.
 
         ``started()`` and ``finished(result)`` are called on the worker thread; ``result`` is what ``work()``
@@ -228,7 +291,13 @@ class ThreadedSceneAnalyzer:
         given, ends the request while it runs (D77): a scene job's arrival calls it (an enrichment job's at once, a
         periodic job's after the grace, D81), so does abort_side(). Accepted while a scene job runs or waits too; it
         starts when none does.
+
+        ``plan(window)``, if given, is called on the worker thread, never under its lock, each time the request could
+        start: SidePlan.START starts it, GIVE_UP drops it (``finished`` gets SideGivenUp), WAIT keeps it for the next
+        gap. ``wait_limit_s`` bounds the waiting: from this offer, a plan's WAIT then gives it up.
         """
+        if plan is not None and (wait_limit_s is None or not wait_limit_s > 0):
+            raise ValueError("a side request with a plan needs a positive wait limit")
         with self._lock:
             if self._stopping or self._thread is None or not self._thread.is_alive():
                 return False
@@ -237,10 +306,22 @@ class ThreadedSceneAnalyzer:
                 return False
             if self._running is not None or self._waiting is not None:
                 self.counters["side_accepted_behind_scene"] += 1
-            self._side = (work, started, finished, abort)
+            limit = None if wait_limit_s is None else round(wait_limit_s * NS_PER_SECOND)
+            self._side = _Side(work, started, finished, abort, plan, limit, self._now())
             self.counters["side_accepted"] += 1
             self._wake.notify()
             return True
+
+    def set_periodic_paused(self, paused: bool) -> None:
+        """D99: scene analysis turned off (no periodic job is expected) or on again (the lane checks the next live frame
+        at once, so one is due now). A side request waiting for the next gap is asked again."""
+        with self._lock:
+            if paused == self._periodic_paused:
+                return
+            self._periodic_paused = paused
+            self._periodic_at = None
+            self._gaps += 1
+            self._wake.notify()
 
     def abort_side(self, reason: str) -> bool:
         """End the running side request (its deadline, memory pressure, stopping); True if one was running."""
@@ -300,7 +381,7 @@ class ThreadedSceneAnalyzer:
             grace[1]()
         if side is not None:
             self.counters["side_dropped_at_stop"] += 1
-            side[2](RuntimeError("stopped"))
+            side.finished(RuntimeError("stopped"))
         if running_abort is not None:
             running_abort("the runtime is stopping")
         if thread is not None:
@@ -311,16 +392,12 @@ class ThreadedSceneAnalyzer:
     def _work(self) -> None:
         while True:
             with self._lock:
-                while self._waiting is None and self._side is None and not self._stopping:
-                    self._wake.wait()
+                while self._waiting is None and not self._side_ready() and not self._stopping:
+                    self._wake.wait(self._side_recheck_s())
                 if self._stopping:
                     return
                 if self._waiting is None:  # scene jobs first; a side request only when none waits
-                    side, self._side = self._side, None
-                    self._running = SIDE
-                    self._running_abort = side[3]  # type: ignore[index]
-                    self._side_run += 1
-                    self._side_ended_by = None
+                    side, window, gap = self._side, self._side_window(), self._gaps
                 else:
                     side = None
                     job, image = self._waiting
@@ -338,7 +415,7 @@ class ThreadedSceneAnalyzer:
                     self._waiting_since = None
                     began = self._now()
             if side is not None:
-                self._run_side(*side[:3])  # type: ignore[arg-type]
+                self._offer_side(side, window, gap)
                 del side
                 continue
             try:
@@ -348,8 +425,73 @@ class ThreadedSceneAnalyzer:
             del image
             with self._lock:
                 self._running = None
+                self._gaps += 1  # a gap opens: a side request waiting for one is asked again
                 self._run_ms.append(((self._now() - began) / 1e6, self._behind_side))
                 self._deliver(job.job_id, outcome)
+
+    def _side_ready(self) -> bool:
+        """Whether the pending side request may be offered now: not waiting for a gap, or a gap opened since, or its
+        wait limit is reached (called with the lock held)."""
+        side = self._side
+        if side is None:
+            return False
+        if side.waiting_since is None or side.waiting_since != self._gaps:
+            return True
+        return side.wait_limit_ns is not None and self._now() - side.offered_ns >= side.wait_limit_ns
+
+    def _side_recheck_s(self) -> float | None:
+        """How long the worker may sleep before a waiting side request's limit; None: until woken (lock held)."""
+        side = self._side
+        if side is None or side.waiting_since is None or side.wait_limit_ns is None:
+            return None
+        remaining_s = (side.offered_ns + side.wait_limit_ns - self._now()) / NS_PER_SECOND
+        return min(RECHECK_MAX_S, max(RECHECK_MIN_S, remaining_s))
+
+    def _side_window(self) -> SideWindow:
+        """How long a side request starting now has before the next periodic job's grace ends (lock held)."""
+        if self._interval_ns is None or self._periodic_paused:
+            return SideWindow(None)
+        now = self._now()
+        due = now if self._periodic_at is None else max(now, self._periodic_at + self._interval_ns)
+        return SideWindow(due - now + round(self._side_grace_s * NS_PER_SECOND))
+
+    def _offer_side(self, side: _Side, window: SideWindow, gap: int) -> None:
+        """Start, keep or give up the pending side request, as its plan decides (called outside the lock: the plan is
+        the caller's code)."""
+        decision, failed = SidePlan.START, False
+        if side.plan is not None:
+            try:
+                decision = SidePlan(side.plan(window))
+            except Exception:  # noqa: BLE001 - a broken plan gives its request up, never stops the worker
+                decision, failed = SidePlan.GIVE_UP, True
+        with self._lock:
+            if self._side is not side or self._stopping or self._waiting is not None:
+                return  # withdrawn or stopping meanwhile; or a scene job came, which goes first: then it is asked again
+            if failed:
+                self.counters["side_plan_failed"] += 1
+            if decision is SidePlan.WAIT:
+                if side.wait_limit_ns is not None and self._now() - side.offered_ns < side.wait_limit_ns:
+                    side.waiting_since = gap
+                    self.counters["side_waits"] += 1
+                    return
+                decision = SidePlan.GIVE_UP  # waiting past its limit: given up, never left waiting
+                self.counters["side_wait_limit"] += 1
+            self._side = None
+            if decision is SidePlan.GIVE_UP:
+                self.counters["side_given_up"] += 1
+            else:
+                self._running = SIDE
+                self._running_abort = side.abort
+                self._side_run += 1
+                self._side_ended_by = None
+        if decision is SidePlan.GIVE_UP:
+            try:
+                side.finished(SideGivenUp())
+            except Exception:  # noqa: BLE001 - a broken callback must not stop scene analysis
+                with self._lock:
+                    self.counters["side_callback_failed"] += 1
+            return
+        self._run_side(side.work, side.started, side.finished)
 
     def _run_side(self, work: Callable[[], Any], started: Callable[[], None], finished: Callable[[Any], None]) -> None:
         try:
