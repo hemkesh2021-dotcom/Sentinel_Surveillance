@@ -12,7 +12,7 @@ Last updated 2026-10-25, session 114 (Claude), on branch `v2-ui-refresh` (worktr
 - **Not established:** the device's pace and timings; any change in the cancellation rate (no reduction claimed); scene waits, deadlines and memory under the change.
 - **Recorded for later work (requirements, not implemented):**
   - a recognition range target: the seat about 2-3 ft; the front door, about 4-5 m, primary; a configurable extended target beyond it; requested, not validated; never by lowering thresholds;
-  - a UI redesign direction with an interactive motion treatment, starting with a local component preview for the maintainer's review.
+  - a UI redesign direction with an interactive motion treatment. Its local component preview, `docs/design/ui-motion-preview.html`, is built for the maintainer's review (session 114 log, part 2); nothing is applied to the dashboard.
 - **Pending (the maintainer):**
   - the PROPOSED values and decisions (session 114 log, section 6);
   - the camera and distance questions (section 11);
@@ -791,7 +791,8 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
      - answer section 11 when convenient;
      - say whether a device validation of the chat change should be prepared (section 9);
      - review the local UI component preview before any dashboard change.
-   - **Claude, next (session 114):** the local UI component preview, for review only. Then, on the maintainer's instruction, either the chat change's device validation package, or a read-only plan toward the requested range (the camera facts first; then session 113's steps 3-4, thresholds unchanged).
+   - **Done (session 114, part 2):** the local UI component preview, `docs/design/ui-motion-preview.html`, checked in headless Chromium (45 of 45 checks), for review only.
+   - **Claude, next (session 114):** on the maintainer's approval of the preview (or the changes they ask for), apply the style to the dashboard as its own slice, with its browser tests. Or, on instruction: the chat change's device validation package, or a read-only plan toward the requested range (the camera facts first; then session 113's steps 3-4, thresholds unchanged).
    - **Done (session 112):** v2.0.0-alpha.2 published: `27d6308` pushed alone as a fast-forward of `alpha-candidate-2026-10`; Dashboard checks and both portable jobs passed on it; the tag `v2.0.0-alpha.2` and the pre-release (not latest) created (session 112 log).
    - **Maintainer (session 112):** the action in the session 112 section of `docs/LOCAL_NOTES.md` (excluded). The 24 October review checkpoint on the pre-release. Whether to update the wiki (it still describes alpha.1) and when to push this record's local commits are your decisions.
    - **Claude, next (session 112):** after the review, only on the maintainer's instruction. The recognition-distance and VLM chat improvements stay deferred until then; F2, false acceptance, accuracy, chat admission and the combined run stay pending.
@@ -1322,6 +1323,55 @@ VIRTUAL_ENV=~/sentinel-validation/py312-df8d9bc/venv PATH=<its bin>:$PATH python
 ```
 
 **Next (the maintainer):** decide section 6's values and decisions; answer section 11 when convenient; say whether a device validation of this change should be prepared (section 9).
+
+### Session 114, part 2 (Claude, 2026-10-25): the UI component preview, for the maintainer's review; nothing in the dashboard changed
+
+1. **The request (the maintainer).** Record the visual direction (section 10), then finish the chat change first (done: `e5d8306`, this record's first commit). Then build a local component preview for review before the style is applied anywhere: a primary button, a toggle, a navigation item and the chat input in their interaction states, with synthetic content. The reference image was then copied to `~/sentinel-design/gold-button-reference.png`; it is outside Git, was inspected and was not copied into the repository.
+2. **The reference image, read.**
+   - **What it shows:** one key, before and after. Before: a raised charcoal rounded square in a recessed well, with a debossed label of low contrast. After: a bright warm-gold rim, a gold label, and a wide bloom with sparks and lens flares.
+   - **Sampled colours** (small patch means): page `#0e0d0b`; the well's rim `#1f1e1a`; the key `#2a2925`-`#36342f`, with its highlight `#484744`; the gold rim's core `#fdf093`/`#f7dd70`, falling to amber `#f5b845`; the gold label `#fee765`; the halo `#bf7d2e`-`#634424`.
+   - **Taken:** the material, the gold rim hugging the edge, the warm gold.
+   - **Left out, as the brief asks:** the bloom, the sparks, the lens flares and the glowing label. The idle deboss survives only as a shadow under a readable ivory label: the image's idle label is about `#23231e` on `#2a2925`, unreadable.
+3. **The preview:** `docs/design/ui-motion-preview.html`, one self-contained file of 41.9 kB (inline CSS, SVG and script, system fonts; nothing loaded beyond the file itself).
+   - **Contents:**
+     - live components driven by synthetic operations whose next result the reviewer chooses (Succeeds or Fails);
+     - every state held still for the four components: idle, hover, keyboard focus, pressed, selected, pending, success, error, disabled;
+     - status colours beside gold;
+     - a camera placeholder that nothing overlays;
+     - the timings, and a contrast table computed in the page.
+   - **Motion:**
+     - hover and focus send a short gold dash once around the control's edge (an SVG rectangle on the outline, 320 ms), then a restrained glow settles (240 ms); keyboard focus adds a solid 2 px ring off the edge;
+     - a press moves the control down 1 px and to 0.985 scale, turns its shadow inset (140 ms) and sends a 160 ms gold pulse; the release takes 260 ms, with a small overshoot;
+     - selected: a steady thin gold line inside the edge, with no glow;
+     - pending: a slow dash circles the edge only while `aria-busy` (1.6 s a turn), then stops;
+     - results come only from the operation's outcome: a failed save never shows "Saved"; a failed toggle stays as it was and says why; a cancelled question comes back into the box.
+   - **Reduced motion** (the system setting, or the preview's switch): nothing travels or scales; states change at once; pending is a still dotted edge, with its words.
+   - **Forced colours:** the system's own colours and outlines.
+   - **Colours:**
+     - dark: page `#0e0d0b`, raised charcoal `#34322d`-`#23221e`, recessed `#181714`, ivory `#efe7d6`, gold `#f2c45a` (core `#fde58a`, amber `#c98a2e`); warning `#ff8a3d`, error `#ff5d61` and success `#7fd3a0`, each with an icon and a word;
+     - ivory theme: page `#f3eee2`, ink `#1e1b16`, gold deepened to `#8a5d0f`, warning `#a5420c`, error `#b4232c`, success `#25683f`.
+4. **Verified locally** (headless Chromium through the test harness, no network; the scripts in the session scratchpad): 45 of 45 checks, in both themes where they apply.
+   - **Loading:** only the file itself loaded; no script error.
+   - **Contrast:** every pair passes. Dark, lowest: error text 6.47:1. Ivory, lowest: the gold ring on a recessed panel, 4.37:1 against 3:1; its text pairs are at least 5.06:1.
+   - **Motion:**
+     - hover starts one trip, which runs once, then the glow;
+     - a press moves the control and pulses;
+     - the click alone shows pending, never success, and the edge circles only while pending;
+     - success and failure come from the result, for the button, the toggle and the chat as above.
+   - **Keyboard:** focus is a solid 2 px gold ring. A seven-step Tab walk in each theme: every stop `:focus-visible`, the disabled button skipped; captures viewed.
+   - **Reduced motion:** no trip, no movement, a still dotted pending edge.
+   - **A 390 px phone:** no horizontal page scroll.
+   - **A capture artefact, not a page defect:** one capture taken just after a full-page capture showed the pressed button missing. Its computed style at that moment was correct (visible, opacity 1, the pressed transform), and a fresh capture showed it as designed. The cause is not established.
+   - **Not checked:** Safari and Firefox (only Chromium here); real devices; how the motion feels at full speed in the maintainer's browser.
+5. **To view it:** download the file to the Mac (in VS Code, right-click it in the Explorer, then Download) and open it in Safari or Chrome. `?theme=light` and `?motion=reduce` choose the theme and reduced motion.
+6. **For the maintainer's review:**
+   - the gold's warmth and the glow's strength;
+   - whether a hovered label turns gold;
+   - the trip's speed and the pulse;
+   - the ivory theme;
+   - whether the state sheet covers what the dashboard needs.
+   - Nothing is applied to the dashboard until it is approved; the existing palettes stay (D96).
+7. **Unchanged:** backend behaviour, the dashboard's code and styles, every sealed session. Nothing launched, pushed, uploaded or shared.
 
 ## Session 112 log (Claude, 2026-10-21): v2.0.0-alpha.2 published: `27d6308` pushed alone to `alpha-candidate-2026-10` as a fast-forward; Dashboard checks and both portable jobs passed on it; the annotated tag and the GitHub pre-release (not latest) created; nothing else pushed
 
