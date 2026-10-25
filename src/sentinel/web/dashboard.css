@@ -238,8 +238,9 @@ html[data-focus=live] .live .frame img, html[data-focus=live] .live .frame canva
 .frame figcaption { position: absolute; left: 8px; right: 8px; top: 8px; display: flex; align-items: center; gap: 8px;
   padding: 9px 12px; border-radius: 9px 9px 0 0; background: var(--stale-bg); color: var(--stale-ink); font-weight: 700;
   font-size: .9rem; }
+/* max-width: never wider than its frame (on a 320 px phone, its minimum height's 4:3 shape was; session 114) */
 .frame-empty { display: grid; place-items: center; align-content: center; gap: 8px; min-height: 220px;
-  aspect-ratio: 4 / 3; padding: 24px; text-align: center; color: var(--muted); }
+  aspect-ratio: 4 / 3; max-width: 100%; padding: 24px; text-align: center; color: var(--muted); }
 .frame-empty .ic { width: 2.2em; height: 2.2em; }
 .frame-empty strong { color: var(--ink); }
 .player-state { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-height: 2em; margin: -4px 0 12px; }
@@ -616,6 +617,12 @@ th { color: var(--muted); font-weight: 650; }
   .pills { margin-left: 0; }
 }
 @media (min-width: 900px) { .scrim { display: none !important; } }
+/* Session 114, part 4: on a phone, explanatory text gives way to the picture and the actions: a short line where one
+   is needed, the full text behind a labelled disclosure (details.tech, closed until opened; updates keep it as the
+   reader left it). Wider screens keep the full text as before. Warnings, NOT CURRENT and failures stay in full. */
+@media (max-width: 599px) { .wide-only { display: none !important; } }
+@media (min-width: 600px) { .narrow-only { display: none !important; } }
+.freshbar > details.tech { margin-top: 8px; }
 
 /* ---------------------------------------------------------------- D71: the page watchdog
    A .fs switch stacks a current layer (.cur) on its not-current replacement (.old). .cur is hidden unless its animation

@@ -932,10 +932,18 @@ def _table(headers: list[str], rows: list[list[object]], empty: str) -> str:
     return f"<div class=wrap><table class=list><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>"
 
 
-def _details(summary: str, body: str, *, key: str) -> str:
-    """Expandable technical detail (closed by default)."""
-    return (f"<details class=tech id=d-{key}><summary>{icon('chevron', 'ic chev')}{_e(summary)}</summary>"
+def _details(summary: str, body: str, *, key: str, cls: str = "") -> str:
+    """Expandable technical detail (closed by default). ``cls``: more classes, such as narrow-only."""
+    classes = f'"tech {cls}"' if cls else "tech"
+    return (f"<details class={classes} id=d-{key}><summary>{icon('chevron', 'ic chev')}{_e(summary)}</summary>"
             f"<div class=body>{body}</div></details>")
+
+
+def _narrow(full: object, *, cls: str, summary: str, key: str) -> str:
+    """Session 114, part 4: a paragraph of ``full`` text as before on a wide screen; on a phone, the same text behind a
+    disclosure labelled ``summary`` (closed until opened, kept as the reader left it through updates)."""
+    return (f"<p class='{cls} wide-only'>{_e(full)}</p>"
+            + _details(summary, f"<p>{_e(full)}</p>", key=key, cls="narrow-only"))
 
 
 FACE_EXPERIMENTAL = "experimental: a validation run, not validated"
@@ -1341,9 +1349,12 @@ def _status(status: object) -> _Markup:
     return _badge(STATUS_KINDS.get(text, "off"), text.capitalize(), glyph=STATUS_ICONS.get(text, "info"))
 
 
-def _empty_frame(glyph: str, title: str, text: object) -> str:
-    return (f"<div class=frame><div class=frame-empty>{icon(glyph)}<strong>{_e(title)}</strong>"
-            f"<p>{_e(text)}</p></div></div>")
+def _empty_frame(glyph: str, title: str, text: object, *, short: str | None = None) -> str:
+    """An empty picture area with its title and why; with ``short``, a phone shows that instead (session 114, part 4;
+    the full text then follows behind a disclosure)."""
+    why = (f"<p>{_e(text)}</p>" if short is None
+           else f"<p class=wide-only>{_e(text)}</p><p class=narrow-only>{_e(short)}</p>")
+    return f"<div class=frame><div class=frame-empty>{icon(glyph)}<strong>{_e(title)}</strong>{why}</div></div>"
 
 
 def _live_head(view: Mapping[str, Any] | None) -> str:
@@ -1479,15 +1490,26 @@ def status_regions(status: Mapping[str, Any], *, theme: Look | str | None = None
     degraded = status["degraded"]
     generated = status.get("generated_utc")
     running = runtime.get("state") == "running"
-    fresh = (  # the page's own freshness, apart from what the runtime last reported (D71)
+    stale = f"<strong>NOT CURRENT: this page has not refreshed for {PAGE_CURRENT_S} s</strong>"
+    fresh = (  # the page's own freshness, apart from what the runtime last reported (D71). On a phone (session 114,
+        # part 4) each state is a short line with its time (both layers share one place, so the longer sets its
+        # height), and how the page stays current, in either state, is behind a disclosure outside the switch that
+        # claims nothing
         f"<div class=fs>"
-        f"<div class='cur now'>{icon('clock')}<p>This page is current: updated less than {PAGE_CURRENT_S} s ago, "
-        f"generated at {_clock(generated)}; it updates every {REFRESH_S} s without reloading. If updates stop, this "
-        f"bar turns NOT CURRENT within {PAGE_CURRENT_S} s and the report below is marked as last reported.</p></div>"
-        f"<div class='old gone'>{icon('clock')}<p><strong>NOT CURRENT: this page has not refreshed for "
-        f"{PAGE_CURRENT_S} s</strong>. Everything below is what the runtime had last reported when this page was "
-        f"generated at {_clock(generated)}, and may have changed since. Only a valid, newer update makes it current "
-        "again; it is retried automatically (without JavaScript, reload).</p></div></div>"
+        f"<div class='cur now'>{icon('clock')}<p class=wide-only>This page is current: updated less than "
+        f"{PAGE_CURRENT_S} s ago, generated at {_clock(generated)}; it updates every {REFRESH_S} s without reloading. "
+        f"If updates stop, this bar turns NOT CURRENT within {PAGE_CURRENT_S} s and the report below is marked as last "
+        f"reported.</p><p class=narrow-only><strong>This page is current</strong> · generated {_clock(generated)}</p>"
+        f"</div><div class='old gone'>{icon('clock')}<p class=wide-only>{stale}. Everything below is what the runtime "
+        f"had last reported when this page was generated at {_clock(generated)}, and may have changed since. Only a "
+        "valid, newer update makes it current again; it is retried automatically (without JavaScript, reload).</p>"
+        f"<p class=narrow-only>{stale} · last report {_clock(generated)}</p></div></div>"
+        + _details("How this page stays current", f"<p>It is shown as current only within {PAGE_CURRENT_S} s of its "
+                   f"last update. It updates every {REFRESH_S} s without reloading; if updates stop, this bar turns NOT "
+                   f"CURRENT within {PAGE_CURRENT_S} s and the report below is marked as last reported.</p><p>When it "
+                   "is not current, everything below is what the runtime had last reported when this page was "
+                   "generated, and may have changed since. Only a valid, newer update makes it current again; it is "
+                   "retried automatically (without JavaScript, reload).</p>", key="freshness", cls="narrow-only")
     )
     pills = (f"<span class=updated>Last update {_clock(runtime.get('updated_utc'))}</span>{_monitoring(runtime, degraded)}"
              f"{_claim(_badge('ok', 'Page current'), _badge('stale', 'NOT CURRENT'))}")
@@ -1791,10 +1813,14 @@ def _snapshot_html(snapshot: Mapping[str, Any] | None) -> str:
     elif state == "saved":
         body = (f"<div class='alertbox k-crit'>{icon('crit')}<p>Saved, but its file is missing or does not match its "
                 "record (size or SHA-256), so it is not shown.</p></div>")
+    elif state == "none":  # on a phone, a short line; why, and how snapshots are saved, behind a disclosure
+        why = f"{snapshot['text']}."
+        body = (_empty_frame("off", "No snapshot", why, short="None was saved for this incident.")
+                + _details("Why there is no snapshot", f"<p>{_e(why)}</p>", key="snapshot-why", cls="narrow-only"))
     else:
-        glyph = "off" if state in ("none", "pruned") else "warn"
-        body = _empty_frame(glyph, {"none": "No snapshot", "missing": "Snapshot missing",
-                                    "pruned": "Snapshot deleted"}.get(state, "No snapshot"), f"{snapshot['text']}.")
+        glyph = "off" if state == "pruned" else "warn"
+        body = _empty_frame(glyph, {"missing": "Snapshot missing", "pruned": "Snapshot deleted"}.get(state, "No snapshot"),
+                            f"{snapshot['text']}.")
     facts = ""
     if "frame" in snapshot:
         facts = ("<dl class=facts>"
@@ -1814,7 +1840,8 @@ def _snapshot_html(snapshot: Mapping[str, Any] | None) -> str:
                      ("SHA-256", _Markup(f"<span class=mono>{_e(snapshot['sha256'])}</span>"))]
         facts += _details("Snapshot provenance", f"<div class=wrap><table class=kv>{_rows(rows)}</table></div>",
                           key="snapshot")
-    return f"{body}{facts}<p class=note>{_e(SNAPSHOT_NOTE)}</p>"
+    return body + facts + _narrow(SNAPSHOT_NOTE, cls="note", summary="About snapshots: what is kept, and for how long",
+                                  key="snapshot-note")
 
 
 def _ack_tag(status: object, acknowledgment: Mapping[str, Any]) -> str:
@@ -1901,9 +1928,10 @@ def incident_regions(detail: Mapping[str, Any], *, theme: Look | str | None = No
     ])
     if acknowledgment["state"] == "acknowledged":
         ack = (f"{_badge('done', 'Acknowledged', big=True)}<p class=reason>{_e(_acknowledgment_text(acknowledgment))}</p>")
-    else:
+    else:  # on a phone, the command-line instructions behind a disclosure (session 114, part 4)
         ack = (f"{_badge('off', 'Not acknowledged', glyph='bell', big=True)}"
-               f"<p class=reason>{_e(_acknowledgment_text(acknowledgment))}</p>")
+               + _narrow(_acknowledgment_text(acknowledgment), cls="reason",
+                         summary="How to acknowledge it (this page is read only)", key="ack-how"))
 
     def shown(part: Mapping[str, Any]) -> str:
         return f"<p class=note>{len(part['shown'])} of {part['total']} shown (the latest).</p>"
