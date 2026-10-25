@@ -347,7 +347,7 @@ def start(setup, *, store=None, backend_error=None, compatibility=COMPAT, valida
         capture_source=lambda capture: SimpleNamespace(),
         tracker_backend=lambda engine: Tracker(calls) if tracker_backend is None else tracker_backend(calls),
         scene_server=lambda options, port: None,
-        scene_request=lambda port, timeout: None,
+        scene_request=lambda port, timeout, model: None,
         meminfo=lambda: {"MemFree": int(memfree), "MemAvailable": 7_000_000_000},
         notifiers=lambda config: ({}, {}),
         face_backend=lambda weights_dir: (backend_class or FaceBackend)(setup.weights, calls, error=backend_error,
@@ -452,7 +452,7 @@ def _refusing_devices() -> Devices:
     def refuse(capture):
         raise SourceError("rtsp_url_missing")
     return Devices(capture_source=refuse, tracker_backend=lambda e: None, scene_server=lambda o, p: None,
-                   scene_request=lambda p, t: None, meminfo=lambda: None)
+                   scene_request=lambda p, t, m: None, meminfo=lambda: None)
 
 
 def test_the_passphrase_is_removed_from_the_environment_even_without_face(tmp_path, monkeypatch, capsys) -> None:

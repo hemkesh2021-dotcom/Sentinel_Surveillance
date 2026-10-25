@@ -179,7 +179,8 @@ from .runtime import (
 from .scene.analyzer import IMAGES_KEPT, RecentImages, ThreadedSceneAnalyzer
 from .scene.chat import CHAT_ADMISSION, ChatAdmission, ChatService
 from .scene.chat_gate import SAMPLE_INTERVAL_S as CHAT_GATE_SAMPLE_S, ChatGate, read_pressure
-from .scene.llama_server import PROFILED_FLAGS, PROMPT_CACHE_FLAGS, SCENE_REQUEST_SHA256
+from .scene.llama_server import PROFILED_FLAGS, PROMPT_CACHE_FLAGS
+from .scene.models import ROLLBACK_SCENE_MODEL_SET, scene_model_set
 from .storage.database import Database, DatabaseError
 from .tracking.diagnostic import (
     DiagnosticBounds,
@@ -1174,6 +1175,9 @@ class SceneOptions:
     # D58: the server keeps the system THP setting: no spawn from a process with THP disabled, and its own THP_enabled
     # must read 1 when ready. assemble() sets it with the THP policy; LlamaServerProcess enforces it.
     require_system_thp: bool = False
+    # Session 115: the scene model set (scene.models) that model and mmproj must be, for scene and chat alike. This
+    # default is the accepted profile's; `sentinel run` selects --scene-model-set (default lfm2.5-vl).
+    model_set: str = ROLLBACK_SCENE_MODEL_SET
 
 
 @dataclass(frozen=True)
@@ -1248,14 +1252,16 @@ class Devices:
     capture_source: Callable[[CaptureConfig], VideoSource]
     tracker_backend: Callable[[Path], Any]  # has load(), track(), reset()
     scene_server: Callable[[SceneOptions, int], Any]  # has start(ready_timeout_s), status(), stop(grace_s)
-    scene_request: Callable[[int, float], Callable[[AnalysisJob, Any], WorkerOutcome]]
+    # (port, request timeout, the selected set's request model) -> the scene job (LlamaSceneRequest)
+    scene_request: Callable[[int, float, str], Callable[[AnalysisJob, Any], WorkerOutcome]]
     meminfo: Callable[[], dict[str, int] | None]
     notifiers: Callable[[NotificationsConfig], tuple[dict[str, Notifier], dict[str, str]]] = environment_notifiers
     memory: MemoryOps = field(default_factory=MemoryOps)  # D58; used only when a policy is selected
     face_backend: Callable[[Path | None], Any] | None = None  # has load(), compatibility(), faces(), weight_files
     identity_store: Callable[[Path], Any] | None = None  # has exists(), load(secret)
     encode: Encoder = encode_jpeg  # D69/D70 pictures; cv2 is imported only when it runs
-    chat_request: Callable[[int, float], Any] | None = None  # D74: a question on the scene worker (LlamaChatRequest)
+    # D74: a question on the scene worker (LlamaChatRequest), with the same three arguments as scene_request
+    chat_request: Callable[[int, float, str], Any] | None = None
 
 
 @dataclass
@@ -1354,7 +1360,9 @@ def profile_mismatch(
     if profile.scene_interval_s != config.scene.interval_s:
         return (f"resource profile {profile.profile_id} measured a {profile.scene_interval_s:g} s scene interval, "
                 f"not the configured {config.scene.interval_s:g} s")
-    if profile.scene_request_sha256 != SCENE_REQUEST_SHA256:
+    # The request the runtime sends names the selected set's model (session 115); for the accepted profile's own set
+    # this is SCENE_REQUEST_SHA256, the request that profile measured.
+    if profile.scene_request_sha256 != scene_model_set(scene.model_set).scene_request_sha256:
         return f"resource profile {profile.profile_id} measured another scene request than the runtime sends"
     if profile.llama_server is None:
         return f"resource profile {profile.profile_id} lacks the llama-server identity"
@@ -1386,13 +1394,28 @@ def scene_admission(
     policy: MemoryPolicy = DEFAULT_POLICY,
 ) -> tuple[str | None, str | None]:
     """(problem, producer revision) for ``--scene``: an enabled scene adapter whose resource
-    profile is ACCEPTED (step-4 evidence, D46) and matches the selected configuration, memory policy included."""
+    profile is ACCEPTED (step-4 evidence, D46) and matches the selected configuration, memory policy included.
+
+    Session 115: a declared model_revision must be the selected scene model set's (it is every scene evidence
+    record's producer revision), and a set that no accepted profile measured is refused here, before the profile
+    check, with the reason (D46, kept unchanged: there is no way around it)."""
     statuses = [s for s in resolve(config.adapters, profiles=profiles) if s.manifest.adapter_id == SCENE_ADAPTER_ID]
     if not statuses:
         return f"no {SCENE_ADAPTER_ID} adapter in the configuration", None
     status = statuses[0]
     if status.state is not AdapterState.ENABLED:
         return f"{SCENE_ADAPTER_ID} {status.state.value}: {status.reason}", None
+    try:
+        chosen = scene_model_set(scene.model_set)
+    except ValueError as exc:
+        return f"{SCENE_ADAPTER_ID}: {exc}", None
+    if status.manifest.model_revision is not None and status.manifest.model_revision != chosen.model_revision:
+        return (f"{SCENE_ADAPTER_ID}: the manifest declares model_revision {status.manifest.model_revision}, not "
+                f"{chosen.model_revision} (scene model set {chosen.key})"), None
+    if not chosen.profiled:
+        return (f"{SCENE_ADAPTER_ID}: scene model set {chosen.key} has no accepted resource profile (D46): it needs a "
+                f"step-4 profile run that measures it and the maintainer's acceptance; --scene-model-set "
+                f"{ROLLBACK_SCENE_MODEL_SET} selects the admitted model"), None
     profile = profiles[status.manifest.resource_profile_id]  # type: ignore[index]  # resolve() checked it
     problem = profile_mismatch(profile, config, scene, policy=policy)
     if problem is not None:
@@ -1640,7 +1663,10 @@ def assemble(
 
         scene = None
         scene_problem = None
-        if options.scene is not None:
+        # Session 115: the set scene_admission checked; scene and chat requests carry its model's name. Which model a
+        # run used reaches its evidence through the manifest's model_revision (the producer revision), not this line.
+        scene_set = None if options.scene is None else scene_model_set(options.scene.model_set)
+        if options.scene is not None and scene_set is not None:
             scene_problem, memory = memfree_problem(devices.meminfo, options.scene.min_free_bytes)
             startup["scene_memory_before"] = memory
             if scene_problem is None:
@@ -1660,7 +1686,8 @@ def assemble(
                         startup["releases"] = {"scene": post_load_release(
                             ops, "scene", {"llm": options.scene.model, "mmproj": options.scene.mmproj})}
                     images = RecentImages()
-                    run_job = devices.scene_request(config.scene_server.port, config.scene_server.request_timeout_s)
+                    run_job = devices.scene_request(config.scene_server.port, config.scene_server.request_timeout_s,
+                                                    scene_set.request_model)
                     # The lane's interval gives chat's questions their windows before the next periodic job (session 114).
                     analyzer = ThreadedSceneAnalyzer(run_job, images, revision=revision or "unknown",
                                                      periodic_interval_s=config.scene.interval_s)
@@ -1784,8 +1811,10 @@ def assemble(
             notifier_problems=notifier_problems, live_preview=options.live_preview, encode=devices.encode,
             snapshots=snapshots, chat=options.chat, chat_validation=options.chat_validation,
             feature_controls=options.feature_controls,
-            chat_run=(devices.chat_request(config.scene_server.port, config.scene_server.request_timeout_s)
-                      if options.chat and scene is not None and devices.chat_request is not None else None),
+            chat_run=(devices.chat_request(config.scene_server.port, config.scene_server.request_timeout_s,
+                                           scene_set.request_model)  # the scene requests' model: one set for both
+                      if options.chat and scene is not None and scene_set is not None
+                      and devices.chat_request is not None else None),
             tracking_diagnostic=tracking,
         )
         if runtime.preview is not None:  # only when enabled, as every new output key (evidence profiles are strict)

@@ -667,7 +667,7 @@ def fake_devices(source: Any, backend: FakeBackend | None = None, *, server: Any
         capture_source=capture_source,
         tracker_backend=tracker_backend,
         scene_server=scene_server,
-        scene_request=lambda port, timeout: (lambda job, image: WorkerOutcome.completed(job.job_id, REPORT)),
+        scene_request=lambda port, timeout, model: (lambda job, image: WorkerOutcome.completed(job.job_id, REPORT)),
         meminfo=lambda: {"MemFree": int(memfree), "MemAvailable": 7_000_000_000},
         notifiers=lambda config: ({}, {}),
     )

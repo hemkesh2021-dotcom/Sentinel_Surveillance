@@ -1,9 +1,12 @@
 """llama-server scene requests for the Oct 20 demo (D24; V2-26 demo form, full acceptance pending).
 
-The demo scene model is v1's LFM2-VL-1.6B (Q4_0 with the Q8_0 vision projector)
-served by llama.cpp's llama-server (b8932, provisionally retained under D36).
+The scene model is an LFM2-VL-family model (Q4_0 with its own Q8_0 vision
+projector) served by llama.cpp's llama-server (b8932, provisionally retained
+under D36): v1's LFM2-VL-1.6B, which the accepted profile measured, or, since
+session 115, LFM2.5-VL-1.6B (scene.models: one set serves scene and chat).
 This module fixes how that server is launched and how one scene job is asked
-of it. It is not V2-26 proper, which compares models and records the choice.
+of it; a request names its set's model, and nothing else differs between sets.
+It is not V2-26 proper, which compares models and records the choice.
 
 - **Loopback only (D42).** The server is always started with
   ``--host 127.0.0.1``, which on the command line overrides any
@@ -51,7 +54,7 @@ IMAGE_SIZE = (480, 360)  # v1's scene image; width, height
 JPEG_QUALITY = 60
 MAX_TOKENS = 200
 TEMPERATURE = 0.05
-MODEL_NAME = "lfm2-vl"
+MODEL_NAME = "lfm2-vl"  # the profiled request's model name (D47); scene.models names each set's
 MAX_RESPONSE_BYTES = 1_000_000
 SCENE_SYSTEM = (
     "You are the scene-analysis component of a home security camera. "
@@ -103,10 +106,10 @@ def llama_server_environment(base: Mapping[str, str]) -> dict[str, str]:
     return env
 
 
-def scene_request_body(jpeg: bytes) -> bytes:
+def scene_request_body(jpeg: bytes, model: str = MODEL_NAME) -> bytes:
     image = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
     body = {
-        "model": MODEL_NAME,
+        "model": model,
         "max_tokens": MAX_TOKENS,
         "temperature": TEMPERATURE,
         "stream": False,
@@ -248,12 +251,15 @@ class LoopbackTransport:
 class LlamaSceneRequest:
     """Runs one scene job against llama-server: encode, request, check the envelope.
 
-    Called on the analyzer's worker thread; it blocks for the request.
+    Called on the analyzer's worker thread; it blocks for the request. ``model`` is the name the request carries
+    (the selected scene model set's).
     """
 
-    def __init__(self, transport: Any, *, encode: Callable[[Any], bytes] = opencv_jpeg) -> None:
+    def __init__(self, transport: Any, *, encode: Callable[[Any], bytes] = opencv_jpeg,
+                 model: str = MODEL_NAME) -> None:
         self._transport = transport
         self._encode = encode
+        self._model = model
 
     def __call__(self, job: AnalysisJob, image: Any) -> WorkerOutcome:
         try:
@@ -261,7 +267,7 @@ class LlamaSceneRequest:
         except Exception as exc:  # a bad frame is that job's error, not a worker crash
             return WorkerOutcome.failed(job.job_id, OutcomeKind.ERROR, f"image encoding failed: {type(exc).__name__}")
         try:
-            data = self._transport.post(scene_request_body(jpeg))
+            data = self._transport.post(scene_request_body(jpeg, self._model))
         except TransportError as exc:
             kind = OutcomeKind.TIMEOUT if exc.timed_out else OutcomeKind.ERROR
             return WorkerOutcome.failed(job.job_id, kind, exc.label)

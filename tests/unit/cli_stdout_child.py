@@ -112,7 +112,7 @@ def command(scenario: str, work: Path) -> int:
         capture_source=lambda config: Source(stop_after=30),
         tracker_backend=lambda engine: backend,
         scene_server=lambda options, port: None,
-        scene_request=lambda port, timeout: None,
+        scene_request=lambda port, timeout, model: None,
         meminfo=lambda: PLENTY,
         notifiers=lambda config: ({}, {}),
     )

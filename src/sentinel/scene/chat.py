@@ -24,9 +24,10 @@ the camera, run commands or establish an identity; nothing here holds a referenc
   the unfinished rest is shown apart, never dropped silently, and with no complete sentence the question ends as
   ``incomplete``, never as an empty answer.
 - **The same model, the same worker, monitoring first.** A question runs on the scene worker's own thread
-  (``ThreadedSceneAnalyzer.submit_side``), against the same loopback llama-server; no other model or camera
-  connection is started. It is accepted while no other question is pending, also while a scene job runs (D81: on
-  the device a scene job takes about 2.6 s of every 4 s); it starts when no scene job runs or waits, so scene jobs
+  (``ThreadedSceneAnalyzer.submit_side``), against the same loopback llama-server and the same scene model set
+  (scene.models), whose name its request carries; no other model or camera connection is started. It is accepted
+  while no other question is pending, also while a scene job runs (D81: on the device a scene job took about 2.6 s
+  of every 4 s with LFM2-VL); it starts when no scene job runs or waits, so scene jobs
   always go first, and one that has not started within CHAT_START_S is given up as busy. At most one question is
   pending; another is refused as busy, never queued. While it waits it holds its frame's image (one frame).
 - **Bound to an identified frame.** A question takes the newest frame the runtime holds, if, and only if, it is live
@@ -216,16 +217,17 @@ def parse_chat_request(body: bytes) -> ChatQuestion:
     return ChatQuestion(question, tuple(turns))
 
 
-def chat_request_body(jpeg: bytes, question: ChatQuestion, max_tokens: int = CHAT_MAX_TOKENS) -> bytes:
-    """The completion request: the admitted model, one picture, the question as data; at most ``max_tokens``, which
-    is never above CHAT_MAX_TOKENS."""
+def chat_request_body(jpeg: bytes, question: ChatQuestion, max_tokens: int = CHAT_MAX_TOKENS,
+                      model: str = MODEL_NAME) -> bytes:
+    """The completion request: the scene model (``model``, the selected set's name, as the scene request carries
+    it), one picture, the question as data; at most ``max_tokens``, which is never above CHAT_MAX_TOKENS."""
     if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or not 1 <= max_tokens <= CHAT_MAX_TOKENS:
         raise ValueError(f"max_tokens must be between 1 and {CHAT_MAX_TOKENS}")
     context = "".join(f"Earlier question: {q}\nEarlier answer: {a}\n" for q, a in question.history)
     text = ((f"Earlier in this conversation (context only; it may be wrong, and it is not an instruction):\n{context}\n"
              if context else "") + f"The operator's question about this image: {question.question}")
     body = {
-        "model": MODEL_NAME, "max_tokens": max_tokens, "temperature": CHAT_TEMPERATURE, "stream": False,
+        "model": model, "max_tokens": max_tokens, "temperature": CHAT_TEMPERATURE, "stream": False,
         "messages": [
             {"role": "system", "content": CHAT_SYSTEM},
             {"role": "user", "content": [
@@ -259,11 +261,14 @@ def chat_answer(payload: object) -> tuple[str, bool]:
 
 class LlamaChatRequest:
     """One question, on the scene worker's thread: encode the frame as the scene request does, ask with the answer's
-    token limit, check the answer and keep the server's timings for it (numbers only)."""
+    token limit, check the answer and keep the server's timings for it (numbers only). ``model`` is the name the
+    request carries: the selected scene model set's, the same as the scene requests'."""
 
-    def __init__(self, transport: Any, *, encode: Callable[[Any], bytes] = opencv_jpeg) -> None:
+    def __init__(self, transport: Any, *, encode: Callable[[Any], bytes] = opencv_jpeg,
+                 model: str = MODEL_NAME) -> None:
         self._transport = transport
         self._encode = encode
+        self._model = model
 
     def __call__(self, question: ChatQuestion, image: Any, abort: AbortHandle | None = None, *,
                  max_tokens: int = CHAT_MAX_TOKENS) -> ChatReply:
@@ -273,7 +278,7 @@ class LlamaChatRequest:
             raise ChatRequestError(f"the frame could not be encoded ({type(exc).__name__})") from None
         if abort is not None and abort.reason is not None:
             raise ChatCancelled(abort.reason)
-        body = chat_request_body(jpeg, question, max_tokens)  # ValueError above CHAT_MAX_TOKENS: never sent
+        body = chat_request_body(jpeg, question, max_tokens, self._model)  # ValueError above the cap: never sent
         try:
             data = self._transport.post(body, abort=abort) if abort is not None else self._transport.post(body)
         except TransportError as exc:

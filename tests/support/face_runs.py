@@ -104,7 +104,7 @@ def real_face_startup(root: Path, accepted_scene, *, comparison: bool = False,
                       tracker_backend=lambda e: (DiagnosticTracker() if tracking else
                                                  SimpleNamespace(load=lambda: None, track=lambda i: [],
                                                                  reset=lambda: None)),
-                      scene_server=lambda o, p: None, scene_request=lambda p, t: None,
+                      scene_server=lambda o, p: None, scene_request=lambda p, t, m: None,
                       meminfo=lambda: {"MemFree": 5_000_000_000, "MemAvailable": 6_000_000_000},
                       notifiers=lambda c: ({}, {}), face_backend=lambda w: backend,
                       identity_store=lambda d: SimpleNamespace(

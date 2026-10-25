@@ -62,7 +62,7 @@ class Recorder:
             return SimpleNamespace(start=lambda timeout: recorder.status, status=lambda: recorder.status,
                                    stop=lambda grace: True)
 
-        def scene_request(port: int, timeout: float) -> Any:
+        def scene_request(port: int, timeout: float, model: str) -> Any:
             recorder.calls.append("scene_request")
             return lambda job, image: None
 

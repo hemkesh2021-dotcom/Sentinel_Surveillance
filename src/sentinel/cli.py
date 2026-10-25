@@ -37,6 +37,7 @@ from .media.clock import Clock, SystemClock
 from .media.frames import FrameStamper
 from .memory_policy import policy_from_flags
 from .media.probe import run_probe
+from .scene.models import DEFAULT_SCENE_MODEL_SET, ROLLBACK_SCENE_MODEL_SET, SCENE_MODEL_SETS, scene_model_set
 from .tracking.probe import TrackProbe, read_meminfo
 from .tracking.tracker import PersonTracker, TrackerError
 
@@ -92,17 +93,17 @@ def _identity_store(directory: Path) -> Any:
     return IdentityStore(directory, Sealer())
 
 
-def _scene_request(port: int, timeout_s: float) -> Any:
+def _scene_request(port: int, timeout_s: float, model: str) -> Any:
     from .scene.llama_server import LlamaSceneRequest, LoopbackTransport
 
-    return LlamaSceneRequest(LoopbackTransport(port, timeout_s))
+    return LlamaSceneRequest(LoopbackTransport(port, timeout_s), model=model)
 
 
-def _chat_request(port: int, timeout_s: float) -> Any:
+def _chat_request(port: int, timeout_s: float, model: str) -> Any:
     from .scene.chat import LlamaChatRequest
     from .scene.llama_server import LoopbackTransport
 
-    return LlamaChatRequest(LoopbackTransport(port, timeout_s))
+    return LlamaChatRequest(LoopbackTransport(port, timeout_s), model=model)
 
 
 def _status_port(text: str) -> int:
@@ -334,8 +335,17 @@ def main(
         "configuration lists an enabled, admitted llama-lfm2-vl-scene adapter",
     )
     run.add_argument("--llama-server", type=Path, default=HOME / "llama.cpp/build/bin/llama-server")
-    run.add_argument("--scene-model", type=Path, default=HOME / "models/lfm2-vl/LFM2-VL-1.6B-Q4_0.gguf")
-    run.add_argument("--scene-mmproj", type=Path, default=HOME / "models/lfm2-vl/mmproj-LFM2-VL-1.6B-Q8_0.gguf")
+    run.add_argument(
+        "--scene-model-set", choices=sorted(SCENE_MODEL_SETS), default=DEFAULT_SCENE_MODEL_SET,
+        help=f"session 115: the model scene analysis and chat both use, with its own projector (default "
+        f"{DEFAULT_SCENE_MODEL_SET}, which no accepted profile has measured yet, so --scene refuses it (D46); "
+        f"{ROLLBACK_SCENE_MODEL_SET}, the accepted profile's model, is the rollback). A model_revision in the "
+        "adapter manifest must be the set's",
+    )
+    run.add_argument("--scene-model", type=Path, default=None,
+                     help="the set's model file (default: in ~/models/, as the set names it)")
+    run.add_argument("--scene-mmproj", type=Path, default=None,
+                     help="the set's own projector (default: beside its model, as the set names it)")
     run.add_argument("--scene-ready-timeout-s", type=_positive_seconds, default=180.0)
     run.add_argument(
         "--scene-min-free-gb", type=_min_free_gb, default=3.0,
@@ -825,9 +835,12 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
     del secret
     scene = None
     if args.scene:
+        chosen = scene_model_set(args.scene_model_set)
         scene = SceneOptions(
-            binary=args.llama_server, model=args.scene_model, mmproj=args.scene_mmproj,
+            binary=args.llama_server, model=args.scene_model or chosen.model_path,
+            mmproj=args.scene_mmproj or chosen.mmproj_path,
             ready_timeout_s=args.scene_ready_timeout_s, min_free_bytes=round(args.scene_min_free_gb * GB),
+            model_set=chosen.key,
         )
     options = RunOptions(
         data_dir=args.data_dir.expanduser(), engine=args.engine, min_free_bytes=round(args.min_free_gb * GB), scene=scene,

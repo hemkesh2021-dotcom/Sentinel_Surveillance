@@ -285,7 +285,7 @@ class World:
             return SimpleNamespace(pid=SERVER_PID, start=start, status=lambda: status,
                                    stop=lambda grace: world.log.append("scene_stop") or True)
 
-        def scene_request(port: int, timeout: float) -> Any:
+        def scene_request(port: int, timeout: float, model: str) -> Any:
             world.log.append("scene_request")
             return lambda job, image: None
 
