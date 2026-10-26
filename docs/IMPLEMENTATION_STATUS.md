@@ -1,6 +1,8 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-26, session 115, part 3 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+Last updated 2026-10-26, session 115, part 4 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+
+**Session 115, part 4: the step-4 candidate measurement of LFM2.5-VL recorded read only; not eligible (K_kernel unavailable).** Every other criterion passed (steady maximum 4.29 GB, 15 fps, 150 of 150 scene reports valid). The start marker fell 0.119 s after the check's whole-second bound, though it preceded the run by 0.76 s, so 1.1 s of the window's padding is not covered by the run's own markers. Journal evidence from the same boot for that gap (0 OOM and 0 NvMap candidates if the journal is complete) is saved apart with its limitations; the verdict is unchanged and nothing is admitted.
 
 **Session 115, part 3: the step-4 candidate package for LFM2.5-VL refreshed for the committed UI; local only.** The old package (`step4cand-lfm25-f77b0ff`) refuses at `460b8e7` because part 2 changed the dashboard's stylesheet and tests. A new package pinned to `460b8e7`, the old one with only its pin changed, replaces it; the old one is kept, unchanged. The clip's hash, recorded under its earlier name, is the current file's (verified read only, as it was for the accepted profile). Workload, model files, limits, criteria and admission are unchanged; nothing launched, pushed or published.
 
@@ -807,7 +809,9 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
    - **Done (session 114, part 4):** shorter text on phones (`485f3f6`): the freshness bar one line with its time, the incident page's explanations behind labelled disclosures, the essentials and every failure in view, wider screens unchanged; 14 browser tests, 7 of 7 mutations caught, the 25 page-rendering modules 877 passed, 1 skipped. Part 3's comparisons, which were 404 pages, rebuilt from the PNG files; the mobile comparisons added beside them (session 114 log, part 4).
    - **Maintainer (session 114, part 4):** look at `mobile-text/before-after/` and the rebuilt `before-after/` in the review folder; say whether the short lines and the disclosures' labels read well, and whether the 320 px phone's picture (only its top 26 px in the first screen) or the blank line under the current line at 360 and 320 px needs a layout change (part 4 log, section 7).
    - **Done (session 115):** LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL the rollback (`378ae85`); step 4 can measure a set (`f77b0ff`); the files verified against the Hub; guarded smoke tests with a synthetic picture passed for both sets; D46 unchanged, so `--scene` refuses LFM2.5-VL until a profile admits it (D104; session 115 log).
-   - **Maintainer (session 115):** when convenient, after a reboot, the step-4 candidate measurement of LFM2.5-VL (`~/sentinel-prep/step4cand-lfm25-460b8e7/`, blocks LCa-LCf, each sourced in one shell; about 20 min; session 115 log, part 3; the earlier `step4cand-lfm25-f77b0ff` refuses at the current code); then the acceptance decision; until then runs keep `--scene-model-set lfm2-vl`.
+   - **Done (session 115, part 4):** `step4cand-lfm25-20261026T094626Z` recorded read only: not eligible, K_kernel unavailable (the start marker 0.119 s past the whole-second bound); every other criterion passed; journal evidence for the 1.1 s gap saved apart (session 115 log, part 4).
+   - **Maintainer (session 115, part 4):** optionally `sudo dmesg --raw` before the next reboot (command in the analysis folder's `ASSESSMENT.md`); then whether that evidence may stand in for the marker proof, or a new measurement (a one-second marker pause in the tooling would need your approval and a new package).
+   - **Maintainer (session 115; ran 2026-10-26, recorded in part 4):** when convenient, after a reboot, the step-4 candidate measurement of LFM2.5-VL (`~/sentinel-prep/step4cand-lfm25-460b8e7/`, blocks LCa-LCf, each sourced in one shell; about 20 min; session 115 log, part 3; the earlier `step4cand-lfm25-f77b0ff` refuses at the current code); then the acceptance decision; until then runs keep `--scene-model-set lfm2-vl`.
    - **Done (session 115, part 2):** the approved preview v6's interactions (`3b93e05`, `e87ba98`): the slower trace and settle; a selected control keeps its look under the pointer and on keyboard focus; 11 of 11 mutations caught, the 25 page-rendering modules 887 passed, 1 skipped; held-state comparisons outside Git (session 115 log, part 2).
    - **Maintainer (session 115, part 2):** look at `v6-interactions/before-after/` in the review folder, or try the motion with its `tools/serve_synthetic.py`; say whether the incident link in a selected row should also keep its look under the pointer.
    - **Claude, next (session 115):** record the measurement read only; after an acceptance, the profile entry and `profiled=True` in a separate commit, then a face + scene + chat validation package with LFM2.5-VL.
@@ -1632,6 +1636,45 @@ Notes on partial and in-progress rows:
      . "$P/step4cand-lfm25-LCf.sh"
      ```
 8. **For the maintainer:** check the package, then run it when convenient after a reboot (sections 5 and 7). Acceptance stays a separate, maintainer-approved commit (D46, D59); until then runs keep `--scene-model-set lfm2-vl`.
+
+### Session 115, part 4 (Claude, 2026-10-26): the step-4 candidate measurement of LFM2.5-VL recorded read only: every criterion passed except K_kernel, unavailable because the start marker fell 0.119 s after the check's bound; the missing coverage traced, journal evidence for it saved apart; the verdict unchanged
+
+1. **The run (USER-SUPPLIED: run by the maintainer from `~/sentinel-prep/step4cand-lfm25-460b8e7/`).** `step4cand-lfm25-20261026T094626Z`.
+   - **Context:** boot `6745ddbf-…` (started 2026-10-26 15:07:47 local); commit `1d260ed` against the pin `460b8e7`; no tracked changes; THP_enabled 1; headless; the model pins verified; `LCb_exit=0`; the D37 drop at 09:47:02Z.
+   - **Result:** `LCd_exit=1`; the workload returned 0; no guard stop; cleanup clear; "rehash equal" for all 14 files.
+   - **The tool's verdict, unchanged:** `not eligible: K_kernel`.
+2. **Every other criterion passed** (the tool's recorded values):
+   - **R** valid run, with the post-load releases and the workload's THP disable verified;
+   - **S** steady interval: 600.0 s, coverage 0.9993;
+   - **M1-M3** memory: steady maximum 4,294,656,000 B with 0 s above target; run peak 4,294,717,440 B; slope 4.10 MB/min; no swap-in;
+   - **T1-T3** throughput: 15.0 fps unique (minimum window 15.0); frame age p95 60.2 ms; processed ratio 1.0;
+   - **F** face: 600 runs at 1.0 Hz, 0 errors;
+   - **V1-V2** scene: 150 of 150 requests completed and valid (p95 2,368.6 ms);
+   - **G** GPU: 17/17 layers offloaded;
+   - **C** prompt cache: disabled, verified;
+   - **I** identity: verified, the clip matching its recorded hash.
+   This is not an acceptance; nothing is admitted (D46).
+3. **Why K_kernel is unavailable.**
+   - **The check's window:** `kernel_evidence()` takes its window from the profiler manifest's whole-second times: `since = int(started_utc) − 1` (09:47:27Z) and `until = int(finished_utc + 60) + 1` (10:03:00Z). It calls coverage "observed" only if the run's start marker is at or before `since + 1` (09:47:28.000Z) and its end marker at or after `until − 1`.
+   - **What it saw:** the start marker is at 09:47:28.119178Z, 0.119 s late; the end marker, at 10:03:02.90Z, passes. The queries completed: 18 kernel records, both markers, no journald loss line.
+   - **The cause:** `demo_profile.utc_now()` truncates to the second, and the profiler started at about 09:47:28.88Z (its first record at monotonic 581.842 s). The marker, written before the child, came 0.762 s earlier on the monotonic clock (581.080 s) but in the same wall-clock second. The check cannot accept a marker in the start's own second, even one that precedes the run. With a 0.76 s gap, that happens whenever the marker's fractional second is below about 0.24. A repeat can fail the same way; nothing about the workload is implied.
+   - **The missing evidence:** coverage of 09:47:27.000-09:47:28.119Z (1.119 s), the window's padding before the child started. The run's markers bracket the rest.
+4. **Journal evidence, saved apart, read only, same boot, no sudo.** Folder `~/sentinel-runs/analysis/step4cand-lfm25-20261026T094626Z-kernel/`: `ASSESSMENT.md`, every query's command and output, and `SHA256SUMS` (`62e58712…`). Outside Git, because the outputs include private device details.
+   - **Records on both sides:** this boot's journal records bracket the whole window, a routine service's at 09:47:23Z and the end marker after `until`.
+   - **Complete kernel log, no loss notice:** the journal holds the boot's kernel log from its first line, and journald's only messages in the boot are its start-up lines (no missed-message, suppression or vacuum notice).
+   - **The same 18 kernel records:** the window query now returns 18, the run's count. Seven are "NVRM: API mismatch" (client 535.309.01, kernel module 540.4.0) during the workload's detector load; they also appear 16-22 s after boot, their source was not established, and K does not count them. Eleven are NVMe UUID notices. None is an OOM or NvMap candidate, and none lies in the uncovered 1.119 s. The whole boot has none either.
+   - **Conditional:** if the journal is complete for this boot, the window holds 0 OOM and 0 NvMap candidates.
+   - **Limitations:**
+     - it is the same journald the run read;
+     - the missed-message notice is an unverified premise about systemd;
+     - another service's records, not the run's marker, bracket the first 1.119 s;
+     - the run kept counts, not lines;
+     - the journal is volatile.
+   - **No verdict change:** it neither changes the run's verdict nor makes the run eligible.
+5. **Not changed:** the run folder and its verdict, the criteria and their code, the package, admission (D46). Nothing rerun; no camera, no reboot; nothing pushed or published.
+6. **Next (the maintainer's):**
+   - **Optional, for independent evidence:** before the next reboot, `sudo dmesg --raw` into the analysis folder (the command is in its `ASSESSMENT.md`); Claude then compares the kernel's own buffer with the journal over the window, read only.
+   - **Then decide** whether this evidence may stand in for the marker proof for review, or whether to measure again. A repeat can miss its marker the same way. A one-second pause between the start marker and the child (tooling only, no criterion changed; the eight checksummed files would change, so a new pin and package) would remove that. It needs your approval and is not implemented.
 
 ## Session 114 log (Claude, 2026-10-25): chat answers sized to the time before the next periodic scene job (session 113's step 1), the image sent checked live when a question starts, shortened answers labelled, the question kept in the page; portable tests, mutations and the full suite; the camera and distance questions and two later requirements recorded as pending; nothing launched, pushed or published
 
