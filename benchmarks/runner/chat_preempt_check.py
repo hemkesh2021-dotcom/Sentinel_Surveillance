@@ -478,11 +478,11 @@ def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaS
         return result
     server = server_factory(args.llama_server, model, mmproj, args.port)
     started = time.monotonic()
-    status = server.start(args.ready_timeout_s)
-    result["readiness"] = {"state": status.state.value, "problem": status.problem, "layers": status.layers,
-                           "vision_on_gpu": status.vision_on_gpu, "ready_s": round(time.monotonic() - started, 2)}
     rig = None
-    try:
+    try:  # from the start on: a guard stop (SIGINT) during the load still stops this check's own llama-server
+        status = server.start(args.ready_timeout_s)
+        result["readiness"] = {"state": status.state.value, "problem": status.problem, "layers": status.layers,
+                               "vision_on_gpu": status.vision_on_gpu, "ready_s": round(time.monotonic() - started, 2)}
         if status.state.value != "ready":
             problems.append(f"not_ready:{status.problem}")
             return result
@@ -533,24 +533,53 @@ def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaS
 # ---------------------------------------------------------------- the reading (with the guard's result)
 
 
+def _trigger(trigger: Any) -> str | None:
+    """The guard's stop condition in short, numbers only; None when nothing triggered."""
+    if not trigger:
+        return None
+    if not isinstance(trigger, Mapping):
+        return str(trigger)
+    conditions = [f"{c.get('condition')} (value {c.get('value')})" for c in trigger.get("conditions") or []
+                  if isinstance(c, Mapping)]
+    return f"{trigger.get('stop')}: {'; '.join(conditions)}" if conditions else str(trigger.get("stop"))
+
+
 def read(directory: Path) -> tuple[list[str], int]:
-    """The check's lines, with the guard's memory and supervision; exit 0 passed, 3 not exercised, 1 otherwise."""
+    """The check's lines, with the guard's memory and supervision; exit 0 passed, 3 not exercised, 1 otherwise.
+
+    Each result is read on its own and a missing one is named. The guard's result is reported without the check's
+    (a guard stop ends the check before it writes its result); nothing is judged without both."""
     lines: list[str] = []
     try:
-        check = json.loads((directory / "chatpreempt.json").read_text())
         guard = json.loads((directory / "result.json").read_text())
     except (OSError, ValueError) as exc:
-        return [f"MISSING the check's or the guard's result ({type(exc).__name__}): nothing is judged"], 1
-    g = guard.get("guard") or {}
-    supervision = guard.get("status") == "child_exited" and (guard.get("stop") or {}).get("forced") is False \
-        and g.get("trigger") is None and (guard.get("child") or {}).get("returncode") == EXIT.get(check.get("verdict"))
-    lines.append(f"{'PASS' if supervision else 'FAIL'} the guard: status {guard.get('status')}, trigger "
-                 f"{g.get('trigger')}, returncode {(guard.get('child') or {}).get('returncode')} for the check's "
-                 f"{check.get('verdict')}")
+        return [f"MISSING the guard's result, result.json ({type(exc).__name__}): nothing is judged"], 1
+    if str(guard.get("status")).startswith("refused:"):
+        return [f"REFUSED the guard: {guard.get('status')}, before launch: nothing was started and nothing is "
+                "judged"], 1
+    g, stop, child = guard.get("guard") or {}, guard.get("stop") or {}, guard.get("child") or {}
+    trigger = _trigger(g.get("trigger"))
     peak = g.get("peak_pressure_bytes")
-    memory = isinstance(peak, int) and peak <= 5_400_000_000 and g.get("trigger") is None
-    lines.append(f"{'PASS' if memory else 'FAIL'} memory: the guard's limits held (no stop); peak pressure {peak} B, "
-                 "at most 5,400,000,000 B")
+    memory = isinstance(peak, int) and peak <= 5_400_000_000 and trigger is None
+    held = "the guard's limits held (no stop)" if trigger is None else f"the guard stopped it on {trigger}"
+    memory_line = f"{'PASS' if memory else 'FAIL'} memory: {held}; peak pressure {peak} B, at most 5,400,000,000 B"
+    supervised = guard.get("status") == "child_exited" and stop.get("forced") is False and trigger is None
+    try:
+        check = json.loads((directory / "chatpreempt.json").read_text())
+    except (OSError, ValueError) as exc:
+        left = guard.get("leftovers") or {}
+        stopped = (f"stop requested by {stop.get('requested_by')} {stop.get('requested_at_s')} s after launch"
+                   if stop.get("requested_by") else "no stop requested")
+        return [f"{'PASS' if supervised else 'FAIL'} the guard: status {guard.get('status')}, trigger {trigger}, "
+                f"{stopped}, returncode {child.get('returncode')}, llama-server after the check's exit "
+                f"{left.get('llama_server_after_exit')}, left {left.get('llama_server_left')}",
+                memory_line,
+                f"MISSING the check's result, chatpreempt.json ({type(exc).__name__}): not written; nothing else is "
+                "judged"], 1
+    supervision = supervised and child.get("returncode") == EXIT.get(check.get("verdict"))
+    lines.append(f"{'PASS' if supervision else 'FAIL'} the guard: status {guard.get('status')}, trigger {trigger}, "
+                 f"returncode {child.get('returncode')} for the check's {check.get('verdict')}")
+    lines.append(memory_line)
     control = check.get("control") or {}
     lines.append(f"{control.get('verdict', 'MISSING')} control (short question): "
                  f"{'; '.join(control.get('reasons', []))} {json.dumps(_summary(control)) if control else ''}".rstrip())

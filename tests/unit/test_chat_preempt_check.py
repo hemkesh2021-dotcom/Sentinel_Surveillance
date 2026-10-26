@@ -186,4 +186,52 @@ def test_the_reading_judges_the_guard_and_never_passes_without_both_results(cp, 
     assert code == 1 and lines[-1].startswith("chat preemption check: failed")
     (tmp_path / "result.json").unlink()
     lines, code = cp.read(tmp_path)
-    assert code == 1 and lines[0].startswith("MISSING")
+    assert (code, lines) == (1, ["MISSING the guard's result, result.json (FileNotFoundError): nothing is judged"])
+
+
+GUARD_STOP = {  # cp-20261026T191803Z's guard result in shape and numbers: MemFree's floor reached during the load
+    "status": "guard_stop", "child": {"returncode": -2, "ran_s": 3.22},
+    "stop": {"requested_by": "guard_stop", "requested_at_s": 3.017, "forced": False},
+    "guard": {"peak_pressure_bytes": 2_934_214_656, "min_mem_free_bytes": 879_345_664,
+              "trigger": {"stop": "free_or_available_stop", "conditions": [
+                  {"stop": "free_or_available_stop", "condition": "MemFree < 1073741824", "field": "MemFree",
+                   "comparison": "<", "threshold": 1_073_741_824, "value": 1_004_228_608}],
+                  "sample": {"MemFree": 1_004_228_608, "MemAvailable": 5_076_869_120}}},
+    "leftovers": {"llama_server_after_exit": 0, "llama_server_left": 0}}
+
+
+def test_a_guard_stop_before_the_check_wrote_its_result_is_read_from_the_guard(cp, tmp_path) -> None:
+    (tmp_path / "result.json").write_text(json.dumps(GUARD_STOP))  # no chatpreempt.json: the check was stopped
+    lines, code = cp.read(tmp_path)
+    assert code == 1 and len(lines) == 3, lines
+    assert lines[0] == ("FAIL the guard: status guard_stop, trigger free_or_available_stop: MemFree < 1073741824 "
+                        "(value 1004228608), stop requested by guard_stop 3.017 s after launch, returncode -2, "
+                        "llama-server after the check's exit 0, left 0")
+    assert lines[1].startswith("FAIL memory: the guard stopped it on free_or_available_stop: MemFree < 1073741824")
+    assert lines[2] == ("MISSING the check's result, chatpreempt.json (FileNotFoundError): not written; nothing else "
+                        "is judged")
+    assert not any(line.startswith("chat preemption check") for line in lines)  # never a verdict without both
+
+
+def test_a_refused_launch_is_read_as_nothing_started(cp, tmp_path) -> None:
+    (tmp_path / "result.json").write_text(json.dumps({"status": "refused:initial_headroom_refused"}))
+    assert cp.read(tmp_path) == ([
+        "REFUSED the guard: refused:initial_headroom_refused, before launch: nothing was started and nothing is "
+        "judged"], 1)
+
+
+def test_an_interrupt_while_the_server_loads_stops_the_checks_own_server(cp, tmp_path) -> None:
+    class InterruptedStart(FakeServerProcess):
+        """The guard's SIGINT arriving while the check waits for its server to be ready."""
+
+        def start(self, ready_timeout_s: float) -> Any:
+            self.fake.start()
+            raise KeyboardInterrupt
+
+    port = free_port()
+    fake = FakeLlamaServer(port, decode_s={})
+    args = argparse.Namespace(model_set="lfm2.5-vl", llama_server=Path("/nonexistent"), port=port, trials=1,
+                              ready_timeout_s=5.0, post_load_release=False, out=tmp_path / "x.json")
+    with pytest.raises(KeyboardInterrupt):  # the interrupt still ends the check, without a result
+        cp.run(args, server_factory=InterruptedStart(fake), environ={}, servers=lambda: [], meminfo=lambda: None)
+    assert not cp.port_in_use(port)  # ... after the check stopped its own server
