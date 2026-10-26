@@ -203,8 +203,20 @@ def test_the_controls_motion_is_bounded_and_only_where_reduced_motion_is_not_ask
     assert "[aria-busy=true] > .edge rect { opacity: .85; stroke-dasharray: 2 3; }" in STYLE[reduced:]
     timings = {name: re.search(rf"--t-{name}: ([^;]+);", STYLE).group(1)
                for name in ("press", "pulse", "trace", "settle", "release", "orbit")}
-    assert timings == {"press": "140ms", "pulse": "160ms", "trace": "320ms", "settle": "240ms", "release": "260ms",
-                       "orbit": "1600ms"}  # the approved preview's, unchanged
+    assert timings == {"press": "140ms", "pulse": "160ms", "trace": "800ms", "settle": "400ms", "release": "260ms",
+                       "orbit": "1600ms"}  # the approved previews': v5's, v6's slower trace and settle (session 115)
+
+
+def test_a_selected_control_is_left_out_of_the_hover_and_focus_look_without_adding_specificity() -> None:
+    """Session 115 (the approved preview v6): the hover and keyboard-focus look (the glow, the highlight's label) and
+    the trace leave out a selected control by its own state attribute, through :where() so that a press still
+    overrides a hover; navigation leaves out its current item the same way (the browser tests hold the behaviour)."""
+    selected = ":not(:where([aria-current], [aria-pressed=true], [aria-checked=true]))"
+    hover = re.compile(r":is\(:hover, :focus-visible\):not\(:disabled\):not\(\[aria-disabled=true\]\)"
+                       r":not\(\[aria-busy=true\]\)([^{\n]*)")
+    assert [match.group(1).strip() for match in hover.finditer(STYLE)] == [selected, selected]  # its look, its trace
+    assert STYLE.count(".nav a:not(:where([aria-current])):hover") == 2
+    assert "[aria-current]:hover" not in STYLE
 
 
 def test_the_trace_metal_and_the_grain_need_no_inline_style_and_load_from_this_origin_only() -> None:

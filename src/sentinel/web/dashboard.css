@@ -42,11 +42,11 @@
   --recess: inset 2px 2px 5px var(--shadow-lo), inset -2px -2px 5px var(--shadow-hi);
   --font: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-  /* session 114: the controls' motion, the approved preview's timings */
+  /* session 114: the controls' motion, the approved preview's timings; session 115: v6's slower trace and settle */
   --t-press: 140ms;    /* a control goes down, its shadow inset */
   --t-pulse: 160ms;    /* the short acknowledgement of a press */
-  --t-trace: 320ms;    /* the highlight's one trip around the edge */
-  --t-settle: 240ms;   /* the glow that follows the trip */
+  --t-trace: 800ms;    /* the highlight's one trip around the edge */
+  --t-settle: 400ms;   /* the glow that follows the trip */
   --t-release: 260ms;  /* the return, with a small overshoot */
   --t-orbit: 1600ms;   /* one turn of the edge while work is pending */
   --ease-press: cubic-bezier(.2, .7, .3, 1);
@@ -121,7 +121,7 @@ html[data-rail=compact] .rail-toggle .ic { transform: scaleX(-1); }
   text-decoration: none; font-weight: 580; white-space: nowrap; background: var(--deep-key, transparent);
   text-shadow: var(--deboss, none); --sh: var(--deep-raised, 0 0 #0000); }  /* states: the controls' states below */
 .nav a .ic { width: 20px; height: 20px; color: var(--muted); transition: color var(--t-settle) ease; }
-.nav a:hover .ic, .nav a[aria-current]:hover .ic { color: inherit; }
+.nav a:not([aria-current]):hover .ic { color: inherit; }
 .nav a[aria-current] .ic { color: var(--ink); }
 .tip { position: absolute; left: calc(100% + 12px); top: 50%; z-index: 45; padding: 6px 10px;
   border: 1px solid var(--line-strong); border-radius: 8px; background: var(--ink); color: var(--canvas);
@@ -506,14 +506,18 @@ th { color: var(--muted); font-weight: 650; }
    and only the request's own answer is shown as its result; a disabled control never glows. A control's shadow is its
    resting shadow (--sh), its selected line (--sel) and its halo (--halo), so states combine without competing. The
    colours: the highlight (--hl: v5's ivory gold in every light mode, the palette's marker in dark, gold in Carbon &
-   Cream), focus rings in --focus, selected lines in --marker-line. */
+   Cream), focus rings in --focus, selected lines in --marker-line.
+   Session 115 (the approved preview v6): a selected control (aria-current, aria-pressed=true, aria-checked=true) keeps
+   its selected look under the pointer and on keyboard focus: no trace, no added glow, its label unchanged; keyboard
+   focus still draws its ring, and a press, pending and disabled answer as before. The exclusion is wrapped in :where()
+   so that it adds no specificity: a press still overrides a hover. */
 :where(.button, .ghost, .peek, .plain, .seg, .swatch, .icon-btn, a.inc, .back, .filters select, .nav a, .switch, .field) {
   --sh: 0 0 #0000; --sel: 0 0 #0000; --halo: 0 0 #0000;
   box-shadow: var(--sh), var(--sel), var(--halo);
   transition: transform var(--t-release) var(--ease-release), box-shadow var(--t-release) ease,
               color var(--t-settle) ease, background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
 }
-:where(.button, .ghost, .peek, .plain, .seg, .swatch, .icon-btn, a.inc, .back, .filters select, .switch):is(:hover, :focus-visible):not(:disabled):not([aria-disabled=true]):not([aria-busy=true]) {
+:where(.button, .ghost, .peek, .plain, .seg, .swatch, .icon-btn, a.inc, .back, .filters select, .switch):is(:hover, :focus-visible):not(:disabled):not([aria-disabled=true]):not([aria-busy=true]):not(:where([aria-current], [aria-pressed=true], [aria-checked=true])) {
   --halo: 0 0 0 1px var(--hl-ring), 0 0 14px var(--hl-glow);
   color: var(--hover-ink, var(--hl));
   transition: transform var(--t-release) var(--ease-release), box-shadow var(--t-settle) ease calc(var(--t-trace) * .6),
@@ -543,13 +547,12 @@ th { color: var(--muted); font-weight: 650; }
 /* Navigation items (the maintainer's decision, session 114): no ring or outline in any state (no focus ring, no line
    inside or outside the edge, no press ring), and keyboard focus changes nothing; an accessibility trade-off, recorded
    in the session 114 log. Hover: the highlight's label, the trace and a glow; selected: the two-layer glow alone, its
-   label in ink; a press goes down without a ring. */
+   label in ink, under the pointer too (v6); a press goes down without a ring. */
 .nav a:focus-visible { outline: none; }
-.nav a:hover { --halo: 0 0 14px var(--hl-glow); color: var(--hl);
+.nav a:not(:where([aria-current])):hover { --halo: 0 0 14px var(--hl-glow); color: var(--hl);
   transition: transform var(--t-release) var(--ease-release), box-shadow var(--t-settle) ease calc(var(--t-trace) * .6),
               color var(--t-settle) ease; }
 .nav a[aria-current] { --sel: var(--glow-selected); }
-.nav a[aria-current]:hover { --halo: 0 0 #0000; }
 .nav a:active { --sh: var(--deep-pressed, var(--recess)); --halo: 0 0 #0000;
   transition: transform var(--t-press) var(--ease-press), box-shadow var(--t-press) var(--ease-press),
               color var(--t-press) ease; }
@@ -678,8 +681,9 @@ html[data-fresh="1"] .report { animation-name: full1; }
   @keyframes enter { from { opacity: 0; transform: translateY(6px); } }
   /* session 114: the controls' motion: the trace once on hover and focus, the edge while pending (a bounded number of
      turns, longer than any request's limit: no animation here runs without end), the pulse, the press */
-  :where(.button, .ghost, .peek, .plain, .seg, .swatch, .icon-btn, a.inc, .back, .filters select, .switch):is(:hover, :focus-visible):not(:disabled):not([aria-disabled=true]):not([aria-busy=true])
-    > .edge rect, .nav a:hover > .edge rect, .field:focus-within > .edge rect, .pick:is(:hover, :focus-within) > .edge rect {
+  :where(.button, .ghost, .peek, .plain, .seg, .swatch, .icon-btn, a.inc, .back, .filters select, .switch):is(:hover, :focus-visible):not(:disabled):not([aria-disabled=true]):not([aria-busy=true]):not(:where([aria-current], [aria-pressed=true], [aria-checked=true]))
+    > .edge rect, .nav a:not(:where([aria-current])):hover > .edge rect, .field:focus-within > .edge rect,
+    .pick:is(:hover, :focus-within) > .edge rect {
     animation: trace var(--t-trace) var(--ease-trace) 1; }
   [aria-busy=true] > .edge rect { animation: orbit var(--t-orbit) linear 40; opacity: .7; stroke-dasharray: 18 82; }
   .pulse > .ring { animation: pulse var(--t-pulse) ease-out 1; }

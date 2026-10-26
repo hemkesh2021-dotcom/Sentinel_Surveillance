@@ -1,5 +1,5 @@
 """Session 114: the maintainer's approved preview (v5) on the dashboard, in a real browser (headless Chromium;
-``browser_harness``), with synthetic data only.
+``browser_harness``), with synthetic data only; session 115: the approved preview v6.
 
 Carbon & Cream's dark mode is v5's deep black (a deep page, recessed panels, raised charcoal keys, a faint grain from
 this origin); every light mode and every other palette keep their earlier look. Every control answers as in session
@@ -8,6 +8,12 @@ pulse; selected is a steady thin line; the edge circles only while the control's
 control never glows. Navigation items are the maintainer's exception: no ring or outline in any state, keyboard focus
 changes nothing, selected shows the two-layer glow alone. The decorations survive in-place updates; the camera picture
 is never decorated; reduced motion keeps every state and moves nothing.
+
+v6 (session 115): the trace takes 800 ms and the glow settles over 400 ms (480 ms after the hover or focus began); a
+selected control (navigation's aria-current, a choice's aria-current or aria-pressed, a switch's aria-checked) keeps
+its selected look under the pointer and on keyboard focus: no trace, no added glow, its label unchanged, keyboard focus
+still drawing its ring. A selection that changes under the pointer, a tap on a phone or a key takes that look at once;
+a press, pending, disabled and reduced motion answer as before.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ from sentinel.scene.chat import ADVISORY
 from sentinel.status_page import StatusServer, new_control_key
 from sentinel.web import palettes
 
+SETTLED_S = 1.0  # past the trace (800 ms) and the glow's settling (from 480 ms to 880 ms after the hover or focus)
 FRAME = {"stream_epoch": 1, "frame_seq": 3, "ingest_utc": "2026-10-25T12:00:00.200000Z", "age_ms_when_asked": 200}
 STYLE = """(selector => { const e = document.querySelector(selector); const s = getComputedStyle(e);
   const rect = e.querySelector(':scope > .edge rect'); const ring = e.querySelector(':scope > .ring');
@@ -88,8 +95,11 @@ def site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, 
         camera.preview.close(2.0)
 
 
-def opened(browser: Browser, url: str, **options: Any) -> Page:
-    page = browser.page(width=1280, height=900, **options)
+def opened(browser: Browser, url: str, *, width: int = 1280, height: int = 900, touch: bool = False,
+           **options: Any) -> Page:
+    page = browser.page(width=width, height=height, mobile=width < 600, **options)
+    if touch:  # a phone's touch screen: a tap, and the hover the browser then keeps on what was tapped
+        page.call("Emulation.setTouchEmulationEnabled", {"enabled": True, "maxTouchPoints": 5})
     page.navigate(url)
     assert wait_until(lambda: page.evaluate("document.readyState") == "complete", 15.0), "the page did not load"
     assert wait_until(lambda: not page.evaluate("document.documentElement.classList.contains('enter')"), 5.0)
@@ -133,7 +143,17 @@ def hover(page: Page, selector: str) -> tuple[float, float]:
 def away(page: Page) -> None:
     mouse(page, "mouseMoved", 1, 1)
     page.evaluate("document.activeElement && document.activeElement.blur()")
-    time.sleep(0.45)  # past every transition
+    time.sleep(0.6)  # past every transition back (the shadow's 260 ms, the label's 400 ms)
+
+
+def tap(page: Page, selector: str) -> None:
+    x, y = centre(page, selector)
+    page.call("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": x, "y": y}]})
+    page.call("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+
+
+def attribute(page: Page, selector: str, name: str) -> str | None:
+    return page.evaluate(f"document.querySelector({selector!r}).getAttribute({name!r})")
 
 
 def keyboard_focus(page: Page, selector: str) -> None:
@@ -141,7 +161,7 @@ def keyboard_focus(page: Page, selector: str) -> None:
     page.key("Tab")
     page.evaluate(f"document.querySelector({selector!r}).focus({{preventScroll: true}})")
     assert page.evaluate(f"document.querySelector({selector!r}).matches(':focus-visible')"), selector
-    time.sleep(0.45)
+    time.sleep(SETTLED_S)
 
 
 def rgb(colour: str) -> str:
@@ -225,7 +245,7 @@ def test_navigation_items_show_no_ring_and_keyboard_focus_changes_nothing(
         x, y = hover(page, item)
         time.sleep(0.1)
         assert style(page, item)["edge"] == "trace"  # the trip around the edge, once
-        time.sleep(0.6)
+        time.sleep(SETTLED_S)
         hovered = style(page, item)
         assert hovered["color"] == rgb(tokens["hl"]) and f"{tokens['hl-glow']} 0px 0px 14px 0px" in hovered["shadow"]
         assert ring_layers(hovered["shadow"], rings) == [] and hovered["outline"].startswith("none"), hovered
@@ -239,10 +259,10 @@ def test_navigation_items_show_no_ring_and_keyboard_focus_changes_nothing(
         page.evaluate("window.scrollTo(0, 0)")
         time.sleep(1.3)  # the clicked section stays marked for a moment; then the section in view again
         hover(page, current)
-        time.sleep(0.6)
-        both = style(page, current)
-        assert all(layer in both["shadow"] for layer in layers(tokens["glow-selected"])) and \
-            ring_layers(both["shadow"], rings) == [], both  # selected and hovered: still the glow alone
+        time.sleep(0.1)
+        assert style(page, current)["edge"] == "none"  # v6: no trip around a selected item
+        time.sleep(SETTLED_S)
+        assert drawn(page, current) == selected  # selected and hovered: the glow alone, its label in ink (v6)
     finally:
         page.close()
 
@@ -251,7 +271,7 @@ def test_navigation_items_show_no_ring_and_keyboard_focus_changes_nothing(
 
 
 @pytest.mark.parametrize("mode", ["dark", "light"])
-def test_choices_switches_buttons_and_the_question_box_answer_as_in_session_114(
+def test_choices_switches_buttons_and_the_question_box_answer_as_approved(
         browser: Browser, site: dict[str, Any], mode: str) -> None:
     tokens = palettes.tokens("carbon-cream", mode)
     halo = [f"{tokens['hl-ring']} 0px 0px 0px 1px", f"{tokens['hl-glow']} 0px 0px 14px 0px"]
@@ -267,7 +287,7 @@ def test_choices_switches_buttons_and_the_question_box_answer_as_in_session_114(
         hover(page, choice)
         time.sleep(0.1)
         assert style(page, choice)["edge"] == "trace"
-        time.sleep(0.6)
+        time.sleep(SETTLED_S)
         hovered = style(page, choice)
         assert all(h in hovered["shadow"] for h in halo) and hovered["color"] == rgb(tokens["hl"]), hovered
         x, y = hover(page, chosen)  # pressed in place: the choice already made, so nothing changes but the look
@@ -275,6 +295,7 @@ def test_choices_switches_buttons_and_the_question_box_answer_as_in_session_114(
         time.sleep(0.05)
         pressed = style(page, chosen)
         assert pressed["transform"] != "none" and pressed["ringAnimation"] == "pulse", pressed  # down, a short pulse
+        assert halo[0] in pressed["shadow"] and pressed["color"] == rgb(tokens["ink"]), pressed  # its press ring (v6)
         mouse(page, "mouseReleased", x, y)
         away(page)
         keyboard_focus(page, choice)
@@ -283,12 +304,13 @@ def test_choices_switches_buttons_and_the_question_box_answer_as_in_session_114(
         away(page)
 
         unlock(page, site["key"])
+        away(page)
         switch = "#features button.switch[data-feature=scene]"
-        on = style(page, switch)
+        on = drawn(page, switch)
         assert line in on["shadow"] and not any(h in on["shadow"] for h in halo), on
         hover(page, switch)
-        time.sleep(0.7)
-        assert all(h in style(page, switch)["shadow"] for h in halo)
+        time.sleep(SETTLED_S)
+        assert drawn(page, switch) == on  # on and hovered: as at rest (v6)
         away(page)
 
         keyboard_focus(page, "#chat-q")
@@ -301,7 +323,7 @@ def test_choices_switches_buttons_and_the_question_box_answer_as_in_session_114(
                       "q.dispatchEvent(new Event('input')); })()")
         away(page)
         hover(page, "#chat-ask")
-        time.sleep(0.7)
+        time.sleep(SETTLED_S)
         ask = style(page, "#chat-ask")
         label = tokens["hl"] if mode == "dark" else tokens["accent-ink"]  # a filled button keeps its label colour
         assert all(h in ask["shadow"] for h in halo) and ask["color"] == rgb(label), ask
@@ -314,9 +336,18 @@ def test_a_disabled_control_never_glows_and_pending_lasts_exactly_as_long_as_its
     tokens = palettes.tokens("carbon-cream", "dark")
     page = opened(browser, f"{site['url']}/dashboard?theme=dark")
     try:
+        locked = "#features button.switch[data-feature=scene]"  # on, and disabled until the controls are unlocked
+        assert page.evaluate(f"document.querySelector({locked!r}).disabled") and \
+            attribute(page, locked, "aria-checked") == "true"
+        hover(page, locked)
+        time.sleep(SETTLED_S)
+        seen = style(page, locked)
+        assert tokens["hl-glow"] not in seen["shadow"] and tokens["hl-ring"] not in seen["shadow"], seen
+        assert seen["edge"] == "none", seen
+        away(page)
         assert page.evaluate("document.getElementById('chat-ask').disabled")  # nothing typed yet
         hover(page, "#chat-ask")
-        time.sleep(0.7)
+        time.sleep(SETTLED_S)
         disabled = style(page, "#chat-ask")
         assert tokens["hl-glow"] not in disabled["shadow"] and tokens["hl-ring"] not in disabled["shadow"], disabled
         assert disabled["edge"] == "none" and disabled["color"] == rgb(tokens["faint"]), disabled
@@ -334,6 +365,207 @@ def test_a_disabled_control_never_glows_and_pending_lasts_exactly_as_long_as_its
                                                 ".dataset.state") == "answered", 5.0)
         done = style(page, "#chat-ask")
         assert done["busy"] is None and done["edge"] == "none", done  # over with the request, not before or after
+    finally:
+        page.close()
+
+
+# ---------------------------------------------------------------- v6: a selected control keeps its look (session 115)
+
+
+def selections(page: Page, key: str) -> dict[str, str | None]:
+    """Every kind of selection on the dashboard, by its own state attribute, each with an unselected control of the
+    same kind (None where every one is selected): a choice (aria-current), a palette (aria-current), the picture's
+    size (aria-pressed), a shown panel (aria-pressed), a previewed incident (aria-pressed), a switch that is on
+    (aria-checked)."""
+    unlock(page, key)
+    page.evaluate("document.querySelector('.inc-list > li:nth-child(2) .peek').click()")
+    assert wait_until(lambda: page.evaluate("!!document.querySelector('.inc-list > li.selected > .peek')"), 5.0)
+    return {"#settings [data-set=density][aria-current]": "#settings [data-set=density]:not([aria-current])",
+            "#settings .swatch[aria-current]": "#settings .swatch:not([aria-current])",
+            "#live .view-size [aria-pressed=true]": "#live .view-size [aria-pressed=false]",
+            "#settings button.seg[data-panel=chat][aria-pressed=true]": None,
+            ".inc-list > li.selected > .peek[aria-pressed=true]": ".inc-list > li:not(.selected) > .peek",
+            "#features button.switch[data-feature=scene][aria-checked=true]": None}
+
+
+@pytest.mark.parametrize("mode", ["dark", "light"])
+@pytest.mark.parametrize("width", [1280, 390], ids=["desktop", "phone"])
+def test_a_selected_control_keeps_its_look_under_the_pointer_and_on_keyboard_focus(
+        browser: Browser, site: dict[str, Any], mode: str, width: int) -> None:
+    tokens = palettes.tokens("carbon-cream", mode)
+    halo = [f"{tokens['hl-ring']} 0px 0px 0px 1px", f"{tokens['hl-glow']} 0px 0px 14px 0px"]
+    ring = f"solid 2px {rgb(tokens['focus'])}"
+    page = opened(browser, f"{site['url']}/dashboard?theme={mode}", width=width, height=900 if width > 600 else 844)
+    try:
+        if width < 600:  # navigation is in the drawer
+            page.evaluate("document.querySelector('.menu').click()")
+            assert wait_until(lambda: page.evaluate("document.documentElement.classList.contains('drawer-open')"), 3.0)
+            time.sleep(0.4)
+        current, item = ".nav a[aria-current]", ".nav a[data-nav=health]:not([aria-current])"
+        hover(page, current)  # its decorations are added on first use
+        mouse(page, "mouseMoved", width - 2, 2)
+        time.sleep(0.6)
+        rest = drawn(page, current)
+        hover(page, current)
+        time.sleep(0.1)
+        assert style(page, current)["edge"] == "none", current  # no trip around a selected item
+        time.sleep(SETTLED_S)
+        assert drawn(page, current) == rest, current  # the glow alone, its label in ink
+        hover(page, item)
+        time.sleep(SETTLED_S)
+        assert style(page, item)["color"] == rgb(tokens["hl"])  # an item not selected still answers the pointer
+        if width < 600:
+            page.key("Escape")
+            assert wait_until(lambda: not page.evaluate("document.documentElement.classList.contains('drawer-open')"),
+                              3.0)
+
+        for chosen, other in selections(page, site["key"]).items():
+            hover(page, chosen)
+            away(page)
+            rest = drawn(page, chosen)
+            hover(page, chosen)
+            time.sleep(0.1)
+            assert page.evaluate(f"!!document.querySelector({chosen!r}).querySelector(':scope > .edge rect')")
+            assert style(page, chosen)["edge"] == "none", chosen  # no trip around the edge
+            time.sleep(SETTLED_S)
+            assert drawn(page, chosen) == rest, chosen  # no added glow, its label unchanged
+            away(page)
+            keyboard_focus(page, chosen)
+            focused = drawn(page, chosen)
+            assert focused["outline"] == ring, (chosen, focused)  # keyboard focus still draws its ring ...
+            assert {**focused, "outline": rest["outline"]} == rest, (chosen, focused)  # ... and nothing else
+            away(page)
+            if other:  # beside it, a control of the same kind that is not selected answers as before
+                hover(page, other)
+                time.sleep(0.1)
+                assert style(page, other)["edge"] == "trace", other
+                time.sleep(SETTLED_S)
+                hovered = style(page, other)
+                assert all(h in hovered["shadow"] for h in halo) and hovered["color"] == rgb(tokens["hl"]), \
+                    (other, hovered)
+                away(page)
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("mode", ["dark", "light"])
+def test_a_selection_made_under_the_pointer_or_from_the_keyboard_shows_the_selected_look_at_once(
+        browser: Browser, site: dict[str, Any], mode: str) -> None:
+    tokens = palettes.tokens("carbon-cream", mode)
+    halo = [f"{tokens['hl-ring']} 0px 0px 0px 1px", f"{tokens['hl-glow']} 0px 0px 14px 0px"]
+    ring = f"solid 2px {rgb(tokens['focus'])}"
+    page = opened(browser, f"{site['url']}/dashboard?theme={mode}")
+    try:
+        fit, actual = "#live .view-size [data-view=fit]", "#live .view-size [data-view=actual]"
+        hover(page, fit)
+        away(page)
+        selected = drawn(page, fit)  # Fit is selected when the page opens
+        x, y = hover(page, actual)
+        time.sleep(SETTLED_S)
+        assert all(h in style(page, actual)["shadow"] for h in halo)
+        mouse(page, "mousePressed", x, y)
+        time.sleep(0.25)
+        pressed = style(page, actual)
+        assert halo[0] in pressed["shadow"] and halo[1] not in pressed["shadow"], pressed  # the press, not the hover
+        mouse(page, "mouseReleased", x, y)
+        assert attribute(page, actual, "aria-pressed") == "true"
+        assert page.evaluate(f"document.querySelector({actual!r}).matches(':hover')")  # the pointer has not moved
+        time.sleep(0.1)
+        assert style(page, actual)["edge"] == "none"  # the trip stops at once
+        time.sleep(0.6)
+        assert drawn(page, actual) == selected  # the selected look under the pointer
+
+        away(page)  # from the keyboard: Space on the focused choice
+        keyboard_focus(page, fit)
+        page.key(" ")
+        assert wait_until(lambda: attribute(page, fit, "aria-pressed") == "true", 2.0)
+        time.sleep(0.6)
+        assert drawn(page, fit) == {**selected, "outline": ring}  # the selected look and the focus ring
+        away(page)
+
+        # a switch: pending while its request is in flight, then off (not selected) and on again, under the pointer
+        unlock(page, site["key"])
+        switch = "#features button.switch[data-feature=scene]"
+        hover(page, switch)
+        away(page)
+        on = drawn(page, switch)
+        page.call("Fetch.enable", {"patterns": [{"urlPattern": "*/features", "requestStage": "Request"}]})
+        try:
+            x, y = hover(page, switch)
+            mouse(page, "mousePressed", x, y)
+            mouse(page, "mouseReleased", x, y)
+            held = page.paused(5.0)
+            assert held is not None and held["request"]["method"] == "POST", held
+            pending = style(page, switch)
+            assert pending["busy"] == "true" and pending["edge"] == "orbit", pending  # selected and pending
+            assert not any(h in pending["shadow"] for h in halo), pending
+            page.call("Fetch.continueRequest", {"requestId": held["requestId"]})
+        finally:
+            page.call("Fetch.disable")
+        assert wait_until(lambda: attribute(page, switch, "aria-checked") == "false"
+                          and not page.evaluate(f"document.querySelector({switch!r}).disabled"), 8.0)
+        time.sleep(SETTLED_S)
+        off = style(page, switch)
+        assert off["edge"] == "trace" and all(h in off["shadow"] for h in halo), off  # off and hovered: the hover
+        x, y = hover(page, switch)
+        mouse(page, "mousePressed", x, y)
+        mouse(page, "mouseReleased", x, y)
+        assert wait_until(lambda: attribute(page, switch, "aria-checked") == "true"
+                          and not page.evaluate(f"document.querySelector({switch!r}).disabled"), 8.0)
+        time.sleep(0.6)
+        assert drawn(page, switch) == on  # on again: the selected look, the pointer still over it
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("mode", ["dark", "light"])
+def test_on_a_phone_a_tapped_choice_shows_its_selected_look_though_the_browser_keeps_it_hovered(
+        browser: Browser, site: dict[str, Any], mode: str) -> None:
+    page = opened(browser, f"{site['url']}/dashboard?theme={mode}", width=390, height=844, touch=True)
+    try:
+        fit, actual = "#live .view-size [data-view=fit]", "#live .view-size [data-view=actual]"
+        tap(page, fit)  # already selected: the tap changes nothing but dresses it
+        time.sleep(SETTLED_S)
+        page.evaluate("document.activeElement && document.activeElement.blur()")
+        tap(page, "#live .phead h2")  # the hover moves to the heading
+        time.sleep(0.6)
+        selected = drawn(page, fit)
+        tap(page, actual)
+        assert attribute(page, actual, "aria-pressed") == "true"
+        assert page.evaluate(f"document.querySelector({actual!r}).matches(':hover')")  # kept by the browser
+        time.sleep(SETTLED_S)
+        page.evaluate("document.activeElement && document.activeElement.blur()")
+        time.sleep(0.6)
+        assert drawn(page, actual) == selected  # no glow, no trace, its label unchanged
+    finally:
+        page.close()
+
+
+def test_the_trace_and_the_glow_take_v6s_timings_and_a_press_and_the_return_keep_theirs(
+        browser: Browser, site: dict[str, Any]) -> None:
+    timing = """(selector => { const e = document.querySelector(selector); const s = getComputedStyle(e);
+      const rect = e.querySelector(':scope > .edge rect'); const d = s.transitionDuration.split(', ');
+      const w = s.transitionDelay.split(', ');
+      return {trace: rect ? getComputedStyle(rect).animationDuration : null, transitions: Object.fromEntries(
+        s.transitionProperty.split(', ').map((p, i) => [p, [d[i], w[i]]]))}; })"""
+    page = opened(browser, f"{site['url']}/dashboard?theme=dark")
+    try:
+        choice = "#settings [data-set=density]:not([aria-current])"
+        hover(page, choice)
+        away(page)
+        rest = page.evaluate(f"({timing})({choice!r})")["transitions"]
+        assert rest["box-shadow"] == ["0.26s", "0s"] and rest["color"] == ["0.4s", "0s"], rest  # the return
+        x, y = hover(page, choice)
+        hovered = page.evaluate(f"({timing})({choice!r})")
+        assert hovered["trace"] == "0.8s", hovered  # one trip around the edge in 800 ms
+        assert hovered["transitions"]["box-shadow"] == ["0.4s", "0.48s"], hovered  # the glow settles as it ends
+        assert hovered["transitions"]["color"] == ["0.4s", "0s"], hovered
+        mouse(page, "mousePressed", x, y)
+        pressed = page.evaluate(f"({timing})({choice!r})")["transitions"]
+        assert pressed["box-shadow"] == ["0.14s", "0s"] and pressed["transform"] == ["0.14s", "0s"], pressed
+        mouse(page, "mouseMoved", 1, 1)
+        mouse(page, "mouseReleased", 1, 1)  # released elsewhere: no choice made
+        assert attribute(page, choice, "aria-current") is None
     finally:
         page.close()
 
@@ -369,7 +601,7 @@ def test_the_camera_picture_is_never_decorated(browser: Browser, site: dict[str,
         away(page)
         frame = style(page, ".live .frame")
         hover(page, picture)
-        time.sleep(0.7)
+        time.sleep(SETTLED_S)
         assert style(page, ".live .frame") == frame  # hovering the picture changes nothing around it
         seen = page.evaluate(f"""(() => {{ const p = getComputedStyle(document.querySelector({picture!r}));
           return {{shadow: p.boxShadow, outline: p.outlineStyle, decorations: document.querySelectorAll(
@@ -390,7 +622,11 @@ def test_reduced_motion_keeps_every_state_and_moves_nothing(browser: Browser, si
         assert f"{tokens['hl-glow']} 0px 0px 14px 0px" in hovered["shadow"] and hovered["edge"] == "none", hovered
         assert set(hovered["transition"].split(", ")) == {"0s"}, hovered
         chosen = "#settings [data-set=density][aria-current]"
+        away(page)
+        rest = drawn(page, chosen)
         x, y = hover(page, chosen)
+        time.sleep(0.2)
+        assert drawn(page, chosen) == rest  # selected: as at rest under the pointer (v6)
         mouse(page, "mousePressed", x, y)
         time.sleep(0.05)
         pressed = style(page, chosen)
