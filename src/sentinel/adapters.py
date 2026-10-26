@@ -227,7 +227,7 @@ class ResourceProfile:
     scene_truncated: int | None = None  # completions that did not finish "stop"
     scene_errors: int | None = None  # HTTP, transport and client-timeout errors
     scene_over_deadline: int | None = None  # completions over the 8 s job timeout
-    kernel_coverage: str | None = None  # must be "observed"
+    kernel_coverage: str | None = None  # must be "observed", or covered by the profile's own D105 exception
     oom_candidates: int | None = None
     nvmap_candidates: int | None = None
     identity_status: str | None = None  # "verified": snapshot before the cache drop equals the end-of-run hashes
@@ -386,6 +386,64 @@ RESOURCE_PROFILES: Mapping[str, ResourceProfile] = MappingProxyType({
 })
 
 
+@dataclass(frozen=True)
+class KernelCoverageException:
+    """D105: the maintainer's substitute for ONE profiled run's own kernel-log coverage proof (K_kernel); not a rule.
+
+    The step-4 tooling and its K criterion are unchanged: every run is judged by its own journal markers, and a run
+    whose markers do not bracket its window stays "not eligible" in its own report. An exception is added only by a
+    separate, maintainer-approved commit, for one named profile, from that run's same-boot evidence covering the whole
+    window. It records the run's own verdict as it stands, the stretch the markers missed, the evidence with its
+    checksums, and the candidate counts that evidence established. It admits nothing by itself:
+    ``kernel_exception_problem`` accepts it only for its own profile, run and boot, with the run's recorded coverage,
+    both counts zero and equal to the profile's, and the profile's every other check still applies.
+    """
+
+    profile_id: str
+    run_dir: str  # the profile's run directory
+    boot_id: str  # the profile's boot
+    recorded_kernel_status: str  # the run's own kernel coverage status, as recorded (never "observed")
+    recorded_reasons: tuple[str, ...]  # the run's own reasons, as recorded
+    recorded_verdict: str  # the run's own result (status detail and exit), as recorded
+    uncovered_utc: tuple[str, str]  # the part of the window the run's own markers did not bracket
+    evidence: str  # what covers the window instead, and how it was compared
+    evidence_sha256: tuple[tuple[str, str], ...]  # (checksum list, its SHA-256) of the saved evidence
+    oom_candidates: int  # established by the evidence over the whole window
+    nvmap_candidates: int
+    decision: str  # the maintainer's decision that approved it
+    limitations: str  # what the evidence does not establish
+
+
+# D105: one entry per maintainer-approved exception; none is ever created at runtime.
+KERNEL_COVERAGE_EXCEPTIONS: Mapping[str, KernelCoverageException] = MappingProxyType({})
+
+
+def kernel_exception_problem(
+    profile: ResourceProfile, exceptions: Mapping[str, KernelCoverageException] = KERNEL_COVERAGE_EXCEPTIONS
+) -> str | None:
+    """None if ``profile``'s unobserved kernel-log coverage is covered by its own D105 exception, else the reason."""
+    pid = profile.profile_id
+    exception = exceptions.get(pid)
+    if exception is None or exception.profile_id != pid:
+        return f"resource profile {pid} has no observed kernel-log coverage"
+    if (exception.run_dir, exception.boot_id) != (profile.run_dir, profile.boot_id):
+        return f"resource profile {pid}'s kernel-coverage exception names another run"
+    if (exception.recorded_kernel_status == "observed" or not exception.recorded_reasons
+            or not exception.recorded_verdict):
+        return f"resource profile {pid}'s kernel-coverage exception does not record the run's own verdict"
+    if exception.recorded_kernel_status != profile.kernel_coverage:
+        return (f"resource profile {pid} records kernel coverage {profile.kernel_coverage}, not the "
+                f"{exception.recorded_kernel_status} its exception covers")
+    if (not exception.evidence or not exception.evidence_sha256 or not exception.decision
+            or any(not name or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                   for name, digest in exception.evidence_sha256)):
+        return f"resource profile {pid}'s kernel-coverage exception lacks its evidence, checksums or decision"
+    if (exception.oom_candidates, exception.nvmap_candidates) != (0, 0) or (
+            profile.oom_candidates, profile.nvmap_candidates) != (exception.oom_candidates, exception.nvmap_candidates):
+        return f"resource profile {pid}'s kernel-coverage exception does not establish 0 OOM and 0 NvMap candidates"
+    return None
+
+
 def known_profile_ids(profiles: Mapping[str, ResourceProfile] = RESOURCE_PROFILES) -> frozenset[str]:
     """Profiles that admit model adapters at all: provisional or accepted."""
     return frozenset(
@@ -471,12 +529,14 @@ def face_admission_problem(
 
 
 def accepted_profile_problem(
-    profile_id: str | None, profiles: Mapping[str, ResourceProfile] = RESOURCE_PROFILES
+    profile_id: str | None, profiles: Mapping[str, ResourceProfile] = RESOURCE_PROFILES,
+    kernel_exceptions: Mapping[str, KernelCoverageException] = KERNEL_COVERAGE_EXCEPTIONS,
 ) -> str | None:
     """None if ``profile_id`` is an ACCEPTED combined profile measured with --cache-ram 0 whose
     recorded evidence passes the step-4 criteria under an admissible identity (D59: step 4, or
     the D58 candidate with its policy evidence and runtime limitation); otherwise the first
-    missing prerequisite. The runtime's policy is matched separately (profile_mismatch)."""
+    missing prerequisite. Kernel-log coverage must be observed, or covered by the profile's own
+    D105 exception. The runtime's policy is matched separately (profile_mismatch)."""
     if profile_id is None:
         return "the manifest names no resource_profile_id; scene needs an accepted combined profile"
     profile = profiles.get(profile_id)
@@ -541,7 +601,9 @@ def accepted_profile_problem(
     if profile.scene_valid is None or profile.scene_valid < STEP4_MIN_SCENE_STRICT_VALID_SHARE * profile.scene_attempts:
         return f"resource profile {profile_id} lacks {STEP4_MIN_SCENE_STRICT_VALID_SHARE:.0%} strictly valid scene reports"
     if profile.kernel_coverage != "observed":
-        return f"resource profile {profile_id} has no observed kernel-log coverage"
+        problem = kernel_exception_problem(profile, kernel_exceptions)  # D105: only the profile's own exception
+        if problem is not None:
+            return problem
     if profile.identity_status != "verified" or profile.replay_clip_verified is not True:
         return f"resource profile {profile_id} has no verified identity (files and replay clip)"
     if (profile.llama_server is None or not profile.llama_server.sha256 or not profile.llama_libraries
