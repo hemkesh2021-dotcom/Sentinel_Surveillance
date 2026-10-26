@@ -1,6 +1,8 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-26, session 115 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+Last updated 2026-10-26, session 115, part 2 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+
+**Session 115, part 2: the approved preview v6's interactions on the dashboard; local only.** The code is `3b93e05` (a test added in `e87ba98`); this record follows it. The hover and keyboard-focus trace takes 800 ms and the glow settles over 400 ms. A selected control (the current navigation item, a chosen theme, density or palette, the picture size, a shown panel, the focus view, a previewed incident, a switch that is on) keeps its selected look under the pointer and on keyboard focus: no trace, no added glow, its label unchanged, keyboard focus still drawing its ring. Press, pending, disabled, reduced motion, every colour and palette, the light mode, the font, the surfaces and the phone text are unchanged; at rest, every element's box and computed style are the same apart from the two timings. Browser tests on desktop and phone in both themes; 11 of 11 mutations caught; the 25 page-rendering modules 887 passed, 1 skipped. Before/after screenshots of held states are in `~/sentinel-design/sentinel-ui-review/v6-interactions/`, outside Git; synthetic data only; nothing pushed or published.
 
 **Session 114, part 4: shorter text on phones, in the approved style; the restyle's before/after comparisons repaired; local only.** The code is `485f3f6`. At most 599 px wide, the freshness bar is one short line with its time in either state (NOT CURRENT at once, with its words), and how the page stays current is a closed, labelled disclosure; on an incident page the snapshot note, why there is no snapshot (a short line stays in the picture's place) and the command-line acknowledgment are labelled disclosures holding the full text, while the title, severity, status, the event, the acknowledgment's state and every failure stay in view. On phones the picture starts 53-131 px sooner, inside the first screen at 320×640. Wider screens keep every full text; the desktop layout and computed styles were checked identical; colours, fonts, tokens, shadows, motion, navigation and controls unchanged. Part 3's 10 "side-by-side pairs" were HTTP 404 pages: rebuilt directly from the PNG files and looked at, the claim corrected in the part 3 log; the mobile comparisons kept beside them, outside Git. 14 new browser tests; 7 of 7 mutations caught; the 25 page-rendering modules: 877 passed, 1 skipped. Synthetic data only; nothing run on the device, pushed or published.
 
@@ -804,6 +806,8 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
    - **Maintainer (session 114, part 4):** look at `mobile-text/before-after/` and the rebuilt `before-after/` in the review folder; say whether the short lines and the disclosures' labels read well, and whether the 320 px phone's picture (only its top 26 px in the first screen) or the blank line under the current line at 360 and 320 px needs a layout change (part 4 log, section 7).
    - **Done (session 115):** LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL the rollback (`378ae85`); step 4 can measure a set (`f77b0ff`); the files verified against the Hub; guarded smoke tests with a synthetic picture passed for both sets; D46 unchanged, so `--scene` refuses LFM2.5-VL until a profile admits it (D104; session 115 log).
    - **Maintainer (session 115):** when convenient, after a reboot, the step-4 candidate measurement of LFM2.5-VL (`~/sentinel-prep/step4cand-lfm25-f77b0ff/`, blocks LCa-LCf; about 20 min; session 115 log, section 10); then the acceptance decision; until then runs keep `--scene-model-set lfm2-vl`.
+   - **Done (session 115, part 2):** the approved preview v6's interactions (`3b93e05`, `e87ba98`): the slower trace and settle; a selected control keeps its look under the pointer and on keyboard focus; 11 of 11 mutations caught, the 25 page-rendering modules 887 passed, 1 skipped; held-state comparisons outside Git (session 115 log, part 2).
+   - **Maintainer (session 115, part 2):** look at `v6-interactions/before-after/` in the review folder, or try the motion with its `tools/serve_synthetic.py`; say whether the incident link in a selected row should also keep its look under the pointer.
    - **Claude, next (session 115):** record the measurement read only; after an acceptance, the profile entry and `profiled=True` in a separate commit, then a face + scene + chat validation package with LFM2.5-VL.
    - **Claude, next (session 114):** on instruction: the chat change's device validation package, or a read-only plan toward the requested range (the camera facts first; then session 113's steps 3-4, thresholds unchanged), or changes to the applied style or the phone text.
    - **Done (session 112):** v2.0.0-alpha.2 published: `27d6308` pushed alone as a fast-forward of `alpha-candidate-2026-10`; Dashboard checks and both portable jobs passed on it; the tag `v2.0.0-alpha.2` and the pre-release (not latest) created (session 112 log).
@@ -1381,6 +1385,90 @@ Notes on partial and in-progress rows:
    - review the migration and the step-4 package; when convenient, run the package (section 10) after a reboot, from a plain SSH session with VS Code and Claude Code closed;
    - then decide on acceptance (a separate commit: the profile entry and `profiled=True`), and only after that on a face + scene + chat validation run with LFM2.5-VL (chat stays a validation run under D77);
    - note the unexplained memory observation (section 8).
+
+### Session 115, part 2 (Claude, 2026-10-26): the approved preview v6's interactions on the dashboard: a slower trace and settle, and a selected control keeps its look under the pointer and on keyboard focus
+
+1. **The request (the maintainer).** Implement the approved v6 interactions in this worktree, keeping unrelated work (the LFM2.5-VL migration) as it is. The reference is `~/sentinel-ui-motion-preview-deep-v6.html`.
+   - **Timings:** the gold hover and focus trace takes 800 ms and the glow settles over 400 ms.
+   - **Selected controls:** they keep their selected look when hovered, with no travelling highlight, no added glow and no change of label colour. This covers navigation, segmented choices, selected buttons and switches that are on, by their actual state attributes.
+   - **Preserved:** click feedback, pending and error states, reduced motion and keyboard focus; the approved black, gold and ivory look, the system font, the surfaces, the light mode, the other palettes and the phone text.
+   - **How:** the preview is a visual reference; integrate it into the production stylesheet without its demonstration controls or redundant selectors.
+   - **Verify:** in the local synthetic dashboard: selected against unselected hover, a selection changing under the pointer, desktop and phone in both themes, the keyboard, reduced motion, disabled and pending; the existing UI checks; comparison screenshots looked at, with no 404 or error page among them.
+   - **Local only:** no push, release, upload or live camera or model workload; recognition, chat scheduling and admission unchanged.
+2. **v6 against v5.** A `diff` of `~/sentinel-design/sentinel-ui-motion-preview-deep-v5.html` and the v6 file shows three changes and nothing else:
+   - the two timing tokens;
+   - every hover selector leaves out selected controls (`aria-pressed`, `aria-current`, `aria-checked`, `aria-selected` and the preview's own `data-force` sample state);
+   - two closing rules: a selected control's label stays ivory and its edge never traces, also on keyboard focus, unless it is pending. Its comment: "keyboard focus outlines remain available on controls".
+   Colours, surfaces, press, pulse, pending, reduced motion and forced colours are the same in both.
+3. **What changed (`3b93e05`; its test addition `e87ba98`).** Only `dashboard.css` and the tests; no markup or script.
+   - **Timings:** `--t-trace` 320 → 800 ms and `--t-settle` 240 → 400 ms. The glow waits `--t-trace × .6`, so it now settles between 480 and 880 ms. Press (140 ms), pulse (160 ms), release (260 ms) and the pending edge's turn (1.6 s) are unchanged.
+   - **Selected controls:** the shared hover and keyboard-focus rule and the trace rule leave out `:where([aria-current], [aria-pressed=true], [aria-checked=true])`. Navigation's hover look and trace leave out `[aria-current]` the same way, so its `.nav a[aria-current]:hover` rule, now redundant, is gone. A navigation icon takes the label's colour on hover only when its item is not selected.
+   - **Why `:where()`:** it adds no specificity, so a press still overrides a hover. With a plain `:not()` the hover rule would outrank the press rule, and a press on an unselected control would keep the hover's glow; a mutation shows it (section 4).
+   - **The attributes the dashboard uses:**
+     - navigation: `aria-current` (`page` from the server, `true` from the scroll spy);
+     - theme and density choices and palette swatches: `aria-current="true"`;
+     - the picture size, the shown panels, the focus view and an incident's preview: `aria-pressed`;
+     - the feature switches: `aria-checked`.
+     `aria-selected` and `data-force` appear nowhere in the dashboard, so the selector leaves them out.
+   - **An incident link in the selected row** (`li.selected > a.inc`) keeps the hover look. Its selection is a class on the row, and its own action, opening the incident's page, stays available. The row's preview button, the control that makes the selection, keeps its selected look.
+   - **Keyboard focus:**
+     - on a selected control: the focus ring as before, and nothing else (as in v6);
+     - on an unselected control: unchanged (the ring, the trace, the glow, the highlight's label);
+     - on navigation items: still nothing (session 114's decision).
+   - **Unchanged:** every palette's and theme's colours and tokens, the grain, surfaces, font, press and pulse, pending, disabled, the reduced-motion and forced-colours rules, and the phone text.
+4. **Verified locally.** Synthetic data only, in headless Chromium through the test harness; nothing on the device, no camera or model.
+   ```
+   T = PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m pytest -q -p no:cacheprovider   # Python 3.10.14, in the worktree
+   T tests/unit/test_status_page_ui.py   # 37 passed
+   T tests/unit/test_dashboard_states_browser.py   # at 3b93e05: 19 passed in 256.55 s; -k keeps_its_look at e87ba98: 4 passed
+   T $(grep -l "status_page\|render_html\|render_incident_html\|StatusServer" tests/unit/*.py)   # the 25 page-rendering modules at e87ba98: 887 passed, 1 skipped (cv2) in 1367.87 s; exit 0
+   ```
+   - **The tests:**
+     - `test_dashboard_states_browser.py` updated: waits sized to the slower settle; a switch that is on, hovered, now keeps its resting look; the selected navigation item, hovered, starts no trace and keeps exactly its resting look; a press on a selected choice keeps its press ring and its label colour.
+     - New there, each in dark and light:
+       - every kind of selection, on desktop and on a 390 px phone (navigation in the drawer): under the pointer it starts no trace and keeps exactly its resting look; on keyboard focus it gains its ring and nothing else; beside it, an unselected control of the same kind still answers with the trace, glow and highlight's label. The kinds: the current navigation item, a density choice, the palette, the picture size, a shown panel, a previewed incident, a switch that is on, and the focus view's button (checked last, because the focus view hides the other panels);
+       - a selection made under the pointer: a press on Actual size draws its press ring and not the hover's glow; once clicked, the trace stops at once and the look equals a selected control's; the same from the keyboard (Space on the focused choice gives the selected look and its ring);
+       - a switch: pending while its request is held in flight (the edge circles, no glow), then off under the pointer (the hover look), then on again (the selected look);
+       - on a phone with touch, a tapped choice that the browser keeps hovered shows the selected look.
+     - Also new: the computed timings (the trace 0.8 s, the glow 0.4 s after 0.48 s, the press 0.14 s, the return 0.26 s, the label 0.4 s); a locked switch that is on never glows; with reduced motion, a selected control under the pointer keeps its resting look.
+     - `test_status_page_ui.py`: the timing tokens; the exclusion in the hover and trace rules, through `:where()`, and in navigation's.
+   - **Mutations:** 11 of 11 caught at the intended assertions, each made in a scratch copy of `src/`:
+     - the hover look, the trace, navigation's look and navigation's trace each given back to selected controls;
+     - the exclusion with specificity (a press keeps the hover's glow);
+     - v5's timings;
+     - no focus ring on a selected choice; no pending edge on a selected switch; no press ring on a selected choice;
+     - a tapped choice keeping the hover look;
+     - the focus view's pressed button given the hover glow.
+   - **At rest nothing moved.** Every element's computed style and box, before (`968d97e`) and after, nothing hovered or focused, on the dashboard and an incident page; desktop dark, light and Teal & Coconut dark, phone dark and light; `::before` and `::after` where present. 5470 elements, every box identical to 0.0001 px. The only computed-style differences are:
+     - the two tokens;
+     - the label's colour transition, which uses the settle time (0.24 → 0.4 s), on 370 elements;
+     - the freshness watchdog's run-dependent timing.
+   - **Screenshots, before (`968d97e`) and after (`e87ba98`, code `3b93e05`), held states.**
+     - **How they were taken:** 114 clips each at device scale 2: desktop 1440×900, phone 390×844 (navigation in its drawer) and desktop with reduced motion, each dark and light.
+     - **Held states:** a state in motion was held at a fixed time with the Web Animations API (the trace at 200 and 600 ms, the press at 80 ms, the pending edge at 500 ms); the others were taken after 1.4 s.
+     - **Checks:** every page answered HTTP 200 with the dashboard (its title, sidebar and current navigation item); every clip held its state (hovered, focused, pending) and none was blank.
+     - **The sheets:** 24 comparison sheets, built from the PNG files only, and I looked at every one.
+     - **What they show:**
+       - at 200 and 600 ms, the old trip nearly done and its glow settled, against the new one a quarter and three quarters of the way round;
+       - a selected control under the pointer or on keyboard focus: before, the highlight's label, the trace and a glow; after, its resting look (pixel-identical in dark), plus the ring on keyboard focus;
+       - Actual size, and a switch clicked back on, under the pointer: the selected look at once.
+     - **Pixel-identical when settled:** an unselected control hovered or focused, the press, the pending edge (dotted and still with reduced motion) and a disabled control.
+     - **Run-to-run differences:** a few rows of untouched states differ in text pixels (the switch card, the disabled Ask, one swatch). The same counts appear between two captures of `968d97e`: text drawn differently between runs.
+     - **A capture correction:** the first set took the press 80 ms in real time, so its progress varied; both sets were taken again with the press held.
+5. **The review screenshots (outside Git, local only).** `~/sentinel-design/sentinel-ui-review/v6-interactions/`:
+   - `before/` and `after/`, each clip with `manifest.json` (each page's check, the control's attributes and computed state);
+   - `before-after/`, 24 sheets with `compose.json`;
+   - `noise-control.json` (two captures of `968d97e`) and `rest-styles.json` (the resting comparison);
+   - `tools/`, the capture, check and composition scripts, and `serve_synthetic.py`. It runs the dashboard from the worktree with the same synthetic stand-ins on 127.0.0.1 only, until Ctrl-C, for trying the motion by hand through an SSH tunnel (the folder's `README.txt` gives the two commands). I checked it in headless Chromium: the page answered 200, a question went pending and was answered, and it stopped cleanly, removing its temporary folder.
+   The v6 preview is copied unchanged beside v5 as `~/sentinel-design/sentinel-ui-motion-preview-deep-v6.html` (SHA-256 `c0787ff9…44e1fa`). The folder's `README.txt` gains section 3. `SHA256SUMS` was regenerated: 387 checksums, all verified, after the 123 earlier ones had verified unchanged. The folder is owner-only. Synthetic data only; never committed, published or shared without approval.
+6. **Not checked; open.**
+   - Safari, Firefox and a real phone. On a real phone, hover after a tap depends on the browser; in Chromium's touch emulation the tapped control stays hovered, and the test covers that.
+   - The motion itself: the screenshots hold frames. The 800 ms trace was not judged in use; that is the maintainer's to feel.
+   - **The full suite was not rerun,** in this part or in part 1. This part changes only the stylesheet and two test modules, and every module that renders the pages ran (887 passed). Part 1's migration ran its focused suites (its log, section 7). The last full suite is session 114, part 3's (2868 passed, 2 skipped).
+   - The incident link in a selected row keeps its hover look (section 3); covering it would be a one-selector change if wanted.
+7. **For the maintainer:**
+   - look at `v6-interactions/before-after/` (the folder's `README.txt` describes it), or try the motion with `serve_synthetic.py`;
+   - say whether the incident link in a selected row should also keep its look under the pointer.
 
 ## Session 114 log (Claude, 2026-10-25): chat answers sized to the time before the next periodic scene job (session 113's step 1), the image sent checked live when a question starts, shortened answers labelled, the question kept in the page; portable tests, mutations and the full suite; the camera and distance questions and two later requirements recorded as pending; nothing launched, pushed or published
 
