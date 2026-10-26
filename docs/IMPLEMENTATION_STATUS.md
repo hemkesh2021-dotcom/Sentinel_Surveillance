@@ -1383,6 +1383,7 @@ Notes on partial and in-progress rows:
      ```
    - **Prepared (2026-10-26), not launched:** `~/sentinel-prep/step4cand-lfm25-f77b0ff/` (outside Git, owner-only; nine files; `SHA256SUMS` itself has SHA-256 `b98ebfa61d35950fd7e3d99dce2df13a14e98153d7e9356bdc20759e5c83afd0`). The six blocks were extracted from this record at `7f79ac8`; a second `sed` extraction is byte-identical, and `bash -n` passes on each. LCd, driven from its own lines through a stub interpreter, made two calls (Check 9, then the candidate with 12 arguments ending `--scene-model-set lfm2.5-vl`) and wrote `LCd_exit=0`. The real `operator_check.main()` at the pin, with `execute()` replaced by a recorder, passed mode `step4cand`, both result paths, the clip, the cache-drop declaration, the candidate's confirmation and `scene_model_set=lfm2.5-vl`. LCb's read-only checks passed on the real worktree (tracked changes, pin, code difference, eight checksums, THP_enabled 1), and its clip-hash lookup finds the recorded hash, which the replay clip matches. Nothing on the device was run.
    - **Check the package first:** `cd ~/sentinel-prep/step4cand-lfm25-f77b0ff && sha256sum SHA256SUMS && sha256sum -c SHA256SUMS` (the first hash must be `b98ebfa6…`, then eight OK: the six blocks, PROTOCOL.md and SOURCE.txt).
+   - **Superseded (part 3, 2026-10-26):** from `3b93e05` this package's LCb stops with "code differs from f77b0ff…", by design; use `~/sentinel-prep/step4cand-lfm25-460b8e7/` (part 3, section 7). This package never ran and is kept unchanged.
 11. **For the maintainer:**
    - review the migration and the step-4 package; when convenient, run the package (section 10) after a reboot, from a plain SSH session with VS Code and Claude Code closed;
    - then decide on acceptance (a separate commit: the profile entry and `profiled=True`), and only after that on a face + scene + chat validation run with LFM2.5-VL (chat stays a validation run under D77);
@@ -1603,7 +1604,34 @@ Notes on partial and in-progress rows:
    - **LCb, LCd and LCf** run their checks inside `( … )` but read those variables from the shell, and LCb and LCd then append their exit line to `$D/provenance.txt`. Their `exit` statements are inside the parentheses, so a failure ends only that block, never your SSH session.
    - **LCc and LCe** use `$D` and contain no `exit`.
    - Sourcing runs exactly the lines a paste would, with no terminal history expansion and no risk of a long paste being cut.
-7. **For the maintainer:** check the package, then run it when convenient after a reboot (section 5). Acceptance stays a separate, maintainer-approved commit (D46, D59); until then runs keep `--scene-model-set lfm2-vl`.
+7. **Prepared (2026-10-26), not launched:** `~/sentinel-prep/step4cand-lfm25-460b8e7/` (outside Git, owner-only; nine files). `SHA256SUMS` itself has SHA-256 `b4e2da222c8c0928a1c956b0eeb7ce5335fe1531660b87e5360f838e5fdb1e41`.
+   - **Extraction:** the six blocks were extracted from this record at `96ef148`. A second `sed` extraction is byte-identical, both equal the old package's blocks with only `PIN=` replaced, and `bash -n` passes on each.
+   - **LCb's read-only lines** (tracked changes, pin ancestry, code difference, the eight checksums, THP) passed on the real worktree at `96ef148`. The old package's same lines stop with "code differs from f77b0ff…".
+   - **All six blocks sourced in order in one bash shell,** with HOME a scratch folder (so the run folder landed there), `sudo` and `sync` stubbed, and after LCa the OC array replaced by a stub interpreter:
+     - the shell survived every block;
+     - `provenance.txt` shows `LCb_exit=0`, the drop time, the Check 9 result, `LCd_exit=0` and "rehash equal";
+     - the stubs received exactly `sudo -v`, `sudo systemctl stop display-manager`, `sync` and `sudo sysctl -w vm.drop_caches=1`.
+   - **The real `operator_check.main()` at HEAD** parsed the four calls, with the work replaced by recorders:
+     - the identity snapshot of 14 files, naming `~/models/lfm2.5-vl/`'s model and its own projector;
+     - Check 9 with the cache-drop declaration;
+     - the candidate with both result paths, the clip, its confirmation and `scene_model_set=lfm2.5-vl`, under the 1440 s bound;
+     - the rehash.
+   - **Unsourced** (LCa run as its own program, then LCb), LCb refuses with `PIN: unbound variable`.
+   - **Focused tests at HEAD:** `test_step4_model_set.py`, the step4cand end-to-end test and `test_scene_models.py`: 26 passed. Part 2's UI validation is reused.
+   - **Nothing ran on the device:** no identity snapshot, no cache drop, no model, no camera.
+   - **The old package** is kept unchanged (`b98ebfa6…`, eight OK), with `~/sentinel-prep/step4cand-lfm25-f77b0ff.SUPERSEDED.txt` beside it.
+   - **Check the package first:** `cd ~/sentinel-prep/step4cand-lfm25-460b8e7 && sha256sum SHA256SUMS && sha256sum -c SHA256SUMS` (the first hash must be `b4e2da22…`, then eight OK: the six blocks, `PROTOCOL.md` and `SOURCE.txt`).
+   - **Then, in the same plain SSH shell:**
+     ```
+     P=~/sentinel-prep/step4cand-lfm25-460b8e7
+     . "$P/step4cand-lfm25-LCa.sh"
+     . "$P/step4cand-lfm25-LCb.sh"    # stop here unless it prints LCb_exit=0
+     . "$P/step4cand-lfm25-LCc.sh"
+     . "$P/step4cand-lfm25-LCd.sh"    # about 17 min; type nothing until LCd_exit= appears
+     . "$P/step4cand-lfm25-LCe.sh"
+     . "$P/step4cand-lfm25-LCf.sh"
+     ```
+8. **For the maintainer:** check the package, then run it when convenient after a reboot (sections 5 and 7). Acceptance stays a separate, maintainer-approved commit (D46, D59); until then runs keep `--scene-model-set lfm2-vl`.
 
 ## Session 114 log (Claude, 2026-10-25): chat answers sized to the time before the next periodic scene job (session 113's step 1), the image sent checked live when a question starts, shortened answers labelled, the question kept in the page; portable tests, mutations and the full suite; the camera and distance questions and two later requirements recorded as pending; nothing launched, pushed or published
 
