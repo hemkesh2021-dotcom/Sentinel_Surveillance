@@ -30,9 +30,15 @@ chat-load.jsonl and viewer.jsonl. Limits, all set before any run:
 - **Cancellation verified:** at least one scene job arrived while a question ran, ended it, and started; the chat
   load saw at least one question cancelled for it. Otherwise the item is MISSING (not exercised), never passing.
   alpha_load alternates a short and a long question so that both answers and cancellations are likely.
-- **Real answers:** at least one question answered; every answered one names its frame (stream epoch, frame, ingest
-  time) and its ages, is marked historical exactly when its frame was STALE_AFTER_MS or older when answered, and is
-  1-600 characters long. The answers' text is never read or kept.
+- **Real answers:** at least one question answered; every answered one names the frame sent to the model (stream
+  epoch, frame, ingest time) and its ages, is marked historical exactly when the frame sent was STALE_AFTER_MS or
+  older when answered, and is 1-600 characters long. Since session 114 the runtime may send the newest live frame
+  instead of a stale one asked about; the answer is then judged against the frame sent, and only then may that
+  frame's age when asked be null: the replacement stated explicitly, the frame asked about kept apart with its own
+  age when asked and a different identity, the frame sent younger than STALE_AFTER_MS when sent and answered no
+  earlier (answer_problem; session 115, part 9). A record that states no replacement is read as before; anything
+  missing or contradictory is not consistent, and each such record is counted by its reason. The answers' text is
+  never read or kept.
 - **Monitoring kept first:** no incident signal lost, no detector failure, video fresh and scene analysis available
   at every capture.
 
@@ -80,6 +86,7 @@ import argparse
 import json
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -204,18 +211,62 @@ def _cancellation(r: s5.Reading, last: Any, asked: list[dict]) -> Any:
     return worker
 
 
+def _age(value: Any) -> bool:
+    """A millisecond count as the runtime writes it: an integer, never a JSON true or false."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def answer_problem(x: dict[str, Any]) -> str | None:
+    """Why an answered question's record does not name the frame sent and its ages consistently; None when it does.
+
+    The record's stream_epoch, frame_seq and ingest_utc name the frame sent to the model. With ``frame_replaced`` true
+    (alpha_load since session 115, part 9) the runtime sent the newest live frame instead of the stale one asked
+    about, which ``asked_frame`` keeps apart; only then may the frame sent have no age when asked. Without the key the
+    record is read as before: the frame asked about was sent, with its age when asked."""
+    if not (isinstance(x.get("stream_epoch"), int) and isinstance(x.get("frame_seq"), int)
+            and isinstance(x.get("ingest_utc"), str)):
+        return "the frame sent is not named"
+    replaced, asked, sent = x.get("frame_replaced", False), x.get("asked_frame"), x.get("age_ms_when_sent")
+    answered = x.get("age_ms_when_answered")
+    if replaced is True:
+        if not (isinstance(asked, dict) and _age(asked.get("stream_epoch")) and _age(asked.get("frame_seq"))
+                and isinstance(asked.get("ingest_utc"), str) and _age(asked.get("age_ms_when_asked"))):
+            return "a replacement without the frame asked about"
+        if (asked["stream_epoch"], asked["frame_seq"]) == (x["stream_epoch"], x["frame_seq"]):
+            return "a replacement whose frame sent is the frame asked about"
+        if x.get("age_ms_when_asked") is not None:
+            return "a replacement whose frame sent has an age when asked"
+        if not (_age(sent) and 0 <= sent < STALE_AFTER_MS):
+            return "a replacement without a frame sent while live"
+        if not (_age(answered) and answered >= sent):
+            return "a replacement without an age when answered at or after its sending"
+    elif replaced is False:
+        if asked is not None or sent is not None:
+            return "replacement facts without a replacement"
+        if not isinstance(x.get("age_ms_when_asked"), int):
+            return "no age when asked, and no replacement stated"
+        if not isinstance(answered, int):
+            return "no age when answered"
+    else:
+        return "the replacement neither stated nor denied"
+    if not (isinstance(x.get("historical"), bool) and x["historical"] == (answered >= STALE_AFTER_MS)):
+        return f"historical not exactly whether the frame sent was {STALE_AFTER_MS} ms or older when answered"
+    if not (isinstance(x.get("answer_chars"), int) and 1 <= x["answer_chars"] <= 600):
+        return "not 1-600 characters"
+    return None
+
+
 def _answers(r: s5.Reading, load: Any, asked: list[dict]) -> list[dict]:
     answered = [x for x in asked if x.get("state") == "answered"]
-    named = [x for x in answered
-             if isinstance(x.get("stream_epoch"), int) and isinstance(x.get("frame_seq"), int)
-             and isinstance(x.get("ingest_utc"), str) and isinstance(x.get("age_ms_when_asked"), int)
-             and isinstance(x.get("age_ms_when_answered"), int) and isinstance(x.get("historical"), bool)
-             and x["historical"] == (x["age_ms_when_answered"] >= STALE_AFTER_MS)
-             and isinstance(x.get("answer_chars"), int) and 1 <= x["answer_chars"] <= 600]
-    r.item("real answers: at least one, each naming its frame and ages, historical exactly when its frame was "
-           f"{STALE_AFTER_MS} ms or older when answered, 1-600 characters",
-           {"answered": len(answered), "named_and_consistent": len(named)} if load is not s5.MISSING else s5.MISSING,
-           bool(answered) and len(named) == len(answered))
+    problems = Counter(problem for problem in map(answer_problem, answered) if problem is not None)
+    value = {"answered": len(answered), "named_and_consistent": len(answered) - sum(problems.values()),
+             "sent_frame_replaced": sum(x.get("frame_replaced") is True and answer_problem(x) is None
+                                        for x in answered),
+             "not_consistent": dict(sorted(problems.items()))}
+    r.item("real answers: at least one, each naming the frame sent and its ages (a replaced frame with the one asked "
+           f"about kept apart), historical exactly when the frame sent was {STALE_AFTER_MS} ms or older when "
+           "answered, 1-600 characters", value if load is not s5.MISSING else s5.MISSING,
+           bool(answered) and not problems)
     return answered
 
 

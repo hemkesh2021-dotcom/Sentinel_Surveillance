@@ -105,6 +105,56 @@ def test_each_status_item_fails_or_is_missing_when_its_evidence_says_so(mods, ma
     assert line_for(text, item).startswith(label), line_for(text, item)
 
 
+def test_cancellation_is_verified_by_a_question_that_outlasted_the_grace_and_was_ended_for_the_scene_job(
+        mods, made) -> None:
+    """The real runtime's run: the held question was still running when the periodic job's declared 1500 ms grace
+    ended, and was ended for it (session 115, part 9: the case the device session fci25-20261026T124349Z lacked)."""
+    records = [json.loads(line) for line in (made / "chat-load.jsonl").read_text().splitlines()]
+    (cancelled,) = [x for x in records if x.get("state") == "cancelled"]
+    assert cancelled["reason"] == mods.check.CANCELLED_FOR_SCENE
+    components = json.loads((made / "status-end.json").read_text())["components"]
+    worker, waits = components["scene"]["worker"], components["chat"]["scene_waits_behind_chat"]
+    assert (worker["side_grace_started"], worker["side_preempted_after_grace"], worker["side_preempted"]) == (1, 1, 1)
+    assert "side_finished_in_grace" not in worker  # it did not end within its grace
+    assert waits["max_ever_ms"] == waits["grace_ms"] == 1500  # the scene job waited the whole grace and no longer
+    assert line_for(text_of(mods.check.read_chat(made)), "cancellation verified").startswith("PASS")
+
+
+def without_the_cancelled_question(run: Path) -> None:
+    path = run / "chat-load.jsonl"
+    path.write_text("".join(line + "\n" for line in path.read_text().splitlines()
+                            if json.loads(line).get("state") != "cancelled"))
+
+
+def without_a_preemption(status: dict) -> None:
+    worker = status["components"]["scene"]["worker"]
+    for counter in ("side_preempted", "side_preempted_after_grace"):
+        worker.pop(counter)
+
+
+def test_a_run_whose_questions_all_ended_within_the_grace_leaves_cancellation_missing(mods, made, tmp_path) -> None:
+    """The shape of fci25-20261026T124349Z (none of its evidence used): every scene job that waited for a question saw
+    it end within the grace, so nothing was cancelled. The path was not exercised: MISSING, never verified."""
+    run = fresh_copy(made, tmp_path)
+    without_the_cancelled_question(run)
+    edit_last_status(run, lambda s: (without_a_preemption(s),
+                                     s["components"]["scene"]["worker"].update(side_finished_in_grace=1)))
+    reading = mods.check.read_chat(run)
+    assert line_for(text_of(reading), "cancellation verified").startswith("MISSING") and not reading.ok
+
+
+@pytest.mark.parametrize("kept", ["a preemption without its cancelled question",
+                                  "a cancelled question without a preemption"])
+def test_half_of_a_cancellations_evidence_never_verifies_it(mods, made, tmp_path, kept: str) -> None:
+    run = fresh_copy(made, tmp_path)
+    if kept.startswith("a preemption"):
+        without_the_cancelled_question(run)
+    else:
+        edit_last_status(run, without_a_preemption)
+    reading = mods.check.read_chat(run)
+    assert line_for(text_of(reading), "cancellation verified").startswith("MISSING") and not reading.ok
+
+
 @pytest.mark.parametrize(("pressure", "label"), [
     (lambda s: 5_000_000_001 if s > 130 else 3_000_000_000, "FAIL"),  # steady above 5.0 GB
     (lambda s: 5_400_000_001 if -10 < s < -9 else 3_000_000_000, "FAIL"),  # a loading peak above 5.4 GB

@@ -787,7 +787,10 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
         "side_accepted", "side_refused", "side_cancelled", "side_completed", "side_dropped_at_stop",
         "side_callback_failed", "side_preempted", "side_aborted", "jobs_waited_for_side",
         # D81: accepted behind a scene job, and the periodic job's grace
-        "side_accepted_behind_scene", "side_grace_started", "side_finished_in_grace", "side_preempted_after_grace"),
+        "side_accepted_behind_scene", "side_grace_started", "side_finished_in_grace", "side_preempted_after_grace",
+        # session 114: a side request waits for the next gap within its limit, or is given up (by its plan, at its
+        # wait limit, or because its plan failed); integers, as every key here ("components.scene.worker.*": INT)
+        "side_waits", "side_wait_limit", "side_given_up", "side_plan_failed"),
     "components.face.results": FACE_COUNTERS,  # runtime face_counters
     "components.face.worker.counters": Either((  # identity.worker counters; an error's class name is content
         vocab("ticks", "skipped_no_person", "replaced", "offered", "abandoned_at_stop", "expired_before_start",
@@ -864,6 +867,10 @@ CHAT_LOAD = JsonProfile({
     "stream_epoch": COUNT, "frame_seq": COUNT, "ingest_utc": maybe(ISO), "age_ms_when_asked": COUNT,
     "age_ms_when_answered": COUNT, "historical": maybe(BOOL), "answer_ms": COUNT, "answer_chars": COUNT,
     "cut_short": maybe(BOOL),
+    # session 115, part 9: whether the runtime sent the newest live frame instead of a stale one asked about
+    # (scene.chat, session 114), the frame sent's age when sent, and the frame asked about kept apart; numbers only
+    "frame_replaced": BOOL, "age_ms_when_sent": COUNT, "asked_frame": NULL, "asked_frame.stream_epoch": COUNT,
+    "asked_frame.frame_seq": COUNT, "asked_frame.ingest_utc": maybe(ISO), "asked_frame.age_ms_when_asked": COUNT,
 }, lines=True)
 VIEWER = JsonProfile({
     **LOAD_EVENT, "second_mono_s": NUM, "pictures": INT, "bytes": INT, "max_age_ms_when_sent": COUNT,

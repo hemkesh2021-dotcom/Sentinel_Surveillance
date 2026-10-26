@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 
 import pytest
+from evidence_profiles import scene_worker_nonconforming
 
 from sentinel.config import parse_config
 from sentinel.contracts import FrameRef, PixelFormat
@@ -630,7 +631,7 @@ def test_a_side_requests_window_runs_to_the_end_of_the_next_periodic_jobs_grace(
 
 
 def test_a_side_request_waiting_for_the_next_gap_lets_the_scene_job_go_first_then_is_asked_again(
-    stamper: FrameStamper, clock: FakeClock
+    stamper: FrameStamper, clock: FakeClock, tmp_path
 ) -> None:
     order: list[object] = []
 
@@ -650,10 +651,11 @@ def test_a_side_request_waiting_for_the_next_gap_lets_the_scene_job_go_first_the
     assert planned.finished.wait(2)
     assert order == ["job-1", "side", "answer"] and len(planned.windows) == 2  # the scene job first, then it starts
     assert analyzer.counters["side_given_up"] == 0
+    assert scene_worker_nonconforming(analyzer.counters, tmp_path) == []  # side_waits, as the evidence reader sees it
     assert analyzer.stop(2.0)
 
 
-def test_a_side_request_is_never_left_waiting_past_its_limit(stamper: FrameStamper, clock: FakeClock) -> None:
+def test_a_side_request_is_never_left_waiting_past_its_limit(stamper: FrameStamper, clock: FakeClock, tmp_path) -> None:
     analyzer = windowed(Gate(), RecentImages(), clock)
     planned = Planned(SidePlan.WAIT)
     assert planned.submit(analyzer)
@@ -664,11 +666,12 @@ def test_a_side_request_is_never_left_waiting_past_its_limit(stamper: FrameStamp
     assert len(planned.windows) == 2  # asked once more at the limit: its wait then gave it up
     assert (analyzer.counters["side_wait_limit"], analyzer.counters["side_given_up"]) == (1, 1)
     wait_for(lambda: not analyzer.busy())
+    assert scene_worker_nonconforming(analyzer.counters, tmp_path) == []  # session 115, part 9
     assert analyzer.stop(2.0)
 
 
 def test_a_side_request_its_plan_gives_up_or_whose_plan_fails_never_runs_and_scene_analysis_goes_on(
-    stamper: FrameStamper, clock: FakeClock
+    stamper: FrameStamper, clock: FakeClock, tmp_path
 ) -> None:
     images = RecentImages()
     analyzer = windowed(Gate(), images, clock)
@@ -678,6 +681,7 @@ def test_a_side_request_its_plan_gives_up_or_whose_plan_fails_never_runs_and_sce
         assert "side" not in side.log and isinstance(side.log[-1], SideGivenUp) and not side.started.is_set()
         wait_for(lambda: not analyzer.busy())
     assert (analyzer.counters["side_given_up"], analyzer.counters["side_plan_failed"]) == (2, 1)
+    assert scene_worker_nonconforming(analyzer.counters, tmp_path) == []  # session 115, part 9
     analyzer.submit(job_for(held_frame(stamper, clock, images)))
     ((job_id, outcome),) = drained(analyzer)
     assert (job_id, outcome.kind) == ("job-1", OutcomeKind.COMPLETED)  # scene analysis goes on

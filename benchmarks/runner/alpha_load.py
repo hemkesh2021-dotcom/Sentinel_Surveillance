@@ -14,7 +14,11 @@ up to ``--wait-s`` for the page on 127.0.0.1, then works until the page has not 
   are exercised. Per question it records numbers and fixed labels only: when it was asked (CLOCK_MONOTONIC, the
   guard's and the runtime's clock), which question, the state it ended in, the reason label for a refusal or a
   cancellation, the frame the answer describes (stream epoch, frame, ingest time), its age when asked and answered,
-  whether it was historical, the answer's length and whether it was cut short. **Never the answer's text.** With
+  whether it was historical, the answer's length and whether it was cut short. Since session 115, part 9 also whether
+  the runtime sent the newest live frame instead of a stale one asked about (``frame_replaced``; scene.chat, session
+  114): then the frame above is the frame sent, with its age when sent (``age_ms_when_sent``; its age when asked is
+  null), and the frame asked about is kept apart (``asked_frame``: stream epoch, frame, ingest time, age when asked).
+  **Never the answer's text.** With
   ``--for-s`` it stops asking that long after its first accepted question (the page answers while the models load,
   when chat is not yet available) and exits; the operator may then ask their own on the page.
 - ``chat --grounding G.jsonl`` (the grounding check G; sessions 65, 105 and 106) also asks the four fixed G questions
@@ -68,6 +72,7 @@ TOKEN = re.compile(rb'data-token="([0-9a-f]{32})"')
 FRAME = re.compile(r"[0-9]{1,9}-[0-9]{1,12}")
 FINAL = {"answered", "error", "timeout", "busy", "cancelled", "unavailable", "paused", "no_fresh_frame", "refused",
          "invalid", "off", "unknown", "incomplete"}  # incomplete: session 114
+ASKED_FRAME = ("stream_epoch", "frame_seq", "ingest_utc", "age_ms_when_asked")  # scene.chat.frame_facts' keys
 
 
 class Page:
@@ -126,7 +131,8 @@ def _label(text: Any) -> str | None:
 
 
 def _record(asked_mono: float, kind: str, document: dict[str, Any], http_status: int) -> dict[str, Any]:
-    frame = document.get("frame") if isinstance(document.get("frame"), dict) else {}
+    frame = document.get("frame") if isinstance(document.get("frame"), dict) else {}  # the frame sent
+    asked_frame = document.get("asked_frame") if isinstance(document.get("asked_frame"), dict) else None
     answer = document.get("answer")
     return {
         "asked_mono_s": round(asked_mono, 3), "kind": kind, "http_status": http_status,
@@ -134,6 +140,9 @@ def _record(asked_mono: float, kind: str, document: dict[str, Any], http_status:
         "reason": _label(document.get("reason")) if document.get("state") != "answered" else None,
         "stream_epoch": frame.get("stream_epoch"), "frame_seq": frame.get("frame_seq"),
         "ingest_utc": frame.get("ingest_utc"), "age_ms_when_asked": frame.get("age_ms_when_asked"),
+        # the runtime states a replacement only when it made one (scene.chat._document): absent means none
+        "frame_replaced": document.get("frame_replaced", False), "age_ms_when_sent": frame.get("age_ms_when_sent"),
+        "asked_frame": None if asked_frame is None else {key: asked_frame.get(key) for key in ASKED_FRAME},
         "age_ms_when_answered": document.get("age_ms_when_answered"), "historical": document.get("historical"),
         "answer_ms": document.get("answer_ms"), "answer_chars": len(answer) if isinstance(answer, str) else None,
         "cut_short": document.get("cut_short"),
