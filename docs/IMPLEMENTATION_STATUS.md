@@ -1,6 +1,8 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-26, session 115, part 5 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+Last updated 2026-10-26, session 115, part 6 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+
+**Session 115, part 6: D105, the LFM2.5-VL resource profile accepted (`7911a4b`, mechanism `20b4b22`); local only.** `step4cand-lfm25-20261026T094728Z` (run `step4cand-lfm25-20261026T094626Z`) is ACCEPTED for the bounded replay demo profile, its kernel-log coverage covered by a run-specific exception from the same-boot `dmesg` evidence; the run's own "not eligible: K_kernel" and `LCd_exit=1` stay as recorded, and the step-4 tooling and criteria are unchanged. LFM2.5-VL is the default and admitted for the configuration it measured; LFM2-VL is the explicit rollback. Not recognition accuracy, chat quality or chat admission; the NVRM lines stay documented and unexplained. Next: a face + scene + chat validation run on the live camera, proposed, not prepared.
 
 **Session 115, part 5: the kernel ring buffer (the maintainer's `sudo dmesg --raw`, same boot) matches the journal record for record and covers the whole required window: 0 OOM and 0 NvMap candidates.** The coverage question is resolved as evidence, saved apart; the run's verdict stays not eligible (K_kernel), and accepting the profile with this evidence is the maintainer's decision.
 
@@ -812,8 +814,10 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
    - **Maintainer (session 114, part 4):** look at `mobile-text/before-after/` and the rebuilt `before-after/` in the review folder; say whether the short lines and the disclosures' labels read well, and whether the 320 px phone's picture (only its top 26 px in the first screen) or the blank line under the current line at 360 and 320 px needs a layout change (part 4 log, section 7).
    - **Done (session 115):** LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL the rollback (`378ae85`); step 4 can measure a set (`f77b0ff`); the files verified against the Hub; guarded smoke tests with a synthetic picture passed for both sets; D46 unchanged, so `--scene` refuses LFM2.5-VL until a profile admits it (D104; session 115 log).
    - **Done (session 115, part 4):** `step4cand-lfm25-20261026T094626Z` recorded read only: not eligible, K_kernel unavailable (the start marker 0.119 s past the whole-second bound); every other criterion passed; journal evidence for the 1.1 s gap saved apart (session 115 log, part 4).
+   - **Done (session 115, part 6):** D105: the LFM2.5-VL profile accepted with its run-specific kernel exception (`20b4b22`, `7911a4b`); admission tests on this device's real files; 10 of 10 mutations; the unit suite without browser modules 2820 passed, 2 skipped (session 115 log, part 6).
+   - **Maintainer (session 115, part 6):** whether to approve the face + scene + chat validation run with LFM2.5-VL on the live camera (about 8 min seated at the Mac; part 6, section 5); then Claude prepares its package.
    - **Done (session 115, part 5):** the maintainer's `dmesg` capture compared read only: complete over the window, 0 OOM and 0 NvMap candidates, matching the journal record for record (session 115 log, part 5).
-   - **Maintainer (session 115, part 5):** whether that evidence stands in for the run's marker proof (then a separate acceptance commit, D46), or a new measurement.
+   - **Maintainer (session 115, part 5; decided: D105, part 6):** whether that evidence stands in for the run's marker proof (then a separate acceptance commit, D46), or a new measurement.
    - **Maintainer (session 115, part 4; dmesg captured):** optionally `sudo dmesg --raw` before the next reboot (command in the analysis folder's `ASSESSMENT.md`); then whether that evidence may stand in for the marker proof, or a new measurement (a one-second marker pause in the tooling would need your approval and a new package).
    - **Maintainer (session 115; ran 2026-10-26, recorded in part 4):** when convenient, after a reboot, the step-4 candidate measurement of LFM2.5-VL (`~/sentinel-prep/step4cand-lfm25-460b8e7/`, blocks LCa-LCf, each sourced in one shell; about 20 min; session 115 log, part 3; the earlier `step4cand-lfm25-f77b0ff` refuses at the current code); then the acceptance decision; until then runs keep `--scene-model-set lfm2-vl`.
    - **Done (session 115, part 2):** the approved preview v6's interactions (`3b93e05`, `e87ba98`): the slower trace and settle; a selected control keeps its look under the pointer and on keyboard focus; 11 of 11 mutations caught, the 25 page-rendering modules 887 passed, 1 skipped; held-state comparisons outside Git (session 115 log, part 2).
@@ -1698,6 +1702,85 @@ Notes on partial and in-progress rows:
 4. **What it does not:** the run's recorded verdict. It stays `not eligible: K_kernel` (`LCd_exit=1`), because the tool's proof is the run's own markers.
 5. **Where it is:** the same analysis folder, outside Git: `DMESG-COMPARISON.md`, `dmesg-compare.json`, `dmesg-match.json`, `tools/` and `SHA256SUMS.dmesg` (`718c8459…`). `ASSESSMENT.md` and the earlier `SHA256SUMS` are unchanged and verified; the run folder is untouched.
 6. **Next (the maintainer's):** decide whether this evidence may stand in for the run's marker proof. If yes, accepting the profile is a separate, maintainer-approved commit (D46): the profile entry and `profiled=True`, recording this exception. If no, measure again, with or without a tooling pause after the start marker (part 4). Nothing was rerun, accepted, pushed or published.
+
+### Session 115, part 6 (Claude, 2026-10-26): D105: the LFM2.5-VL resource profile accepted with a run-specific kernel-coverage exception; the run's own verdict unchanged; LFM2.5-VL the default, LFM2-VL the rollback
+
+1. **The maintainer's decision, D105 (2026-10-26), as given:**
+   - **Accepted:** the LFM2.5 resource profile from `step4cand-lfm25-20261026T094626Z`.
+   - **The exception:** a run-specific K_kernel evidence exception, based on the same-boot `dmesg` capture and its comparison with the journal.
+   - **Unchanged:** the run's own "not eligible: K_kernel" and `LCd_exit=1`; future kernel checks (no general bypass); LFM2.5-VL the default and LFM2-VL the explicit rollback.
+   - **The NVRM lines:** they stay documented; their appearance before the run does not establish that they are harmless.
+   - **Scope:** the approval covers the measured resource profile only. It does not validate recognition accuracy or chat quality, and it does not admit chat.
+2. **Verified before registering** (read only):
+   - **Evidence:** both evidence checksum lists verify, `SHA256SUMS` (`62e58712…`, the journal evidence) and `SHA256SUMS.dmesg` (`718c8459…`, the capture and its comparison); the run folder is unchanged since the analysis began.
+   - **Generated values:** the entry's values were generated by script from the run's `manifest.json`, `profile.json`, `step4cand.json` and identity snapshot.
+   - **Field-by-field comparison:** the committed entry and exception match those files in 29 of 29 field groups. They cover:
+     - run directory, commit, boot, flags, cache, interval;
+     - model and projector (name, size, time, SHA-256), engine, criteria;
+     - every recorded value, the run's own kernel status, the build;
+     - the request fingerprint `1eb816af…`, which is the lfm2.5-vl set's;
+     - the memory policy and its six R inputs;
+     - the exception's run, the recorded status and reasons, the evidence checksums (recomputed from the files), and its counts against the dmesg comparison;
+     - the set's facts and fingerprint against the profile's.
+   - **Files on disk:** the device's LFM2.5-VL files have the recorded size and modification time; the run's end-of-run rehash was equal for all 14 files.
+3. **What changed.**
+   - **`20b4b22`, the mechanism, with no exception:**
+     - `adapters.KernelCoverageException` and the static `KERNEL_COVERAGE_EXCEPTIONS`;
+     - `kernel_exception_problem()`;
+     - `accepted_profile_problem()` still requires observed kernel coverage, and otherwise accepts only the profile's own exception. That exception must name the same profile, run directory and boot, record the run's own (never "observed") status, reasons and verdict, carry evidence, a decision and well-formed checksums, and establish 0 OOM and 0 NvMap candidates equal to the profile's. Every other check still applies.
+     - The step-4 tooling and its K criterion are untouched (`benchmarks/` unchanged). A regression test feeds `kernel_evidence()` this run's marker times and still gets "uncertain" with no counts.
+   - **`7911a4b`, the acceptance:**
+     - **The entry:** `step4cand-lfm25-20261026T094728Z` (named after the profiler run, as D59's was; operator session `step4cand-lfm25-20261026T094626Z`). It is ACCEPTED under `step4cand-wtd-plr-combined-cache-off-v2` with the candidate memory policy (verified) and `kernel_coverage="uncertain"` as the run recorded it. Its 0 OOM and 0 NvMap come from the exception's evidence.
+     - **Its limitations:** the startup identity limitation, the candidate's runtime limitation, and `NVRM_MISMATCH_OBSERVATION`.
+     - **The exception:** for that profile only, with the uncovered stretch 09:47:27.000000Z-09:47:28.119178Z, the evidence, both checksum lists and its own limitations.
+     - **The default set:** `profiled=True` for `lfm2.5-vl`. It stays the default and `lfm2-vl` stays the explicit rollback (`--scene-model-set lfm2-vl`, with its own profile `step4cand-demo-20261007T090339Z`).
+   - **Not changed:**
+     - the run folder and its verdict;
+     - the step-4 criteria and tooling;
+     - face admission: still keyed to the D59 profile, still `PENDING_VALIDATION`, no record for the new profile;
+     - chat admission (D77: validation runs only);
+     - drivers; recognition; thresholds.
+4. **Tests.**
+   ```
+   T = PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m pytest -q -p no:cacheprovider   # Python 3.10.14, in the worktree
+   T tests/unit/test_kernel_coverage_exception.py   # 27 passed (synthetic records; the tooling regression)
+   T tests/unit/test_lfm25_profile_admission.py     # 17 passed (8 portable; 9 on this device's real files, skipped elsewhere)
+   T <the admission, registry and step-4 suites, 13 modules>   # 552 passed (with the two new modules)
+   T tests/unit --ignore-glob='*browser*'           # 2820 passed, 2 skipped (torch, cv2) in 1181.30 s; exit 0
+   ```
+   - **Admitted:** on this device's real files, the default set with the LFM2.5 profile under the candidate policy is admitted, and the rollback on its own profile still is.
+   - **Refused:**
+     - the old model or the old projector in the new set's place;
+     - a same-name model of another size, or of the measured size with another modification time;
+     - a same-name projector of another size;
+     - a llama-server of the measured size with other bytes;
+     - another detector engine;
+     - the default memory policy; a 5 s interval;
+     - the rollback set on the new profile, or the default set on the old profile (another request fingerprint);
+     - a mismatched declared model revision;
+     - the session folder's name as a profile ID;
+     - the profile without its own exception, or with the exception filed under another profile.
+   - **Updated deliberately** (they pinned "no LFM2.5-VL profile"): the registry test now admits exactly the D59 and D105 profiles, with one exception; the set test reads `profiled=True` and the profile's facts. The D46 refusal of an unprofiled set is still shown, with a synthetic unprofiled copy, in assembly and through the CLI. The profiled default now passes D46 and meets its profile's checks (refused without the measured memory policy).
+   - **Mutations:** 10 of 10 caught:
+     - a general bypass; run or boot not compared; nonzero counts allowed; checksums not required;
+     - the exception removed, or naming another boot;
+     - the set left unprofiled;
+     - another model time recorded, or the old request fingerprint;
+     - the NVRM observation dropped.
+5. **Next: a face + scene + chat validation run with LFM2.5-VL (PROPOSED; no package yet; nothing launched).**
+   - **Live camera (CCTV) required: yes.** Face recognition needs live faces, and scene analysis and chat read live frames. A recorded clip cannot stand in.
+   - **Position and actions:** the session 103-104 integration run's (`fci-`), at the Mac:
+     - seated at your usual place, in the camera's view, working as usual; you need not face it;
+     - nobody else in view; type nothing in the launch window;
+     - the chat questions asked for you, the two fixed protocol questions every 6 s; answer texts never recorded;
+     - at the stop cue, stay seated until it ends by itself.
+   - **Duration:** 480 s from readiness; about 1-2 min of loading before it; about 20 minutes in all with the checks after a reboot.
+   - **Configuration:** `sentinel run --scene --face --face-validation --chat --chat-validation --workload-thp-disable --post-load-release`, with the default scene model set:
+     - the scene manifest names `step4cand-lfm25-20261026T094728Z` and `model_revision: lfm2.5-vl-1.6b-q4_0`;
+     - face keeps its admission record on the D59 profile (`PENDING_VALIDATION`; the new run measured the same face weights);
+     - under `step5_guard` with its limits unchanged, monitoring first, chat's gate unchanged.
+   - **It establishes** that face, LFM2.5-VL scene analysis and chat run together within the memory limits on the live camera. **It does not establish** recognition accuracy, chat quality or chat admission.
+   - **Needed first:** your approval of that run; then Claude prepares and dry-runs a package pinned to the current commit. The NVRM lines stay documented and are read again from that boot's kernel log.
 
 ## Session 114 log (Claude, 2026-10-25): chat answers sized to the time before the next periodic scene job (session 113's step 1), the image sent checked live when a question starts, shortened answers labelled, the question kept in the page; portable tests, mutations and the full suite; the camera and distance questions and two later requirements recorded as pending; nothing launched, pushed or published
 
