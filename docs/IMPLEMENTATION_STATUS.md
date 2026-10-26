@@ -1,6 +1,8 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-26, session 115, part 11 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+Last updated 2026-10-27, session 115, part 12 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+
+**Session 115, part 12: the chat preemption check's session `cp-20261026T191803Z` read only: stopped by the guard during the model load, nothing judged; two tooling defects fixed (`9ba014e`); local only.** The guard launched the check, and the check started llama-server. 3.0 s later, before readiness, the guard stopped it on its MemFree floor (1,004,228,608 B under 1 GiB). Pressure was not the trigger: its peak was 2.93 GB, and MemAvailable stayed at least 5.06 GB. No cache drop had preceded the run. The check's result `chatpreempt.json` was never written; the guard's result was present. Two defects followed. The reading hid the guard's result behind a generic MISSING line. The check left its own llama-server for the guard to stop. Both are fixed: the reading names the missing file and reports the guard stop, and the check stops its own server whatever ends it. Three new tests and one tightened (23), which fail at `5df3289`; a dry run of the failure path reproduces the device's outcome at `5df3289` and shows the fix at `9ba014e`. `chatpreempt-5df3289` refuses at this code by design and is not to be rerun. A re-pinned package needs the maintainer's approval. Nothing pushed or published.
 
 **Session 115, part 11: the controlled chat preemption check implemented (`5df3289`), packaged (`chatpreempt-5df3289`, manifest `0ffba2fc…`) and dry-run checked; not run against the model; local only.** One guarded llama-server with LFM2.5-VL and a synthetic picture (no camera), through the runtime's own scene worker (the 1.5 s grace, no lane interval) and chat service. There is a short-answer control and three long-question trials. A scene job is submitted only while the request is genuinely in flight: the POST open and `/slots` decoding. A trial passes only when the grace then ended it, and its scene job started within 2000 ms with a valid report. An answer that ended by itself is NOT EXERCISED, never PASS. Metadata only. 20 tests; the dry run's eight cases behaved as designed. It is separate evidence, never an integration run's cancellation item. Nothing pushed or published.
 
@@ -825,8 +827,10 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
    - **Done (session 115):** LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL the rollback (`378ae85`); step 4 can measure a set (`f77b0ff`); the files verified against the Hub; guarded smoke tests with a synthetic picture passed for both sets; D46 unchanged, so `--scene` refuses LFM2.5-VL until a profile admits it (D104; session 115 log).
    - **Done (session 115, part 4):** `step4cand-lfm25-20261026T094626Z` recorded read only: not eligible, K_kernel unavailable (the start marker 0.119 s past the whole-second bound); every other criterion passed; journal evidence for the 1.1 s gap saved apart (session 115 log, part 4).
    - **Done (session 115, part 6):** D105: the LFM2.5-VL profile accepted with its run-specific kernel exception (`20b4b22`, `7911a4b`); admission tests on this device's real files; 10 of 10 mutations; the unit suite without browser modules 2820 passed, 2 skipped (session 115 log, part 6).
+   - **Done (session 115, part 12):** `cp-20261026T191803Z` read only: a guard stop on MemFree's floor 3.0 s after launch, during the model load; nothing judged. The reading's and the check's cleanup defects fixed (`9ba014e`); 23 tests, the four new or changed ones fail at `5df3289`; the failure path dry-run (session 115 log, part 12).
+   - **Maintainer (session 115, part 12):** nothing to run on the device now; do not rerun `chatpreempt-5df3289`. Decide whether Claude prepares and dry-runs a re-pinned package at `9ba014e`. It would carry the corrected recovery text and an operator cache drop before the check, as the integration packages do; the guard's limits stay unchanged (part 12, section 7).
    - **Done (session 115, part 11):** the controlled chat preemption check: the tool and its tests (`5df3289`), the package `chatpreempt-5df3289` (manifest `0ffba2fc…`) and its dry run (P passed, N not exercised, F failed, D/L/M/U refusals, R repeats nothing); not run against the model (session 115 log, part 11).
-   - **Maintainer (session 115, part 11):** when convenient, run `chatpreempt-5df3289` (no CCTV; close VS Code, Claude Code and Codex; about 5-10 min; `PROTOCOL.md`); send back the folder's name and `check.txt`. Separately, whether to re-pin and run the integration package (`fci-lfm25-b106100` refuses at `5df3289`'s code by design).
+   - **Maintainer (session 115, part 11; ran 2026-10-27 as `cp-20261026T191803Z`, recorded in part 12):** when convenient, run `chatpreempt-5df3289` (no CCTV; close VS Code, Claude Code and Codex; about 5-10 min; `PROTOCOL.md`); send back the folder's name and `check.txt`. Separately, whether to re-pin and run the integration package (`fci-lfm25-b106100` refuses at `5df3289`'s code by design).
    - **Done (session 115, part 10):** `fci-lfm25-b106100` prepared and dry-run checked (manifest `ba8c5808…`; B, RF, M1, M2 and NC as designed; the other cases as before; not launched); cancellation under the sizing assessed (not reliably exercised) and a controlled check proposed (session 115 log, part 10).
    - **Maintainer (session 115, part 10; decided in part 11: the controlled check first):** whether to run `fci-lfm25-b106100` as it is (chat completion probably not passed, for MISSING cancellation); whether Claude implements and packages the controlled cancellation check (part 10, section 4); in which order. Unresolved follow-ups unchanged: the camera reconnect, the NVML mismatch; the legacy-v1 items pending.
    - **Done (session 115, part 9):** the two tooling gaps closed (`b106100`): the scene worker's four counters declared; replaced-frame answers recorded and judged against the frame sent; the cancellation reading covered (outlasting the grace verifies it; unexercised stays MISSING); 63 new tests; 14 of 14 mutations; the unit suite without browser modules 2883 passed, 2 skipped (session 115 log, part 9).
@@ -842,7 +846,7 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
    - **Maintainer (session 115; ran 2026-10-26, recorded in part 4):** when convenient, after a reboot, the step-4 candidate measurement of LFM2.5-VL (`~/sentinel-prep/step4cand-lfm25-460b8e7/`, blocks LCa-LCf, each sourced in one shell; about 20 min; session 115 log, part 3; the earlier `step4cand-lfm25-f77b0ff` refuses at the current code); then the acceptance decision; until then runs keep `--scene-model-set lfm2-vl`.
    - **Done (session 115, part 2):** the approved preview v6's interactions (`3b93e05`, `e87ba98`): the slower trace and settle; a selected control keeps its look under the pointer and on keyboard focus; 11 of 11 mutations caught, the 25 page-rendering modules 887 passed, 1 skipped; held-state comparisons outside Git (session 115 log, part 2).
    - **Maintainer (session 115, part 2):** look at `v6-interactions/before-after/` in the review folder, or try the motion with its `tools/serve_synthetic.py`; say whether the incident link in a selected row should also keep its look under the pointer.
-   - **Claude, next (session 115, part 11):** after a `chatpreempt-5df3289` session, record it read only (metadata only; separate evidence); nothing launched. (Done: the measurement recorded, part 4; the profile accepted, part 6; the package prepared, part 7; its run recorded read only, part 8; the tooling gaps closed, part 9; the package re-pinned, part 10; the controlled check prepared, part 11.)
+   - **Claude, next (session 115, part 12):** on the maintainer's approval only, the re-pinned chat preemption package at `9ba014e` and its dry run; nothing launched. (Done: the measurement recorded, part 4; the profile accepted, part 6; the package prepared, part 7; its run recorded read only, part 8; the tooling gaps closed, part 9; the package re-pinned, part 10; the controlled check prepared, part 11; its session recorded read only and the tool fixed, part 12.)
    - **Claude, next (session 114):** on instruction: the chat change's device validation package, or a read-only plan toward the requested range (the camera facts first; then session 113's steps 3-4, thresholds unchanged), or changes to the applied style or the phone text.
    - **Done (session 112):** v2.0.0-alpha.2 published: `27d6308` pushed alone as a fast-forward of `alpha-candidate-2026-10`; Dashboard checks and both portable jobs passed on it; the tag `v2.0.0-alpha.2` and the pre-release (not latest) created (session 112 log).
    - **Maintainer (session 112):** the action in the session 112 section of `docs/LOCAL_NOTES.md` (excluded). The 24 October review checkpoint on the pre-release. Whether to update the wiki (it still describes alpha.1) and when to push this record's local commits are your decisions.
@@ -1801,6 +1805,82 @@ Notes on partial and in-progress rows:
      - under `step5_guard` with its limits unchanged, monitoring first, chat's gate unchanged.
    - **It establishes** that face, LFM2.5-VL scene analysis and chat run together within the memory limits on the live camera. **It does not establish** recognition accuracy, chat quality or chat admission.
    - **Needed first:** your approval of that run; then Claude prepares and dry-runs a package pinned to the current commit. The NVRM lines stay documented and are read again from that boot's kernel log.
+
+### Session 115, part 12 (Claude, 2026-10-27): the chat preemption check's session `cp-20261026T191803Z` read only, stopped by the guard during the model load and nothing judged; the reading's and the check's cleanup defects fixed (`9ba014e`); the failure path dry-run
+
+1. **The request (the maintainer, 2026-10-27).**
+   - **The report:** the session gave `CR_exit=0`, `CV_guard_exit=1`, "MISSING the check's or the guard's result (FileNotFoundError): nothing is judged", `CV_exit=1`, then `llama_servers_left=0`, 9 files sealed, `CH_exit=0`.
+   - **The inspection:** read the sealed session only, and verify its seal. Name the missing file, say why it was not produced or found, and whether the guard launched the model. Read stdout, stderr and the command arguments without secrets or answer text.
+   - **No inference from exit code 1 alone.**
+   - **If a tooling defect is established:** the smallest fix, a focused regression test, and a dry run of the affected failure path. Preserve the session.
+   - **The bounds:** no workload, cache drop, driver or admission change, push or publication.
+2. **The session, read only** (`~/sentinel-runs/chatpreempt/cp-20261026T191803Z`).
+   - **The seal:** it verifies, 9 of 9 files (`SHA256SUMS` itself `2d28a145…`), and is unchanged.
+   - **Missing:** `cp/chatpreempt.json`, the check's result. `main()` writes it only after `run()` returns.
+   - **Present:**
+     - the guard's result `cp/result.json`, with its copy `guard-stdout.json`;
+     - `cp/guard.jsonl` (17 samples);
+     - `cp/run.err` (a 12-line traceback, no secret);
+     - `cp/run.jsonl` (empty: the check prints only at its end);
+     - `guard-stderr.txt` (empty: no cues).
+   - **The command arguments** (from cp-R and cp-V, matching the guard's recorded parameters):
+     - the guard: `--from-launch --duration-s 600 --step4-headroom`;
+     - the check: `run --model-set lfm2.5-vl --post-load-release`, with its defaults `--ready-timeout-s 180`, port 18081 and three trials, under the runtime's Python.
+   - **Analysis apart:** `~/sentinel-runs/analysis/cp-20261026T191803Z-reading/ASSESSMENT.md` (`SHA256SUMS` `f574d57f…`).
+3. **What happened (the guard's record; numbers only).**
+   - **Before launch:** step 4's headroom passed, with MemFree 3,679,408,128 B, MemAvailable 6,686,756,864 B, pressure 1.30 GB and Cached 2.74 GB. No cache drop had preceded the run; the package said none was needed.
+   - **The model was launched:** the guard launched the check at 19:19:02Z. The check passed its own refusals and its MemFree precheck, then started llama-server. Its traceback ends in `LlamaServerProcess.start` → `_await_ready`, which comes after the spawn, and the guard counted one llama-server after the check's exit. It was never ready.
+   - **The stop:** at 3.017 s, the trigger `free_or_available_stop` fired on `MemFree < 1073741824`, value 1,004,228,608 B.
+     - Pressure was not the trigger: its peak was 2,934,214,656 B against the 4.8 GB stop. MemAvailable stayed at least 5,055,795,200 B, and the swap counters were unchanged.
+     - Over the samples, MemFree fell while Cached rose (2.74 → 3.91 GB) and MemAvailable stayed at 5.06-5.08 GB. This is an association; the fields do not attribute the whole loss.
+   - **Then:**
+     - the guard's SIGINT raised KeyboardInterrupt in the readiness wait, and the check exited with -2 after 0.203 s, without a result;
+     - its llama-server outlived it (`llama_server_after_exit` 1), and the guard stopped it (`llama_server_left` 0), so `cleanup_clear` is false and the status is `guard_stop`;
+     - `read` raised FileNotFoundError on the check's result and printed the generic MISSING line.
+   - **The kernel log:** this boot's journal holds no kernel record after 13:49:10Z, so none in the run's window. `dmesg` needs privileges.
+4. **Two tooling defects, established and fixed in `9ba014e`** (`benchmarks/runner/chat_preempt_check.py`).
+   - **The reading** loaded both results in one `try`. So a missing check result hid the guard's, which held the cause, and the line named neither file. The package's recovery text then maps "`CV_guard_exit=1`, then MISSING" to a headroom refusal with nothing started; here that would have been wrong.
+     - Now each result is read on its own and a missing one is named.
+     - A refused launch reads `REFUSED the guard: refused:…, before launch: nothing was started and nothing is judged`.
+     - With the guard's result and no check result, the reading reports the guard's status, its trigger in short (numbers only), the stop, the returncode and the leftover llama-servers. Then `MISSING the check's result, chatpreempt.json (…): not written; nothing else is judged`, with no verdict line.
+     - The memory line no longer says "the guard's limits held (no stop)" when the guard stopped the run.
+   - **The run** called `server.start()` outside its `try/finally`. So an interrupt during the load left the check's own llama-server to the guard, contrary to step5_guard's contract that the child stops its own llama-server. The start is now inside, and the `finally` stops it whatever ends the check. The interrupt still ends the check without a result.
+   - **Not changed:** the runtime, the guard and its limits, the judging of trials, the grace, the delay limit, scheduling, thresholds and admission.
+5. **Tests (portable).**
+   ```
+   PYTHONPATH=src ~/sentinel-surveillance/.venv/bin/python -m pytest -q -p no:cacheprovider tests/unit/test_chat_preempt_check.py
+   # 23 passed (3 repeated runs passed)
+   ```
+   - **New:**
+     - a guard stop with no check result, from this session's guard result (shape and numbers): the three exact lines, no verdict, exit 1;
+     - a refused launch;
+     - an interrupt during the server's start, which still ends the check and leaves the server stopped.
+   - **Tightened:** the missing guard result names `result.json`.
+   - **At `5df3289`** (a `git archive` copy with the new test file): those four fail and the other 19 pass.
+   - **The scope:** nothing else imports the module, so no broader suite was run.
+6. **The failure path, dry-run** (`~/sentinel-prep/dryrun-harness-9ba014e-guardstop/`, outside Git; `DRYRUN.txt`).
+   - **What is real:** step5_guard as cp-V composes it, the check's own CLI and reading, and the runtime's `LlamaServerProcess` spawning a stand-in process named llama-server that never becomes ready.
+   - **The setup:** a fake meminfo whose MemFree falls under the floor during the load, in private namespaces, with code trees from `git archive`.
+   - **G at `5df3289`** reproduces the device's outcome: guard_stop at 3.02 s, -2, KeyboardInterrupt in `_await_ready`, `llama_server_after_exit` 1, `cleanup_clear` false, the generic MISSING.
+   - **G at `9ba014e`:** `llama_server_after_exit` 0 and `cleanup_clear` true. The reading's three lines name the guard stop, the MemFree trigger and the missing file.
+   - **M at `9ba014e`** (too little MemAvailable): REFUSED.
+   - **Not covered:** the real llama-server's load, its MemFree draw and its own SIGTERM handling, and the package blocks (cp-R refuses at this code by design).
+7. **Next (the maintainer's decision).**
+   - **No device step now.** Do not rerun `chatpreempt-5df3289`: its cp-R refuses at `9ba014e`'s code by design, and its precondition (no cache drop) did not leave this load above the floor.
+   - **Proposed, needing approval:** a re-pinned package at `9ba014e` and its dry run. It would differ from `chatpreempt-5df3289` in three ways:
+     - the pin;
+     - the corrected recovery text (a guard stop versus a refused launch, as the reading now says);
+     - an operator cache drop before the check, as the integration packages have (fci25, after its drop: baseline MemFree 7.0 GB, minimum 2.43 GB; one observation, not a guarantee).
+
+     The guard's limits, the headroom check and the check's judging stay unchanged.
+   - **Unchanged:** the re-pin of `fci-lfm25-b106100`, the camera reconnect, the NVML mismatch and the legacy-v1 items.
+8. **Not established:**
+   - what made up the whole MemFree loss;
+   - whether a dropped cache keeps this load above the floor;
+   - whether the real llama-server stops on the check's own SIGTERM during the load (the guard's SIGTERM stopped it here);
+   - every item of the check itself: nothing was judged.
+
+   The session stays separate evidence. It changes no verdict and is no integration run's cancellation item.
 
 ### Session 115, part 11 (Claude, 2026-10-26): the controlled chat preemption check implemented (`5df3289`), packaged (`chatpreempt-5df3289`) and dry-run checked; not run against the model; separate evidence, never an integration item
 
