@@ -1,6 +1,8 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-26, session 115, part 10 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+Last updated 2026-10-26, session 115, part 11 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+
+**Session 115, part 11: the controlled chat preemption check implemented (`5df3289`), packaged (`chatpreempt-5df3289`, manifest `0ffba2fc…`) and dry-run checked; not run against the model; local only.** One guarded llama-server with LFM2.5-VL and a synthetic picture (no camera), through the runtime's own scene worker (the 1.5 s grace, no lane interval) and chat service. There is a short-answer control and three long-question trials. A scene job is submitted only while the request is genuinely in flight: the POST open and `/slots` decoding. A trial passes only when the grace then ended it, and its scene job started within 2000 ms with a valid report. An answer that ended by itself is NOT EXERCISED, never PASS. Metadata only. 20 tests; the dry run's eight cases behaved as designed. It is separate evidence, never an integration run's cancellation item. Nothing pushed or published.
 
 **Session 115, part 10: the validation package re-pinned to `b106100`, `fci-lfm25-b106100` (manifest `ba8c5808…`), prepared and dry-run checked; not launched; local only.** It is part 7's procedure with only the pin, the approval line and decision 16 changed. Its dry run added four composed cases: replaced frames passed; missing and contradictory metadata failed with their reasons; an unexercised cancellation read MISSING. The unchanged-frames case passed with its cancellation verified. Under the session-114 answer sizing, the unchanged workload is not expected to exercise cancellation: fci25 had 56 of 56 questions end within the grace. A device session would probably read chat completion not passed for that reason alone. A separate controlled cancellation check (synthetic picture, no camera, about 3-4 min) is proposed, not implemented. Nothing run on the device, pushed or published.
 
@@ -823,8 +825,10 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
    - **Done (session 115):** LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL the rollback (`378ae85`); step 4 can measure a set (`f77b0ff`); the files verified against the Hub; guarded smoke tests with a synthetic picture passed for both sets; D46 unchanged, so `--scene` refuses LFM2.5-VL until a profile admits it (D104; session 115 log).
    - **Done (session 115, part 4):** `step4cand-lfm25-20261026T094626Z` recorded read only: not eligible, K_kernel unavailable (the start marker 0.119 s past the whole-second bound); every other criterion passed; journal evidence for the 1.1 s gap saved apart (session 115 log, part 4).
    - **Done (session 115, part 6):** D105: the LFM2.5-VL profile accepted with its run-specific kernel exception (`20b4b22`, `7911a4b`); admission tests on this device's real files; 10 of 10 mutations; the unit suite without browser modules 2820 passed, 2 skipped (session 115 log, part 6).
+   - **Done (session 115, part 11):** the controlled chat preemption check: the tool and its tests (`5df3289`), the package `chatpreempt-5df3289` (manifest `0ffba2fc…`) and its dry run (P passed, N not exercised, F failed, D/L/M/U refusals, R repeats nothing); not run against the model (session 115 log, part 11).
+   - **Maintainer (session 115, part 11):** when convenient, run `chatpreempt-5df3289` (no CCTV; close VS Code, Claude Code and Codex; about 5-10 min; `PROTOCOL.md`); send back the folder's name and `check.txt`. Separately, whether to run `fci-lfm25-b106100`.
    - **Done (session 115, part 10):** `fci-lfm25-b106100` prepared and dry-run checked (manifest `ba8c5808…`; B, RF, M1, M2 and NC as designed; the other cases as before; not launched); cancellation under the sizing assessed (not reliably exercised) and a controlled check proposed (session 115 log, part 10).
-   - **Maintainer (session 115, part 10):** whether to run `fci-lfm25-b106100` as it is (chat completion probably not passed, for MISSING cancellation); whether Claude implements and packages the controlled cancellation check (part 10, section 4); in which order. Unresolved follow-ups unchanged: the camera reconnect, the NVML mismatch; the legacy-v1 items pending.
+   - **Maintainer (session 115, part 10; decided in part 11: the controlled check first):** whether to run `fci-lfm25-b106100` as it is (chat completion probably not passed, for MISSING cancellation); whether Claude implements and packages the controlled cancellation check (part 10, section 4); in which order. Unresolved follow-ups unchanged: the camera reconnect, the NVML mismatch; the legacy-v1 items pending.
    - **Done (session 115, part 9):** the two tooling gaps closed (`b106100`): the scene worker's four counters declared; replaced-frame answers recorded and judged against the frame sent; the cancellation reading covered (outlasting the grace verifies it; unexercised stays MISSING); 63 new tests; 14 of 14 mutations; the unit suite without browser modules 2883 passed, 2 skipped (session 115 log, part 9).
    - **Maintainer (session 115, part 9; decided 2026-10-26, done in part 10):** whether Claude prepares and dry-runs (not launches) a validation package pinned to `b106100`, part 7's procedure with only the pin changed and dry-run cases with a waiting side request and a replaced frame (part 9, section 8); `fci-lfm25-5a6fc23` refuses at this code and must not be rerun. Unresolved follow-ups: the camera stream's end and reconnect in fci25; the NVML mismatch (no driver or package change without your decision). The legacy-v1 items stay a separate pending task.
    - **Done (session 115, part 8):** `fci25-20261026T124349Z` recorded read only: memory and face execution passed, the integration not passed (two tooling gaps from session 114: an undeclared scene-worker counter and the replaced frame's facts not recorded; the cancellation path unexercised); this boot's kernel log preserved, 0 OOM and 0 NvMap, the NVRM lines associated with an installed NVML 535 library (session 115 log, part 8).
@@ -838,7 +842,7 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
    - **Maintainer (session 115; ran 2026-10-26, recorded in part 4):** when convenient, after a reboot, the step-4 candidate measurement of LFM2.5-VL (`~/sentinel-prep/step4cand-lfm25-460b8e7/`, blocks LCa-LCf, each sourced in one shell; about 20 min; session 115 log, part 3; the earlier `step4cand-lfm25-f77b0ff` refuses at the current code); then the acceptance decision; until then runs keep `--scene-model-set lfm2-vl`.
    - **Done (session 115, part 2):** the approved preview v6's interactions (`3b93e05`, `e87ba98`): the slower trace and settle; a selected control keeps its look under the pointer and on keyboard focus; 11 of 11 mutations caught, the 25 page-rendering modules 887 passed, 1 skipped; held-state comparisons outside Git (session 115 log, part 2).
    - **Maintainer (session 115, part 2):** look at `v6-interactions/before-after/` in the review folder, or try the motion with its `tools/serve_synthetic.py`; say whether the incident link in a selected row should also keep its look under the pointer.
-   - **Claude, next (session 115, part 10):** on your decision only: record a session of `fci-lfm25-b106100` read only, or implement the controlled check with portable tests, its package and dry run; nothing launched. (Done: the measurement recorded, part 4; the profile accepted, part 6; the package prepared, part 7; its run recorded read only, part 8; the tooling gaps closed, part 9; the package re-pinned, part 10.)
+   - **Claude, next (session 115, part 11):** after a `chatpreempt-5df3289` session, record it read only (metadata only; separate evidence); nothing launched. (Done: the measurement recorded, part 4; the profile accepted, part 6; the package prepared, part 7; its run recorded read only, part 8; the tooling gaps closed, part 9; the package re-pinned, part 10; the controlled check prepared, part 11.)
    - **Claude, next (session 114):** on instruction: the chat change's device validation package, or a read-only plan toward the requested range (the camera facts first; then session 113's steps 3-4, thresholds unchanged), or changes to the applied style or the phone text.
    - **Done (session 112):** v2.0.0-alpha.2 published: `27d6308` pushed alone as a fast-forward of `alpha-candidate-2026-10`; Dashboard checks and both portable jobs passed on it; the tag `v2.0.0-alpha.2` and the pre-release (not latest) created (session 112 log).
    - **Maintainer (session 112):** the action in the session 112 section of `docs/LOCAL_NOTES.md` (excluded). The 24 October review checkpoint on the pre-release. Whether to update the wiki (it still describes alpha.1) and when to push this record's local commits are your decisions.
@@ -1797,6 +1801,100 @@ Notes on partial and in-progress rows:
      - under `step5_guard` with its limits unchanged, monitoring first, chat's gate unchanged.
    - **It establishes** that face, LFM2.5-VL scene analysis and chat run together within the memory limits on the live camera. **It does not establish** recognition accuracy, chat quality or chat admission.
    - **Needed first:** your approval of that run; then Claude prepares and dry-runs a package pinned to the current commit. The NVRM lines stay documented and are read again from that boot's kernel log.
+
+### Session 115, part 11 (Claude, 2026-10-26): the controlled chat preemption check implemented (`5df3289`), packaged (`chatpreempt-5df3289`) and dry-run checked; not run against the model; separate evidence, never an integration item
+
+1. **The request (the maintainer, 2026-10-26).**
+   - **The order:** implement and dry-run the separate controlled cancellation check first; do not launch the real model.
+   - **The interfaces:** use the existing scene worker, chat service and LFM2.5 server interfaces with a synthetic picture. Preserve the production runtime code, scheduling rules, thresholds and admission.
+   - **In flight:** do not assume a 120-token limit outlasts the grace. Verify the request is genuinely in flight when the scene job is submitted. An answer that finishes first is NOT EXERCISED, never PASS.
+   - **The trials:** a short-answer control and at most three bounded trials, reported separately.
+   - **What is verified:** the cancellation reason, the scene-start delay against the existing limit, a valid scene response, server health, memory limits and cleanup.
+   - **Metadata only.**
+   - **The bounds:** focused tests, a package and a dry run; no broad mutation campaign, repeated full suite or live workload.
+   - **The evidence stays separate:** it cannot change the previous verdict or satisfy that run's missing item.
+2. **The tool `benchmarks/runner/chat_preempt_check.py` (`5df3289`; operator tooling, the runtime untouched).**
+   - **`run`** starts one llama-server through the runtime's `LlamaServerProcess`, as `scene_smoke.py` does.
+     - It refuses before anything starts when:
+       - `LLAMA_SERVER_SLOTS_DEBUG` is set (llama-server's `/slots` then carries text; by default it sends numbers only, per the installed source);
+       - another llama-server runs, or the port is taken;
+       - MemFree is below the runtime's precheck.
+     - It composes, unchanged, the runtime's `ThreadedSceneAnalyzer` (`LlamaSceneRequest`, the 1.5 s grace) and `ChatService` in its validation run (`LlamaChatRequest`), on a live synthetic stream (labelled shapes, 15 fps).
+     - The analyzer has no lane interval, as while scene analysis is paused. So chat gives the full 120-token cap, and the check submits the periodic jobs.
+   - **In flight** means:
+     - the chat transport's POST has begun and not returned (a wrapper around the runtime's transport, which keeps times and the outcome only);
+     - `/slots` shows a slot processing with at least one token decoded.
+   - **The judging (predeclared, per trial):**
+     - **PASS** only for a request in flight that the grace then ended, with all of these:
+       - `cancelled` with `analyzer.PREEMPTED`;
+       - the request aborted;
+       - one preemption after the grace counted;
+       - the scene job started within D80's 2000 ms by the check's clock and by the worker's own measure;
+       - the scene job completed within the 8 s deadline with a report the strict parser accepts.
+     - **NOT EXERCISED** for an answer that ended by itself, before the job or within the grace.
+     - **FAIL** otherwise. A late or invalid scene job always fails.
+   - **The control** (the short question): AS EXPECTED only if answered, never cancelled, with its scene job valid.
+   - **Overall:**
+     - `passed`: the control as expected, at least one PASS, no FAIL, `/health` OK, no slot processing at the end, and a clean stop;
+     - `not exercised`: no trial exercised and nothing failed;
+     - `failed`: anything else.
+     - Exit codes 0, 3 and 1.
+   - **`read`** judges the result with the guard's: supervision, the returncode matching the verdict, no trigger and the peak pressure, then the lines.
+   - **Metadata only:** states, the runtime's fixed reason labels, timings, token counts, lengths and counters; never an answer's, a report's or a slot's text.
+3. **Tests (portable).**
+   ```
+   T = PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m pytest -q -p no:cacheprovider
+   T tests/unit/test_chat_preempt_check.py      # 20 passed; 5 repeated runs passed
+   ```
+   - **The fake:** `tests/support/fake_llama_server.py`, a loopback stand-in:
+     - a prompt phase;
+     - decoding that stops when its connection closes;
+     - `/slots` with text to be dropped;
+     - a valid or invalid scene report.
+   - **The cases:**
+     - pass (`closed_by_client` 1, the scene start 1500-2000 ms);
+     - not exercised within the grace, and before submission;
+     - an invalid scene report failing;
+     - three bounded trials;
+     - the slots-debug and other-server refusals;
+     - 12 judging cases;
+     - the reading with the guard (passed, a trigger, missing);
+     - the limits equal to `alpha_check`'s and the questions to `alpha_load`'s.
+   - **3 targeted mutations:** an answer within the grace passing; in flight without a decoded token; no delay limit. All caught; the second only after the fake gained a prompt phase.
+4. **The package `~/sentinel-prep/chatpreempt-5df3289/`** (outside Git; `SHA256SUMS` over 6 files, its SHA-256 `0ffba2fcd2499afe51388a7d0090fa4341323b162d0bdf82ff8abeea1b865b51`).
+   - **cp-R:**
+     - the pin's ancestry and code equality, no tracked changes, 16 checksums;
+     - no `LLAMA_SERVER_SLOTS_DEBUG`, no llama-server running;
+     - the runtime's scene admission on the device's files, read only, as a files check.
+   - **cp-V:** `step5_guard --from-launch --duration-s 600 --step4-headroom` over the check (`--model-set lfm2.5-vl --post-load-release`), then the reading.
+   - **cp-H:** what is left, then the seal.
+   - **The operator:**
+     - no CCTV;
+     - a plain SSH shell, with VS Code, Claude Code and Codex closed so that the guard's headroom check passes;
+     - no reboot, drop or sudo.
+   - **Duration:** cp-V about 1-2.5 minutes; about 5-10 minutes in all.
+   - **Recovery:** PROTOCOL.md covers each STOP, the headroom refusal (not a repeat, since nothing ran), a guard stop, a lost shell (seal with `CPW=<folder>`), and a leftover llama-server.
+5. **The dry run** (`~/sentinel-prep/dryrun-harness-5df3289-cp/`: the blocks and the real guard on a fake meminfo; after cp-R the model run is replaced by the real `run()` against the fake server):
+   - **P:** the control AS EXPECTED; three trials PASS (scene start 1501 ms each); passed, `CV_exit=0`; a repeated cp-V refused.
+   - **N:** three NOT EXERCISED; not exercised, `CV_exit=3`.
+   - **F:** an invalid report; the control NOT AS EXPECTED, the trials FAIL; failed, `CV_exit=1`.
+   - **D:** slots debug set; cp-R STOP.
+   - **L:** a llama-server running; cp-R STOP.
+   - **M:** too little MemAvailable; the guard refused, nothing judged, `CV_exit=1`.
+   - **U:** cp-V before cp-R; STOP.
+   - **R:** cp-R pasted twice repeats nothing.
+   - **Every case:** each seal verifies, no fake text appears in any dry folder, and nothing was created under the real `~/sentinel-runs`.
+   - **Not covered:** the model's real load and pace, whether a real long answer outlasts the grace, llama-server's own handling of the closed request, the post-load release, and a guard stop.
+6. **Not changed:**
+   - the runtime, scheduling, thresholds, limits, admission, drivers and packages;
+   - `fci25-20261026T124349Z` and its verdict;
+   - `fci-lfm25-b106100`, still not launched.
+
+   This check, when run, is separate evidence and never that run's or any integration run's cancellation item.
+7. **Next (the maintainer's decision):**
+   - run `chatpreempt-5df3289` (no CCTV, about 5-10 minutes);
+   - then, separately, decide whether to run `fci-lfm25-b106100` (CCTV; about 30 minutes);
+   - the follow-ups are unchanged: the camera reconnect, the NVML mismatch, and the legacy-v1 items pending.
 
 ### Session 115, part 10 (Claude, 2026-10-26): the validation package re-pinned to `b106100`, `fci-lfm25-b106100`, prepared and dry-run checked, with dry cases for unchanged frames, replaced frames, missing metadata and cancellation; not launched; whether the unchanged workload can exercise cancellation, and a separate controlled check proposed
 
