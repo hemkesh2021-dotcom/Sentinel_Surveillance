@@ -1,6 +1,8 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-26, session 115, part 2 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+Last updated 2026-10-26, session 115, part 3 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+
+**Session 115, part 3: the step-4 candidate package for LFM2.5-VL refreshed for the committed UI; local only.** The old package (`step4cand-lfm25-f77b0ff`) refuses at `460b8e7` because part 2 changed the dashboard's stylesheet and tests. A new package pinned to `460b8e7`, the old one with only its pin changed, replaces it; the old one is kept, unchanged. The clip's hash, recorded under its earlier name, is the current file's (verified read only, as it was for the accepted profile). Workload, model files, limits, criteria and admission are unchanged; nothing launched, pushed or published.
 
 **Session 115, part 2: the approved preview v6's interactions on the dashboard; local only.** The code is `3b93e05` (a test added in `e87ba98`); this record follows it. The hover and keyboard-focus trace takes 800 ms and the glow settles over 400 ms. A selected control (the current navigation item, a chosen theme, density or palette, the picture size, a shown panel, the focus view, a previewed incident, a switch that is on) keeps its selected look under the pointer and on keyboard focus: no trace, no added glow, its label unchanged, keyboard focus still drawing its ring. Press, pending, disabled, reduced motion, every colour and palette, the light mode, the font, the surfaces and the phone text are unchanged; at rest, every element's box and computed style are the same apart from the two timings. Browser tests on desktop and phone in both themes; 11 of 11 mutations caught; the 25 page-rendering modules 887 passed, 1 skipped. Before/after screenshots of held states are in `~/sentinel-design/sentinel-ui-review/v6-interactions/`, outside Git; synthetic data only; nothing pushed or published.
 
@@ -805,7 +807,7 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
    - **Done (session 114, part 4):** shorter text on phones (`485f3f6`): the freshness bar one line with its time, the incident page's explanations behind labelled disclosures, the essentials and every failure in view, wider screens unchanged; 14 browser tests, 7 of 7 mutations caught, the 25 page-rendering modules 877 passed, 1 skipped. Part 3's comparisons, which were 404 pages, rebuilt from the PNG files; the mobile comparisons added beside them (session 114 log, part 4).
    - **Maintainer (session 114, part 4):** look at `mobile-text/before-after/` and the rebuilt `before-after/` in the review folder; say whether the short lines and the disclosures' labels read well, and whether the 320 px phone's picture (only its top 26 px in the first screen) or the blank line under the current line at 360 and 320 px needs a layout change (part 4 log, section 7).
    - **Done (session 115):** LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL the rollback (`378ae85`); step 4 can measure a set (`f77b0ff`); the files verified against the Hub; guarded smoke tests with a synthetic picture passed for both sets; D46 unchanged, so `--scene` refuses LFM2.5-VL until a profile admits it (D104; session 115 log).
-   - **Maintainer (session 115):** when convenient, after a reboot, the step-4 candidate measurement of LFM2.5-VL (`~/sentinel-prep/step4cand-lfm25-f77b0ff/`, blocks LCa-LCf; about 20 min; session 115 log, section 10); then the acceptance decision; until then runs keep `--scene-model-set lfm2-vl`.
+   - **Maintainer (session 115):** when convenient, after a reboot, the step-4 candidate measurement of LFM2.5-VL (`~/sentinel-prep/step4cand-lfm25-460b8e7/`, blocks LCa-LCf, each sourced in one shell; about 20 min; session 115 log, part 3; the earlier `step4cand-lfm25-f77b0ff` refuses at the current code); then the acceptance decision; until then runs keep `--scene-model-set lfm2-vl`.
    - **Done (session 115, part 2):** the approved preview v6's interactions (`3b93e05`, `e87ba98`): the slower trace and settle; a selected control keeps its look under the pointer and on keyboard focus; 11 of 11 mutations caught, the 25 page-rendering modules 887 passed, 1 skipped; held-state comparisons outside Git (session 115 log, part 2).
    - **Maintainer (session 115, part 2):** look at `v6-interactions/before-after/` in the review folder, or try the motion with its `tools/serve_synthetic.py`; say whether the incident link in a selected row should also keep its look under the pointer.
    - **Claude, next (session 115):** record the measurement read only; after an acceptance, the profile entry and `profiled=True` in a separate commit, then a face + scene + chat validation package with LFM2.5-VL.
@@ -1469,6 +1471,139 @@ Notes on partial and in-progress rows:
 7. **For the maintainer:**
    - look at `v6-interactions/before-after/` (the folder's `README.txt` describes it), or try the motion with `serve_synthetic.py`;
    - say whether the incident link in a selected row should also keep its look under the pointer.
+
+### Session 115, part 3 (Claude, 2026-10-26): the step-4 candidate package for LFM2.5-VL refreshed for the committed v6 UI: a new package pinned to `460b8e7`, the old one kept; the clip's name and recorded hash explained
+
+1. **The request (the maintainer).** The v6 UI is complete at `460b8e7`, and the pending package `~/sentinel-prep/step4cand-lfm25-f77b0ff/` still compares `benchmarks`, `src`, `tests`, `config` and `pyproject.toml` with `f77b0ff`, so its LCb would refuse the UI changes.
+   - **Wanted:** a new, separately named package pinned to the verified current commit; the old one kept.
+   - **Unchanged:** the UI (no revert); the version check (no bypass); every guard and acceptance criterion; the measurement workload, the model files, the limits and the admission rules.
+   - **Explain:** whether the mapping between `CLIP=two_people_doorway_60s_2026-09-29.mp4` and the hash looked up under `room_static_60s_2026-09-29.mp4` is intentional.
+   - **Check:** syntax checks and a focused dry run, without launching models or the camera, reusing part 2's UI validation.
+   - **Report:** the package path, its manifest's SHA-256 and the exact commands for LCa-LCf in one SSH shell, saying whether each block must be sourced.
+   - **Not:** no push, publication or admission change.
+2. **Why the old package stops.** HEAD is `460b8e7`, with no tracked changes. `git diff --name-only f77b0ff 460b8e7 -- benchmarks src tests config pyproject.toml` lists `src/sentinel/web/dashboard.css`, `tests/unit/test_dashboard_states_browser.py` and `tests/unit/test_status_page_ui.py` (part 2's UI work). Everything else since `f77b0ff` is in `docs/`. So the old LCb's third check prints "code differs from f77b0ff…" and stops, as designed.
+   - The eight files whose SHA-256 LCb checks are byte-identical at `460b8e7`: the four step-4 runners, `gpu_alloc_probe.py`, `memory_policy.py`, `scene/models.py` and `scene/llama_server.py`. Part 2 changed only the dashboard's stylesheet and its tests.
+3. **The new package: the old one with only its pin changed.**
+   - Pinned to `460b8e739bd67edf497b9a5631d956dbbae60887`, the current commit.
+   - LCa's `PIN=` line is the only difference; LCb-LCf are byte-identical to the old package's (`diff`). So the identity snapshot, the cache drop, Check 9, the candidate measurement under `step4cand-wtd-plr-combined-cache-off-v2`, its 1440 s bound, the rehash, the model pins, the eight runner checksums and the clip check are all unchanged.
+   - Its LCb accepts HEAD only if HEAD contains `460b8e7` and nothing in `benchmarks`, `src`, `tests`, `config` or `pyproject.toml` differs from it. This record's commits change only `docs/`.
+   - The old package is unchanged (its `SHA256SUMS` still verifies, `b98ebfa6…`). A note beside it, `~/sentinel-prep/step4cand-lfm25-f77b0ff.SUPERSEDED.txt`, says why it refuses and which package replaces it. It never ran.
+4. **The clip's name and its recorded hash: intentional, and verified again (read only).**
+   - **One recording, three names:**
+     - `one_person_2026-09-29_1606.mp4`;
+     - renamed `room_static_60s_2026-09-29.mp4` by Claude, recorded in `c865f14` (2026-10-03), the SHA-256 unchanged;
+     - then `two_people_doorway_60s_2026-09-29.mp4`, the name the maintainer asked for after reviewing the clip in session 7 (real people, no empty-room period). The rename happened outside Git; the maintainer's file listing in session 11 shows only the new name.
+   - **Why the old name:** the clip's SHA-256 was recorded in the main checkout's excluded local notes under its earlier names (one line names both) and was not relabelled. The hash is not reproduced in Git, because the clip holds a third party whose consent is unresolved (session 38's step-4 explanation).
+   - **What the lookup does:** the blocks read the hash from that one line and pass it to `operator_check --step4-identity`. That command hashes the current file and reports `clip_mismatch` unless the two match, and LCb accepts only `complete`. The old name is a lookup key for a recorded value, never a second file; there is no `room_static` file in `~/clips/`.
+   - **Checked today**, printing only "same" or "different":
+     - the notes have exactly one line naming `room_static_60s_2026-09-29.mp4`, and it holds one 64-hex value;
+     - the current `~/clips/two_people_doorway_60s_2026-09-29.mp4` (1,770,670 B, modified 2026-09-29T10:37:03Z) has that SHA-256: same;
+     - the accepted profile's own run, `step4cand-20261007T082510Z`, recorded the same file name, modification time and hash, in both its identity snapshot and the profile's manifest: same.
+   - So the new measurement replays the same bytes as the profile it is to be compared with. The equivalence was first established read only in session 20 ("Clip identity") and again in session 38 ("Step 4, explained for operator review"). Session 11's entry, which calls it unresolved, predates both checks.
+5. **The blocks** (run in this worktree, at `460b8e7` or a later commit that changes only `docs/`). Source each one with `.` in one SSH shell, in order; section 6 says why. If LCb does not print `LCb_exit=0`, stop there and send back the folder's name and the last lines.
+   - **Before you launch (D50):**
+     - *Duration:* about 20 minutes: LCb's identity snapshot about 1-2 min; LCd about 17 min, bounded at about 26 min.
+     - *Position:* anywhere. A recorded clip is replayed: no camera, nobody needs to be in view.
+     - *Timed actions:* none. Type nothing while LCd runs.
+     - *Finish:* `LCd_exit=` is printed; then source LCe and LCf.
+     - *Prerequisites:* a fresh reboot; a plain SSH session from the Mac (not VS Code's terminal); VS Code, Claude Code and other development tools closed (the run records them and is not eligible otherwise); no other Sentinel run or llama-server. LCc stops the display manager and drops the page cache (D37); `sudo` asks for your password there.
+   - **LCa** (the session's variables):
+     ```bash
+     cd /home/villain8001/sentinel-worktrees/v2-ui && set -o pipefail
+     PIN=460b8e739bd67edf497b9a5631d956dbbae60887
+     SET=lfm2.5-vl
+     RUN="step4cand-lfm25-$(date -u +%Y%m%dT%H%M%SZ)"
+     D="$HOME/sentinel-runs/d1-checklist/$RUN"
+     CLIP="$HOME/clips/two_people_doorway_60s_2026-09-29.mp4"
+     NOTES="$HOME/sentinel-surveillance/docs/LOCAL_NOTES.md"
+     OC=(env PYTHONPATH=src /home/villain8001/sentinel-surveillance/.venv/bin/python benchmarks/runner/operator_check.py)
+     mkdir -p -m 700 "$HOME/sentinel-runs/d1-checklist" && mkdir -m 700 "$D" && echo "artifacts: $D"
+     ```
+   - **LCb** (the checks and the identity snapshot, before the cache drop):
+     ```bash
+     ( set -euo pipefail
+       [ "$(git status --porcelain --untracked-files=no | wc -l)" -eq 0 ] || { echo "tracked changes present"; exit 1; }
+       git merge-base --is-ancestor "$PIN" HEAD || { echo "HEAD does not contain $PIN"; exit 1; }
+       git diff --quiet "$PIN" HEAD -- benchmarks src tests config pyproject.toml || { echo "code differs from $PIN"; exit 1; }
+       printf '%s  %s\n' \
+         71945cf4a6a27dbc3d4ed0077f1cca644681f9b1a7a281c8a5850689e7af27d4 benchmarks/runner/demo_profile.py \
+         0eea67ae2db0e71cd6e0bf967cfae1dd2fc5dbf8f8a46fa891cb093077b14577 benchmarks/runner/demo_workload.py \
+         39f81ea81d6aae207d0e66e8b8328facfed1ad954c4ba6e6ff897fec75f9352a benchmarks/runner/operator_check.py \
+         a1a356010c60ab4b0222161fa912b83adb5aa75b7e2c2381e6e398e5d3499da8 benchmarks/runner/step4_criteria.py \
+         855367147069b240933e8c243101dca0185b94a389e5dfbf6314e1d97a58a735 benchmarks/runner/gpu_alloc_probe.py \
+         645b13b2c935640bec0948db96ce7df3667c5dda8bd7acbec79886d222d72822 src/sentinel/memory_policy.py \
+         99f7f983a0626f4ca2edfdc3cf960b3676d2eb47155160cbf49507db0587e095 src/sentinel/scene/models.py \
+         338ec601f630e3804a9ebe597f1777e474f211231c6e0b0b6091b35216e10b98 src/sentinel/scene/llama_server.py \
+         | sha256sum -c --quiet - || { echo "runner checksum mismatch"; exit 1; }
+       SHELL_THP="$(awk '/^THP_enabled:/ {print $2}' /proc/self/status)"
+       [ "$SHELL_THP" = 1 ] || { echo "this shell's THP_enabled is ${SHELL_THP:-unreadable}, not 1: open a new SSH session"; exit 1; }
+       { echo "utc=$(date -u +%FT%TZ)"; echo "boot_id=$(cat /proc/sys/kernel/random/boot_id)"; echo "boot_started=$(uptime -s)"
+         echo "commit=$(git rev-parse HEAD)"; echo "pin_commit=$PIN"; echo "scene_model_set=$SET"; echo "runner_sha256=verified"
+         echo "tracked_changes=$(git status --porcelain --untracked-files=no | wc -l)"
+         echo "shell_thp_enabled=$SHELL_THP"
+         echo "display_manager=$(systemctl is-active display-manager || true)"; } > "$D/provenance.txt"
+       CLIP_SHA="$(grep -F 'room_static_60s_2026-09-29.mp4' "$NOTES" | grep -oE '[0-9a-f]{64}' || true)"
+       [ "${#CLIP_SHA}" -eq 64 ] || { echo "recorded clip hash not found in $NOTES"; exit 1; }
+       "${OC[@]}" --step4-identity --step4-clip "$CLIP" --step4-clip-sha256 "$CLIP_SHA" --scene-model-set "$SET" \
+         | tee "$D/identity.json"
+       python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["status"] == "complete"; print(r["result_file"])' \
+         "$D/identity.json" > "$D/identity.path"
+       cp "$(cat "$D/identity.path")" "$D/identity-result.json"
+       python3 -c 'import json,sys; f=json.load(open(sys.argv[1]))["step4_identity"]["files"]; assert (f["model:llm"]["sha256"], f["model:mmproj"]["sha256"]) == (sys.argv[2], sys.argv[3]), "not the pinned LFM2.5-VL files"' \
+         "$D/identity-result.json" 8186364a4e7c3ad30f6dd3d3b7a4e0074c77dd91eed6cad5d8be9090ce285804 \
+         2ce89e610c56f3198ece2b86cf61743a08b9307279c89125eb2412ebb908689d
+       echo "model_files_sha256=pinned" >> "$D/provenance.txt"
+       echo "identity_finished_utc=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["finished_utc"])' "$D/identity.json")" >> "$D/provenance.txt"
+       echo "LCb passed"
+     ); echo "LCb_exit=$?" | tee -a "$D/provenance.txt"
+     ```
+   - **LCc** (headless, then the D37 cache drop):
+     ```bash
+     sudo -v
+     sudo systemctl stop display-manager
+     sync
+     sudo sysctl -w vm.drop_caches=1
+     echo "d37_drop_utc=$(date -u +%FT%TZ)" | tee -a "$D/provenance.txt"
+     ```
+   - **LCd** (Check 9, then the measurement):
+     ```bash
+     ( set -euo pipefail
+       grep -qx 'LCb_exit=0' "$D/provenance.txt" || { echo "LCb did not pass in this directory: start again at LCa"; exit 1; }
+       grep -q '^d37_drop_utc=' "$D/provenance.txt" || { echo "d37_drop_utc not recorded: run LCc's last line first"; exit 1; }
+       echo "LCd started $(date -u +%T) UTC: about 17 min, bounded at about 26 min; type nothing until LCd_exit= appears"
+       "${OC[@]}" --execute-workload check9 --operator-dropped-caches | tee "$D/check9.json"
+       CHECK9="$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["check9"]["status"] == "bounded_smoke_complete"; print(r["result_file"])' "$D/check9.json")"
+       echo "check9_result=$CHECK9" >> "$D/provenance.txt"
+       timeout -s TERM --kill-after=30s 1440s "${OC[@]}" \
+         --execute-workload step4cand --check9-report "$CHECK9" --identity-report "$(cat "$D/identity.path")" \
+         --step4-clip "$CLIP" --confirm-step4cand-prerequisites --operator-dropped-caches --scene-model-set "$SET" \
+         | tee "$D/step4cand.json"
+       echo "LCd passed: the D58 candidate procedure measured $SET and the run is eligible for maintainer review under step4cand-wtd-plr-combined-cache-off-v2 (never accepted here: admission needs a separate maintainer-approved commit, D46)"
+     ); echo "LCd_exit=$?" | tee -a "$D/provenance.txt"
+     ```
+   - **LCe** (copy the evidence beside the provenance):
+     ```bash
+     for f in check9 step4cand; do
+       [ -s "$D/$f.json" ] && python3 -c 'import json,os,sys; print(os.path.dirname(json.load(open(sys.argv[1]))["result_file"]))' "$D/$f.json" || true
+     done | while read -r dir; do cp -a "$dir" "$D/"; done; ls -l "$D"
+     ```
+   - **LCf** (the identity rehash: the files are unchanged since the snapshot):
+     ```bash
+     ( set -euo pipefail
+       CLIP_SHA="$(grep -F 'room_static_60s_2026-09-29.mp4' "$NOTES" | grep -oE '[0-9a-f]{64}' || true)"
+       "${OC[@]}" --step4-identity --step4-clip "$CLIP" --step4-clip-sha256 "$CLIP_SHA" --scene-model-set "$SET" \
+         | tee "$D/identity-rehash.json"
+       NEW="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["result_file"])' "$D/identity-rehash.json")"
+       python3 -c 'import json,sys; a,b=(json.load(open(p))["step4_identity"]["files"] for p in sys.argv[1:3]); c=sorted(k for k in set(a)|set(b) if (a.get(k) or {}).get("sha256")!=(b.get(k) or {}).get("sha256")); print("rehash equal" if not c else "CHANGED: %s" % c); sys.exit(1 if c else 0)' \
+         "$D/identity-result.json" "$NEW" | tee -a "$D/provenance.txt"
+     )
+     ```
+6. **Every block must be sourced (`. file`), in one shell, in order.**
+   - **LCa** sets the shell's variables (`PIN`, `SET`, `RUN`, `D`, `CLIP`, `NOTES` and the `OC` array) and `cd`s into the worktree. Run as a separate program, it would set nothing in your shell, and an array cannot be exported.
+   - **LCb, LCd and LCf** run their checks inside `( … )` but read those variables from the shell, and LCb and LCd then append their exit line to `$D/provenance.txt`. Their `exit` statements are inside the parentheses, so a failure ends only that block, never your SSH session.
+   - **LCc and LCe** use `$D` and contain no `exit`.
+   - Sourcing runs exactly the lines a paste would, with no terminal history expansion and no risk of a long paste being cut.
+7. **For the maintainer:** check the package, then run it when convenient after a reboot (section 5). Acceptance stays a separate, maintainer-approved commit (D46, D59); until then runs keep `--scene-model-set lfm2-vl`.
 
 ## Session 114 log (Claude, 2026-10-25): chat answers sized to the time before the next periodic scene job (session 113's step 1), the image sent checked live when a question starts, shortened answers labelled, the question kept in the page; portable tests, mutations and the full suite; the camera and distance questions and two later requirements recorded as pending; nothing launched, pushed or published
 
