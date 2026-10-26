@@ -376,7 +376,7 @@ def selections(page: Page, key: str) -> dict[str, str | None]:
     """Every kind of selection on the dashboard, by its own state attribute, each with an unselected control of the
     same kind (None where every one is selected): a choice (aria-current), a palette (aria-current), the picture's
     size (aria-pressed), a shown panel (aria-pressed), a previewed incident (aria-pressed), a switch that is on
-    (aria-checked)."""
+    (aria-checked). The focus view's button (aria-pressed) is checked last, by itself."""
     unlock(page, key)
     page.evaluate("document.querySelector('.inc-list > li:nth-child(2) .peek').click()")
     assert wait_until(lambda: page.evaluate("!!document.querySelector('.inc-list > li.selected > .peek')"), 5.0)
@@ -419,7 +419,7 @@ def test_a_selected_control_keeps_its_look_under_the_pointer_and_on_keyboard_foc
             assert wait_until(lambda: not page.evaluate("document.documentElement.classList.contains('drawer-open')"),
                               3.0)
 
-        for chosen, other in selections(page, site["key"]).items():
+        def keeps_its_look(chosen: str) -> None:
             hover(page, chosen)
             away(page)
             rest = drawn(page, chosen)
@@ -435,6 +435,9 @@ def test_a_selected_control_keeps_its_look_under_the_pointer_and_on_keyboard_foc
             assert focused["outline"] == ring, (chosen, focused)  # keyboard focus still draws its ring ...
             assert {**focused, "outline": rest["outline"]} == rest, (chosen, focused)  # ... and nothing else
             away(page)
+
+        for chosen, other in selections(page, site["key"]).items():
+            keeps_its_look(chosen)
             if other:  # beside it, a control of the same kind that is not selected answers as before
                 hover(page, other)
                 time.sleep(0.1)
@@ -444,6 +447,9 @@ def test_a_selected_control_keeps_its_look_under_the_pointer_and_on_keyboard_foc
                 assert all(h in hovered["shadow"] for h in halo) and hovered["color"] == rgb(tokens["hl"]), \
                     (other, hovered)
                 away(page)
+        page.evaluate("document.getElementById('focus-toggle').click()")  # last: the focus view hides the others
+        assert attribute(page, "#focus-toggle", "aria-pressed") == "true"
+        keeps_its_look("#focus-toggle")
     finally:
         page.close()
 
