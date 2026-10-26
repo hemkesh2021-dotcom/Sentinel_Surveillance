@@ -289,6 +289,14 @@ CANDIDATE_RUNTIME_LIMITATION = (
     "disable), waits no 5 s after a release, and has no steady-end THP checkpoint or THP-settings read; measured "
     "headless with no dev tools, over one 600 s steady interval on one boot (demo limitation)"
 )
+# D105: kernel lines seen on the LFM2.5-VL profile's boot that no criterion counts and nothing has explained. Their
+# appearance at boot, before the run, does not establish that they are harmless.
+NVRM_MISMATCH_OBSERVATION = (
+    "unexplained kernel lines on the profiled boot: \"NVRM: API mismatch: the client has the version 535.309.01, but "
+    "this kernel module has the version 540.4.0\" 5 times 16-23 s after boot and 7 times during the workload's "
+    "detector load (printk 642.40-642.42 s), and one boot-time \"NVRM rpcRmApiControl_dce: ... Failed RM ctrl call\"; "
+    "not OOM or NvMap candidates and not counted by K_kernel; their source and effect were not established (D105)"
+)
 _RUN_DIR = re.compile(r"^demo-profile-\d{8}T\d{6}Z$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _BOOT_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -383,6 +391,78 @@ RESOURCE_PROFILES: Mapping[str, ResourceProfile] = MappingProxyType({
         memory_policy=CANDIDATE_POLICY,
         memory_policy_verified=True,
     ),
+    # The D58 candidate procedure measuring scene model set lfm2.5-vl (session 115), accepted by the maintainer under
+    # D105 (2026-10-26) with the run-specific kernel-coverage exception in KERNEL_COVERAGE_EXCEPTIONS: the run's own
+    # report says "not eligible: K_kernel" (LCd_exit=1), unchanged. Values generated from the run's manifest.json,
+    # profile.json, step4cand.json and identity snapshot.
+    "step4cand-lfm25-20261026T094728Z": ResourceProfile(
+        profile_id="step4cand-lfm25-20261026T094728Z",
+        status=ProfileStatus.ACCEPTED,
+        run_dir="demo-profile-20261026T094728Z",
+        commit="1d260ed5d5c7afe4577dec9b062248007d26f35e",
+        boot_id="6745ddbf-fc39-4700-a820-6ee8e825caad",
+        llama_flags=_STEP4_LLAMA_FLAGS,
+        cache_ram_mib=0,
+        scene_interval_s=4.0,
+        llm=FileFacts("LFM2.5-VL-1.6B-Q4_0.gguf", 695_752_480, "2026-10-25T20:33:16+00:00",
+                      "8186364a4e7c3ad30f6dd3d3b7a4e0074c77dd91eed6cad5d8be9090ce285804"),
+        mmproj=FileFacts("mmproj-LFM2.5-VL-1.6b-Q8_0.gguf", 583_109_888, "2026-10-25T20:37:24+00:00",
+                         "2ce89e610c56f3198ece2b86cf61743a08b9307279c89125eb2412ebb908689d"),
+        engine_sha256="08370639f961d2c67148c19562718ef80527c7085e88d2d923176180f1b98637",
+        criteria_id=STEP4_CANDIDATE_CRITERIA_ID,
+        criteria_passed=True,  # the maintainer's judgment: 14 criteria pass as recorded; K_kernel by D105's exception
+        gpu_guard_ok=True,
+        cache_verdict="disabled_verified",
+        steady_status="complete",
+        steady_coverage=0.9993,
+        steady_max_bytes=4_294_656_000,
+        steady_seconds_above_target=0.0,
+        peak_bytes=4_294_717_440,
+        steady_slope_bytes_per_min=4_099_065,
+        unique_fps=15.0,
+        min_window_fps=15.0,
+        schedule_age_p95_ms=60.2,
+        schedule_age_p99_ms=70.8,
+        face_hz=1.0,
+        face_errors=0,
+        scene_attempts=150,
+        scene_valid=150,
+        scene_truncated=0,
+        scene_errors=0,
+        scene_over_deadline=0,
+        kernel_coverage="uncertain",  # the run's own report, as recorded
+        oom_candidates=0,  # established by D105's same-boot evidence; the run's report has lower bounds 0 only
+        nvmap_candidates=0,
+        identity_status="verified",
+        replay_clip_verified=True,
+        llama_server=FileFacts("llama-server", 9_080_480, "2026-04-25T19:41:59+00:00",
+                               "3d6cbfe061043d6c3bf09e20b61f998cbf80e23a5c59e94049e9142269bc0f85"),
+        llama_libraries=(
+            FileFacts("libggml-base.so.0.10.0", 805_336, "2026-04-25T19:21:01+00:00",
+                      "afc19920f759337f8f983c09263f66bf7e5cbbd2cc4f99c64ad729fcb8b5a155"),
+            FileFacts("libggml-cpu.so.0.10.0", 995_032, "2026-04-25T19:21:22+00:00",
+                      "b6b3a68a0d1c06a0f2f457469f6d39be848d2276e3e5061edb43646d4c2a6545"),
+            FileFacts("libggml-cuda.so.0.10.0", 199_749_520, "2026-04-25T19:35:35+00:00",
+                      "7a85864039b9a9980e2b9308302ce15146d732ae03f0d88d51ae7a604f38c54b"),
+            FileFacts("libggml.so.0.10.0", 77_880, "2026-04-25T19:35:39+00:00",
+                      "ccb98bd7f02198d6345e469c1e1aafa2cd9735791e80eec526eb8952c8e90b74"),
+            FileFacts("libllama-common.so.0.0.8932", 5_086_776, "2026-04-25T19:38:56+00:00",
+                      "1588061895ad551b4360b24037624fc408cf24e02159c0cfbe4eecd62b9f238c"),
+            FileFacts("libllama.so.0.0.8932", 3_033_896, "2026-04-25T19:37:19+00:00",
+                      "4f6c659419ee77c8002bc928867327093edaab101201370cb12f1c2d9ab4b629"),
+            FileFacts("libmtmd.so.0.0.8932", 1_171_384, "2026-04-25T19:38:04+00:00",
+                      "b66ff78faedf3c69ef50645f9e08232a3d4531e2f49cecd1518e5c25a3cee76c"),
+        ),
+        scene_request_sha256="1eb816afada9944ac398e46cb73ce43026ca0a475781f0fd8546f96175d322a3",
+        limitations=(STARTUP_IDENTITY_LIMITATION, CANDIDATE_RUNTIME_LIMITATION, NVRM_MISMATCH_OBSERVATION),
+        note=("D58 candidate run step4cand-lfm25-20261026T094626Z (scene model set lfm2.5-vl, status record "
+              "session 115 part 4): 14 criteria of step4cand-wtd-plr-combined-cache-off-v2 pass; K_kernel "
+              "unavailable in the run's own report (its start marker 0.119 s past the whole-second bound), covered "
+              "by D105's run-specific exception; accepted by the maintainer under D105 (2026-10-26) for the bounded "
+              "640x480 replay demo profile only: not recognition accuracy, chat quality or chat admission"),
+        memory_policy=CANDIDATE_POLICY,
+        memory_policy_verified=True,
+    ),
 })
 
 
@@ -415,7 +495,35 @@ class KernelCoverageException:
 
 
 # D105: one entry per maintainer-approved exception; none is ever created at runtime.
-KERNEL_COVERAGE_EXCEPTIONS: Mapping[str, KernelCoverageException] = MappingProxyType({})
+KERNEL_COVERAGE_EXCEPTIONS: Mapping[str, KernelCoverageException] = MappingProxyType({
+    # The maintainer's approval (2026-10-26), for this run only: its evidence is the same-boot kernel ring buffer.
+    "step4cand-lfm25-20261026T094728Z": KernelCoverageException(
+        profile_id="step4cand-lfm25-20261026T094728Z",
+        run_dir="demo-profile-20261026T094728Z",
+        boot_id="6745ddbf-fc39-4700-a820-6ee8e825caad",
+        recorded_kernel_status="uncertain",
+        recorded_reasons=("run markers do not bracket the interval",),
+        recorded_verdict=("operator session step4cand-lfm25-20261026T094626Z: status_detail "
+                          "\"not eligible: K_kernel\", eligible_for_maintainer_review false, LCd_exit=1; kept "
+                          "unchanged in the run's own records"),
+        uncovered_utc=("2026-10-26T09:47:27.000000Z", "2026-10-26T09:47:28.119178Z"),
+        evidence=("the maintainer's sudo dmesg --raw of the same boot (captured 2026-10-26T10:16:50Z): the kernel ring "
+                  "buffer, unwrapped from boot, holds 981 records that match the journal's 981 kernel records one to "
+                  "one by printk time and text; the K window (09:47:27Z-10:03:00Z) holds 18 records, none an OOM or "
+                  "NvMap candidate and none in the uncovered stretch; ~/sentinel-runs/analysis/"
+                  "step4cand-lfm25-20261026T094626Z-kernel/ (ASSESSMENT.md, DMESG-COMPARISON.md), outside Git"),
+        evidence_sha256=(("SHA256SUMS", "62e5871203caf12341080c7aff34fc458f38647bc9c773ed7129a7cef1d47178"),
+                         ("SHA256SUMS.dmesg", "718c8459a556763d8f97420dfa671ed2a455bee14d5c8b703a819d6bf2ce7a00")),
+        oom_candidates=0,
+        nvmap_candidates=0,
+        decision="D105 (the maintainer, 2026-10-26): accept this profile with this run-specific exception",
+        limitations=("the capture is the maintainer's, about 14 minutes after the window, its boot ID in a file the "
+                     "same command wrote; candidate lines use the run's own substring patterns, and a message rate-"
+                     "limited at its source never reaches the buffer (the only suppression notice: uuid_show); the "
+                     "NVRM lines stay unexplained (NVRM_MISMATCH_OBSERVATION); it substitutes for this run's marker "
+                     "proof only, never for another run's"),
+    ),
+})
 
 
 def kernel_exception_problem(

@@ -1,6 +1,8 @@
-"""Session 115: the scene model sets. LFM2.5-VL-1.6B is the default; LFM2-VL-1.6B, the accepted profile's model, is the
-rollback. One set serves scene analysis and chat alike. D46 is unchanged (the maintainer's decision, 2026-10-26): a set
-that no accepted profile measured is refused by ``sentinel run --scene``, and nothing gets around that.
+"""Session 115: the scene model sets. LFM2.5-VL-1.6B is the default; LFM2-VL-1.6B, the first accepted profile's model, is
+the rollback. One set serves scene analysis and chat alike. D46 is unchanged (the maintainer's decision, 2026-10-26): a set
+that no accepted profile measured is refused by ``sentinel run --scene``, and nothing gets around that. Since D105
+(2026-10-26) an accepted profile, step4cand-lfm25-20261026T094728Z, measured the default set; the refusal is shown here
+with a SYNTHETIC unprofiled copy of it.
 
 Profiles here are the SYNTHETIC ``accepted_scene`` fixture (tests/unit/conftest.py) or the registry, read only; no
 model, server or camera is used.
@@ -42,6 +44,7 @@ from sentinel.scene.llama_server import (
 
 ROOT = Path(__file__).resolve().parents[2]
 ACCEPTED = "step4cand-demo-20261007T090339Z"
+LFM25_PROFILE = "step4cand-lfm25-20261026T094728Z"  # accepted under D105
 OLD, NEW = models.SCENE_MODEL_SETS["lfm2-vl"], models.SCENE_MODEL_SETS["lfm2.5-vl"]
 JPEG = b"\xff\xd8synthetic\xff\xd9"
 D46_REFUSAL = ("scene_not_admitted: llama-lfm2-vl-scene: scene model set lfm2.5-vl has no accepted resource profile "
@@ -118,7 +121,10 @@ def test_the_rollback_set_is_exactly_what_the_accepted_profile_measured() -> Non
 
 
 def test_the_new_set_is_lfm25_vl_at_a_pinned_revision_with_its_own_projector() -> None:
-    assert models.DEFAULT_SCENE_MODEL_SET == NEW.key == "lfm2.5-vl" and NEW.profiled is False
+    assert models.DEFAULT_SCENE_MODEL_SET == NEW.key == "lfm2.5-vl" and NEW.profiled is True  # D105
+    profile = RESOURCE_PROFILES[LFM25_PROFILE]  # the accepted profile measured exactly these files and this request
+    assert (NEW.model, NEW.mmproj) == (profile.llm, profile.mmproj)
+    assert NEW.scene_request_sha256 == profile.scene_request_sha256
     assert re.fullmatch(r"[0-9a-f]{40}", models.LFM25_REVISION)
     assert NEW.source == f"LiquidAI/LFM2.5-VL-1.6B-GGUF at {models.LFM25_REVISION}"
     assert (NEW.model.name, NEW.model.bytes, NEW.model.sha256) == (
@@ -181,13 +187,21 @@ def test_the_request_classes_send_the_model_they_were_given() -> None:
 # ---------------------------------------------------------------- admission: D46 unchanged
 
 
-def test_the_new_set_is_refused_before_any_process_whatever_the_profile_says(tmp_path, accepted_scene) -> None:
+def unprofiled(monkeypatch) -> None:
+    """SYNTHETIC: the default set as it was before D105, with no accepted profile behind it."""
+    monkeypatch.setattr(models, "SCENE_MODEL_SETS", {**models.SCENE_MODEL_SETS,
+                                                     NEW.key: dataclasses.replace(NEW, profiled=False)})
+
+
+def test_an_unprofiled_set_is_refused_before_any_process_whatever_the_profile_says(tmp_path, accepted_scene,
+                                                                                  monkeypatch) -> None:
+    unprofiled(monkeypatch)
     fixture = accepted_scene()
     manifest = {**fixture.manifest, "model_revision": NEW.model_revision}
     scene = dataclasses.replace(fixture.options, model_set=NEW.key)
     assert refusal(tmp_path / "a", manifest, scene, fixture.profiles) == D46_REFUSAL
     # A profile that names the new files does not admit them either: only a maintainer-approved commit that records
-    # an accepted profile which measured them, and marks the set profiled, can.
+    # an accepted profile which measured them, and marks the set profiled, can (as D105's did).
     measured = accepted_scene(llm=dataclasses.replace(fixture.profile.llm, name=NEW.model.name),
                               mmproj=dataclasses.replace(fixture.profile.mmproj, name=NEW.mmproj.name))
     assert refusal(tmp_path / "b", manifest, scene, measured.profiles) == D46_REFUSAL
@@ -289,19 +303,38 @@ def test_sentinel_run_selects_lfm25_by_default_and_lfm2_as_the_rollback(tmp_path
     assert (explicit.model, explicit.mmproj) == (Path("/m/a.gguf"), Path("/m/b.gguf"))
 
 
-def test_the_cli_refuses_the_new_default_with_the_d46_reason_and_starts_nothing(tmp_path, capsys, monkeypatch) -> None:
+def cli_scene_run(tmp_path: Path, monkeypatch, profile_id: str) -> int:
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("a process was started"))
+    tmp_path.mkdir(parents=True, exist_ok=True)
     config = tmp_path / "config.yaml"
     config.write_text(
         "config_version: 1\ncamera: {id: cam-1}\nadapters: [{adapter_id: llama-lfm2-vl-scene, contract_version: 1, "
         "implementation_revision: '1', enabled: true, input_kinds: [frame], output_kinds: [scene.report], "
-        f"model_revision: lfm2.5-vl-1.6b-q4_0, resource_profile_id: {ACCEPTED}, timeout_ms: 8000}}]\n")
+        f"model_revision: lfm2.5-vl-1.6b-q4_0, resource_profile_id: {profile_id}, timeout_ms: 8000}}]\n")
     code = cli.main(["run", str(config), "--data-dir", str(tmp_path / "data"), "--engine", "x", "--status-port", "0",
                      "--scene"], capture_source=lambda config: object(),
                     tracker_backend=lambda engine: pytest.fail("the detector was constructed"),
                     meminfo=lambda: {"MemFree": 7_000_000_000, "MemAvailable": 7_000_000_000})
-    assert code == 1 and capsys.readouterr().err.strip() == f"run: {D46_REFUSAL}"
     assert not (tmp_path / "data" / "sentinel.db").exists()
+    return code
+
+
+def test_the_cli_refuses_an_unprofiled_default_with_the_d46_reason_and_starts_nothing(tmp_path, capsys,
+                                                                                    monkeypatch) -> None:
+    unprofiled(monkeypatch)
+    for profile_id in (ACCEPTED, LFM25_PROFILE):  # whatever profile the manifest names
+        capsys.readouterr()
+        assert cli_scene_run(tmp_path / profile_id, monkeypatch, profile_id) == 1
+        assert capsys.readouterr().err.strip() == f"run: {D46_REFUSAL}"
+
+
+def test_the_cli_checks_the_profiled_default_against_its_profile_and_starts_nothing(tmp_path, capsys,
+                                                                                 monkeypatch) -> None:
+    """D105: past D46, the default meets its profile's checks; without the measured memory policy it is refused."""
+    assert cli_scene_run(tmp_path, monkeypatch, LFM25_PROFILE) == 1
+    error = capsys.readouterr().err.strip()
+    assert error.startswith("run: scene_not_admitted: llama-lfm2-vl-scene: resource profile "
+                            f"{LFM25_PROFILE} measured memory policy") and "D46" not in error
 
 
 def test_run_still_has_no_option_that_bypasses_scene_admission(capsys) -> None:

@@ -12,11 +12,12 @@ the deadlines and the memory guards are the same for every set.
   measured (SCENE_REQUEST_SHA256). The rollback: selecting it restores the admitted configuration exactly.
 - ``lfm2.5-vl`` (the default since session 115): LiquidAI/LFM2.5-VL-1.6B-GGUF at a pinned revision, Q4_0 with its
   own Q8_0 projector: the same ``lfm2_vl`` architecture and layer count, served by the same llama-server build (b8932,
-  whose ``lfm2`` projector code already cites this model's processor configuration). No resource profile measured it,
-  so under D46 (kept unchanged by the maintainer's decision, 2026-10-26) ``sentinel run --scene`` refuses it, and
-  chat with it, until a step-4 profile run measures it and a maintainer-approved commit records that profile as
-  accepted. Measured timings of the other model are never its own: chat's pace starts from the fallback in every run
-  (chat_budget).
+  whose ``lfm2`` projector code already cites this model's processor configuration). The step-4 candidate run
+  step4cand-lfm25-20261026T094626Z measured these files and this request; the maintainer accepted it as resource
+  profile step4cand-lfm25-20261026T094728Z under D105 (2026-10-26), with a kernel-coverage exception for that run
+  only. D46 is unchanged: the profile admits scene analysis only for the configuration it measured. It measures
+  resources only: not recognition accuracy or chat quality, and it does not admit chat (D77). Measured timings of the
+  other model are never its own: chat's pace starts from the fallback in every run (chat_budget).
 
 Portable: nothing here reads a model file.
 """
@@ -76,7 +77,7 @@ class SceneModelSet:
 
 
 ROLLBACK_SCENE_MODEL_SET = "lfm2-vl"
-DEFAULT_SCENE_MODEL_SET = "lfm2.5-vl"  # session 115: the migration; refused by --scene until a profile admits it
+DEFAULT_SCENE_MODEL_SET = "lfm2.5-vl"  # session 115: the migration; profiled by step4cand-lfm25-20261026T094728Z (D105)
 LFM25_REPOSITORY = "LiquidAI/LFM2.5-VL-1.6B-GGUF"
 LFM25_REVISION = "36fc16bc95133424921bcc3da009e83b2f23ffb5"  # the Hub's main on 2026-10-26; immutable
 
@@ -103,7 +104,7 @@ SCENE_MODEL_SETS: Mapping[str, SceneModelSet] = MappingProxyType({
         mmproj=FileFacts("mmproj-LFM2.5-VL-1.6b-Q8_0.gguf", 583_109_888, "2026-10-25T20:37:24+00:00",
                          "2ce89e610c56f3198ece2b86cf61743a08b9307279c89125eb2412ebb908689d"),
         source=f"{LFM25_REPOSITORY} at {LFM25_REVISION}",
-        profiled=False,
+        profiled=True,  # D105: resource profile step4cand-lfm25-20261026T094728Z measured these files and this request
     ),
 })
 
