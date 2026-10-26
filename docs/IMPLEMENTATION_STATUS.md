@@ -1,6 +1,8 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-26, session 115, part 6 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+Last updated 2026-10-26, session 115, part 7 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+
+**Session 115, part 7: the face + scene + chat validation package with LFM2.5-VL prepared and dry-run checked; not launched; local only.** `~/sentinel-prep/fci-lfm25-5a6fc23/` (manifest `7c9b331a…`) is pinned to `5a6fc23` with no code change: session 103's integration procedure with the scene model set `lfm2.5-vl` on D105's profile, a read-only scene admission check before any preparation, and the VNC desktop closed by the existing procedure (one SIGTERM to its session leader on a typed CLOSE; the launch refused while it, its server or the display manager runs). The dry run's 38 cases behaved as designed, including the new VNC case. Memory limits, the launch floor, thresholds, admissions, the answer handling and the enrollment's working copy are unchanged. The live camera is required: about 8 minutes seated at the Mac, about 30 minutes in all. The legacy-v1 items stay a separate pending task, recorded outside Git; `start_sentinel.sh` is not switched. Nothing pushed or published.
 
 **Session 115, part 6: D105, the LFM2.5-VL resource profile accepted (`7911a4b`, mechanism `20b4b22`); local only.** `step4cand-lfm25-20261026T094728Z` (run `step4cand-lfm25-20261026T094626Z`) is ACCEPTED for the bounded replay demo profile, its kernel-log coverage covered by a run-specific exception from the same-boot `dmesg` evidence; the run's own "not eligible: K_kernel" and `LCd_exit=1` stay as recorded, and the step-4 tooling and criteria are unchanged. LFM2.5-VL is the default and admitted for the configuration it measured; LFM2-VL is the explicit rollback. Not recognition accuracy, chat quality or chat admission; the NVRM lines stay documented and unexplained. Next: a face + scene + chat validation run on the live camera, proposed, not prepared.
 
@@ -815,14 +817,16 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
    - **Done (session 115):** LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL the rollback (`378ae85`); step 4 can measure a set (`f77b0ff`); the files verified against the Hub; guarded smoke tests with a synthetic picture passed for both sets; D46 unchanged, so `--scene` refuses LFM2.5-VL until a profile admits it (D104; session 115 log).
    - **Done (session 115, part 4):** `step4cand-lfm25-20261026T094626Z` recorded read only: not eligible, K_kernel unavailable (the start marker 0.119 s past the whole-second bound); every other criterion passed; journal evidence for the 1.1 s gap saved apart (session 115 log, part 4).
    - **Done (session 115, part 6):** D105: the LFM2.5-VL profile accepted with its run-specific kernel exception (`20b4b22`, `7911a4b`); admission tests on this device's real files; 10 of 10 mutations; the unit suite without browser modules 2820 passed, 2 skipped (session 115 log, part 6).
-   - **Maintainer (session 115, part 6):** whether to approve the face + scene + chat validation run with LFM2.5-VL on the live camera (about 8 min seated at the Mac; part 6, section 5); then Claude prepares its package.
+   - **Done (session 115, part 7):** the face + scene + chat validation package with LFM2.5-VL prepared and dry-run checked (`~/sentinel-prep/fci-lfm25-5a6fc23/`, manifest `7c9b331a…`; 38 dry cases as designed, including the VNC desktop's; not launched; session 115 log, part 7).
+   - **Maintainer (session 115, part 7):** when convenient, after a reboot, run that package (the live camera; about 8 min seated at the Mac, about 30 min in all; `PROTOCOL.md`); send back the folder's name and `iv/check.txt`; no reboot afterwards until Claude has read that boot's kernel log. The legacy-v1 items stay a separate pending task (recorded outside Git).
+   - **Maintainer (session 115, part 6; approved 2026-10-26, packaged in part 7):** whether to approve the face + scene + chat validation run with LFM2.5-VL on the live camera (about 8 min seated at the Mac; part 6, section 5); then Claude prepares its package.
    - **Done (session 115, part 5):** the maintainer's `dmesg` capture compared read only: complete over the window, 0 OOM and 0 NvMap candidates, matching the journal record for record (session 115 log, part 5).
    - **Maintainer (session 115, part 5; decided: D105, part 6):** whether that evidence stands in for the run's marker proof (then a separate acceptance commit, D46), or a new measurement.
    - **Maintainer (session 115, part 4; dmesg captured):** optionally `sudo dmesg --raw` before the next reboot (command in the analysis folder's `ASSESSMENT.md`); then whether that evidence may stand in for the marker proof, or a new measurement (a one-second marker pause in the tooling would need your approval and a new package).
    - **Maintainer (session 115; ran 2026-10-26, recorded in part 4):** when convenient, after a reboot, the step-4 candidate measurement of LFM2.5-VL (`~/sentinel-prep/step4cand-lfm25-460b8e7/`, blocks LCa-LCf, each sourced in one shell; about 20 min; session 115 log, part 3; the earlier `step4cand-lfm25-f77b0ff` refuses at the current code); then the acceptance decision; until then runs keep `--scene-model-set lfm2-vl`.
    - **Done (session 115, part 2):** the approved preview v6's interactions (`3b93e05`, `e87ba98`): the slower trace and settle; a selected control keeps its look under the pointer and on keyboard focus; 11 of 11 mutations caught, the 25 page-rendering modules 887 passed, 1 skipped; held-state comparisons outside Git (session 115 log, part 2).
    - **Maintainer (session 115, part 2):** look at `v6-interactions/before-after/` in the review folder, or try the motion with its `tools/serve_synthetic.py`; say whether the incident link in a selected row should also keep its look under the pointer.
-   - **Claude, next (session 115):** record the measurement read only; after an acceptance, the profile entry and `profiled=True` in a separate commit, then a face + scene + chat validation package with LFM2.5-VL.
+   - **Claude, next (session 115, part 7):** after that run, record it read only from `iv/check.txt` and non-text metadata, with that boot's NVRM lines described, never judged; nothing admitted or accepted from it. (Earlier: the measurement recorded, part 4; the profile accepted, part 6; the package prepared, part 7.)
    - **Claude, next (session 114):** on instruction: the chat change's device validation package, or a read-only plan toward the requested range (the camera facts first; then session 113's steps 3-4, thresholds unchanged), or changes to the applied style or the phone text.
    - **Done (session 112):** v2.0.0-alpha.2 published: `27d6308` pushed alone as a fast-forward of `alpha-candidate-2026-10`; Dashboard checks and both portable jobs passed on it; the tag `v2.0.0-alpha.2` and the pre-release (not latest) created (session 112 log).
    - **Maintainer (session 112):** the action in the session 112 section of `docs/LOCAL_NOTES.md` (excluded). The 24 October review checkpoint on the pre-release. Whether to update the wiki (it still describes alpha.1) and when to push this record's local commits are your decisions.
@@ -1781,6 +1785,119 @@ Notes on partial and in-progress rows:
      - under `step5_guard` with its limits unchanged, monitoring first, chat's gate unchanged.
    - **It establishes** that face, LFM2.5-VL scene analysis and chat run together within the memory limits on the live camera. **It does not establish** recognition accuracy, chat quality or chat admission.
    - **Needed first:** your approval of that run; then Claude prepares and dry-runs a package pinned to the current commit. The NVRM lines stay documented and are read again from that boot's kernel log.
+
+### Session 115, part 7 (Claude, 2026-10-26): the face + scene + chat validation package with LFM2.5-VL, `fci-lfm25-5a6fc23`, prepared and dry-run checked; the VNC desktop closed by the existing procedure; not launched
+
+1. **The request (the maintainer, 2026-10-26).**
+   - Prepare and dry-run the proposed 8-minute face + scene + chat validation package with the accepted LFM2.5 profile and the current committed code; do not launch it.
+   - Include the complete preparation, with the separately started VNC desktop detected and closed through the existing operator-confirmed procedure.
+     - **USER-REPORTED:** stopping the display manager alone left the VNC desktop running during the previous attempt.
+     - The step-4 package's LCc stops only the display manager, and that run's records list no desktop processes, so they neither confirm nor rule this out.
+   - Preserve the memory limits, recognition thresholds, admission decisions and private-answer handling; keep the original enrollment protected by the working-copy procedure.
+   - Provide the package path, manifest hash, ordered commands, expected outputs and cleanup and recovery; state the CCTV requirement, operator actions and duration before the launch command.
+   - Keep the reported legacy-v1 items a separate pending task, which this test does not resolve. Do not switch `start_sentinel.sh`, push or publish.
+2. **The package `~/sentinel-prep/fci-lfm25-5a6fc23/`** (outside Git; `SHA256SUMS` over 18 files, its SHA-256 `7c9b331a44003b75e405ec04d9a3cb71926ad29a67a10e8000e9431949d1f0ff`).
+   - **Pinned** to `5a6fc23` (D105's record), with no code change for it. i-B checks:
+     - the pin's ancestry;
+     - that `benchmarks`, `src`, `tests`, `config` and `pyproject.toml` equal the pin's;
+     - no tracked changes;
+     - 55 files' checksums.
+   - **Derived from `fci-aaca744`** (session 103; its run `fci-20261020T110028Z` passed all four parts). i-P, i-F, i-M, i-H and iv-D are unchanged byte for byte. The differences:
+     - **i-R:** the pin, the session prefix `fci25-` and the decisions file `fci25-decisions-5a6fc23.txt`.
+     - **i-D:** 15 decisions and the approval line `APPROVE 5a6fc23 fci25 lfm25_integration cache_drop`. The record lines:
+       - the session kind, the scene model set `lfm2.5-vl`, the scene profile `step4cand-lfm25-20261026T094728Z` and the face admission profile `step4cand-demo-20261007T090339Z`;
+       - the scene admission checked in i-B, and the VNC desktop's handling;
+       - the NVRM lines documented, unexplained and not judged;
+       - the legacy-v1 items a separate pending task.
+     - **i-B:**
+       - each decision line is checked;
+       - the scene adapter's manifest names `model_revision: lfm2.5-vl-1.6b-q4_0` and `resource_profile_id: step4cand-lfm25-20261026T094728Z`; the face manifest is unchanged;
+       - before anything is prepared, a read-only scene admission check calls the runtime's own `scene_admission()` on this device's files, under the candidate memory policy.
+     - **i-C and i-O:** this package's `hostprep.py`, SHA-256 `98357fd9…`. Only its docstring differs.
+     - **i-V:** it checks the session kind and the set in `decisions.txt`; the launch adds `--scene-model-set lfm2.5-vl`.
+     - **iv-E:** the condition line in `iv/check.txt` names LFM2.5-VL, the set and the profile.
+   - **Unchanged:**
+     - the guard's limits and step 4's headroom;
+     - the launch floor of 5,569,835,008 B (D103, from `trk-20261017T103831Z`);
+     - `--require-ready face_chat` and the 480 s duration;
+     - the recognition thresholds;
+     - face admission on the D59 profile (`PENDING_VALIDATION`);
+     - chat as a validation run, not admitted (D77);
+     - `alpha_load chat`: two fixed questions every 6 s, with no answer text kept;
+     - the account (format 11) before any reading;
+     - `alpha_check integration` and its four parts;
+     - i-F's working copy of the original enrollment, and i-H's check that the original is unchanged.
+3. **Stated before the launch command** (the package's `PROTOCOL.md` and `CHECKLIST.md`).
+   - **The live camera (CCTV) is required:** face recognition, scene analysis and chat read live frames.
+   - **Position and actions:**
+     - seated at the Mac, at the usual place, in the camera's view; facing the camera is not needed;
+     - nobody else in view from i-V's launch to the stop;
+     - at the T0 beep, work as usual; type nothing in the SSH window and ask no chat questions; stay seated at the stop beep.
+   - **Duration:** 480 s from readiness, about 1-2 minutes of loading before it and about a minute to stop. About 30 minutes in all, with the reboot and the blocks.
+   - **After i-H:** no reboot until Claude has read that boot's kernel log. The journal on this device is volatile: there is no `/var/log/journal`, and `journalctl` lists only the current boot. The NVRM lines are read from that log: described, never judged. If a reboot cannot wait, the operator captures `sudo dmesg --raw` first.
+4. **The VNC desktop: the existing procedure, unchanged** (`hostprep.py`, as in the fci-, fcg- and f2c- sessions).
+   - **i-C** lists the user's optional processes, with PIDs read at that moment:
+     - the VNC desktop's session leader (`xfce4-session`, whose parent is `vncserver`) is a target;
+     - `vncserver` and `Xtigervnc` are listed as expected to end with it, and are never signalled;
+     - only a typed CLOSE sends one SIGTERM per target, never SIGKILL;
+     - i-C prints the crontab's own restore command.
+   - **i-P** stops the display manager.
+   - **i-O's check** fails while `xfce4-session`, `vncserver`, `Xtigervnc` or `Xvnc` runs, or while the display manager is active. **i-V** launches nothing until i-O has passed after i-M.
+   - **On this device:**
+     - `fci-20261020T110028Z`: one SIGTERM to the session leader, gone in 0.5 s;
+     - the fcg G run: gone at the first check;
+     - i-O passed both times.
+5. **Checks** (no camera, GPU, model or real data used; no real cache dropped; no real process signalled):
+   ```
+   cd ~/sentinel-prep/dryrun-harness-5a6fc23-fci25            # copied from dryrun-harness-aaca744-fci; README.txt lists the changes
+   ./all.sh dry1                                               # all.sh exit 0: 37 cases and the new case V
+   DRY_DECISIONS=$PWD/dry1/home/sentinel-runs/d1-checklist/fci25-decisions-5a6fc23.txt ./r7.sh <a new HOME outside the harness>
+   python3 verify_fci25.py dry1                                # the per-case summary
+   T = PYTHONPATH=$PWD/src ~/sentinel-surveillance/.venv/bin/python -m pytest -q -p no:cacheprovider   # Python 3.10.14, in the worktree at 5a6fc23
+   T tests/unit/test_lfm25_profile_admission.py tests/unit/test_alpha_check.py tests/unit/test_guard_verdict.py \
+     tests/unit/test_launch_memory.py tests/unit/test_step5_guard.py                                    # 158 passed
+   ```
+   - **B, the complete session:**
+     - i-C closed the stand-in claude, VS Code, update-manager and VNC desktop on CLOSE;
+     - i-B printed `scene admitted: lfm2.5-vl on resource profile step4cand-lfm25-20261026T094728Z`;
+     - face_chat readiness was met, with both cues and `IV_exit=0`;
+     - all four parts passed, and the repeats were refused;
+     - its provenance records the set, both profiles and `scene_admission=admitted`.
+   - **V, the VNC desktop (new):**
+     - with the VNC server, its X server and its desktop session running and the display manager stopped, i-C listed the session leader and was declined;
+     - i-O then failed (`PO_prepared=incomplete:running:Xtigervnc,vncserver,xfce4-session`) and i-V launched nothing (`IV_exit=1`);
+     - i-C with CLOSE: one SIGTERM, gone after 0.5 s, the stand-in server with it;
+     - i-O passed, i-V launched once and every part passed.
+   - **The other paths:**
+     - S: recognition behaviour alone not passed;
+     - X: readiness refused, no cue;
+     - C, E, F, G and I: each STOP path with its own next step;
+     - J-N, Q1-Q2, D1-D7, R1-R8, P1-P2, T and U: as in session 103;
+     - R7 was rerun by `r7.sh` outside the harness: `refused:evidence:reference_result_missing`, nothing launched.
+   - **Every case:**
+     - every session sealed;
+     - exactly one drop call where i-M was confirmed, and none otherwise;
+     - no launch after a refused check;
+     - no synthetic secret and no stand-in answer text in any of the 77 dry folders.
+   - **Read only, outside the harness:**
+     - i-V's launch arguments, parsed by the pinned CLI's own parser and stopped there: `scene_model_set='lfm2.5-vl'`, with scene, face, chat, both validation flags, THP disable and post-load release set; nothing started;
+     - i-B's admission check on the real files: `scene_admission=admitted`;
+     - the real F1 gate: `f1_gate=passed`, `f1_basis=accepted_recheck`;
+     - `bash -n` on the 12 blocks; `hostprep.py` parses.
+   - **Corrected in the package's text before sealing:** the expected iv-E lines. The condition line goes to `iv/check.txt` only, and the screen shows the launch-memory report's. The reading's verdict label names session 103 because `alpha_check.py` is unchanged.
+6. **A separate pending task: the legacy-v1 items** the maintainer reported, recorded outside Git as one open task. This package does not address them; `start_sentinel.sh` is not switched or edited.
+7. **Not established:**
+   - the camera, the GPU, the models and the scene server;
+   - real chat answers and timing;
+   - real memory and the guard's real sampling;
+   - the real VNC server's response to its session ending (known only from the earlier sessions above);
+   - whether LFM2.5-VL with face and chat on the live camera fits the memory limits.
+
+   The package's own estimate is a peak of about 4.2-4.4 GB, from `fci-20261020T110028Z` and the step-4 replay profile: an estimate, not a measurement.
+8. **Next.**
+   - **The maintainer:** when convenient, after a reboot, run the package (`PROTOCOL.md`) and send back the session folder's name and `iv/check.txt`. Do not reboot until Claude has read that boot's kernel log.
+   - **Claude:** then record the session read only, from `iv/check.txt` and non-text metadata, and describe that boot's NVRM lines. Nothing is admitted or accepted from it.
+   - **The legacy-v1 task** waits for the maintainer's decision.
 
 ## Session 114 log (Claude, 2026-10-25): chat answers sized to the time before the next periodic scene job (session 113's step 1), the image sent checked live when a question starts, shortened answers labelled, the question kept in the page; portable tests, mutations and the full suite; the camera and distance questions and two later requirements recorded as pending; nothing launched, pushed or published
 
