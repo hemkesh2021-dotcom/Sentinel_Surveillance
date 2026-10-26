@@ -1,6 +1,8 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-26, session 115, part 9 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+Last updated 2026-10-26, session 115, part 10 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+
+**Session 115, part 10: the validation package re-pinned to `b106100`, `fci-lfm25-b106100` (manifest `ba8c5808…`), prepared and dry-run checked; not launched; local only.** It is part 7's procedure with only the pin, the approval line and decision 16 changed. Its dry run added four composed cases: replaced frames passed; missing and contradictory metadata failed with their reasons; an unexercised cancellation read MISSING. The unchanged-frames case passed with its cancellation verified. Under the session-114 answer sizing, the unchanged workload is not expected to exercise cancellation: fci25 had 56 of 56 questions end within the grace. A device session would probably read chat completion not passed for that reason alone. A separate controlled cancellation check (synthetic picture, no camera, about 3-4 min) is proposed, not implemented. Nothing run on the device, pushed or published.
 
 **Session 115, part 9: session 114's two evidence-tool gaps closed (`b106100`); portable only; local only.** The status profile declares the scene worker's four session-114 counters (integers; unknown keys still nonconforming). `alpha_load` records a replaced frame's facts: the replacement, the frame sent's age when sent, and the frame asked about, apart; no text. `alpha_check` judges an answer against the frame sent. A null age when asked passes only with an explicit, complete and consistent replacement; a record stating none is read as before. The cancellation item is unchanged: a question outlasting the grace and ended verifies it; an unexercised path stays MISSING. 63 new tests, 14 of 14 mutations caught, the unit suite without browser modules 2883 passed, 2 skipped. `fci25-20261026T124349Z` and its verdict are unchanged (its nine ages are not reconstructed); `fci-lfm25-5a6fc23` now refuses by design. The camera reconnect and the NVML mismatch remain unresolved follow-ups. Nothing run on the device, pushed or published.
 
@@ -821,8 +823,10 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
    - **Done (session 115):** LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL the rollback (`378ae85`); step 4 can measure a set (`f77b0ff`); the files verified against the Hub; guarded smoke tests with a synthetic picture passed for both sets; D46 unchanged, so `--scene` refuses LFM2.5-VL until a profile admits it (D104; session 115 log).
    - **Done (session 115, part 4):** `step4cand-lfm25-20261026T094626Z` recorded read only: not eligible, K_kernel unavailable (the start marker 0.119 s past the whole-second bound); every other criterion passed; journal evidence for the 1.1 s gap saved apart (session 115 log, part 4).
    - **Done (session 115, part 6):** D105: the LFM2.5-VL profile accepted with its run-specific kernel exception (`20b4b22`, `7911a4b`); admission tests on this device's real files; 10 of 10 mutations; the unit suite without browser modules 2820 passed, 2 skipped (session 115 log, part 6).
+   - **Done (session 115, part 10):** `fci-lfm25-b106100` prepared and dry-run checked (manifest `ba8c5808…`; B, RF, M1, M2 and NC as designed; the other cases as before; not launched); cancellation under the sizing assessed (not reliably exercised) and a controlled check proposed (session 115 log, part 10).
+   - **Maintainer (session 115, part 10):** whether to run `fci-lfm25-b106100` as it is (chat completion probably not passed, for MISSING cancellation); whether Claude implements and packages the controlled cancellation check (part 10, section 4); in which order. Unresolved follow-ups unchanged: the camera reconnect, the NVML mismatch; the legacy-v1 items pending.
    - **Done (session 115, part 9):** the two tooling gaps closed (`b106100`): the scene worker's four counters declared; replaced-frame answers recorded and judged against the frame sent; the cancellation reading covered (outlasting the grace verifies it; unexercised stays MISSING); 63 new tests; 14 of 14 mutations; the unit suite without browser modules 2883 passed, 2 skipped (session 115 log, part 9).
-   - **Maintainer (session 115, part 9):** whether Claude prepares and dry-runs (not launches) a validation package pinned to `b106100`, part 7's procedure with only the pin changed and dry-run cases with a waiting side request and a replaced frame (part 9, section 8); `fci-lfm25-5a6fc23` refuses at this code and must not be rerun. Unresolved follow-ups: the camera stream's end and reconnect in fci25; the NVML mismatch (no driver or package change without your decision). The legacy-v1 items stay a separate pending task.
+   - **Maintainer (session 115, part 9; decided 2026-10-26, done in part 10):** whether Claude prepares and dry-runs (not launches) a validation package pinned to `b106100`, part 7's procedure with only the pin changed and dry-run cases with a waiting side request and a replaced frame (part 9, section 8); `fci-lfm25-5a6fc23` refuses at this code and must not be rerun. Unresolved follow-ups: the camera stream's end and reconnect in fci25; the NVML mismatch (no driver or package change without your decision). The legacy-v1 items stay a separate pending task.
    - **Done (session 115, part 8):** `fci25-20261026T124349Z` recorded read only: memory and face execution passed, the integration not passed (two tooling gaps from session 114: an undeclared scene-worker counter and the replaced frame's facts not recorded; the cancellation path unexercised); this boot's kernel log preserved, 0 OOM and 0 NvMap, the NVRM lines associated with an installed NVML 535 library (session 115 log, part 8).
    - **Maintainer (session 115, part 8; decided 2026-10-26, done in part 9: the slice, an answer judged against the frame sent, the cancellation requirement kept):** whether Claude prepares the tooling-only slice (part 8, section 8); how `alpha_check` should judge an answer about a replaced frame; whether and how a later run should exercise the cancellation path; whether to look into the NVML 535 package (no driver or package change without your decision). A reboot is no longer blocked.
    - **Done (session 115, part 7):** the face + scene + chat validation package with LFM2.5-VL prepared and dry-run checked (`~/sentinel-prep/fci-lfm25-5a6fc23/`, manifest `7c9b331a…`; 38 dry cases as designed, including the VNC desktop's; not launched; session 115 log, part 7).
@@ -834,7 +838,7 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
    - **Maintainer (session 115; ran 2026-10-26, recorded in part 4):** when convenient, after a reboot, the step-4 candidate measurement of LFM2.5-VL (`~/sentinel-prep/step4cand-lfm25-460b8e7/`, blocks LCa-LCf, each sourced in one shell; about 20 min; session 115 log, part 3; the earlier `step4cand-lfm25-f77b0ff` refuses at the current code); then the acceptance decision; until then runs keep `--scene-model-set lfm2-vl`.
    - **Done (session 115, part 2):** the approved preview v6's interactions (`3b93e05`, `e87ba98`): the slower trace and settle; a selected control keeps its look under the pointer and on keyboard focus; 11 of 11 mutations caught, the 25 page-rendering modules 887 passed, 1 skipped; held-state comparisons outside Git (session 115 log, part 2).
    - **Maintainer (session 115, part 2):** look at `v6-interactions/before-after/` in the review folder, or try the motion with its `tools/serve_synthetic.py`; say whether the incident link in a selected row should also keep its look under the pointer.
-   - **Claude, next (session 115, part 9):** on your approval only, the re-pinned validation package and its dry run (part 9, section 8); nothing launched. (Done: the measurement recorded, part 4; the profile accepted, part 6; the package prepared, part 7; its run recorded read only, part 8; the tooling gaps closed, part 9.)
+   - **Claude, next (session 115, part 10):** on your decision only: record a session of `fci-lfm25-b106100` read only, or implement the controlled check with portable tests, its package and dry run; nothing launched. (Done: the measurement recorded, part 4; the profile accepted, part 6; the package prepared, part 7; its run recorded read only, part 8; the tooling gaps closed, part 9; the package re-pinned, part 10.)
    - **Claude, next (session 114):** on instruction: the chat change's device validation package, or a read-only plan toward the requested range (the camera facts first; then session 113's steps 3-4, thresholds unchanged), or changes to the applied style or the phone text.
    - **Done (session 112):** v2.0.0-alpha.2 published: `27d6308` pushed alone as a fast-forward of `alpha-candidate-2026-10`; Dashboard checks and both portable jobs passed on it; the tag `v2.0.0-alpha.2` and the pre-release (not latest) created (session 112 log).
    - **Maintainer (session 112):** the action in the session 112 section of `docs/LOCAL_NOTES.md` (excluded). The 24 October review checkpoint on the pre-release. Whether to update the wiki (it still describes alpha.1) and when to push this record's local commits are your decisions.
@@ -1793,6 +1797,104 @@ Notes on partial and in-progress rows:
      - under `step5_guard` with its limits unchanged, monitoring first, chat's gate unchanged.
    - **It establishes** that face, LFM2.5-VL scene analysis and chat run together within the memory limits on the live camera. **It does not establish** recognition accuracy, chat quality or chat admission.
    - **Needed first:** your approval of that run; then Claude prepares and dry-runs a package pinned to the current commit. The NVRM lines stay documented and are read again from that boot's kernel log.
+
+### Session 115, part 10 (Claude, 2026-10-26): the validation package re-pinned to `b106100`, `fci-lfm25-b106100`, prepared and dry-run checked, with dry cases for unchanged frames, replaced frames, missing metadata and cancellation; not launched; whether the unchanged workload can exercise cancellation, and a separate controlled check proposed
+
+1. **The request (the maintainer, 2026-10-26).**
+   - **The package:** prepare and dry-run the updated validation package pinned to `b106100`, and do not launch it. Reuse the existing preparation, enrollment protection, memory limits and cleanup.
+   - **The dry cases:** end-to-end cases for unchanged frames, replaced frames, missing replacement metadata and cancellation evidence.
+   - **Cancellation:** explain whether the unchanged workload can reliably exercise cancellation under the current answer sizing. If not, propose the smallest separate controlled check, and say exactly what it would prove. No runtime change, and no weakening of the requirement.
+   - **The bounds:** no broad mutation campaign or repeated full suite without an actual failure. Preserve the previous run and its verdict. No live workload, driver or admission change, push or publication.
+2. **The package `~/sentinel-prep/fci-lfm25-b106100/`** (outside Git; `SHA256SUMS` over 18 files, its SHA-256 `ba8c580871237ed1ab347821390f63264c3160d5e73f33f052bb9b47d50236af`).
+   - **Derivation:** fci-lfm25-5a6fc23's blocks, with count-checked replacements:
+     - the pin `b1061003…` (the decisions file `fci25-decisions-b106100.txt`);
+     - the approval line `APPROVE b106100 fci25 lfm25_integration cache_drop`;
+     - decision 16 (the reading at `b106100`), with two record lines, and i-B's checks of them;
+     - i-B's checksums of the three changed tool files (55 in all, each checked against the pin);
+     - this package's `hostprep.py` (`ed4758f4…`; only its docstring differs).
+   - **Unchanged byte for byte:** i-P, i-F, i-M, i-V, iv-D, iv-E and i-H. So these are fci-lfm25-5a6fc23's:
+     - the preparation: i-C's typed CLOSE, the VNC desktop's handling, the camera probe, the one-time drop, i-O's check;
+     - the enrollment's working copy and its unchanged check;
+     - the launch;
+     - the guard's limits, the launch floor, the 480 s and the cleanup.
+   - **Two consequences:** `fci-lfm25-5a6fc23` refuses at this code, and `fci25-20261026T124349Z` stays sealed (`fb57f9ec…` verifies) and not passed.
+3. **Can the unchanged workload exercise cancellation? Not reliably.**
+   - **What the item needs:** a scene job must end a running question, and that question must say why.
+   - **How a question gets ended:**
+     - by a periodic job, when a question is still running at the end of its 1.5 s grace;
+     - at once by an incident's job, but the integration run has no zone, so it has no incidents.
+   - **The sizing (session 114):** each answer is planned to end `RELEASE_RESERVE_MS` (500 ms) before that grace ends, using the slowest of the last 8 measured paces. So a cut-off needs an answer to overrun its own plan by more than 500 ms.
+   - **fci25 on the same workload:**
+     - 56 scene jobs waited behind a question, and all 56 questions ended within the grace;
+     - the longest wait was 1051 ms;
+     - none of 75 timed questions overran its plan;
+     - 35 answers were shortened to fit;
+     - the measured pace was 625 ms of overhead plus 19.3 ms per token.
+   - **Reading:** the path would be exercised only by chance. A repeated run would probably read MISSING again, so chat completion would read not passed for that reason alone. This is stated in the package's `PROTOCOL.md`, `CHECKLIST.md` and decision 16.
+4. **The smallest separate controlled check (PROPOSED; not implemented or prepared).**
+   - **What it is:** one guarded tool in the shape of `scene_smoke.py` (operator tooling; the runtime unchanged).
+     - It starts one llama-server through the runtime's own `LlamaServerProcess`: LFM2.5-VL, the profiled flags, the prompt cache off.
+     - It uses the synthetic picture (no camera, no face) and runs under `step5_guard` with its limits unchanged.
+     - It drives the runtime's own `ThreadedSceneAnalyzer` (the 1.5 s grace) and `ChatService` with `LlamaChatRequest`.
+   - **How it makes the path happen:**
+     - the analyzer has no periodic schedule, so chat sizes nothing (the runtime's documented window None, the 120-token cap);
+     - each trial asks the long protocol question and, once it is answering, submits one periodic scene job;
+     - at about 19 ms per token, the answer is still running when the grace ends, so the runtime's own cut-off ends it;
+     - plus one short question as a control, which should finish within the grace;
+     - three trials, each reported on its own.
+   - **What it would prove:** on this device's llama-server and LFM2.5-VL, the after-grace preemption ends a real in-flight chat request:
+     - the question ends `cancelled` with the scene job's reason;
+     - the scene job starts within 2000 ms of its submission (D80);
+     - the scene job returns a valid report;
+     - the server stays healthy and nothing is left;
+     - memory stays within the guard's limits.
+   - **What it would not prove:**
+     - that the integration workload, with its sizing, ever triggers the path;
+     - anything about face, the camera, recognition, chat quality or admission.
+   - **It is not the integration's item:** it never makes "cancellation verified" pass and changes no verdict. Whether it may count as device coverage of the path is the maintainer's decision.
+   - **Its size:** no CCTV; about 3-4 minutes (about 70 s of loading, three trials, the stop); one block after the usual closing of other work. It would need its own approval, implementation with portable tests, package and dry run.
+5. **The dry run (harness `~/sentinel-prep/dryrun-harness-b106100-fci25/`; nothing real used).**
+   ```
+   cd ~/sentinel-prep/dryrun-harness-b106100-fci25 && ./all.sh "$PWD/dry1"    # all.sh exit 0
+   DRY_DECISIONS=$PWD/dry1/home/sentinel-runs/d1-checklist/fci25-decisions-b106100.txt ./r7.sh <a HOME outside it>   # R7
+   python3 verify_fci25.py dry1                                                 # the per-case summary
+   ```
+   - **The four new cases are composed** (`test_dry_build.py`, outside Git). The synthetic runtime run cannot hold a replaced frame, because its scene jobs end at once and its answers are unbounded (`limit_unbounded`). So three of its answered records are replaced by `alpha_load._record`'s records of real `ChatService` documents in which the frame was replaced; the third is answered 2.5 s after sending. Its captures carry `frame_replaced` and `side_waits`.
+   - **B (unchanged frames):**
+     - 79 of 79 answers consistent, none replaced;
+     - the held question outlasted the grace and was ended: cancellation verified PASS;
+     - integration passed.
+   - **RF (replaced frames):**
+     - 79 of 79 consistent, `sent_frame_replaced` 3, the late one historical;
+     - the privacy and structure counts PASS with the new fields and `side_waits`;
+     - integration passed;
+     - no answer text in any record.
+   - **M1 (missing metadata, fci25's shape):** real answers FAIL, `"no age when asked, and no replacement stated": 1`; chat completion not passed; `IV_check_exit=1`.
+   - **M2 (contradictory):** real answers FAIL, `"a replacement without the frame asked about": 1`; chat completion not passed.
+   - **NC (no cancellation):** cancellation verified MISSING, real answers PASS; chat completion not passed; an unexercised path is never verified.
+   - **The other cases as before, under the new pin:** the approval cases, S, X and Y, the STOP paths, V (the VNC desktop), the preparation, drop and launch-check cases, the prerequisite and tamper cases, and R7 by `r7.sh` (`refused:evidence:reference_result_missing`).
+   - **Every case:**
+     - every session sealed;
+     - one drop where confirmed, and none otherwise;
+     - no launch after a refusal;
+     - 0 synthetic secrets or answer texts in 85 dry folders;
+     - nothing created under the real `~/sentinel-runs`.
+6. **Proposed device steps (not launched; each needs the maintainer's go-ahead).**
+   - **(a) The validation session** with `fci-lfm25-b106100`:
+     - **CCTV required:** the live camera.
+     - **Position:** seated at the Mac, in its view, with nobody else in view.
+     - **Actions:**
+       - reboot;
+       - plain SSH from the Mac's Terminal;
+       - verify both manifests;
+       - i-D once (the new approval line);
+       - the blocks in order, with i-C's CLOSE for the VNC desktop;
+       - at T0 work as usual, type nothing and ask nothing; stay seated at the stop;
+       - after i-H, no reboot until Claude has read the boot's kernel log.
+     - **Duration:** 480 s from readiness, about 1-2 minutes of loading, about 30 minutes in all.
+     - **Expected:** cancellation probably MISSING, so chat completion not passed. It would show execution, face execution and memory, plus the corrected tools on device records.
+   - **(b) The controlled check (section 4):** only if approved and implemented; no CCTV; about 3-4 minutes.
+7. **Not changed:** code (the record only), the runtime, criteria, admission, drivers, packages, `fci25-20261026T124349Z` and its verdict, `fci-lfm25-5a6fc23`. The camera reconnect and the NVML mismatch stay unresolved follow-ups, and the legacy-v1 items stay a separate pending task.
 
 ### Session 115, part 9 (Claude, 2026-10-26): the two tooling gaps closed: the scene worker's four counters declared, and answers about a replaced frame recorded and judged against the frame sent; the cancellation item unchanged and its reading covered; portable tests only; `fci25-20261026T124349Z` and its verdict unchanged
 
