@@ -17,9 +17,19 @@ It is not V2-26 proper, which compares models and records the choice.
   provisional demo profile (D33), plus ``--cache-ram 0`` (D41). S1 showed that
   llama-server's default host-RAM prompt cache grew by about 5.4 MiB per
   request. Configuration chooses only the port and the request timeout.
-- **The same request S1 and check 8 measured.** A 480×360 JPEG at quality 60,
-  the v2 SceneReport prompt, schema-constrained output (U20), at most 200
-  tokens, non-streaming.
+- **The same request S1 and check 8 measured, plus the schema sent twice.** A
+  480×360 JPEG at quality 60, the v2 SceneReport prompt, schema-constrained
+  output (U20), at most 200 tokens, non-streaming. Since session 115, part 17,
+  the report schema goes both as OpenAI's ``response_format`` and as
+  llama.cpp's own top-level ``json_schema`` field, from one source
+  (``scene_report_schema``): llama-server b8932's special case for the
+  LFM2.5-VL chat template builds a grammar only for tools and ignores
+  ``response_format``, so the schema never reached the sampler and reports
+  with more than five observations came back (session 115, part 16). The
+  server converts a top-level ``json_schema`` itself whenever the template
+  produced no grammar; where the template did (LFM2-VL), that grammar is kept.
+  The fingerprint (D47) includes the field, so a profile measured without it
+  is refused until a new step-4 measurement is accepted (D46).
 - **Fail closed.** The response is read up to a bound. The envelope must be one
   complete ``stop`` choice (U20's ``scene_completion_content``). Only then does
   the report text go to the scene lane, which parses it strictly. Problems are
@@ -42,7 +52,7 @@ from pathlib import Path
 from typing import Any
 
 from ..jobs import AnalysisJob, OutcomeKind, WorkerOutcome
-from .completion import SceneCompletionError, scene_completion_content, scene_response_format
+from .completion import SceneCompletionError, scene_completion_content, scene_report_schema, scene_response_format
 
 LOOPBACK_HOST = "127.0.0.1"
 COMPLETIONS_PATH = "/v1/chat/completions"
@@ -79,11 +89,13 @@ def request_fingerprint(
 
     The step-4 workload records it for what it sent; an accepted profile keeps it, and
     ``sentinel run --scene`` refuses a profile whose fingerprint differs from SCENE_REQUEST_SHA256.
+    Since session 115, part 17, the top-level ``json_schema`` field is part of it: every profile
+    measured before that field is refused until the request is measured again.
     """
     canonical = {
         "system": system, "prompt": prompt, "image_size": list(image_size), "jpeg_quality": jpeg_quality,
         "max_tokens": max_tokens, "temperature": temperature, "model": model, "stream": False,
-        "response_format": scene_response_format(),
+        "response_format": scene_response_format(), "json_schema": scene_report_schema(),
     }
     return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -114,6 +126,7 @@ def scene_request_body(jpeg: bytes, model: str = MODEL_NAME) -> bytes:
         "temperature": TEMPERATURE,
         "stream": False,
         "response_format": scene_response_format(),
+        "json_schema": scene_report_schema(),  # llama.cpp's own field: converted by the server when the template is not
         "messages": [
             {"role": "system", "content": SCENE_SYSTEM},
             {

@@ -19,10 +19,15 @@ class SceneCompletionError(SceneReportError):
         super().__init__(reason)
 
 
+def scene_report_schema() -> dict[str, object]:
+    """The report's JSON schema: the one source for both places a scene request carries it (session 115, part 17)."""
+    return SceneReport.model_json_schema()
+
+
 def scene_response_format() -> dict[str, object]:
     return {
         "type": "json_schema",
-        "json_schema": {"name": "scene_report", "strict": True, "schema": SceneReport.model_json_schema()},
+        "json_schema": {"name": "scene_report", "strict": True, "schema": scene_report_schema()},
     }
 
 

@@ -40,6 +40,11 @@ def test_request_schema_is_the_unchanged_report_schema_and_not_shared_mutable_st
     assert schema["properties"]["observations"]["items"]["maxLength"] == 80
     schema["properties"].clear()
     assert scene_response_format()["json_schema"]["schema"] == SceneReport.model_json_schema()
+    from sentinel.scene.completion import scene_report_schema  # the one source (session 115, part 17)
+
+    assert scene_report_schema() == scene_response_format()["json_schema"]["schema"] == SceneReport.model_json_schema()
+    scene_report_schema()["properties"].clear()
+    assert scene_report_schema() == SceneReport.model_json_schema()
 
 
 @pytest.mark.parametrize("fenced", [False, True])

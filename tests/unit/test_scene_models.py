@@ -113,7 +113,11 @@ def test_the_rollback_set_is_exactly_what_the_accepted_profile_measured() -> Non
     assert models.ROLLBACK_SCENE_MODEL_SET == OLD.key == "lfm2-vl" and OLD.profiled is True
     assert (OLD.model, OLD.mmproj) == (profile.llm, profile.mmproj)
     assert OLD.request_model == MODEL_NAME == "lfm2-vl"
-    assert OLD.scene_request_sha256 == profile.scene_request_sha256 == SCENE_REQUEST_SHA256
+    assert OLD.scene_request_sha256 == SCENE_REQUEST_SHA256
+    # session 115, part 17: the request gained its top-level json_schema field, so the profile that measured the
+    # request without it (its fingerprint, as recorded) no longer admits the set until a new measurement is accepted
+    assert profile.scene_request_sha256 == "3057dacd4c0ed54193b36b10cfccbac65efaae38ab40e7a6bb142be341595045"
+    assert profile.scene_request_sha256 != SCENE_REQUEST_SHA256
     assert OLD.model_revision == "lfm2-vl-1.6b-q4_0"
     # the earlier defaults of sentinel run, unchanged for the rollback
     assert OLD.model_path == Path.home() / "models/lfm2-vl/LFM2-VL-1.6B-Q4_0.gguf"
@@ -122,9 +126,11 @@ def test_the_rollback_set_is_exactly_what_the_accepted_profile_measured() -> Non
 
 def test_the_new_set_is_lfm25_vl_at_a_pinned_revision_with_its_own_projector() -> None:
     assert models.DEFAULT_SCENE_MODEL_SET == NEW.key == "lfm2.5-vl" and NEW.profiled is True  # D105
-    profile = RESOURCE_PROFILES[LFM25_PROFILE]  # the accepted profile measured exactly these files and this request
+    profile = RESOURCE_PROFILES[LFM25_PROFILE]  # the accepted profile measured exactly these files ...
     assert (NEW.model, NEW.mmproj) == (profile.llm, profile.mmproj)
-    assert NEW.scene_request_sha256 == profile.scene_request_sha256
+    # ... and the request before session 115, part 17, whose fingerprint it keeps: it no longer admits the set
+    assert profile.scene_request_sha256 == "1eb816afada9944ac398e46cb73ce43026ca0a475781f0fd8546f96175d322a3"
+    assert NEW.scene_request_sha256 != profile.scene_request_sha256
     assert re.fullmatch(r"[0-9a-f]{40}", models.LFM25_REVISION)
     assert NEW.source == f"LiquidAI/LFM2.5-VL-1.6B-GGUF at {models.LFM25_REVISION}"
     assert (NEW.model.name, NEW.model.bytes, NEW.model.sha256) == (

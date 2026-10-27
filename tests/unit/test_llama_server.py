@@ -135,6 +135,7 @@ def test_the_request_is_the_one_s1_and_check_8_measured() -> None:
         "temperature": 0.05,
         "stream": False,
         "response_format": scene_response_format(),
+        "json_schema": scene_response_format()["json_schema"]["schema"],  # session 115, part 17: the same schema twice
         "messages": [
             {"role": "system", "content": workload.SCENE_SYSTEM},
             {"role": "user", "content": [

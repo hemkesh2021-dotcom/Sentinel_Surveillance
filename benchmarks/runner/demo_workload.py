@@ -742,7 +742,7 @@ def face_loop(deepface, latest: Latest, stats: Stats, hz: float, stop: threading
 
 
 def scene_request(port: int, frame) -> dict:
-    from sentinel.scene.completion import SceneCompletionError, scene_response_format
+    from sentinel.scene.completion import SceneCompletionError, scene_report_schema, scene_response_format
 
     import cv2
 
@@ -757,6 +757,7 @@ def scene_request(port: int, frame) -> dict:
         "temperature": 0.05,
         "stream": False,
         "response_format": scene_response_format(),
+        "json_schema": scene_report_schema(),  # as the runtime's scene_request_body sends it (session 115, part 17)
         "messages": [
             {"role": "system", "content": SCENE_SYSTEM},
             {

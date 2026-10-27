@@ -725,14 +725,17 @@ def test_the_registry_candidate_matches_the_runtime_and_refuses_it_without_both_
     profile = RESOURCE_PROFILES["step4cand-demo-20261007T090339Z"]
     assert accepted_profile_problem(profile.profile_id) is None
     assert profile.llama_flags == PROFILED_FLAGS + PROMPT_CACHE_FLAGS and profile.cache_ram_mib == 0
-    assert profile.engine_sha256 == LEGACY_ENGINE_SHA256 and profile.scene_request_sha256 == SCENE_REQUEST_SHA256
+    assert profile.engine_sha256 == LEGACY_ENGINE_SHA256
+    # session 115, part 17: the profile keeps the fingerprint of the request without the top-level json_schema field
+    assert profile.scene_request_sha256 != SCENE_REQUEST_SHA256
     missing = SceneOptions(tmp_path / "no-server", tmp_path / "no-model", tmp_path / "no-mmproj")
     config = parse_config({"config_version": 1, "camera": {"id": "cam-1"}})
     for policy in (DEFAULT_POLICY, MemoryPolicy("workload_disabled", "none"), MemoryPolicy("system", "post_load")):
         assert profile_mismatch(profile, config, missing, policy=policy) == (
             f"resource profile {profile.profile_id} measured memory policy (THP workload_disabled, model-file release "
             f"post_load), not the runtime's ({policy.describe()})")
-    assert "missing" in profile_mismatch(profile, config, missing, policy=CANDIDATE_POLICY)  # then the files
+    assert profile_mismatch(profile, config, missing, policy=CANDIDATE_POLICY) == (  # then the request, then the files
+        f"resource profile {profile.profile_id} measured another scene request than the runtime sends")
 
 
 def test_a_step4_profile_needs_no_policy_evidence_because_it_measures_the_default(accepted_scene) -> None:
