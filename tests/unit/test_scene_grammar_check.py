@@ -36,11 +36,13 @@ def check():
         sys.path.remove(str(RUNNERS))
 
 
-def ran(check, tmp_path: Path, *, rounds: int = 2, **fake_options: Any) -> tuple[dict[str, Any], FakeLlamaServer]:
+def ran(check, tmp_path: Path, *, rounds: int = 2, model_set: str = "lfm2.5-vl", thinking_control: bool = False,
+        **fake_options: Any) -> tuple[dict[str, Any], FakeLlamaServer]:
     port = free_port()
     fake = FakeLlamaServer(port, decode_s={}, **fake_options)
-    args = argparse.Namespace(model_set="lfm2.5-vl", llama_server=Path("/nonexistent/llama-server"), port=port,
-                              rounds=rounds, ready_timeout_s=5.0, post_load_release=False, out=tmp_path / "check.json")
+    args = argparse.Namespace(model_set=model_set, llama_server=Path("/nonexistent/llama-server"), port=port,
+                              rounds=rounds, ready_timeout_s=5.0, post_load_release=False, out=tmp_path / "check.json",
+                              thinking_control=thinking_control)
     result = check.run(args, server_factory=FakeServerProcess(fake), servers=lambda: [], in_use=lambda port: False,
                        meminfo=lambda: None, picture=lambda: "a synthetic picture",
                        encode=lambda image: b"\xff\xd8x\xff\xd9", vmstat=lambda: {"drop_pagecache": 1},
@@ -57,10 +59,10 @@ def test_the_bodies_are_the_runtimes_and_differ_in_the_pinned_grammar_only(check
     assert list(bodies) == ["chat", "unconstrained", "grammar"]
     assert bodies["grammar"] == scene_request_body(jpeg, "lfm2.5-vl")
     with_grammar, without = json.loads(bodies["grammar"]), json.loads(bodies["unconstrained"])
-    assert "grammar" not in without and "response_format" in without and "json_schema" not in without
-    assert dict(without, grammar=scene_report_grammar()) == with_grammar
+    assert not ({"grammar", "response_format", "json_schema"} & set(without))  # no output constraint at all
+    assert dict(without, grammar=scene_report_grammar(), response_format=with_grammar["response_format"]) == with_grammar
     assert check.body_difference(bodies["unconstrained"], bodies["grammar"]) == {
-        "differing_members": ["grammar"], "only_grammar": True, "grammar_is_pinned": True}
+        "differing_members": ["grammar", "response_format"], "only_constraints": True, "grammar_is_pinned": True}
     chat = json.loads(bodies["chat"])
     assert not ({"grammar", "json_schema", "response_format"} & set(chat)) and chat["model"] == "lfm2.5-vl"
 
@@ -74,8 +76,10 @@ def test_a_control_over_the_limit_and_valid_grammar_answers_read_as_enforced(che
     assert cases["unconstrained"] == {"requests": 2, "statuses": ["200"], "transport": [], "error_categories": [],
                                       "finish_reasons": ["stop"], "valid_reports": 0, "rejected_reports": 2,
                                       "rejection_reasons": ["invalid_report"], "observations_over_limit": 2,
-                                      "observations_max": None}
+                                      "observations_max": None, "reasoning_answers": 0, "completion_tokens_max": 60}
     assert cases["grammar"]["valid_reports"] == 2 and cases["grammar"]["observations_max"] == 1
+    assert result["comparison"]["chat_within_budget"] is True and result["comparison"]["reasoning_present"] is False
+    assert "thinking_control" not in result
     chat = [item for item in result["requests"] if item["case"] == "chat"][0]
     assert chat["answer"]["parses_as_report"] is False and chat["answer"]["content_chars"] == len(ANSWER)
     assert chat["answer"]["validation"] == "not_applicable"
@@ -87,6 +91,27 @@ def test_a_control_over_the_limit_and_valid_grammar_answers_read_as_enforced(che
     text = json.dumps(result)
     for secret in (ANSWER, "synthetic picture", REPORT["summary"], "data:image", "six", "root ::="):
         assert secret not in text
+
+
+def test_a_thinking_model_is_read_without_reasoning_only_when_the_set_switches_it_off(check, tmp_path) -> None:
+    """Session 116: the fake reasons unless the request's chat_template_kwargs switch thinking off, as LFM3-VL's
+    template does. The lfm3-vl set sends the switch in every request; the thinking control, without it, shows the
+    reasoning the switch keeps out; a set without the switch against such a model reads reasoning_present."""
+    result, fake = ran(check, tmp_path, rounds=1, model_set="lfm3-vl", scene_text=SIX, grammar_scene_text=json.dumps(REPORT),
+                       reasoning="synthetic reasoning the result must never hold", thinking_control=True)
+    assert result["comparison"]["outcome"] == "enforced" and result["comparison"]["reasoning_present"] is False
+    for item in result["requests"]:
+        assert item["answer"]["reasoning_chars"] == 0 and item["answer"]["think_tag_in_content"] is False
+    assert result["scene_request_sha256"] == check.scene_model_set("lfm3-vl").scene_request_sha256
+    control = result["thinking_control"]
+    assert control["case"] == "thinking_control" and control["status"] == 200
+    assert control["answer"]["reasoning_chars"] == len("synthetic reasoning the result must never hold")
+    assert "synthetic reasoning" not in json.dumps(result) and fake.completed == {"chat": 2, "scene": 2}
+    without_switch, _ = ran(check, tmp_path / "b", rounds=1, model_set="lfm2.5-vl", scene_text=SIX,
+                            grammar_scene_text=json.dumps(REPORT), reasoning="r", thinking_control=True)
+    assert without_switch["comparison"]["outcome"] == "reasoning_present"
+    assert without_switch["comparison"]["reasoning_present"] is True
+    assert without_switch["thinking_control"] == "not_applicable"
 
 
 def test_a_control_within_the_limit_is_not_exercised(check, tmp_path) -> None:

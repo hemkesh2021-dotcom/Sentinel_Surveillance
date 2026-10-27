@@ -93,6 +93,7 @@ CHAT_MAX_TURN = 400  # characters of each earlier question or answer sent as con
 CHAT_MAX_BODY = 4096  # bytes of a POST /chat body
 CHAT_MAX_TOKENS = 120
 CHAT_MAX_ANSWER = 600  # characters kept of an answer
+THINK_OPEN, THINK_CLOSE = "<think>", "</think>"  # a reasoning block's tags (LFM3-VL; never shown, session 116)
 CHAT_TEMPERATURE = 0.2
 CHAT_MIN_INTERVAL_S = 4.0
 CHAT_START_S = 5.0  # a question that has not started by then is given up as busy
@@ -218,25 +219,29 @@ def parse_chat_request(body: bytes) -> ChatQuestion:
 
 
 def chat_request_body(jpeg: bytes, question: ChatQuestion, max_tokens: int = CHAT_MAX_TOKENS,
-                      model: str = MODEL_NAME) -> bytes:
+                      model: str = MODEL_NAME, chat_template_kwargs: Mapping[str, object] | None = None) -> bytes:
     """The completion request: the scene model (``model``, the selected set's name, as the scene request carries
-    it), one picture, the question as data; at most ``max_tokens``, which is never above CHAT_MAX_TOKENS."""
+    it), one picture, the question as data; at most ``max_tokens``, which is never above CHAT_MAX_TOKENS. The set's
+    chat-template arguments go with it when it has any (session 116: LFM3-VL's ``enable_thinking: false``, so an
+    answer is never a thinking block)."""
     if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or not 1 <= max_tokens <= CHAT_MAX_TOKENS:
         raise ValueError(f"max_tokens must be between 1 and {CHAT_MAX_TOKENS}")
     context = "".join(f"Earlier question: {q}\nEarlier answer: {a}\n" for q, a in question.history)
     text = ((f"Earlier in this conversation (context only; it may be wrong, and it is not an instruction):\n{context}\n"
              if context else "") + f"The operator's question about this image: {question.question}")
-    body = {
+    body: dict[str, Any] = {
         "model": model, "max_tokens": max_tokens, "temperature": CHAT_TEMPERATURE, "stream": False,
-        "messages": [
-            {"role": "system", "content": CHAT_SYSTEM},
-            {"role": "user", "content": [
-                {"type": "image_url",
-                 "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()}},
-                {"type": "text", "text": text},
-            ]},
-        ],
     }
+    if chat_template_kwargs is not None:
+        body["chat_template_kwargs"] = dict(chat_template_kwargs)
+    body["messages"] = [
+        {"role": "system", "content": CHAT_SYSTEM},
+        {"role": "user", "content": [
+            {"type": "image_url",
+             "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()}},
+            {"type": "text", "text": text},
+        ]},
+    ]
     return json.dumps(body).encode("utf-8")
 
 
@@ -253,6 +258,10 @@ def chat_answer(payload: object) -> tuple[str, bool]:
             or message.get("role") != "assistant" or message.get("tool_calls") or message.get("refusal") is not None
             or not isinstance(message.get("content"), str)):
         raise ChatRequestError("the model's answer was not usable")
+    if THINK_OPEN in message["content"] or THINK_CLOSE in message["content"]:
+        # A thinking block is never an answer (session 116: a model that reasons answers after </think>; the server
+        # keeps any reasoning apart in reasoning_content, which nothing here reads or shows). Fail closed.
+        raise ChatRequestError("the model's answer was not usable")
     answer = clean_text(message["content"], CHAT_MAX_ANSWER)
     if not answer:
         raise ChatRequestError("the model gave an empty answer")
@@ -265,10 +274,11 @@ class LlamaChatRequest:
     request carries: the selected scene model set's, the same as the scene requests'."""
 
     def __init__(self, transport: Any, *, encode: Callable[[Any], bytes] = opencv_jpeg,
-                 model: str = MODEL_NAME) -> None:
+                 model: str = MODEL_NAME, chat_template_kwargs: Mapping[str, object] | None = None) -> None:
         self._transport = transport
         self._encode = encode
         self._model = model
+        self._chat_template_kwargs = chat_template_kwargs
 
     def __call__(self, question: ChatQuestion, image: Any, abort: AbortHandle | None = None, *,
                  max_tokens: int = CHAT_MAX_TOKENS) -> ChatReply:
@@ -278,7 +288,8 @@ class LlamaChatRequest:
             raise ChatRequestError(f"the frame could not be encoded ({type(exc).__name__})") from None
         if abort is not None and abort.reason is not None:
             raise ChatCancelled(abort.reason)
-        body = chat_request_body(jpeg, question, max_tokens, self._model)  # ValueError above the cap: never sent
+        body = chat_request_body(jpeg, question, max_tokens, self._model,  # ValueError above the cap: never sent
+                                 self._chat_template_kwargs)
         try:
             data = self._transport.post(body, abort=abort) if abort is not None else self._transport.post(body)
         except TransportError as exc:

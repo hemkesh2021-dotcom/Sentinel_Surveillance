@@ -131,6 +131,9 @@ VLM_TIMEOUT_S = 30.0
 # --scene-request-model before any request; the default is the profiled request's, so earlier procedures are unchanged.
 SCENE_REQUEST_MODEL = "lfm2-vl"
 _REQUEST_MODEL = re.compile(r"^[a-z0-9][a-z0-9.-]{0,31}$")
+# The set's chat-template arguments (session 116: LFM3-VL's no-think switch), sent as chat_template_kwargs in every
+# scene request when given by --scene-template-kwargs; None for the profiled sets, which send none.
+SCENE_TEMPLATE_KWARGS: dict[str, object] | None = None
 MR1_ACK_TIMEOUT_S = 60.0  # the orchestrator's release and samples take a few seconds
 MR1_DETECTOR_FRAMES = 15  # one second of the 15 fps replay, unpaced
 WINDOW_S = 10  # unique-frame throughput windows (step-4 criterion T1)
@@ -448,7 +451,7 @@ def scene_request_sha256() -> str | None:
         return None
     return request_fingerprint(system=SCENE_SYSTEM, prompt=SCENE_PROMPT, image_size=VLM_IMAGE_SIZE,
                                jpeg_quality=VLM_JPEG_QUALITY, max_tokens=VLM_MAX_TOKENS, temperature=0.05,
-                               model=SCENE_REQUEST_MODEL)
+                               model=SCENE_REQUEST_MODEL, chat_template_kwargs=SCENE_TEMPLATE_KWARGS)
 
 
 def check_cuda_driver() -> bool:
@@ -770,6 +773,8 @@ def scene_request(port: int, frame) -> dict:
         "stream": False,
         "response_format": scene_response_format(),
         "grammar": scene_report_grammar(),  # as the runtime's scene_request_body sends it (session 115, part 20)
+        # the set's chat-template arguments, as the runtime sends them (session 116); none for the profiled sets
+        **({"chat_template_kwargs": dict(SCENE_TEMPLATE_KWARGS)} if SCENE_TEMPLATE_KWARGS is not None else {}),
         "messages": [
             {"role": "system", "content": SCENE_SYSTEM},
             {
@@ -1047,7 +1052,7 @@ def run_scene_only(args, stats: Stats) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    global SCENE_REQUEST_MODEL
+    global SCENE_REQUEST_MODEL, SCENE_TEMPLATE_KWARGS
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--engine")
     parser.add_argument("--scene-only", action="store_true",
@@ -1076,10 +1081,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scene-request-model", default=SCENE_REQUEST_MODEL,
                         help="session 115: the model name every scene request carries, the selected scene model "
                              "set's (default lfm2-vl, the profiled request's)")
+    parser.add_argument("--scene-template-kwargs", default=None,
+                        help="session 116: the selected set's chat-template arguments, a JSON object sent in every "
+                             "scene request as llama-server's chat_template_kwargs (none by default)")
     args = parser.parse_args(argv)
     if not _REQUEST_MODEL.match(args.scene_request_model):
         parser.error("--scene-request-model must be a scene model set's request name")
     SCENE_REQUEST_MODEL = args.scene_request_model  # once, before any request or thread
+    if args.scene_template_kwargs is not None:
+        try:
+            parsed_kwargs = json.loads(args.scene_template_kwargs)
+        except ValueError:
+            parsed_kwargs = None
+        if not isinstance(parsed_kwargs, dict) or not all(
+                isinstance(k, str) and isinstance(v, (str, bool, int, float)) for k, v in parsed_kwargs.items()):
+            parser.error("--scene-template-kwargs must be a JSON object of string, boolean or number values")
+        SCENE_TEMPLATE_KWARGS = parsed_kwargs  # once, before any request or thread
     if args.mr1_release_check and args.post_load_release:
         parser.error("--mr1-release-check and --post-load-release are separate procedures; pass one")
     if args.memory_attribution and (args.scene_only or args.mr1_release_check):

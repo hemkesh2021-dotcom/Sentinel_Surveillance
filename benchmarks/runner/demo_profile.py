@@ -1401,6 +1401,9 @@ def start_workload(args: argparse.Namespace, run_dir: Path) -> subprocess.Popen:
     request_model = getattr(args, "scene_request_model", DEFAULT_SCENE_REQUEST_MODEL)
     if request_model != DEFAULT_SCENE_REQUEST_MODEL:  # the default's command line is unchanged (session 115)
         argv += ["--scene-request-model", request_model]
+    template_kwargs = getattr(args, "scene_template_kwargs", None)
+    if template_kwargs is not None:  # the set's chat-template arguments, as the runtime sends them (session 116)
+        argv += ["--scene-template-kwargs", template_kwargs]
     releasing = [flag for flag, on in (("--mr1-release-check", getattr(args, "mr1_release_check", False)),
                                        ("--post-load-release", getattr(args, "post_load_release", False))) if on]
     attribution = ["--memory-attribution"] if getattr(args, "memory_attribution", False) else []  # MA1: counters only
@@ -3353,6 +3356,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     # Session 115: the model name the workload's scene requests carry, the scene model set's whose --model and
     # --mmproj these are (operator_check --scene-model-set passes all three); the default is the profiled request's.
     parser.add_argument("--scene-request-model", default=DEFAULT_SCENE_REQUEST_MODEL)
+    parser.add_argument("--scene-template-kwargs", default=None,
+                        help="session 116: the selected set's chat-template arguments, a JSON object the workload "
+                             "sends in every scene request (none by default, as the profiled sets send none)")
     parser.add_argument("--engine", type=Path, default=HOME / "yolov8n.engine")
     parser.add_argument("--summarize", type=Path, metavar="RUN_DIR", help="only rebuild summary.txt and profile.json")
     return parser.parse_args(argv)

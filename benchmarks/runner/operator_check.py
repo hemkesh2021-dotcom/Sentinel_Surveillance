@@ -127,7 +127,7 @@ JOURNAL_ERRORS = (  # (fixed class, journalctl stderr pattern); first match wins
 S1_ARMS = {"a": None, "b": 0}  # llama-server --cache-ram MiB; None keeps b8932's default (8192 MiB)
 # --scene-model-set (session 115): sentinel.scene.models.SCENE_MODEL_SETS's keys, kept equal by a test (this script
 # imports the package only when a set is used)
-SCENE_MODEL_SET_KEYS = ("lfm2-vl", "lfm2.5-vl")
+SCENE_MODEL_SET_KEYS = ("lfm2-vl", "lfm2.5-vl", "lfm3-vl")  # sentinel.scene.models' keys (a test keeps them equal)
 _DROPPED = object()
 DROP_CACHES_PROCEDURE = (
     "D37: operator-run `sync && sudo sysctl -w vm.drop_caches=1` before measurement runs only; "
@@ -690,15 +690,19 @@ def file_facts(path: Path) -> dict | None:
 
 
 def scene_model_args(model_set: str | None) -> list[str]:
-    """The profiler's --model, --mmproj and --scene-request-model for a scene model set (session 115). None adds
-    nothing, so every earlier command line is unchanged (the profiler's defaults are the accepted profile's set)."""
+    """The profiler's --llama, --model, --mmproj, --scene-request-model and, when the set sends any,
+    --scene-template-kwargs for a scene model set (sessions 115 and 116). None adds nothing, so every earlier command
+    line is unchanged (the profiler's defaults are the accepted profile's set and build)."""
     if model_set is None:
         return []
     from sentinel.scene.models import scene_model_set  # this script runs with the repository's venv
 
     chosen = scene_model_set(model_set)
-    return ["--model", str(chosen.model_path), "--mmproj", str(chosen.mmproj_path),
+    argv = ["--llama", str(chosen.llama_server), "--model", str(chosen.model_path), "--mmproj", str(chosen.mmproj_path),
             "--scene-request-model", chosen.request_model]
+    if chosen.chat_template_kwargs is not None:
+        argv += ["--scene-template-kwargs", json.dumps(dict(chosen.chat_template_kwargs), sort_keys=True)]
+    return argv
 
 
 def identity_files(clip: Path, model_set: str | None = None) -> dict[str, Path]:

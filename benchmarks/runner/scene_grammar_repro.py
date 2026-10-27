@@ -104,15 +104,16 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def case_bodies(jpeg: bytes, model: str) -> dict[str, bytes]:
+def case_bodies(jpeg: bytes, model: str, chat_template_kwargs: Mapping[str, object] | None = None) -> dict[str, bytes]:
     """The three requests: the runtime's chat body; the runtime's scene body without its constraint member (since
     part 20 the ``grammar``; the request every accepted profile measured); and part 17's request (bc8fc91), that body
-    with the top-level ``json_schema`` field in the grammar's place, kept as the reproduction of the failure."""
-    request = json.loads(scene_request_body(jpeg, model))
+    with the top-level ``json_schema`` field in the grammar's place, kept as the reproduction of the failure. Each
+    carries the set's template arguments, when it has any (session 116)."""
+    request = json.loads(scene_request_body(jpeg, model, chat_template_kwargs))
     without_field = {key: value for key, value in request.items() if key != "grammar"}
     with_field = {key: (scene_report_schema() if key == "grammar" else value) for key, value in request.items()}
     with_field = {("json_schema" if key == "grammar" else key): value for key, value in with_field.items()}
-    return {"basic": chat_request_body(jpeg, ChatQuestion(QUESTION), CHAT_MAX_TOKENS, model),
+    return {"basic": chat_request_body(jpeg, ChatQuestion(QUESTION), CHAT_MAX_TOKENS, model, chat_template_kwargs),
             "response_format": json.dumps(without_field).encode("utf-8"),  # scene_request_body's serialisation
             "json_schema": json.dumps(with_field).encode("utf-8")}
 
@@ -252,9 +253,10 @@ def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaS
         sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
     chosen = scene_model_set(args.model_set)
     model, mmproj = chosen.model_path, chosen.mmproj_path
+    binary = args.llama_server or chosen.llama_server  # the set's own pinned build (session 116)
     result: dict[str, Any] = {"model_set": chosen.key, "request_model": chosen.request_model,
                               "scene_request_sha256": chosen.scene_request_sha256,
-                              "files": {"model": model.name, "mmproj": mmproj.name}, "binary": str(args.llama_server),
+                              "files": {"model": model.name, "mmproj": mmproj.name}, "binary": str(binary),
                               "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                               "rounds": args.rounds, "memory": {"before": _memory(meminfo)}, "vmstat": vmstat(),
                               "problems": [], "requests": []}
@@ -270,7 +272,7 @@ def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaS
     if problem is not None:
         problems.append(f"memfree_precheck:{problem}")
         return result
-    server = server_factory(args.llama_server, model, mmproj, args.port)
+    server = server_factory(binary, model, mmproj, args.port)
     started = time.monotonic()
     status = server.start(args.ready_timeout_s)
     result["readiness"] = {"state": status.state.value, "problem": status.problem, "layers": status.layers,
@@ -290,10 +292,10 @@ def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaS
             result["memory"]["released"] = _memory(meminfo)
         result["build_info"] = build(args.port)
         jpeg = encode(picture())
-        bodies = case_bodies(jpeg, chosen.request_model)
+        bodies = case_bodies(jpeg, chosen.request_model, chosen.chat_template_kwargs)
         result["picture"] = {"jpeg_bytes": len(jpeg), "sha256": _sha256(jpeg)}
         result["bodies"] = {name: {"bytes": len(body), "sha256": _sha256(body)} for name, body in bodies.items()}
-        request = json.loads(scene_request_body(jpeg, chosen.request_model))
+        request = json.loads(scene_request_body(jpeg, chosen.request_model, chosen.chat_template_kwargs))
         result["bodies"]["json_schema"]["is_part_17s_request"] = json.loads(bodies["json_schema"]) == {
             **{key: value for key, value in request.items() if key != "grammar"}, "json_schema": scene_report_schema()}
         result["bodies"]["response_format"]["is_scene_request_body_without_grammar"] = \
@@ -331,7 +333,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     runner = sub.add_parser("run", help="one server load and the bounded comparison")
     runner.add_argument("--model-set", choices=sorted(SCENE_MODEL_SETS), required=True)
-    runner.add_argument("--llama-server", type=Path, default=DEFAULT_BINARY)
+    runner.add_argument("--llama-server", type=Path, default=None,
+                        help="the llama-server binary (default: the selected set's own pinned build)")
     runner.add_argument("--port", type=int, default=PORT)
     runner.add_argument("--rounds", type=int, default=3, choices=range(1, MAX_ROUNDS + 1))
     runner.add_argument("--ready-timeout-s", type=float, default=180.0)

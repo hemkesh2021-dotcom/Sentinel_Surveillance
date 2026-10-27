@@ -86,7 +86,7 @@ SCENE_PROMPT = (
 
 def request_fingerprint(
     *, system: str, prompt: str, image_size: tuple[int, int], jpeg_quality: int, max_tokens: int,
-    temperature: float, model: str,
+    temperature: float, model: str, chat_template_kwargs: Mapping[str, object] | None = None,
 ) -> str:
     """SHA-256 of everything that shapes a scene request except the image (D47).
 
@@ -94,13 +94,17 @@ def request_fingerprint(
     ``sentinel run --scene`` refuses a profile whose fingerprint differs from SCENE_REQUEST_SHA256.
     Since session 115, part 20, the top-level ``grammar`` field is part of it: every profile
     measured before that field (part 17's ``json_schema`` field included) is refused until the
-    request is measured again.
+    request is measured again. A set's chat-template arguments (session 116: LFM3-VL's
+    ``enable_thinking: false``) are part of it when the set sends any; the sets that send none keep
+    their fingerprints.
     """
     canonical = {
         "system": system, "prompt": prompt, "image_size": list(image_size), "jpeg_quality": jpeg_quality,
         "max_tokens": max_tokens, "temperature": temperature, "model": model, "stream": False,
         "response_format": scene_response_format(), "grammar": scene_report_grammar(),
     }
+    if chat_template_kwargs is not None:
+        canonical["chat_template_kwargs"] = dict(chat_template_kwargs)
     return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -122,16 +126,20 @@ def llama_server_environment(base: Mapping[str, str]) -> dict[str, str]:
     return env
 
 
-def scene_request_body(jpeg: bytes, model: str = MODEL_NAME) -> bytes:
+def scene_request_body(jpeg: bytes, model: str = MODEL_NAME,
+                       chat_template_kwargs: Mapping[str, object] | None = None) -> bytes:
     image = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
-    body = {
+    body: dict[str, Any] = {
         "model": model,
         "max_tokens": MAX_TOKENS,
         "temperature": TEMPERATURE,
         "stream": False,
         "response_format": scene_response_format(),
         "grammar": scene_report_grammar(),  # llama.cpp's own field: a USER grammar, never prefilled (part 20)
-        "messages": [
+    }
+    if chat_template_kwargs is not None:  # the set's template arguments (session 116: LFM3-VL's no-think switch)
+        body["chat_template_kwargs"] = dict(chat_template_kwargs)
+    body["messages"] = [
             {"role": "system", "content": SCENE_SYSTEM},
             {
                 "role": "user",
@@ -140,8 +148,7 @@ def scene_request_body(jpeg: bytes, model: str = MODEL_NAME) -> bytes:
                     {"type": "text", "text": SCENE_PROMPT},
                 ],
             },
-        ],
-    }
+        ]
     return json.dumps(body).encode("utf-8")
 
 
@@ -273,10 +280,11 @@ class LlamaSceneRequest:
     """
 
     def __init__(self, transport: Any, *, encode: Callable[[Any], bytes] = opencv_jpeg,
-                 model: str = MODEL_NAME) -> None:
+                 model: str = MODEL_NAME, chat_template_kwargs: Mapping[str, object] | None = None) -> None:
         self._transport = transport
         self._encode = encode
         self._model = model
+        self._chat_template_kwargs = chat_template_kwargs
 
     def __call__(self, job: AnalysisJob, image: Any) -> WorkerOutcome:
         try:
@@ -284,7 +292,7 @@ class LlamaSceneRequest:
         except Exception as exc:  # a bad frame is that job's error, not a worker crash
             return WorkerOutcome.failed(job.job_id, OutcomeKind.ERROR, f"image encoding failed: {type(exc).__name__}")
         try:
-            data = self._transport.post(scene_request_body(jpeg, self._model))
+            data = self._transport.post(scene_request_body(jpeg, self._model, self._chat_template_kwargs))
         except TransportError as exc:
             kind = OutcomeKind.TIMEOUT if exc.timed_out else OutcomeKind.ERROR
             return WorkerOutcome.failed(job.job_id, kind, exc.label)

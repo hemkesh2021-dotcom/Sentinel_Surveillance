@@ -444,7 +444,8 @@ class Rig:
 
     def __init__(self, port: int, request_model: str, revision: str, picture: Any,
                  transport: Callable[[int, float], Any] = LoopbackTransport,
-                 encode: Callable[[Any], bytes] = opencv_jpeg, build: str | None = None) -> None:
+                 encode: Callable[[Any], bytes] = opencv_jpeg, build: str | None = None,
+                 chat_template_kwargs: Mapping[str, object] | None = None) -> None:
         self.port, self.picture, self.build = port, picture, build
         self.clock = SystemClock()
         self.stamper = FrameStamper("chatpreempt", self.clock)
@@ -453,7 +454,8 @@ class Rig:
         self.scene_started: dict[str, int] = {}
         self.scene_completions: dict[str, Any] = {}
         responses = SceneResponses(transport(port, REQUEST_TIMEOUT_S))
-        scene_request = LlamaSceneRequest(responses, encode=encode, model=request_model)
+        scene_request = LlamaSceneRequest(responses, encode=encode, model=request_model,
+                                          chat_template_kwargs=chat_template_kwargs)
 
         def run_job(job: AnalysisJob, image: Any) -> Any:  # on the worker's one thread: one request at a time
             self.scene_started[job.job_id] = time.monotonic_ns()
@@ -468,7 +470,8 @@ class Rig:
         freshness = FreshnessConfig()
         self.chat = ChatService(enabled=True, admission=CHAT_ADMISSION, scene=self.analyzer,
                                 latest=self.frames.latest, clock=self.clock,
-                                run=LlamaChatRequest(self.chat_transport, encode=encode, model=request_model),
+                                run=LlamaChatRequest(self.chat_transport, encode=encode, model=request_model,
+                                                     chat_template_kwargs=chat_template_kwargs),
                                 assess=lambda frame: assess_frame(frame, self.stamper.current_stream, self.clock.mono(),
                                                                   watching, freshness),
                                 stale_after_s=freshness.stale_after_s, validation_run=True)
@@ -664,9 +667,10 @@ def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaS
     (a fake llama-server, its process, the meminfo reader, a picture and an encoder without OpenCV)."""
     chosen = scene_model_set(args.model_set)
     model, mmproj = chosen.model_path, chosen.mmproj_path
+    binary = args.llama_server or chosen.llama_server  # the set's own pinned build (session 116)
     result: dict[str, Any] = {"check": "chat_preempt", "scope": SCOPE, "model_set": chosen.key,
                               "request_model": chosen.request_model, "model_revision": chosen.model_revision,
-                              "files": {"model": model.name, "mmproj": mmproj.name}, "binary": str(args.llama_server),
+                              "files": {"model": model.name, "mmproj": mmproj.name}, "binary": str(binary),
                               "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                               "limits": {"grace_ms": GRACE_MS, "max_chat_delay_ms": MAX_CHAT_DELAY_MS,
                                          "job_timeout_ms": JOB_TIMEOUT_MS, "chat_max_tokens": CHAT_MAX_TOKENS,
@@ -687,7 +691,7 @@ def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaS
     if problem is not None:
         problems.append(f"memfree_precheck:{problem}")
         return result
-    server = server_factory(args.llama_server, model, mmproj, args.port)
+    server = server_factory(binary, model, mmproj, args.port)
     started = time.monotonic()
     rig = None
     try:  # from the start on: a guard stop (SIGINT) during the load still stops this check's own llama-server
@@ -711,7 +715,7 @@ def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaS
         result["picture"] = {"jpeg_bytes": len(jpeg), "sha256": hashlib.sha256(jpeg).hexdigest()}
         result["server_build"] = server_build(args.port)  # the decoding rule holds for VALIDATED_BUILD only
         rig = Rig(args.port, chosen.request_model, chosen.model_revision, image, transport, encode,
-                  build=result["server_build"])
+                  build=result["server_build"], chat_template_kwargs=chosen.chat_template_kwargs)
         rig.start()
         result["control"] = rig.trial("control", QUESTIONS["short"])
         result["memory"]["after_control"] = _memory()
@@ -825,7 +829,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     go = sub.add_parser("run")
     go.add_argument("--model-set", choices=sorted(SCENE_MODEL_SETS), required=True)
-    go.add_argument("--llama-server", type=Path, default=DEFAULT_BINARY)
+    go.add_argument("--llama-server", type=Path, default=None,
+                        help="the llama-server binary (default: the selected set's own pinned build)")
     go.add_argument("--port", type=int, default=PORT)
     go.add_argument("--trials", type=int, default=TRIALS, choices=range(1, TRIALS + 1))
     go.add_argument("--ready-timeout-s", type=float, default=180.0)

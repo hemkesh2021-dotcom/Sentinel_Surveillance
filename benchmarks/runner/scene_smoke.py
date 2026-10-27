@@ -170,9 +170,10 @@ def llama_servers() -> list[int]:
 def run(args: argparse.Namespace) -> dict[str, Any]:
     chosen = scene_model_set(args.model_set)
     model, mmproj = chosen.model_path, chosen.mmproj_path
+    binary = args.llama_server or chosen.llama_server  # the set's own pinned build (session 116)
     result: dict[str, Any] = {"model_set": chosen.key, "request_model": chosen.request_model,
                               "model_revision": chosen.model_revision, "source": chosen.source,
-                              "files": {"model": model.name, "mmproj": mmproj.name}, "binary": str(args.llama_server),
+                              "files": {"model": model.name, "mmproj": mmproj.name}, "binary": str(binary),
                               "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                               "memory": {"before": _memory()}, "problems": []}
     problems: list[str] = result["problems"]
@@ -187,7 +188,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if problem is not None:
         problems.append(f"memfree_precheck:{problem}")
         return result
-    server = LlamaServerProcess(args.llama_server, model, mmproj, args.port)
+    server = LlamaServerProcess(binary, model, mmproj, args.port)
     started = time.monotonic()
     status = server.start(args.ready_timeout_s)
     result["readiness"] = {"state": status.state.value, "problem": status.problem, "layers": status.layers,
@@ -219,9 +220,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         jpeg = opencv_jpeg(image)
         result["picture"] = {"jpeg_bytes": len(jpeg), "sha256": hashlib.sha256(jpeg).hexdigest()}
         renders = {}
-        for name, body in (("scene", scene_request_body(jpeg, chosen.request_model)),
+        for name, body in (("scene", scene_request_body(jpeg, chosen.request_model, chosen.chat_template_kwargs)),
                            ("chat", chat_request_body(jpeg, ChatQuestion(QUESTION), CHAT_MAX_TOKENS,
-                                                      chosen.request_model))):
+                                                      chosen.request_model, chosen.chat_template_kwargs))):
             request = json.loads(body)
             code, rendered = _get_json(args.port, "POST", "/apply-template",
                                        json.dumps({"messages": request["messages"]}).encode())
@@ -241,7 +242,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         transport = RecordingTransport(LoopbackTransport(args.port, REQUEST_TIMEOUT_S))
         stamper = FrameStamper("smoke", SystemClock())
         stamper.connect()
-        scene = LlamaSceneRequest(transport, model=chosen.request_model)
+        scene = LlamaSceneRequest(transport, model=chosen.request_model, chat_template_kwargs=chosen.chat_template_kwargs)
         result["scene"] = []
         for index in range(args.repeats):
             frame = stamper.stamp(native_width=640, native_height=480, pixel_format=PixelFormat.BGR)
@@ -267,7 +268,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             if wall_ms > JOB_TIMEOUT_MS:
                 item["over_job_timeout"] = True
             result["scene"].append(item)
-        chat = LlamaChatRequest(transport, model=chosen.request_model)
+        chat = LlamaChatRequest(transport, model=chosen.request_model, chat_template_kwargs=chosen.chat_template_kwargs)
         result["chat"] = []
         for index in range(args.repeats):
             begun = time.monotonic()
@@ -305,7 +306,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--model-set", choices=sorted(SCENE_MODEL_SETS), required=True)
-    parser.add_argument("--llama-server", type=Path, default=DEFAULT_BINARY)
+    parser.add_argument("--llama-server", type=Path, default=None,
+                        help="the llama-server binary (default: the selected set's own pinned build)")
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--repeats", type=int, default=3, choices=range(1, MAX_REPEATS + 1))
     parser.add_argument("--ready-timeout-s", type=float, default=180.0)

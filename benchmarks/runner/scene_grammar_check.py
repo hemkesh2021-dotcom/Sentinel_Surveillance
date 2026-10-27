@@ -86,13 +86,15 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def case_bodies(jpeg: bytes, model: str) -> dict[str, bytes]:
-    """The three requests: the runtime's chat body, the runtime's scene body without its ``grammar`` member, and the
-    runtime's scene body as sent (scene_request_body's bytes)."""
-    with_grammar = scene_request_body(jpeg, model)
+def case_bodies(jpeg: bytes, model: str, chat_template_kwargs: Mapping[str, object] | None = None) -> dict[str, bytes]:
+    """The three requests: the runtime's chat body; the runtime's scene body without any output constraint (its
+    ``grammar`` member and its ``response_format`` removed: a server whose chat template builds a grammar from the
+    schema in ``response_format``, as the LFM3 build does, would otherwise still constrain the control); and the
+    runtime's scene body as sent (scene_request_body's bytes), each with the set's template arguments."""
+    with_grammar = scene_request_body(jpeg, model, chat_template_kwargs)
     request = json.loads(with_grammar)
-    del request["grammar"]
-    return {"chat": chat_request_body(jpeg, ChatQuestion(QUESTION), CHAT_MAX_TOKENS, model),
+    del request["grammar"], request["response_format"]
+    return {"chat": chat_request_body(jpeg, ChatQuestion(QUESTION), CHAT_MAX_TOKENS, model, chat_template_kwargs),
             "unconstrained": json.dumps(request).encode("utf-8"), "grammar": with_grammar}
 
 
@@ -100,18 +102,22 @@ def body_difference(unconstrained: bytes, with_grammar: bytes) -> dict[str, Any]
     a, b = json.loads(unconstrained), json.loads(with_grammar)
     differing = sorted(key for key in set(a) | set(b) if a.get(key) != b.get(key))
     grammar = b.get("grammar")
-    return {"differing_members": differing, "only_grammar": differing == ["grammar"],
+    return {"differing_members": differing, "only_constraints": differing == ["grammar", "response_format"],
             "grammar_is_pinned": isinstance(grammar, str) and _sha256(grammar.encode("utf-8")) ==
             SCENE_REPORT_GRAMMAR_SHA256}
 
 
-def chat_facts(item: dict[str, Any]) -> dict[str, Any]:
-    """Whether a chat answer parses as a scene report (it should not be constrained to one); its length is kept by
-    one_request, its text never."""
-    answer = item.get("answer")
-    if not isinstance(answer, Mapping) or answer.get("content_chars") is None:
-        return {"parses_as_report": None}
-    return {"parses_as_report": answer.get("parses_as_report")}
+def reasoning_facts(data: bytes) -> dict[str, Any]:
+    """Whether an answer carried reasoning (session 116: LFM3-VL thinks unless the request switches it off): the
+    length of the server's separate ``reasoning_content`` and whether the content itself holds a thinking tag. The
+    runtime shows neither; the real-time path must not pay for either. Nothing of the text is kept."""
+    try:
+        message = json.loads(data)["choices"][0]["message"]
+        content, reasoning = message.get("content"), message.get("reasoning_content")
+    except (ValueError, KeyError, IndexError, TypeError):
+        return {"reasoning_chars": None, "think_tag_in_content": None}
+    return {"reasoning_chars": len(reasoning) if isinstance(reasoning, str) else 0,
+            "think_tag_in_content": isinstance(content, str) and ("<think>" in content or "</think>" in content)}
 
 
 def comparison(requests: list[dict[str, Any]]) -> dict[str, Any]:
@@ -134,25 +140,36 @@ def comparison(requests: list[dict[str, Any]]) -> dict[str, Any]:
             "observations_over_limit": sum(OBSERVATIONS_OVER_LIMIT in (v.get("details") or []) for v in rejections),
             "observations_max": max((v.get("observations") for v in validations if v.get("valid") is True),
                                     default=None),
+            "reasoning_answers": sum(bool(answer.get("reasoning_chars")) or bool(answer.get("think_tag_in_content"))
+                                     for answer in answers),
+            "completion_tokens_max": max(((answer.get("usage") or {}).get("completion_tokens") or 0
+                                          for answer in answers), default=None),
         }
     answered = {name: per_case[name]["requests"] > 0 and per_case[name]["statuses"] == ["200"] and
                 not per_case[name]["transport"] for name in CASES}
-    grammar = per_case["grammar"]
+    grammar, chat = per_case["grammar"], per_case["chat"]
     grammar_ok = answered["grammar"] and grammar["finish_reasons"] == ["stop"] and \
         grammar["valid_reports"] == grammar["requests"]
+    # the real-time path's budget: every chat answer complete within its token cap (finish stop) and no reasoning
+    # paid for or shown, by chat or by the scene request (session 116)
+    chat_within_budget = answered["chat"] and chat["finish_reasons"] == ["stop"]
+    reasoning_present = chat["reasoning_answers"] + grammar["reasoning_answers"] > 0
     if not answered["chat"]:
         outcome = "chat_failed"
     elif not answered["grammar"]:
         outcome = "grammar_requests_failed"
     elif grammar["rejected_reports"] or grammar["finish_reasons"] != ["stop"]:
         outcome = "grammar_reports_rejected"
+    elif reasoning_present:
+        outcome = "reasoning_present"
     elif grammar_ok and answered["unconstrained"] and per_case["unconstrained"]["observations_over_limit"] > 0:
         outcome = "enforced"
     elif grammar_ok and answered["unconstrained"]:
         outcome = "enforced_control_not_exercised"
     else:
         outcome = "mixed"  # a control not answered, or a grammar answer without a finish reason or validation
-    return {"cases": per_case, "outcome": outcome}
+    return {"cases": per_case, "outcome": outcome, "chat_within_budget": chat_within_budget,
+            "reasoning_present": reasoning_present}
 
 
 def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaServerProcess,
@@ -163,11 +180,12 @@ def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaS
         sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
     chosen = scene_model_set(args.model_set)
     model, mmproj = chosen.model_path, chosen.mmproj_path
+    binary = args.llama_server or chosen.llama_server  # the set's own pinned build (session 116)
     grammar_problem = scene_grammar_problem()  # before the fingerprint, which refuses a stale grammar by raising
     result: dict[str, Any] = {"model_set": chosen.key, "request_model": chosen.request_model,
                               "scene_request_sha256": None if grammar_problem else chosen.scene_request_sha256,
                               "grammar_problem": grammar_problem,
-                              "files": {"model": model.name, "mmproj": mmproj.name}, "binary": str(args.llama_server),
+                              "files": {"model": model.name, "mmproj": mmproj.name}, "binary": str(binary),
                               "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                               "rounds": args.rounds, "memory": {"before": _memory(meminfo)}, "vmstat": vmstat(),
                               "problems": [], "requests": []}
@@ -186,7 +204,7 @@ def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaS
     if problem is not None:
         problems.append(f"memfree_precheck:{problem}")
         return result
-    server = server_factory(args.llama_server, model, mmproj, args.port)
+    server = server_factory(binary, model, mmproj, args.port)
     started = time.monotonic()
     status = server.start(args.ready_timeout_s)
     result["readiness"] = {"state": status.state.value, "problem": status.problem, "layers": status.layers,
@@ -206,14 +224,14 @@ def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaS
             result["memory"]["released"] = _memory(meminfo)
         result["build_info"] = build(args.port)
         jpeg = encode(picture())
-        bodies = case_bodies(jpeg, chosen.request_model)
+        bodies = case_bodies(jpeg, chosen.request_model, chosen.chat_template_kwargs)
         result["picture"] = {"jpeg_bytes": len(jpeg), "sha256": _sha256(jpeg)}
         result["bodies"] = {name: {"bytes": len(body), "sha256": _sha256(body)} for name, body in bodies.items()}
         result["bodies"]["grammar"]["is_scene_request_body"] = bodies["grammar"] == scene_request_body(
-            jpeg, chosen.request_model)
+            jpeg, chosen.request_model, chosen.chat_template_kwargs)
         result["scene_bodies_differ"] = body_difference(bodies["unconstrained"], bodies["grammar"])
-        if not (result["scene_bodies_differ"]["only_grammar"] and result["scene_bodies_differ"]["grammar_is_pinned"]):
-            problems.append("scene_bodies_differ_beyond_the_pinned_grammar")
+        if not (result["scene_bodies_differ"]["only_constraints"] and result["scene_bodies_differ"]["grammar_is_pinned"]):
+            problems.append("scene_bodies_differ_beyond_the_constraints")
             return result
         for round_number in range(1, args.rounds + 1):
             for name in CASES:
@@ -222,6 +240,8 @@ def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaS
                 wall_ms = round((time.monotonic() - begun) * 1000, 1)
                 item = one_request("basic" if name == "chat" else name, status_code, data, transport, wall_ms)
                 item["case"], item["round"] = name, round_number
+                if item["answer"] is not None and item["transport"] is None:
+                    item["answer"].update(reasoning_facts(data))
                 if name == "chat" and item["answer"] is not None and item["transport"] is None:
                     item["answer"]["parses_as_report"] = _parses_as_report(data)
                     item["answer"]["validation"] = "not_applicable"
@@ -229,6 +249,22 @@ def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaS
                 if item["transport"] is not None:
                     problems.append(f"{name}_{round_number}:{item['transport']}")
         result["comparison"] = comparison(result["requests"])
+        if args.thinking_control and chosen.chat_template_kwargs is not None:
+            # One chat request with the set's switch removed (the template's default: thinking on), to show that the
+            # switch is what keeps reasoning out, not a hidden cost: with the cap of CHAT_MAX_TOKENS the model thinks
+            # instead of answering. Reported, never part of the outcome.
+            control = json.loads(bodies["chat"])
+            del control["chat_template_kwargs"]
+            begun = time.monotonic()
+            status_code, data, transport = send(args.port, json.dumps(control).encode("utf-8"))
+            item = one_request("basic", status_code, data, transport, round((time.monotonic() - begun) * 1000, 1))
+            item["case"], item["round"] = "thinking_control", 0
+            if item["answer"] is not None and item["transport"] is None:
+                item["answer"].update(reasoning_facts(data))
+                item["answer"]["validation"] = "not_applicable"
+            result["thinking_control"] = item
+        elif args.thinking_control:
+            result["thinking_control"] = "not_applicable"
         result["memory"]["end_of_requests"] = _memory(meminfo)
         return result
     finally:
@@ -260,11 +296,14 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     runner = sub.add_parser("run", help="one server load and the bounded verification")
     runner.add_argument("--model-set", choices=sorted(SCENE_MODEL_SETS), required=True)
-    runner.add_argument("--llama-server", type=Path, default=DEFAULT_BINARY)
+    runner.add_argument("--llama-server", type=Path, default=None,
+                        help="the llama-server binary (default: the selected set's own pinned build)")
     runner.add_argument("--port", type=int, default=PORT)
     runner.add_argument("--rounds", type=int, default=3, choices=range(1, MAX_ROUNDS + 1))
     runner.add_argument("--ready-timeout-s", type=float, default=180.0)
     runner.add_argument("--post-load-release", action="store_true")
+    runner.add_argument("--thinking-control", action="store_true",
+                        help="session 116: one extra chat request without the set's no-think switch, reported apart")
     runner.add_argument("--out", type=Path, required=True, help="a new JSON file for the result")
     args = parser.parse_args(argv)
     if args.out.exists():

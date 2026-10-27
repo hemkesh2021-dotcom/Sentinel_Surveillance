@@ -37,6 +37,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from sentinel.scene.llama_server import SCENE_SYSTEM
 from sentinel.scene.server import ServerState, ServerStatus
 
 ANSWER = "A synthetic answer about labelled shapes."  # never to appear in a check's result
@@ -52,11 +53,14 @@ class FakeLlamaServer:
                  scene_text: str | None = None, prompt_s: float = 0.0, scene_prompt_s: float = 0.0,
                  scene_tokens: int = 60, build: str = BUILD, slot_task_ids: bool = True,
                  json_schema_error: str | None = None, grammar_error: str | None = None,
-                 grammar_scene_text: str | None = None) -> None:
+                 grammar_scene_text: str | None = None, reasoning: str | None = None) -> None:
         self.port, self.decode_s, self.tokens_per_s, self.scene_s = port, decode_s, tokens_per_s, scene_s
         self.prompt_s, self.scene_prompt_s, self.scene_tokens = prompt_s, scene_prompt_s, scene_tokens
         self.build, self.slot_task_ids, self.json_schema_error = build, slot_task_ids, json_schema_error
         self.grammar_error = grammar_error
+        # session 116: a thinking model's reasoning_content, given with every answer unless the request's
+        # chat_template_kwargs switch enable_thinking off (as LFM3-VL's template does)
+        self.reasoning = reasoning
         self.scene_text = json.dumps(REPORT) if scene_text is None else scene_text
         self.grammar_scene_text = grammar_scene_text  # None: a grammar request is answered with scene_text too
         self._lock = threading.Lock()
@@ -118,6 +122,20 @@ class FakeLlamaServer:
                 else:
                     self._json(404, {"error": "not found"})
 
+            @staticmethod
+            def _scene_shaped(body: dict[str, Any]) -> bool:
+                """A scene request stripped of every constraint (scene_grammar_check's control, session 116) is still
+                a scene request: the runtime's scene system prompt tells it from a chat request."""
+                messages = body.get("messages") or []
+                return bool(messages) and messages[0].get("content") == SCENE_SYSTEM
+
+            def _message(self, content: str, body: dict[str, Any]) -> dict[str, Any]:
+                message: dict[str, Any] = {"role": "assistant", "content": content}
+                thinking = (body.get("chat_template_kwargs") or {}).get("enable_thinking", True)
+                if server.reasoning is not None and thinking:
+                    message["reasoning_content"] = server.reasoning
+                return message
+
             def do_POST(self) -> None:
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 cap = int(body["max_tokens"])
@@ -129,9 +147,9 @@ class FakeLlamaServer:
                     elif server.grammar_error is not None and "grammar" in body:
                         self._json(400, {"error": {"code": 400, "message": server.grammar_error,
                                                    "type": "invalid_request_error"}})
-                    elif "response_format" in body or "grammar" in body:
+                    elif "response_format" in body or "grammar" in body or self._scene_shaped(body):
                         constrained = "grammar" in body and server.grammar_scene_text is not None
-                        self._scene(cap, server.grammar_scene_text if constrained else server.scene_text)
+                        self._scene(cap, server.grammar_scene_text if constrained else server.scene_text, body)
                     else:
                         self._chat(body, cap)
                 finally:
@@ -147,7 +165,7 @@ class FakeLlamaServer:
                     time.sleep(0.01)
                 return True
 
-            def _scene(self, cap: int, text: str) -> None:
+            def _scene(self, cap: int, text: str, body: dict[str, Any]) -> None:
                 time.sleep(server.scene_prompt_s)
                 server._prompt_done()
                 tokens = min(cap - 1, server.scene_tokens)
@@ -157,8 +175,7 @@ class FakeLlamaServer:
                     time.sleep(0.01)
                 server._decoded(tokens)
                 server.completed["scene"] += 1
-                self._json(200, {"choices": [{"finish_reason": "stop", "index": 0,
-                                              "message": {"role": "assistant", "content": text}}],
+                self._json(200, {"choices": [{"finish_reason": "stop", "index": 0, "message": self._message(text, body)}],
                                  "usage": {"completion_tokens": tokens, "prompt_tokens": 325,
                                            "total_tokens": tokens + 325},
                                  "timings": {"predicted_n": tokens}})
@@ -181,7 +198,7 @@ class FakeLlamaServer:
                 server._decoded(tokens)
                 server.completed["chat"] += 1
                 self._json(200, {"choices": [{"finish_reason": "length" if tokens >= cap else "stop", "index": 0,
-                                              "message": {"role": "assistant", "content": ANSWER}}],
+                                              "message": self._message(ANSWER, body)}],
                                  "timings": {"prompt_ms": 5.0, "predicted_ms": seconds * 1000.0,
                                              "predicted_n": tokens}})
 

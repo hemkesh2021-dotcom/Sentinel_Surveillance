@@ -38,15 +38,25 @@ def test_without_a_set_every_step4_command_is_unchanged_and_with_one_it_adds_its
     op, out, clip = mods.operator, Path("/out"), Path("/clip.mp4")
     for build in (op.step4_argv, op.step4plr_argv, op.step4cand_argv):
         before = build(out, clip)
-        assert not {"--model", "--mmproj", "--scene-request-model"} & set(before)
+        assert not {"--llama", "--model", "--mmproj", "--scene-request-model", "--scene-template-kwargs"} & set(before)
         assert build(out, clip, None) == before
-        added = ["--model", str(NEW.model_path), "--mmproj", str(NEW.mmproj_path), "--scene-request-model", "lfm2.5-vl"]
+        added = ["--llama", str(NEW.llama_server), "--model", str(NEW.model_path), "--mmproj", str(NEW.mmproj_path),
+                 "--scene-request-model", "lfm2.5-vl"]
         after = build(out, clip, "lfm2.5-vl")
-        assert [a for a in after if a not in added] == before and len(after) == len(before) + 6
-        at = after.index("--model")
-        assert after[at:at + 6] == added and after[at - 2:at] == ["--min-free-gb", "3.5"]
+        assert [a for a in after if a not in added] == before and len(after) == len(before) + 8
+        at = after.index("--llama")
+        assert after[at:at + 8] == added and after[at - 2:at] == ["--min-free-gb", "3.5"]
         args = mods.profile.parse_args(after[2:])
-        assert (args.model, args.mmproj, args.scene_request_model) == (NEW.model_path, NEW.mmproj_path, "lfm2.5-vl")
+        assert (args.llama, args.model, args.mmproj, args.scene_request_model, args.scene_template_kwargs) == (
+            NEW.llama_server, NEW.model_path, NEW.mmproj_path, "lfm2.5-vl", None)
+        # session 116: a set with its own build and template arguments adds both
+        lfm3 = models.SCENE_MODEL_SETS["lfm3-vl"]
+        with_lfm3 = build(out, clip, "lfm3-vl")
+        assert len(with_lfm3) == len(before) + 10 and with_lfm3[at:at + 2] == ["--llama", str(lfm3.llama_server)]
+        assert with_lfm3[at + 8:at + 10] == ["--scene-template-kwargs", '{"enable_thinking": false}']
+        args = mods.profile.parse_args(with_lfm3[2:])
+        assert (args.llama, args.scene_request_model, args.scene_template_kwargs) == (
+            lfm3.llama_server, "lfm3-vl", '{"enable_thinking": false}')
     defaults = mods.profile.parse_args([])
     assert (defaults.model, defaults.mmproj) == (OLD.model_path, OLD.mmproj_path)  # the rollback set's files
 

@@ -180,7 +180,7 @@ from .scene.analyzer import IMAGES_KEPT, RecentImages, ThreadedSceneAnalyzer
 from .scene.chat import CHAT_ADMISSION, ChatAdmission, ChatService
 from .scene.chat_gate import SAMPLE_INTERVAL_S as CHAT_GATE_SAMPLE_S, ChatGate, read_pressure
 from .scene.llama_server import PROFILED_FLAGS, PROMPT_CACHE_FLAGS
-from .scene.models import ROLLBACK_SCENE_MODEL_SET, scene_model_set
+from .scene.models import FALLBACK_SCENE_MODEL_SET, ROLLBACK_SCENE_MODEL_SET, SceneModelSet, scene_model_set
 from .storage.database import Database, DatabaseError
 from .tracking.diagnostic import (
     DiagnosticBounds,
@@ -1252,8 +1252,9 @@ class Devices:
     capture_source: Callable[[CaptureConfig], VideoSource]
     tracker_backend: Callable[[Path], Any]  # has load(), track(), reset()
     scene_server: Callable[[SceneOptions, int], Any]  # has start(ready_timeout_s), status(), stop(grace_s)
-    # (port, request timeout, the selected set's request model) -> the scene job (LlamaSceneRequest)
-    scene_request: Callable[[int, float, str], Callable[[AnalysisJob, Any], WorkerOutcome]]
+    # (port, request timeout, the selected scene model set: its request name and template arguments) -> the scene
+    # job (LlamaSceneRequest)
+    scene_request: Callable[[int, float, SceneModelSet], Callable[[AnalysisJob, Any], WorkerOutcome]]
     meminfo: Callable[[], dict[str, int] | None]
     notifiers: Callable[[NotificationsConfig], tuple[dict[str, Notifier], dict[str, str]]] = environment_notifiers
     memory: MemoryOps = field(default_factory=MemoryOps)  # D58; used only when a policy is selected
@@ -1261,7 +1262,7 @@ class Devices:
     identity_store: Callable[[Path], Any] | None = None  # has exists(), load(secret)
     encode: Encoder = encode_jpeg  # D69/D70 pictures; cv2 is imported only when it runs
     # D74: a question on the scene worker (LlamaChatRequest), with the same three arguments as scene_request
-    chat_request: Callable[[int, float, str], Any] | None = None
+    chat_request: Callable[[int, float, SceneModelSet], Any] | None = None
 
 
 @dataclass
@@ -1414,8 +1415,9 @@ def scene_admission(
                 f"{chosen.model_revision} (scene model set {chosen.key})"), None
     if not chosen.profiled:
         return (f"{SCENE_ADAPTER_ID}: scene model set {chosen.key} has no accepted resource profile (D46): it needs a "
-                f"step-4 profile run that measures it and the maintainer's acceptance; --scene-model-set "
-                f"{ROLLBACK_SCENE_MODEL_SET} selects the admitted model"), None
+                f"step-4 profile run that measures it and the maintainer's acceptance; no other set is substituted "
+                f"(--scene-model-set {FALLBACK_SCENE_MODEL_SET} selects the explicit fallback, "
+                f"{ROLLBACK_SCENE_MODEL_SET} the rollback, each admitted only by its own accepted profile)"), None
     profile = profiles[status.manifest.resource_profile_id]  # type: ignore[index]  # resolve() checked it
     problem = profile_mismatch(profile, config, scene, policy=policy)
     if problem is not None:
@@ -1687,7 +1689,7 @@ def assemble(
                             ops, "scene", {"llm": options.scene.model, "mmproj": options.scene.mmproj})}
                     images = RecentImages()
                     run_job = devices.scene_request(config.scene_server.port, config.scene_server.request_timeout_s,
-                                                    scene_set.request_model)
+                                                    scene_set)  # its request name and template arguments
                     # The lane's interval gives chat's questions their windows before the next periodic job (session 114).
                     analyzer = ThreadedSceneAnalyzer(run_job, images, revision=revision or "unknown",
                                                      periodic_interval_s=config.scene.interval_s)
@@ -1812,7 +1814,7 @@ def assemble(
             snapshots=snapshots, chat=options.chat, chat_validation=options.chat_validation,
             feature_controls=options.feature_controls,
             chat_run=(devices.chat_request(config.scene_server.port, config.scene_server.request_timeout_s,
-                                           scene_set.request_model)  # the scene requests' model: one set for both
+                                           scene_set)  # the scene requests' set: one model for both
                       if options.chat and scene is not None and scene_set is not None
                       and devices.chat_request is not None else None),
             tracking_diagnostic=tracking,

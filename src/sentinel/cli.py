@@ -37,7 +37,13 @@ from .media.clock import Clock, SystemClock
 from .media.frames import FrameStamper
 from .memory_policy import policy_from_flags
 from .media.probe import run_probe
-from .scene.models import DEFAULT_SCENE_MODEL_SET, ROLLBACK_SCENE_MODEL_SET, SCENE_MODEL_SETS, scene_model_set
+from .scene.models import (
+    DEFAULT_SCENE_MODEL_SET,
+    FALLBACK_SCENE_MODEL_SET,
+    ROLLBACK_SCENE_MODEL_SET,
+    SCENE_MODEL_SETS,
+    scene_model_set,
+)
 from .tracking.probe import TrackProbe, read_meminfo
 from .tracking.tracker import PersonTracker, TrackerError
 
@@ -93,17 +99,20 @@ def _identity_store(directory: Path) -> Any:
     return IdentityStore(directory, Sealer())
 
 
-def _scene_request(port: int, timeout_s: float, model: str) -> Any:
+def _scene_request(port: int, timeout_s: float, chosen: Any) -> Any:
+    """The scene requests of the selected scene model set (its request name and template arguments)."""
     from .scene.llama_server import LlamaSceneRequest, LoopbackTransport
 
-    return LlamaSceneRequest(LoopbackTransport(port, timeout_s), model=model)
+    return LlamaSceneRequest(LoopbackTransport(port, timeout_s), model=chosen.request_model,
+                             chat_template_kwargs=chosen.chat_template_kwargs)
 
 
-def _chat_request(port: int, timeout_s: float, model: str) -> Any:
+def _chat_request(port: int, timeout_s: float, chosen: Any) -> Any:
     from .scene.chat import LlamaChatRequest
     from .scene.llama_server import LoopbackTransport
 
-    return LlamaChatRequest(LoopbackTransport(port, timeout_s), model=model)
+    return LlamaChatRequest(LoopbackTransport(port, timeout_s), model=chosen.request_model,
+                            chat_template_kwargs=chosen.chat_template_kwargs)
 
 
 def _status_port(text: str) -> int:
@@ -334,13 +343,15 @@ def main(
         help="also start the scene server and scene analysis; off by default, and refused unless the "
         "configuration lists an enabled, admitted llama-lfm2-vl-scene adapter",
     )
-    run.add_argument("--llama-server", type=Path, default=HOME / "llama.cpp/build/bin/llama-server")
+    run.add_argument("--llama-server", type=Path, default=None,
+                     help="the llama-server binary (default: the selected scene model set's own pinned build)")
     run.add_argument(
         "--scene-model-set", choices=sorted(SCENE_MODEL_SETS), default=DEFAULT_SCENE_MODEL_SET,
-        help=f"session 115: the model scene analysis and chat both use, with its own projector (default "
-        f"{DEFAULT_SCENE_MODEL_SET}, which no accepted profile has measured yet, so --scene refuses it (D46); "
-        f"{ROLLBACK_SCENE_MODEL_SET}, the accepted profile's model, is the rollback). A model_revision in the "
-        "adapter manifest must be the set's",
+        help=f"the model scene analysis and chat both use, with its own projector and its own llama.cpp build "
+        f"(default {DEFAULT_SCENE_MODEL_SET}, LFM3-VL-2B, which no accepted profile has measured yet, so --scene "
+        f"refuses it (D46); {FALLBACK_SCENE_MODEL_SET} is the explicit fallback and {ROLLBACK_SCENE_MODEL_SET} the "
+        "rollback; no set is ever substituted for another). A model_revision in the adapter manifest must be the "
+        "set's",
     )
     run.add_argument("--scene-model", type=Path, default=None,
                      help="the set's model file (default: in ~/models/, as the set names it)")
@@ -837,7 +848,7 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
     if args.scene:
         chosen = scene_model_set(args.scene_model_set)
         scene = SceneOptions(
-            binary=args.llama_server, model=args.scene_model or chosen.model_path,
+            binary=args.llama_server or chosen.llama_server, model=args.scene_model or chosen.model_path,
             mmproj=args.scene_mmproj or chosen.mmproj_path,
             ready_timeout_s=args.scene_ready_timeout_s, min_free_bytes=round(args.scene_min_free_gb * GB),
             model_set=chosen.key,
