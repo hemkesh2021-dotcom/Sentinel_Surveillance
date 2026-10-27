@@ -1,6 +1,13 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-27, session 115, part 13 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+Last updated 2026-10-27, session 115, part 14 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+
+**Session 115, part 14: the chat preemption session `cp-20261027T100655Z` read only: failed, every scene report rejected, the rejection's field not recorded; local only.** The session's boot kernel log was preserved first: the run's window has only the drop's and rfkill's lines, with no OOM, NvMap or NVRM.
+- **The preemption mechanism ran as designed:** all three long requests were aborted and cancelled with the scene job's reason, each with an after-grace preemption counted and its scene job starting 1501 ms after submission.
+- **The scene reports:** all four, the control's included, completed with `finish_reason` `stop` and were then rejected by the production parser. The request and the parser are production's. But the tool dropped the parser's safe message (field and error type), which the production lane keeps, so the precise reason is not in the evidence.
+- **The slot counters:** `n_decoded` 194 and `n_remain` 6 are the previous scene task's (200 = the scene budget). llama-server b8931 zeroes them only when a new prompt is done, so "decoding had begun" was not established for any trial.
+
+These are two tool defects, and the picture the tool uses is a confound. A focused tool fix is proposed, not made. Nothing pushed or published.
 
 **Session 115, part 13: the corrected chat preemption package `chatpreempt-9ba014e` (manifest `ef87f054…`) prepared and dry-run checked; not launched; local only.** It is the same check at `9ba014e`, preceded by the integration packages' own preparation:
 - cp-C closes the optional desktop and development processes on a typed CLOSE, the VNC desktop included, which may have started again after a boot;
@@ -836,8 +843,10 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
    - **Done (session 115):** LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL the rollback (`378ae85`); step 4 can measure a set (`f77b0ff`); the files verified against the Hub; guarded smoke tests with a synthetic picture passed for both sets; D46 unchanged, so `--scene` refuses LFM2.5-VL until a profile admits it (D104; session 115 log).
    - **Done (session 115, part 4):** `step4cand-lfm25-20261026T094626Z` recorded read only: not eligible, K_kernel unavailable (the start marker 0.119 s past the whole-second bound); every other criterion passed; journal evidence for the 1.1 s gap saved apart (session 115 log, part 4).
    - **Done (session 115, part 6):** D105: the LFM2.5-VL profile accepted with its run-specific kernel exception (`20b4b22`, `7911a4b`); admission tests on this device's real files; 10 of 10 mutations; the unit suite without browser modules 2820 passed, 2 skipped (session 115 log, part 6).
+   - **Done (session 115, part 14):** `cp-20261027T100655Z` read only: failed, preserved. The scene reports were rejected for an unrecorded reason, and the slot counters belonged to the previous scene task. Its kernel log was preserved (`~/sentinel-runs/analysis/cp-20261027T100655Z-kernel/`), and the reading is in `…-reading/ASSESSMENT.md` (session 115 log, part 14).
+   - **Maintainer (session 115, part 14):** nothing to run now; do not repeat `chatpreempt-9ba014e`. Decide whether Claude makes the focused tool fix (record the parser's safe rejection detail and the completion's non-text facts; take decoding only from the chat task's own slot counters; a fake that keeps the previous counters during the prompt), then re-pins and dry-runs the package (part 14, section 6). Whether the scene job keeps the long-description picture is your decision, after the reason is known. A reboot is no longer blocked: the kernel log is saved.
    - **Done (session 115, part 13):** `chatpreempt-9ba014e` prepared (manifest `ef87f054…`, 11 files): the check at `9ba014e` after cp-C, cp-P, cp-M (the drop) and cp-O, with the corrected recovery. Its dry run: seven cases, every expected outcome checked by `verify.py`; not launched (session 115 log, part 13).
-   - **Maintainer (session 115, part 13):** when convenient, run `chatpreempt-9ba014e`: no CCTV; save your work, quit VS Code, end Claude Code and Codex; sudo needed; about 10-15 min; `PROTOCOL.md`. Send back the folder's name, `check.txt` and the cp-V lines. Keep that boot until Claude has read its kernel log. Separately, the re-pin of `fci-lfm25-b106100` stays your decision.
+   - **Maintainer (session 115, part 13; ran 2026-10-27 as `cp-20261027T100655Z`, recorded in part 14):** when convenient, run `chatpreempt-9ba014e`: no CCTV; save your work, quit VS Code, end Claude Code and Codex; sudo needed; about 10-15 min; `PROTOCOL.md`. Send back the folder's name, `check.txt` and the cp-V lines. Keep that boot until Claude has read its kernel log. Separately, the re-pin of `fci-lfm25-b106100` stays your decision.
    - **Done (session 115, part 12):** `cp-20261026T191803Z` read only: a guard stop on MemFree's floor 3.0 s after launch, during the model load; nothing judged. The reading's and the check's cleanup defects fixed (`9ba014e`); 23 tests, the four new or changed ones fail at `5df3289`; the failure path dry-run (session 115 log, part 12).
    - **Maintainer (session 115, part 12; decided 2026-10-27, done in part 13: the re-pinned package with the drop):** nothing to run on the device now; do not rerun `chatpreempt-5df3289`. Decide whether Claude prepares and dry-runs a re-pinned package at `9ba014e`. It would carry the corrected recovery text and an operator cache drop before the check, as the integration packages do; the guard's limits stay unchanged (part 12, section 7).
    - **Done (session 115, part 11):** the controlled chat preemption check: the tool and its tests (`5df3289`), the package `chatpreempt-5df3289` (manifest `0ffba2fc…`) and its dry run (P passed, N not exercised, F failed, D/L/M/U refusals, R repeats nothing); not run against the model (session 115 log, part 11).
@@ -857,7 +866,7 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
    - **Maintainer (session 115; ran 2026-10-26, recorded in part 4):** when convenient, after a reboot, the step-4 candidate measurement of LFM2.5-VL (`~/sentinel-prep/step4cand-lfm25-460b8e7/`, blocks LCa-LCf, each sourced in one shell; about 20 min; session 115 log, part 3; the earlier `step4cand-lfm25-f77b0ff` refuses at the current code); then the acceptance decision; until then runs keep `--scene-model-set lfm2-vl`.
    - **Done (session 115, part 2):** the approved preview v6's interactions (`3b93e05`, `e87ba98`): the slower trace and settle; a selected control keeps its look under the pointer and on keyboard focus; 11 of 11 mutations caught, the 25 page-rendering modules 887 passed, 1 skipped; held-state comparisons outside Git (session 115 log, part 2).
    - **Maintainer (session 115, part 2):** look at `v6-interactions/before-after/` in the review folder, or try the motion with its `tools/serve_synthetic.py`; say whether the incident link in a selected row should also keep its look under the pointer.
-   - **Claude, next (session 115, part 13):** after a `chatpreempt-9ba014e` session, record it read only (metadata only; separate evidence), with that boot's kernel log; nothing launched. (Done: the measurement recorded, part 4; the profile accepted, part 6; the package prepared, part 7; its run recorded read only, part 8; the tooling gaps closed, part 9; the package re-pinned, part 10; the controlled check prepared, part 11; its session recorded read only and the tool fixed, part 12; the corrected package with the drop prepared, part 13.)
+   - **Claude, next (session 115, part 14):** on the maintainer's approval only, the focused tool fix with its tests, then a re-pinned package and its dry run; nothing launched. (Done: the measurement recorded, part 4; the profile accepted, part 6; the package prepared, part 7; its run recorded read only, part 8; the tooling gaps closed, part 9; the package re-pinned, part 10; the controlled check prepared, part 11; its session recorded read only and the tool fixed, part 12; the corrected package with the drop prepared, part 13; its session read only, part 14.)
    - **Claude, next (session 114):** on instruction: the chat change's device validation package, or a read-only plan toward the requested range (the camera facts first; then session 113's steps 3-4, thresholds unchanged), or changes to the applied style or the phone text.
    - **Done (session 112):** v2.0.0-alpha.2 published: `27d6308` pushed alone as a fast-forward of `alpha-candidate-2026-10`; Dashboard checks and both portable jobs passed on it; the tag `v2.0.0-alpha.2` and the pre-release (not latest) created (session 112 log).
    - **Maintainer (session 112):** the action in the session 112 section of `docs/LOCAL_NOTES.md` (excluded). The 24 October review checkpoint on the pre-release. Whether to update the wiki (it still describes alpha.1) and when to push this record's local commits are your decisions.
@@ -1816,6 +1825,69 @@ Notes on partial and in-progress rows:
      - under `step5_guard` with its limits unchanged, monitoring first, chat's gate unchanged.
    - **It establishes** that face, LFM2.5-VL scene analysis and chat run together within the memory limits on the live camera. **It does not establish** recognition accuracy, chat quality or chat admission.
    - **Needed first:** your approval of that run; then Claude prepares and dry-runs a package pinned to the current commit. The NVRM lines stay documented and are read again from that boot's kernel log.
+
+### Session 115, part 14 (Claude, 2026-10-27): the chat preemption session `cp-20261027T100655Z` read only; failed, the scene reports rejected for an unrecorded reason, the slot counters the previous scene task's
+
+1. **The request (the maintainer, 2026-10-27).**
+   - **The report:** `CV_outcome=ran_to_its_end`, `CV_exit=1`, `CH_exit=0`; 13 files sealed; no llama-server left. The three long requests were aborted and cancelled for the scene-priority reason, after-grace preemption counted, scene starts about 1501 ms. Every scene report, the control's included, was rejected (`scene_report_report_rejected`). Memory, server health and cleanup passed.
+   - **The order:** first preserve this boot's kernel log, then verify the seal and investigate read only.
+   - **The questions:**
+     - the precise rejection reason, from non-text metadata and the code path;
+     - the tool's scene request, response limits and validation, compared with production;
+     - a harness defect, a model-output issue or insufficient evidence, without assuming;
+     - why the trials' slot metadata reads `n_decoded` 194 and `n_remain` 6, and whether those counters belong to the intended request.
+   - **The bounds:** preserve the failed verdict and the sealed evidence. Expose and save no answer text; weaken no validation; change no admission. No rerun and no driver change. No new package or broad test campaign yet.
+2. **The kernel log, preserved first** (same boot `a16a2b07…`; `~/sentinel-runs/analysis/cp-20261027T100655Z-kernel/`, 977 records; `SHA256SUMS` `8609d2fd…`).
+   - **The run's window** (10:06-10:12Z): the drop's line (10:08:16Z, as `CM_attempt`) and two rfkill lines at the display manager's stop and start. No OOM, NvMap or NVRM line.
+   - **At the boot's start:**
+     - the five NVRM API-mismatch messages;
+     - one `rpcRmApiControl_dce ... Failed RM ctrl call cmd:0x731341`, also in the fci25 and step-4 boots' evidence;
+     - four nvmap initialisation lines;
+     - a systemd-oomd socket skipped.
+
+     Described, not judged; the NVML mismatch stays a follow-up.
+3. **The session** (seal verified, 13 of 13, `01d304d8…`; unchanged; metadata only).
+   - **The preparation:** complete. The drop took MemFree from 4.89 to 6.97 GB and Cached from 2.15 to 0.25 GB.
+   - **The guard:** `child_exited` with returncode 1, no trigger; lowest MemFree 3.82 GB, peak pressure 2.93 GB; cleanup clear.
+   - **The server:** ready in 4.55 s, 17/17 layers, vision on the GPU, the release verified; healthy, idle and stopped cleanly at the end.
+   - **The control:** answered within the grace (22 tokens). Its scene job waited 380 ms and completed; the report was rejected.
+   - **Each trial:** cancelled with `PREEMPTED`, the request aborted 1501 ms after submission, one preemption after the grace counted. The scene job started 1501 ms after submission and completed (run 3.7-3.9 s); the report was rejected.
+4. **The slot counters are not the chat request's.**
+   - **The arithmetic:** 194 + 6 = 200, the scene request's `MAX_TOKENS`. The chat cap is 120, and the control's own reading, 1 + 119, sums to 120.
+   - **They are identical in all three trials,** including trial 3, sampled 37.7 ms after its POST began.
+   - **The source:** in llama-server b8931 (`tools/server/server-context.cpp`), `n_decoded` is zeroed only when a new task's prompt is fully processed; `reset()` keeps the counters; `/slots` reports them beside the new task's `is_processing`.
+   - **So** each reading showed the preceding scene job's final counters: 194 tokens decoded, ending itself with 6 of 200 left.
+   - **Established:** each trial's request was in flight at submission (its POST open, the slot processing).
+   - **Not established:** that decoding had begun, which is the tool's stated condition. The fake llama-server zeroes the counters at a request's start, which hid this.
+5. **The rejected reports.**
+   - **The tool's scene request is production's:**
+     - the runtime's `LlamaSceneRequest` and `scene_request_body` (the profiled prompt, 200 tokens, temperature 0.05, the schema `response_format`);
+     - `opencv_jpeg` (480x360, quality 60);
+     - the set's `request_model` and the 20 s timeout, as `demo_runtime` passes them;
+     - the same `LlamaServerProcess` flags.
+   - **The envelope passed:** one choice, `finish_reason` `stop`, the assistant's string content.
+   - **The validation is production's:** `parse_scene_report`, the same strict parser the scene lane runs, raised `SceneReportError`.
+   - **The precise reason is not in the evidence.** The parser's message names the field and the error type, never the text. The lane keeps it, and `scene_smoke` too. The tool's `report_facts` kept only `report_rejected`.
+   - **The narrowing:**
+     - llama.cpp's own converter (`examples/json_schema_to_grammar.py`, run offline on the schema) builds a grammar enforcing every bound the parser checks. So text generated under that grammar should parse, and the 4,096-character bound is out of practical reach in 194 tokens.
+     - The rejection therefore points to the schema grammar not being in force for these completions, or to the server's chat parser (b8931's autoparser) changing the content, or to an edge case not identified. The session cannot tell these apart.
+   - **Associated, not causal:**
+     - the tool's picture (twelve labelled shapes, chosen so that a description runs long) also feeds the scene jobs;
+     - its completions ran about 194 tokens, where the smoke test's valid reports on its simpler picture ran 82-84;
+     - the step-4 profile's 150 valid reports came from real clips.
+   - **The classification:**
+     - **established:** not a validation difference introduced by the harness; two harness defects (the dropped reason, the stale counters accepted as decoding) and a confounded design (the picture);
+     - **insufficient evidence:** whether it is the model's output, the grammar or the content extraction.
+     - Production relevance, if busy scenes draw rejected reports, is not established.
+6. **Proposed, needing approval (nothing changed in this part):**
+   - **The tool:** a focused fix, portable, with no runtime change:
+     - record the parser's safe rejection detail (error types at known field paths, unexpected keys masked) and the scene completion's non-text facts (`finish_reason`, completion tokens);
+     - keep `/slots`' `id_task` and `params.n_predict`, and take "decoding" only from the chat task's own counters (a new task, `n_decoded` + `n_remain` equal to the chat's `max_tokens`, and `n_decoded` rising across two readings);
+     - make the fake keep the previous task's counters until its prompt ends;
+     - with focused tests.
+   - **Then:** a re-pinned package and its dry run. Its run, with the same picture, would name the field and type. Changing the picture to obtain a pass is not proposed.
+   - **Unchanged:** the verdict (failed), the sealed session, `chatpreempt-9ba014e`, the integration packages, the runtime, the validation, admission, drivers and packages.
+   - **The analysis record:** `~/sentinel-runs/analysis/cp-20261027T100655Z-reading/ASSESSMENT.md` (`SHA256SUMS` `e8e2a0a1…`).
 
 ### Session 115, part 13 (Claude, 2026-10-27): the corrected chat preemption package `chatpreempt-9ba014e`, with the integration packages' preparation and a one-time cache drop, prepared and dry-run checked; not launched
 
