@@ -1,6 +1,15 @@
 # Sentinel v2 — implementation status
 
-Last updated 2026-10-27, session 115, part 12 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+Last updated 2026-10-27, session 115, part 13 (Claude), on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
+
+**Session 115, part 13: the corrected chat preemption package `chatpreempt-9ba014e` (manifest `ef87f054…`) prepared and dry-run checked; not launched; local only.** It is the same check at `9ba014e`, preceded by the integration packages' own preparation:
+- cp-C closes the optional desktop and development processes on a typed CLOSE, the VNC desktop included, which may have started again after a boot;
+- cp-P stops the display manager;
+- cp-M drops the page cache once, on a typed DROP, with memory recorded before and after;
+- cp-O refuses until nothing optional runs;
+- cp-H seals the session and starts the display manager again.
+
+cp-V says whether the guard refused the launch (nothing started) or stopped the check after the model started (a result, never repeated), and names the next step. The guard's limits, the headroom check, scheduling, admission and the trial criteria are unchanged. The dry run's seven cases (a pass, a guard stop after launch, a refused launch, the VNC desktop started again, a declined drop, a failed drop, blocks out of order) were checked case by case. Nothing pushed or published.
 
 **Session 115, part 12: the chat preemption check's session `cp-20261026T191803Z` read only: stopped by the guard during the model load, nothing judged; two tooling defects fixed (`9ba014e`); local only.** The guard launched the check, and the check started llama-server. 3.0 s later, before readiness, the guard stopped it on its MemFree floor (1,004,228,608 B under 1 GiB). Pressure was not the trigger: its peak was 2.93 GB, and MemAvailable stayed at least 5.06 GB. No cache drop had preceded the run. The check's result `chatpreempt.json` was never written; the guard's result was present. Two defects followed. The reading hid the guard's result behind a generic MISSING line. The check left its own llama-server for the guard to stop. Both are fixed: the reading names the missing file and reports the guard stop, and the check stops its own server whatever ends it. Three new tests and one tightened (23), which fail at `5df3289`; a dry run of the failure path reproduces the device's outcome at `5df3289` and shows the fix at `9ba014e`. `chatpreempt-5df3289` refuses at this code by design and is not to be rerun. A re-pinned package needs the maintainer's approval. Nothing pushed or published.
 
@@ -827,8 +836,10 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
    - **Done (session 115):** LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL the rollback (`378ae85`); step 4 can measure a set (`f77b0ff`); the files verified against the Hub; guarded smoke tests with a synthetic picture passed for both sets; D46 unchanged, so `--scene` refuses LFM2.5-VL until a profile admits it (D104; session 115 log).
    - **Done (session 115, part 4):** `step4cand-lfm25-20261026T094626Z` recorded read only: not eligible, K_kernel unavailable (the start marker 0.119 s past the whole-second bound); every other criterion passed; journal evidence for the 1.1 s gap saved apart (session 115 log, part 4).
    - **Done (session 115, part 6):** D105: the LFM2.5-VL profile accepted with its run-specific kernel exception (`20b4b22`, `7911a4b`); admission tests on this device's real files; 10 of 10 mutations; the unit suite without browser modules 2820 passed, 2 skipped (session 115 log, part 6).
+   - **Done (session 115, part 13):** `chatpreempt-9ba014e` prepared (manifest `ef87f054…`, 11 files): the check at `9ba014e` after cp-C, cp-P, cp-M (the drop) and cp-O, with the corrected recovery. Its dry run: seven cases, every expected outcome checked by `verify.py`; not launched (session 115 log, part 13).
+   - **Maintainer (session 115, part 13):** when convenient, run `chatpreempt-9ba014e`: no CCTV; save your work, quit VS Code, end Claude Code and Codex; sudo needed; about 10-15 min; `PROTOCOL.md`. Send back the folder's name, `check.txt` and the cp-V lines. Keep that boot until Claude has read its kernel log. Separately, the re-pin of `fci-lfm25-b106100` stays your decision.
    - **Done (session 115, part 12):** `cp-20261026T191803Z` read only: a guard stop on MemFree's floor 3.0 s after launch, during the model load; nothing judged. The reading's and the check's cleanup defects fixed (`9ba014e`); 23 tests, the four new or changed ones fail at `5df3289`; the failure path dry-run (session 115 log, part 12).
-   - **Maintainer (session 115, part 12):** nothing to run on the device now; do not rerun `chatpreempt-5df3289`. Decide whether Claude prepares and dry-runs a re-pinned package at `9ba014e`. It would carry the corrected recovery text and an operator cache drop before the check, as the integration packages do; the guard's limits stay unchanged (part 12, section 7).
+   - **Maintainer (session 115, part 12; decided 2026-10-27, done in part 13: the re-pinned package with the drop):** nothing to run on the device now; do not rerun `chatpreempt-5df3289`. Decide whether Claude prepares and dry-runs a re-pinned package at `9ba014e`. It would carry the corrected recovery text and an operator cache drop before the check, as the integration packages do; the guard's limits stay unchanged (part 12, section 7).
    - **Done (session 115, part 11):** the controlled chat preemption check: the tool and its tests (`5df3289`), the package `chatpreempt-5df3289` (manifest `0ffba2fc…`) and its dry run (P passed, N not exercised, F failed, D/L/M/U refusals, R repeats nothing); not run against the model (session 115 log, part 11).
    - **Maintainer (session 115, part 11; ran 2026-10-27 as `cp-20261026T191803Z`, recorded in part 12):** when convenient, run `chatpreempt-5df3289` (no CCTV; close VS Code, Claude Code and Codex; about 5-10 min; `PROTOCOL.md`); send back the folder's name and `check.txt`. Separately, whether to re-pin and run the integration package (`fci-lfm25-b106100` refuses at `5df3289`'s code by design).
    - **Done (session 115, part 10):** `fci-lfm25-b106100` prepared and dry-run checked (manifest `ba8c5808…`; B, RF, M1, M2 and NC as designed; the other cases as before; not launched); cancellation under the sizing assessed (not reliably exercised) and a controlled check proposed (session 115 log, part 10).
@@ -846,7 +857,7 @@ Session 46's summary: **The D58 candidate run was recorded** (USER-SUPPLIED): a 
    - **Maintainer (session 115; ran 2026-10-26, recorded in part 4):** when convenient, after a reboot, the step-4 candidate measurement of LFM2.5-VL (`~/sentinel-prep/step4cand-lfm25-460b8e7/`, blocks LCa-LCf, each sourced in one shell; about 20 min; session 115 log, part 3; the earlier `step4cand-lfm25-f77b0ff` refuses at the current code); then the acceptance decision; until then runs keep `--scene-model-set lfm2-vl`.
    - **Done (session 115, part 2):** the approved preview v6's interactions (`3b93e05`, `e87ba98`): the slower trace and settle; a selected control keeps its look under the pointer and on keyboard focus; 11 of 11 mutations caught, the 25 page-rendering modules 887 passed, 1 skipped; held-state comparisons outside Git (session 115 log, part 2).
    - **Maintainer (session 115, part 2):** look at `v6-interactions/before-after/` in the review folder, or try the motion with its `tools/serve_synthetic.py`; say whether the incident link in a selected row should also keep its look under the pointer.
-   - **Claude, next (session 115, part 12):** on the maintainer's approval only, the re-pinned chat preemption package at `9ba014e` and its dry run; nothing launched. (Done: the measurement recorded, part 4; the profile accepted, part 6; the package prepared, part 7; its run recorded read only, part 8; the tooling gaps closed, part 9; the package re-pinned, part 10; the controlled check prepared, part 11; its session recorded read only and the tool fixed, part 12.)
+   - **Claude, next (session 115, part 13):** after a `chatpreempt-9ba014e` session, record it read only (metadata only; separate evidence), with that boot's kernel log; nothing launched. (Done: the measurement recorded, part 4; the profile accepted, part 6; the package prepared, part 7; its run recorded read only, part 8; the tooling gaps closed, part 9; the package re-pinned, part 10; the controlled check prepared, part 11; its session recorded read only and the tool fixed, part 12; the corrected package with the drop prepared, part 13.)
    - **Claude, next (session 114):** on instruction: the chat change's device validation package, or a read-only plan toward the requested range (the camera facts first; then session 113's steps 3-4, thresholds unchanged), or changes to the applied style or the phone text.
    - **Done (session 112):** v2.0.0-alpha.2 published: `27d6308` pushed alone as a fast-forward of `alpha-candidate-2026-10`; Dashboard checks and both portable jobs passed on it; the tag `v2.0.0-alpha.2` and the pre-release (not latest) created (session 112 log).
    - **Maintainer (session 112):** the action in the session 112 section of `docs/LOCAL_NOTES.md` (excluded). The 24 October review checkpoint on the pre-release. Whether to update the wiki (it still describes alpha.1) and when to push this record's local commits are your decisions.
@@ -1805,6 +1816,64 @@ Notes on partial and in-progress rows:
      - under `step5_guard` with its limits unchanged, monitoring first, chat's gate unchanged.
    - **It establishes** that face, LFM2.5-VL scene analysis and chat run together within the memory limits on the live camera. **It does not establish** recognition accuracy, chat quality or chat admission.
    - **Needed first:** your approval of that run; then Claude prepares and dry-runs a package pinned to the current commit. The NVRM lines stay documented and are read again from that boot's kernel log.
+
+### Session 115, part 13 (Claude, 2026-10-27): the corrected chat preemption package `chatpreempt-9ba014e`, with the integration packages' preparation and a one-time cache drop, prepared and dry-run checked; not launched
+
+1. **The request (the maintainer, 2026-10-27).**
+   - **The package:** prepare and dry-run the corrected package pinned to `9ba014e`; do not launch the real model.
+   - **The drop:** include an operator-confirmed, one-time cache drop before launch, recording memory before and after.
+   - **The desktop:** account for optional desktop and VNC processes that may have restarted after a boot, using the existing preparation procedure.
+   - **Unchanged:** every guard limit, scheduling, admission and the trial criteria.
+   - **The recovery:** correct it to tell a refused launch from a guard stop after the model started, and verify the blocks handle both and clean up.
+   - **The bounds:** reuse the existing tests and dry-run infrastructure; no broad mutation campaign or unrelated work. Preserve the previous sealed session.
+2. **The package `~/sentinel-prep/chatpreempt-9ba014e/`** (outside Git; `SHA256SUMS` over 11 files, its SHA-256 `ef87f054889741408f7cde73b6f44224b5ec83f7bdb0e27e23fa817f6c8d64f8`).
+   - **cp-R:** chatpreempt-5df3289's, with these changes:
+     - the pin;
+     - 18 checksums (the check's new one, and `launch_memory.py` and `demo_profile.py` added);
+     - `launch_memory.py` for records only;
+     - `cp_next`, which names the next block from the session's provenance.
+   - **The preparation, from fci-lfm25-b106100 under cp- names:**
+     - **cp-C:** i-C's listing, and closing only on a typed CLOSE. It covers VS Code's server, Claude Code, Codex, update-manager and the VNC desktop's session leader; the VNC server ends with its session.
+     - **cp-P:** i-P's display-manager stop and counts line, without the camera probe.
+     - **cp-M:** i-M's drop on a typed DROP: `sync`, then `sudo sysctl -w vm.drop_caches=1` once, between `memory-before-drop.json` and `memory-after-drop.json`. It is never repeated in a session.
+     - **cp-O:** i-O's check, through `hostmem_observe.py` and `hostprep.py check`, with `memory-prepared-<UTC>.json`. It refuses while an optional process runs or the display manager is not stopped, and records why (`CO_refused=`).
+     - **`hostprep.py`:** fci-lfm25-b106100's, with only its header and five message strings changed to cp- names (`64d68ff4…`).
+   - **cp-V:**
+     - it launches only after the drop passed and cp-O passed after it, and once per session;
+     - the guard and the check are composed as before (`--from-launch --duration-s 600 --step4-headroom`; `run --model-set lfm2.5-vl --post-load-release`);
+     - it prints `CV_outcome=refused_before_launch|stopped_after_launch|ran_to_its_end|no_guard_result` from the guard's result, a described memory line and a `NEXT:` line for each case.
+   - **cp-H:** what is left, the seal, then the display manager started again when cp-P stopped it. For a launched check it says to keep the boot for its kernel log.
+   - **PROTOCOL.md's recovery:**
+     - **a refused launch:** nothing started; it is not a repeat, but no new session until the maintainer has read it;
+     - **a guard stop after the model started:** a result; never repeated; keep the boot.
+   - **Not added:** no launch floor. D103's floor belongs to the face workloads; the guard's step-4 headroom stays the only pre-launch memory check.
+3. **The dry run** (`~/sentinel-prep/dryrun-harness-9ba014e-cp/`, outside Git).
+   - **Reused:**
+     - dryrun-harness-b106100-fci25's stand-ins: sudo, sync, sysctl, systemctl, the desktop and development processes, and the fake meminfo;
+     - part 11's `check_standin.py`;
+     - part 12's stand-in llama-server and `load.sh`.
+   - **New:**
+     - `check_real.py`: the real CLI and the runtime's `LlamaServerProcess`, with the binary forced to the stand-in;
+     - `verify.py`: each case's expected outcome, checked against its log, sealed folder and call log.
+   - **The cases:**
+     - **A:** Claude Code, VS Code and the VNC desktop closed on CLOSE; the drop once (MemFree 5.49 → 6.86 GB, Cached 1.62 → 0.26 GB, fake values); prepared; passed; a second cp-V did nothing; 13 files sealed; the display manager started again.
+     - **G:** a guard stop 2.8 s after launch on MemFree's floor. `CV_outcome=stopped_after_launch`; the reading FAIL the guard, FAIL memory, MISSING the check's result, no verdict; `llama_server_after_exit` 0 and `cleanup_clear` true.
+     - **M:** MemAvailable 3,500,000 kB after the preparation. `CV_outcome=refused_before_launch`; the reading REFUSED; no child; no kernel-log hold.
+     - **V:** the VNC desktop started again after cp-C. cp-O refused and cp-V launched nothing (both naming cp-C); cp-C closed it; then passed.
+     - **D:** the drop declined, then made once; a repeat refused.
+     - **DF:** the drop failed; nothing launched.
+     - **O:** blocks out of order; each STOP named the next block.
+   - **Results:** every check passed. Each seal verifies; nothing was left running; no fake text appears; nothing was made under the real `~/sentinel-runs/chatpreempt`. Run on `attempt1/`, `verify.py` fails V, where cp-V named cp-O before cp-O recorded its reason.
+   - **Not covered:** the real load after a real drop, its MemFree draw and pace, llama-server's own cancellation and its SIGTERM handling during a load, the post-load release, and the real display manager, VNC desktop and sudo.
+4. **Unchanged:**
+   - `cp-20261026T191803Z` (sealed) and `chatpreempt-5df3289`, which refuses at `9ba014e`;
+   - `fci25-20261026T124349Z` and `fci-lfm25-b106100`;
+   - the runtime, the guard, the limits, admission, drivers and packages.
+   - No code changed in this part; the tests were not rerun (the code is `9ba014e`'s, tested in part 12).
+5. **Next (the maintainer's decision):**
+   - run `chatpreempt-9ba014e` (no CCTV, sudo, about 10-15 minutes);
+   - keep that boot until Claude has read its kernel log.
+   - The follow-ups are unchanged: the integration package's re-pin, the camera reconnect, the NVML mismatch, and the legacy-v1 items pending.
 
 ### Session 115, part 12 (Claude, 2026-10-27): the chat preemption check's session `cp-20261026T191803Z` read only, stopped by the guard during the model load and nothing judged; the reading's and the check's cleanup defects fixed (`9ba014e`); the failure path dry-run
 
