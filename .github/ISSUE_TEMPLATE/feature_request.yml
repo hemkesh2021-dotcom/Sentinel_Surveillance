@@ -1,0 +1,54 @@
+name: Feature request
+description: Suggest an improvement or new capability
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What limitation or pain point does this address?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should change? Be concrete.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Detection / tracking
+        - Face recognition
+        - VLM reasoning / chat
+        - Dashboard / UI
+        - Alerting / notifications
+        - Camera support
+        - Performance / memory
+        - Security hardening
+        - Documentation
+        - Other
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Jetson constraints considered
+      description: 8GB unified memory, shared CPU/GPU, SD card wear. How does this fit?
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+
+  - type: checkboxes
+    id: willing
+    attributes:
+      label: Contribution
+      options:
+        - label: I'm willing to implement this myself

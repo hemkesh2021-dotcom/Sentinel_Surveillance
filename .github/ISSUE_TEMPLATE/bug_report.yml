@@ -1,0 +1,97 @@
+name: Bug report
+description: Something is broken or behaving unexpectedly
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please fill in as much as you can — Jetson issues are often environment-specific.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Clear description of the bug and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Launch llama-server with ...
+        2. Run python main.py ...
+        3. Open dashboard at ...
+        4. See error
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Person detection (YOLOv8 / TensorRT)
+        - Tracking (ByteTrack / Re-ID)
+        - Face recognition (DeepFace / Facenet512)
+        - VLM reasoning (LFM2-VL / llama.cpp)
+        - Dashboard (Flask / MJPEG)
+        - Telegram alerting
+        - RTSP / camera input
+        - Setup / installation
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      placeholder: "Jetson Orin Nano Super 8GB / x86 + RTX 3060 / etc."
+    validations:
+      required: true
+
+  - type: input
+    id: jetpack
+    attributes:
+      label: JetPack / L4T version
+      placeholder: "JetPack 6.2 (L4T 36.4.3)"
+
+  - type: input
+    id: camera
+    attributes:
+      label: Camera model
+      placeholder: "Imou Ranger S2, RTSP"
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact launch command(s)
+      description: Include env vars such as GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 and the full llama-server command.
+      render: shell
+
+  - type: textarea
+    id: memory
+    attributes:
+      label: Memory state
+      description: Output of `free -h` or `tegrastats` at the time of the bug. Many OOM issues are memory-pressure-dependent.
+      render: shell
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / traceback
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and this is not a duplicate
+          required: true
+        - label: I removed all secrets, tokens, chat IDs and RTSP credentials from the logs above
+          required: true
