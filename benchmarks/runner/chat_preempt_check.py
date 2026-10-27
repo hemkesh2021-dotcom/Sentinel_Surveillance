@@ -28,7 +28,17 @@ The check is a short-answer control and at most TRIALS cancellation trials, each
 - **A trial:** alpha_load's long question, the same way. The scene job is submitted only when the request is genuinely
   in flight:
   - the chat transport's POST to llama-server has begun and not returned;
-  - llama-server's /slots shows a slot processing, with at least one answer token decoded.
+  - llama-server is decoding this request (DecodingWatch).
+
+  **The decoding rule** (session 115, part 15) follows /slots as llama-server b8932 (VALIDATED_BUILD) fills it:
+  - a slot takes a new task's id and its n_predict when the task is launched;
+  - but it keeps the previous task's n_decoded and n_remain until the new task's prompt has been processed.
+
+  So a reading counts only when it shows a slot processing a task whose id is not the one the slot held before the
+  question. Decoding is observed only when two consecutive readings of that task show n_decoded rising, with n_decoded +
+  n_remain equal to its n_predict and n_predict equal to the chat's cap (corroboration, never identity on its own).
+  Another build, an unreadable or multi-slot /slots, or a second new task is ambiguous. A trial whose decoding was not
+  observed is NOT EXERCISED.
 
   **A request that ends before that, or that ends by itself within the grace, is NOT EXERCISED, never passed.** Only an
   exercised trial can pass, and it passes only with all of these:
@@ -48,7 +58,10 @@ passed; not exercised when no trial was exercised and nothing failed; failed oth
 
 The result keeps metadata only:
 - states, the runtime's fixed reason labels, timings, token counts, lengths and counters;
-- never an answer's or a report's text, and never a prompt.
+- the server's build string (/props build_info, nothing else from /props);
+- each scene response's finish reason and completion-token count;
+- for a rejected report, the known field paths and pydantic's error categories, with an unexpected key masked;
+- never an answer's or a report's text, a value, a parser message, a key the report should not have, or a prompt.
 
 The picture is synthetic: labelled shapes on white, with nobody and no fire. No camera, no face and no private file is
 read. Run it under the existing guard, from the worktree, with the runtime's Python (it has OpenCV):
@@ -66,6 +79,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -73,6 +87,8 @@ import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
+
+from pydantic import ValidationError
 
 HERE = Path(__file__).resolve().parent
 SRC = HERE.parents[1] / "src"
@@ -96,8 +112,10 @@ from sentinel.scene.chat import CHAT_ADMISSION, CHAT_MAX_TOKENS, CHAT_MIN_INTERV
     LlamaChatRequest  # noqa: E402
 from sentinel.scene.llama_server import LOOPBACK_HOST, LlamaSceneRequest, LoopbackTransport, TransportError, \
     opencv_jpeg  # noqa: E402
+from sentinel.scene.completion import scene_completion_finish_reason  # noqa: E402
 from sentinel.scene.models import SCENE_MODEL_SETS, scene_model_set  # noqa: E402
-from sentinel.scene.report import SceneReportError, parse_scene_report  # noqa: E402
+from sentinel.scene.report import _FENCE as REPORT_FENCE  # noqa: E402  (the parser's own fence rule)
+from sentinel.scene.report import MAX_REPORT_CHARS, SceneReport, SceneReportError, parse_scene_report  # noqa: E402
 from sentinel.scene.server import LlamaServerProcess, health_ok, port_in_use  # noqa: E402
 from sentinel.tracking.probe import read_meminfo  # noqa: E402
 
@@ -113,6 +131,11 @@ TRIALS = 3
 IN_FLIGHT_WAIT_S = 10.0  # how long a request has to begin decoding before its trial is not exercised
 POLL_S = 0.01
 SLOTS_DEBUG = "LLAMA_SERVER_SLOTS_DEBUG"  # llama-server puts the prompt and the text generated into /slots when set
+VALIDATED_BUILD = "b8932-98dc1418e"  # the llama-server build whose /slots the decoding rule was checked against
+BUILD_INFO = re.compile(r"b\d{1,6}-[0-9a-f]{7,40}")
+ERROR_TYPE = re.compile(r"[a-z_]{1,40}")  # pydantic's error categories
+REPORT_FIELDS = frozenset(SceneReport.model_fields)
+MAX_DETAILS = 10
 SCOPE = ("separate controlled evidence of the runtime's after-grace preemption on this device's llama-server; it is "
          "not an integration run's 'cancellation verified' item, changes no verdict and admits nothing")
 EXIT = {"passed": 0, "failed": 1, "not_exercised": 3}
@@ -215,6 +238,145 @@ def slot_progress(port: int) -> dict[str, Any] | None:
     return out
 
 
+def slot_reading(port: int) -> dict[str, Any] | None:
+    """From llama-server's /slots, numbers only, for its one slot: whether it is processing, the task it holds (its
+    current task, or its last one once that ended: b8932's ``id_task``), that task's ``n_predict``, and the slot's
+    tokens decoded and remaining. None when /slots cannot be read. Everything else in the response is dropped here."""
+    try:
+        code, data = _get_json(port, "/slots")
+    except OSError:
+        return None
+    if code != 200 or not isinstance(data, list):
+        return None
+    out: dict[str, Any] = {"slots": len(data), "processing": None, "id_task": None, "n_predict": None,
+                           "n_decoded": None, "n_remain": None}
+    if len(data) != 1 or not isinstance(data[0], Mapping):
+        return out
+    slot, params = data[0], data[0].get("params")
+    token = slot.get("next_token")
+    token = token[0] if isinstance(token, list) and token else token
+    out.update(processing=slot.get("is_processing") if isinstance(slot.get("is_processing"), bool) else None,
+               id_task=_count(slot.get("id_task")),
+               n_predict=_count(params.get("n_predict")) if isinstance(params, Mapping) else None)
+    if isinstance(token, Mapping):
+        out["n_decoded"], out["n_remain"] = _count(token.get("n_decoded")), _count(token.get("n_remain"))
+    return out
+
+
+def idle_slot(port: int, timeout_s: float = 5.0) -> dict[str, Any] | None:
+    """The slot's reading once it is idle. llama-server sends a request's final response and then releases the slot
+    (send_final_response, then slot.release()), so a reading right after the previous job may still show it
+    processing. Still processing after ``timeout_s``, it is returned as it is (and the trial's attribution is
+    ambiguous)."""
+    deadline = time.monotonic() + timeout_s
+    reading = slot_reading(port)
+    while reading is not None and reading.get("processing") is True and time.monotonic() < deadline:
+        time.sleep(POLL_S)
+        reading = slot_reading(port)
+    return reading
+
+
+def server_build(port: int) -> str | None:
+    """llama-server's build string from /props (``build_info``), when it has that form; nothing else is kept."""
+    try:
+        code, data = _get_json(port, "/props")
+    except OSError:
+        return None
+    build = data.get("build_info") if code == 200 and isinstance(data, Mapping) else None
+    return build if isinstance(build, str) and BUILD_INFO.fullmatch(build) else None
+
+
+class DecodingWatch:
+    """Whether llama-server is decoding the current chat request, from /slots readings alone (the module's decoding
+    rule, checked against VALIDATED_BUILD's tools/server/server-context.cpp):
+
+    - launch_slot_with_task gives the slot the new task (its id, its params) at once;
+    - n_decoded is set to 0 only when that task's prompt has been processed, and n_remain is recomputed only once
+      n_decoded > 0, so through the prompt both still hold the previous task's values;
+    - once the task ends, /slots keeps showing it (task_prev).
+
+    ``result`` is None while watching, "decoding_observed", or what made the attribution impossible."""
+
+    def __init__(self, baseline: Mapping[str, Any] | None, build: str | None, max_tokens: int) -> None:
+        self.baseline_task = None if baseline is None else baseline.get("id_task")
+        self.build, self.max_tokens = build, max_tokens
+        self.task: int | None = None
+        self.n_predict: int | None = None
+        self.readings = 0
+        self.before: int | None = None
+        self.last: Mapping[str, Any] | None = None
+        self.result: str | None = None
+        if build != VALIDATED_BUILD:
+            self.result = "ambiguous:unvalidated_build"
+        elif baseline is None or baseline.get("slots") != 1 or baseline.get("processing") is not False:
+            self.result = "ambiguous:no_idle_slot_before_the_question"
+
+    def feed(self, reading: Mapping[str, Any] | None) -> bool:
+        """One reading; True once decoding of this request is observed."""
+        if self.result is not None:
+            return self.result == "decoding_observed"
+        if reading is None or reading.get("slots") != 1 or reading.get("processing") is None:
+            self.result = "ambiguous:slots_unreadable"
+            return False
+        if reading["processing"] is False:
+            return False  # not launched yet (or ended: the trial sees that from the transport)
+        task = reading.get("id_task")
+        if task is None:
+            self.result = "ambiguous:no_task_identity"
+            return False
+        if task == self.baseline_task:
+            return False  # the slot still shows the task it held before the question
+        if self.task is None:
+            self.task, self.n_predict = task, reading.get("n_predict")
+        elif task != self.task:
+            self.result = "ambiguous:another_new_task"
+            return False
+        self.readings += 1
+        decoded, remain = reading.get("n_decoded"), reading.get("n_remain")
+        previous, self.last = (None if self.last is None else self.last.get("n_decoded")), reading
+        if self.before is None:
+            self.before = decoded
+        rising = previous is not None and decoded is not None and decoded > previous and decoded >= 1
+        if rising and remain is not None and self.n_predict == self.max_tokens == decoded + remain:
+            self.result = "decoding_observed"
+            return True
+        return False
+
+    def end(self, why: str) -> None:
+        if self.result is None:
+            self.result = why
+
+    def record(self) -> dict[str, Any]:
+        last = self.last or {}
+        return {"result": self.result, "build": self.build, "baseline_task": self.baseline_task, "task": self.task,
+                "n_predict": self.n_predict, "readings": self.readings, "n_decoded_first": self.before,
+                "n_decoded": last.get("n_decoded"), "n_remain": last.get("n_remain")}
+
+
+class SceneResponses:
+    """The runtime's scene transport, keeping each response's finish reason (the runtime's own reading of it) and
+    completion-token count. Never its text."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner, self.last = inner, None
+
+    def post(self, body: bytes, **kwargs: Any) -> bytes:
+        self.last = None
+        data = self.inner.post(body, **kwargs)
+        self.last = completion_facts(data)
+        return data
+
+
+def completion_facts(data: bytes) -> dict[str, Any]:
+    try:
+        payload = json.loads(data)
+    except (ValueError, UnicodeDecodeError):
+        return {"finish_reason": "missing", "completion_tokens": None}
+    usage = payload.get("usage") if isinstance(payload, Mapping) else None
+    return {"finish_reason": scene_completion_finish_reason(payload),
+            "completion_tokens": _count(usage.get("completion_tokens")) if isinstance(usage, Mapping) else None}
+
+
 def _memory() -> dict[str, int | None]:
     info = read_meminfo() or {}
     return {key: info.get(key) for key in ("MemTotal", "MemFree", "MemAvailable")}
@@ -232,12 +394,46 @@ def report_facts(text: str | None) -> dict[str, Any]:
     try:
         report = parse_scene_report(text)
     except SceneReportError:
-        return {"valid": False, "problem": "report_rejected"}
+        return {"valid": False, "problem": "report_rejected", "rejection": rejection_details(text)}
     dumped = report.model_dump(mode="json")
     return {"valid": True, "persons_visible": dumped.get("persons_visible"),
             "fire_or_smoke": dumped.get("fire_or_smoke"), "threat": dumped.get("threat"),
             "uncertainty": dumped.get("uncertainty"), "observations": len(dumped.get("observations") or []),
             "summary_chars": len(dumped.get("summary") or "")}
+
+
+def rejection_details(text: str) -> list[dict[str, str]]:
+    """Why parse_scene_report rejects ``text``, safely: the known field paths (an observation by its index) and
+    pydantic's error categories only.
+    - An unexpected key is masked.
+    - No value, message, input or context is kept.
+
+    It repeats the parser's own steps (its length bound, its fence) to reach the validation errors the parser hides."""
+    if len(text) > MAX_REPORT_CHARS:
+        return [{"loc": "<report>", "type": "report_too_long"}]
+    body = text.strip()
+    fenced = REPORT_FENCE.match(body)
+    if fenced:
+        body = fenced.group("body").strip()
+    try:
+        SceneReport.model_validate_json(body)
+    except ValidationError as exc:
+        errors = exc.errors(include_url=False, include_context=False, include_input=False)
+        return [{"loc": _safe_loc(error["loc"]),
+                 "type": error["type"] if ERROR_TYPE.fullmatch(str(error["type"])) else "other"}
+                for error in errors[:MAX_DETAILS]]
+    return [{"loc": "<report>", "type": "rejected_otherwise"}]
+
+
+def _safe_loc(loc: tuple[Any, ...]) -> str:
+    """A validation error's path with only the report's own field names and indices: anything else is masked."""
+    parts = []
+    for index, part in enumerate(loc):
+        if isinstance(part, int) and not isinstance(part, bool) and index > 0:
+            parts.append(str(part))
+        else:
+            parts.append(part if index == 0 and part in REPORT_FIELDS else "<unexpected>")
+    return ".".join(parts) or "<report>"
 
 
 # ---------------------------------------------------------------- one trial
@@ -248,18 +444,23 @@ class Rig:
 
     def __init__(self, port: int, request_model: str, revision: str, picture: Any,
                  transport: Callable[[int, float], Any] = LoopbackTransport,
-                 encode: Callable[[Any], bytes] = opencv_jpeg) -> None:
-        self.port, self.picture = port, picture
+                 encode: Callable[[Any], bytes] = opencv_jpeg, build: str | None = None) -> None:
+        self.port, self.picture, self.build = port, picture, build
         self.clock = SystemClock()
         self.stamper = FrameStamper("chatpreempt", self.clock)
         self.stamper.connect()
         self.frames, self.images = RecentFrames(), RecentImages()
         self.scene_started: dict[str, int] = {}
-        scene_request = LlamaSceneRequest(transport(port, REQUEST_TIMEOUT_S), encode=encode, model=request_model)
+        self.scene_completions: dict[str, Any] = {}
+        responses = SceneResponses(transport(port, REQUEST_TIMEOUT_S))
+        scene_request = LlamaSceneRequest(responses, encode=encode, model=request_model)
 
-        def run_job(job: AnalysisJob, image: Any) -> Any:
+        def run_job(job: AnalysisJob, image: Any) -> Any:  # on the worker's one thread: one request at a time
             self.scene_started[job.job_id] = time.monotonic_ns()
-            return scene_request(job, image)
+            responses.last = None
+            outcome = scene_request(job, image)
+            self.scene_completions[job.job_id] = responses.last
+            return outcome
 
         self.analyzer = ThreadedSceneAnalyzer(run_job, self.images, revision=revision)  # no lane interval: see above
         self.chat_transport = InFlight(transport(port, REQUEST_TIMEOUT_S))
@@ -299,6 +500,8 @@ class Rig:
         _until(lambda: not self.analyzer.busy(), 10.0)
         before = dict(self.analyzer.counters)
         self.chat_transport.reset()
+        # the slot's task before the question, then the chat's cap (no lane interval: the full cap is planned)
+        watch = DecodingWatch(idle_slot(self.port), self.build, CHAT_MAX_TOKENS)
         code, accepted = self.chat.ask(ChatQuestion(question))
         item: dict[str, Any] = {"name": name, "question": "short" if question == QUESTIONS["short"] else "long",
                                 "accepted": code}
@@ -308,13 +511,17 @@ class Rig:
         job = accepted["job"]
         deadline = time.monotonic() + IN_FLIGHT_WAIT_S
         progress, in_flight = None, False
-        while time.monotonic() < deadline:
+        while watch.result is None:
             begun, ended, _ = self.chat_transport.state()
             if ended is not None or self._final(job):
+                watch.end("ended_before_decoding_was_observed")
+                break
+            if time.monotonic() > deadline:
+                watch.end("no_decoding_observed_in_time")
                 break
             if begun is not None:
-                progress = slot_progress(self.port)
-                if progress and progress["processing"] >= 1 and (progress["n_decoded"] or 0) >= 1:
+                progress = slot_reading(self.port)
+                if watch.feed(progress):
                     begun, ended, _ = self.chat_transport.state()
                     in_flight = begun is not None and ended is None
                     break
@@ -338,6 +545,7 @@ class Rig:
         answer = document.get("answer")
         item.update({
             "in_flight_at_submission": in_flight,
+            "decoding": watch.record(),
             "slots_at_submission": progress,
             "submitted_after_request_began_ms": None if begun is None else round((submitted_ns - begun) / 1e6, 1),
             "request": {"outcome": outcome,
@@ -352,7 +560,9 @@ class Rig:
                       "waited_behind_question_ms": delays.get("last_ms") if after.get("jobs_waited_for_side", 0)
                       > before.get("jobs_waited_for_side", 0) else None,
                       "completed_after_submission_ms": round((done_ns - submitted_ns) / 1e6, 1),
-                      "outcome": scene_outcome.kind.value, **report_facts(scene_outcome.text)},
+                      "outcome": scene_outcome.kind.value,
+                      **(self.scene_completions.get(scene_id) or {"finish_reason": None, "completion_tokens": None}),
+                      **report_facts(scene_outcome.text)},
             "counters": {key: after.get(key, 0) - before.get(key, 0) for key in sorted(set(after) | set(before))
                          if after.get(key, 0) != before.get(key, 0)},
         })
@@ -408,7 +618,8 @@ def judge_trial(item: Mapping[str, Any]) -> tuple[str, list[str]]:
     if problems:
         return "FAIL", problems
     if not item["in_flight_at_submission"]:
-        return "NOT EXERCISED", ["the request was not in flight when the scene job was submitted"]
+        why = (item.get("decoding") or {}).get("result")
+        return "NOT EXERCISED", [f"the request was not in flight, decoding, when the scene job was submitted ({why})"]
     if end["state"] == "answered":
         if counters.get("side_finished_in_grace") == 1:
             return "NOT EXERCISED", ["the answer ended by itself within the grace"]
@@ -498,7 +709,9 @@ def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaS
         image = picture()
         jpeg = encode(image)
         result["picture"] = {"jpeg_bytes": len(jpeg), "sha256": hashlib.sha256(jpeg).hexdigest()}
-        rig = Rig(args.port, chosen.request_model, chosen.model_revision, image, transport, encode)
+        result["server_build"] = server_build(args.port)  # the decoding rule holds for VALIDATED_BUILD only
+        rig = Rig(args.port, chosen.request_model, chosen.model_revision, image, transport, encode,
+                  build=result["server_build"])
         rig.start()
         result["control"] = rig.trial("control", QUESTIONS["short"])
         result["memory"]["after_control"] = _memory()
@@ -595,12 +808,16 @@ def read(directory: Path) -> tuple[list[str], int]:
 
 def _summary(item: Mapping[str, Any]) -> dict[str, Any]:
     end, scene = item.get("question_end") or {}, item.get("scene") or {}
-    return {"in_flight": item.get("in_flight_at_submission"), "slots": item.get("slots_at_submission"),
+    decoding = item.get("decoding") or {}
+    return {"in_flight": item.get("in_flight_at_submission"), "decoding": decoding.get("result"),
+            "slot_task": [decoding.get("baseline_task"), decoding.get("task")],
+            "slots": item.get("slots_at_submission"),
             "request": (item.get("request") or {}).get("outcome"), "state": end.get("state"),
             "reason": end.get("reason"), "tokens": end.get("tokens"),
             "scene_start_delay_ms": scene.get("start_delay_ms"),
             "scene_waited_ms": scene.get("waited_behind_question_ms"), "scene_report_valid": scene.get("valid"),
-            "counters": item.get("counters")}
+            "scene_finish": scene.get("finish_reason"), "scene_tokens": scene.get("completion_tokens"),
+            "scene_rejection": scene.get("rejection"), "counters": item.get("counters")}
 
 
 def main(argv: list[str] | None = None) -> int:
