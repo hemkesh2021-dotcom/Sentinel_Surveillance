@@ -18,7 +18,10 @@ valid report, or the given invalid text, with ``finish_reason`` "stop" and its u
 With ``json_schema_error`` (session 115, part 19), a request carrying llama.cpp's top-level ``json_schema`` field is
 answered as b8932 answers a task whose sampler cannot be initialised: HTTP 400 with the error envelope
 ``{"error": {"code": 400, "message": ..., "type": "invalid_request_error"}}`` (format_error_response in
-tools/server/server-common.cpp), the given text as its message, and nothing decoded.
+tools/server/server-common.cpp), the given text as its message, and nothing decoded. ``grammar_error`` does the same
+for a request carrying the top-level ``grammar`` field (part 20), and ``grammar_scene_text``, when given, is what such
+a request is answered with instead of ``scene_text``, so a test can answer the constrained and the unconstrained scene
+request differently.
 
 /slots also carries a ``generated`` text, and /props a template and a model path. A reader must drop them all (the real
 server sends slot text only with LLAMA_SERVER_SLOTS_DEBUG).
@@ -48,11 +51,14 @@ class FakeLlamaServer:
     def __init__(self, port: int, *, decode_s: dict[str, float], tokens_per_s: float = 50.0, scene_s: float = 0.2,
                  scene_text: str | None = None, prompt_s: float = 0.0, scene_prompt_s: float = 0.0,
                  scene_tokens: int = 60, build: str = BUILD, slot_task_ids: bool = True,
-                 json_schema_error: str | None = None) -> None:
+                 json_schema_error: str | None = None, grammar_error: str | None = None,
+                 grammar_scene_text: str | None = None) -> None:
         self.port, self.decode_s, self.tokens_per_s, self.scene_s = port, decode_s, tokens_per_s, scene_s
         self.prompt_s, self.scene_prompt_s, self.scene_tokens = prompt_s, scene_prompt_s, scene_tokens
         self.build, self.slot_task_ids, self.json_schema_error = build, slot_task_ids, json_schema_error
+        self.grammar_error = grammar_error
         self.scene_text = json.dumps(REPORT) if scene_text is None else scene_text
+        self.grammar_scene_text = grammar_scene_text  # None: a grammar request is answered with scene_text too
         self._lock = threading.Lock()
         # one slot; "task" stays the last task's id once it ends (llama-server's task_prev)
         self._slot: dict[str, Any] = {"processing": False, "task": None, "n_predict": None, "n_decoded": 0,
@@ -120,8 +126,12 @@ class FakeLlamaServer:
                     if server.json_schema_error is not None and "json_schema" in body:
                         self._json(400, {"error": {"code": 400, "message": server.json_schema_error,
                                                    "type": "invalid_request_error"}})
-                    elif "response_format" in body:
-                        self._scene(cap)
+                    elif server.grammar_error is not None and "grammar" in body:
+                        self._json(400, {"error": {"code": 400, "message": server.grammar_error,
+                                                   "type": "invalid_request_error"}})
+                    elif "response_format" in body or "grammar" in body:
+                        constrained = "grammar" in body and server.grammar_scene_text is not None
+                        self._scene(cap, server.grammar_scene_text if constrained else server.scene_text)
                     else:
                         self._chat(body, cap)
                 finally:
@@ -137,7 +147,7 @@ class FakeLlamaServer:
                     time.sleep(0.01)
                 return True
 
-            def _scene(self, cap: int) -> None:
+            def _scene(self, cap: int, text: str) -> None:
                 time.sleep(server.scene_prompt_s)
                 server._prompt_done()
                 tokens = min(cap - 1, server.scene_tokens)
@@ -148,7 +158,7 @@ class FakeLlamaServer:
                 server._decoded(tokens)
                 server.completed["scene"] += 1
                 self._json(200, {"choices": [{"finish_reason": "stop", "index": 0,
-                                              "message": {"role": "assistant", "content": server.scene_text}}],
+                                              "message": {"role": "assistant", "content": text}}],
                                  "usage": {"completion_tokens": tokens, "prompt_tokens": 325,
                                            "total_tokens": tokens + 325},
                                  "timings": {"predicted_n": tokens}})

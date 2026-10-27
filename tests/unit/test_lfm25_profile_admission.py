@@ -64,7 +64,7 @@ def admission(cfg=None, scene=None, policy=CANDIDATE_POLICY, profiles=RESOURCE_P
 def test_the_entry_is_the_default_sets_measurement_and_the_rollback_keeps_its_own() -> None:
     lfm25, lfm2 = RESOURCE_PROFILES[LFM25], RESOURCE_PROFILES[LFM2]
     assert (NEW.model, NEW.mmproj) == (lfm25.llm, lfm25.mmproj) and (OLD.model, OLD.mmproj) == (lfm2.llm, lfm2.mmproj)
-    # the request each measured is the one before session 115, part 17; the sets now send another (its json_schema)
+    # the request each measured is the one before session 115, part 17; the sets now send another (its grammar, part 20)
     assert (lfm25.scene_request_sha256, lfm2.scene_request_sha256) == (BEFORE[LFM25], BEFORE[LFM2])
     assert NEW.scene_request_sha256 != BEFORE[LFM25] and OLD.scene_request_sha256 != BEFORE[LFM2]
     assert models.DEFAULT_SCENE_MODEL_SET == NEW.key and models.ROLLBACK_SCENE_MODEL_SET == OLD.key

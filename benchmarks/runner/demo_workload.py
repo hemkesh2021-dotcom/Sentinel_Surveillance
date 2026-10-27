@@ -98,6 +98,11 @@ if _SRC not in sys.path:  # demo_profile also starts this with PYTHONPATH=src
     sys.path.insert(0, _SRC)
 from sentinel import memory_policy  # noqa: E402 - standard library only; shared with sentinel run (D58)
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:  # llama_errors sits beside this script (loaded under another name by the tests)
+    sys.path.insert(0, _HERE)
+from llama_errors import error_category  # noqa: E402 - standard library only (session 115, part 20)
+
 EVENT_PREFIX = "@@EVENT "
 ALLOCATOR_INTERVAL_S = 1.0
 ALLOCATOR_FIELDS = {
@@ -593,6 +598,7 @@ class Stats:
         self.face_errors: dict[str, int] = {}
         self.vlm_ms: list[float] = []
         self.vlm_errors: dict[str, int] = {}
+        self.vlm_http_categories: dict[str, int] = {}  # llama_errors' fixed labels (session 115, part 20)
         self.vlm_valid = 0
         self.vlm_invalid = 0
         self.vlm_unchecked = 0
@@ -654,6 +660,7 @@ class Stats:
                     "latency_ms": percentiles(self.vlm_ms),
                     "over_d16_timeout": over,
                     "errors": errors,
+                    "http_error_categories": dict(self.vlm_http_categories),
                     "valid_reports": self.vlm_valid,
                     "invalid_reports": self.vlm_invalid,
                     "unchecked_reports": self.vlm_unchecked,
@@ -686,12 +693,16 @@ class SceneProgress:
         self.finish_reasons = dict.fromkeys(PROGRESS_FINISH_REASONS, 0)
         self.rejections = dict.fromkeys(PROGRESS_REJECTIONS, 0)
         self.errors = dict.fromkeys(PROGRESS_ERRORS, 0)
+        self.http_error_categories: dict[str, int] = {}  # llama_errors' fixed labels (session 115, part 20)
 
     def record(self, *, latency_ms: float | None = None, finish_reason: str | None = None,
                rejection: str | None = None, valid: bool = False, error: str | None = None,
-               prompt_tokens: int | None = None, completion_tokens: int | None = None) -> None:
+               prompt_tokens: int | None = None, completion_tokens: int | None = None,
+               error_category: str | None = None) -> None:
         with self._lock:
             self.requests += 1
+            if error_category is not None:  # an HTTP error's fixed category (session 115, part 20)
+                self.http_error_categories[error_category] = self.http_error_categories.get(error_category, 0) + 1
             self.completed += int(latency_ms is not None)
             self.valid += int(valid)
             if finish_reason is not None:
@@ -708,6 +719,7 @@ class SceneProgress:
                 "completed": self.completed, "valid_reports": self.valid, "invalid_reports": self.invalid,
                 "finish_reasons": dict(self.finish_reasons),
                 "rejected_reports_by_reason": dict(self.rejections), "errors": dict(self.errors),
+                "http_error_categories": dict(self.http_error_categories),
                 "latency_ms": round(latency_ms, 1) if latency_ms is not None else None,
                 "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
                 "synthetic_images_issued": getattr(self._source, "issued", None),
@@ -742,7 +754,7 @@ def face_loop(deepface, latest: Latest, stats: Stats, hz: float, stop: threading
 
 
 def scene_request(port: int, frame) -> dict:
-    from sentinel.scene.completion import SceneCompletionError, scene_report_schema, scene_response_format
+    from sentinel.scene.completion import SceneCompletionError, scene_report_grammar, scene_response_format
 
     import cv2
 
@@ -757,7 +769,7 @@ def scene_request(port: int, frame) -> dict:
         "temperature": 0.05,
         "stream": False,
         "response_format": scene_response_format(),
-        "json_schema": scene_report_schema(),  # as the runtime's scene_request_body sends it (session 115, part 17)
+        "grammar": scene_report_grammar(),  # as the runtime's scene_request_body sends it (session 115, part 20)
         "messages": [
             {"role": "system", "content": SCENE_SYSTEM},
             {
@@ -779,6 +791,17 @@ def scene_request(port: int, frame) -> dict:
     if len(data) > VLM_MAX_RESPONSE_BYTES:
         raise SceneCompletionError("response_too_large")
     return json.loads(data)
+
+
+def http_error_category(exc: urllib.error.HTTPError) -> str:
+    """The server's error category for an HTTP error, a fixed label from its bounded body (llama_errors, session 115,
+    part 20): the category of b8932's known messages, never the message. step4cand-lfm25-20261027T145229Z kept
+    "HTTP 400" alone for 150 requests, which is why their cause took a separate reproduction."""
+    try:
+        data = exc.read(VLM_MAX_RESPONSE_BYTES + 1)
+    except Exception:  # noqa: BLE001 - an error without a readable body (no fp, a closed one): a fixed label
+        return "unreadable"
+    return error_category(data)
 
 
 def scene_attempt(port: int, frame, stats: Stats) -> dict[str, object]:
@@ -827,6 +850,9 @@ def scene_attempt(port: int, frame, stats: Stats) -> dict[str, object]:
     except Exception as exc:  # noqa: BLE001 - counted by class, never raised or echoed
         if isinstance(exc, urllib.error.HTTPError):
             name, outcome["error"] = f"HTTP {exc.code}", "http"
+            outcome["error_category"] = category = http_error_category(exc)
+            with stats.lock:
+                stats.vlm_http_categories[category] = stats.vlm_http_categories.get(category, 0) + 1
         elif isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):
             name, outcome["error"] = "timeout", "timeout"
         else:
@@ -990,6 +1016,7 @@ def run_smoke(model, deepface, args, *, frames=None, scene=None) -> dict[str, ob
             "attempts": 1 if frame is not None else 0, "completed": int(latency is not None),
             "finish_reason": outcome.get("finish_reason"), "valid": bool(outcome.get("valid")),
             "rejection": outcome.get("rejection"), "error": outcome.get("error"), "errors": scene_errors,
+            "error_category": outcome.get("error_category"),
             "latency_ms": round(latency, 1) if isinstance(latency, float) else None,
         },
     }

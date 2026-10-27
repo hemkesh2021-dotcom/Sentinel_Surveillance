@@ -53,12 +53,18 @@ def test_the_three_bodies_are_the_runtimes_and_the_scene_bodies_differ_in_the_fi
     from sentinel.scene.llama_server import scene_request_body
     from sentinel.scene.models import scene_model_set
 
+    from sentinel.scene.completion import scene_report_schema
+
     jpeg = b"\xff\xd8x\xff\xd9"
     bodies = repro.case_bodies(jpeg, scene_model_set("lfm2.5-vl").request_model)
     assert list(bodies) == ["basic", "response_format", "json_schema"]
-    assert bodies["json_schema"] == scene_request_body(jpeg, "lfm2.5-vl")
+    sent = json.loads(scene_request_body(jpeg, "lfm2.5-vl"))
     with_field, without = json.loads(bodies["json_schema"]), json.loads(bodies["response_format"])
-    assert "json_schema" not in without and "response_format" in without
+    assert without == {key: value for key, value in sent.items() if key != "grammar"}  # the profiled request
+    assert "json_schema" not in without and "response_format" in without and "grammar" not in without
+    # part 17's request: the schema where the grammar now goes, in the same place
+    assert list(with_field) == [("json_schema" if key == "grammar" else key) for key in sent]
+    assert with_field["json_schema"] == scene_report_schema() and "grammar" not in with_field
     assert dict(without, json_schema=with_field["json_schema"]) == with_field
     assert repro.body_difference(bodies["response_format"], bodies["json_schema"]) == {
         "differing_members": ["json_schema"], "only_json_schema": True, "json_schema_in_response_format": True}
@@ -86,7 +92,8 @@ def test_a_server_rejecting_the_field_at_sampler_init_is_read_so_without_its_mes
     basic = [item for item in result["requests"] if item["case"] == "basic"][0]
     assert basic["answer"]["validation"] == "not_applicable" and basic["answer"]["content_chars"] == len(ANSWER)
     assert result["scene_bodies_differ"]["only_json_schema"] is True
-    assert result["bodies"]["json_schema"]["is_scene_request_body"] is True
+    assert result["bodies"]["json_schema"]["is_part_17s_request"] is True
+    assert result["bodies"]["response_format"]["is_scene_request_body_without_grammar"] is True
     assert result["build_info"] == BUILD and result["stop"]["stopped"] is True
     assert fake.completed == {"chat": 2, "scene": 2}
     text = json.dumps(result)
@@ -130,7 +137,7 @@ def test_the_error_envelope_is_categorised_and_never_kept(repro, payload, expect
     for key, value in expected.items():
         assert facts[key] == value
     assert set(facts) <= {"type", "envelope", "category", "grammar_prefill_rejected", "piece_is_generation_prompt_start",
-                          "message_sha256", "message_chars"}
+                          "sampler_init_sliced", "message_sha256", "message_chars"}
     assert "message" not in facts
 
 

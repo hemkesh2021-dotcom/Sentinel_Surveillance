@@ -1433,9 +1433,14 @@ def sanitize_diagnostic(value, depth: int = 0):
         "synthetic_images_issued", "edge", "boundary_t_mono", "unique_fps", "windows", "window_s", "count",
         "min_fps", "max_fps", "schedule_age_ms", "decode_to_result_age_ms", "attempts", "client_timeouts",
         "http_errors", "transport_errors", "request_sha256", "error_count", "clip_loop_t_mono",
+        # session 115, part 20: an HTTP error's category (llama_errors' fixed labels), counted and per outcome
+        "http_error_categories", "error_category", "sampler_init_failed", "json_schema_conversion_failed",
+        "json_schema_and_grammar", "exceeds_context_size", "image_processing_failed", "unparsable", "unreadable",
     }
     strings = {
         *PHASES_IN_ORDER, "phase", "cuda_driver", "detector_loaded", "face_loaded",
+        "sampler_init_failed", "json_schema_conversion_failed", "json_schema_and_grammar", "exceeds_context_size",
+        "image_processing_failed", "unparsable", "unreadable",
         "torch_allocator", "workload_stats", "scene_progress", "time.monotonic", "bytes", "allocator_lifetime",
         "observed", "unavailable", "synthetic noise", "synthetic noise, distinct per request",
         "not evaluated; structural validity is not scene accuracy", "steady_boundary", "start", "end",
@@ -3138,7 +3143,8 @@ def summarize(run_dir: Path) -> str:
             ]
         lines += [
             f"  scene: {scene.get('completed')} completed, latency ms {scene.get('latency_ms')}; over the 8 s D16 timeout {scene.get('over_d16_timeout')}; "
-            f"errors {scene.get('errors')}; valid/invalid/unchecked reports {scene.get('valid_reports')}/{scene.get('invalid_reports')}/{scene.get('unchecked_reports')}; "
+            f"errors {scene.get('errors')}; http error categories {scene.get('http_error_categories', 'unavailable')}; "
+            f"valid/invalid/unchecked reports {scene.get('valid_reports')}/{scene.get('invalid_reports')}/{scene.get('unchecked_reports')}; "
             f"mean prompt/completion tokens {scene.get('prompt_tokens_mean')}/{scene.get('completion_tokens_mean')}",
             f"  scene completion finish reasons {scene.get('finish_reasons', 'unavailable')}; "
             f"rejections {scene.get('rejected_reports_by_reason', 'unavailable')}; "

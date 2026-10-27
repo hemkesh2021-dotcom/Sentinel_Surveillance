@@ -114,7 +114,7 @@ def test_the_rollback_set_is_exactly_what_the_accepted_profile_measured() -> Non
     assert (OLD.model, OLD.mmproj) == (profile.llm, profile.mmproj)
     assert OLD.request_model == MODEL_NAME == "lfm2-vl"
     assert OLD.scene_request_sha256 == SCENE_REQUEST_SHA256
-    # session 115, part 17: the request gained its top-level json_schema field, so the profile that measured the
+    # session 115, parts 17 and 20: the request gained its top-level grammar field, so the profile that measured the
     # request without it (its fingerprint, as recorded) no longer admits the set until a new measurement is accepted
     assert profile.scene_request_sha256 == "3057dacd4c0ed54193b36b10cfccbac65efaae38ab40e7a6bb142be341595045"
     assert profile.scene_request_sha256 != SCENE_REQUEST_SHA256

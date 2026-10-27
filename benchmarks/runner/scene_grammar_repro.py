@@ -13,11 +13,13 @@ page cache after the load settles (D58). Then, for ROUNDS rounds, three requests
 
 - **basic:** the runtime's chat request (chat_request_body) with a fixed short question: image input and decoding with
   no output constraint at all;
-- **response_format:** the runtime's scene request (scene_request_body) with its top-level ``json_schema`` member
-  removed, and nothing else changed: the request every accepted profile measured (D47 before session 115, part 17);
-- **json_schema:** the runtime's scene request as it is sent since part 17, byte for byte scene_request_body's.
+- **response_format:** the runtime's scene request (scene_request_body) without its constraint member (the
+  ``grammar`` since part 20) and nothing else changed: the request every accepted profile measured (D47 before part 17);
+- **json_schema:** part 17's request (bc8fc91): that body with the top-level ``json_schema`` field in the grammar's
+  place, the request step4cand-lfm25-20261027T145229Z sent, kept here as the reproduction of its failure.
 
-The last two differ in that one member only; the result records both bodies' SHA-256 and that check. Each request is
+The last two differ in that one member only; the result records both bodies' SHA-256 and that check. (Until part 20
+the third case was the runtime's own request; scenegram-20261027T160238Z ran it so, with the field.) Each request is
 posted on the loopback with http.client, as the runtime's transport does, but the response body is read whatever the
 status: the runtime's transport and the step-4 workload keep only an error's status, which is why
 step4cand-lfm25-20261027T145229Z could not say why its 150 scene requests failed.
@@ -64,6 +66,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from chat_preempt_check import rejection_details, report_facts, server_build  # noqa: E402
+from llama_errors import error_facts  # noqa: E402
 from scene_smoke import (  # noqa: E402
     DEFAULT_BINARY,
     JOB_TIMEOUT_MS,
@@ -82,6 +85,7 @@ from sentinel.scene.completion import (  # noqa: E402
     parse_scene_completion,
     scene_completion_content,
     scene_completion_finish_reason,
+    scene_report_schema,
 )
 from sentinel.scene.llama_server import COMPLETIONS_PATH, LOOPBACK_HOST, MAX_RESPONSE_BYTES, opencv_jpeg, \
     scene_request_body  # noqa: E402
@@ -93,21 +97,6 @@ from sentinel.tracking.probe import read_meminfo  # noqa: E402
 CASES = ("basic", "response_format", "json_schema")
 MAX_ROUNDS = 5
 QUESTION = "Describe this picture in one short sentence."
-# b8932's error envelope (tools/server/server-common.cpp, format_error_response): its fixed type strings.
-ERROR_TYPES = frozenset({"invalid_request_error", "authentication_error", "not_found_error", "server_error",
-                         "permission_error", "not_supported_error", "unavailable_error",
-                         "exceed_context_size_error"})
-# b8932's known error messages, by the code that raises them; a message is matched, never kept.
-ERROR_CATEGORIES = (
-    ("sampler_init_failed", "Failed to initialize samplers: "),  # server-context.cpp, launch_slot_with_task
-    ("json_schema_conversion_failed", '"json_schema": '),  # server-task.cpp, params_from_json_cmpl
-    ("json_schema_and_grammar", "Cannot use both json_schema and grammar"),  # server-common.cpp
-    ("exceeds_context_size", "exceeds the available context size"),  # server-context.cpp
-    ("image_processing_failed", "failed to process image"),  # server-context.cpp
-)
-# llama-grammar.cpp (llama_grammar_accept_token), reached from common_sampler_init's prefill of the generation prompt
-GRAMMAR_PREFILL = "Unexpected empty grammar stack after accepting piece: "
-GENERATION_PROMPT_START = "<|im_start|>"  # both LFM2-VL templates' generation prompt (scene_smoke's chatml_problem)
 VMSTAT = Path("/proc/vmstat")
 
 
@@ -116,14 +105,16 @@ def _sha256(data: bytes) -> str:
 
 
 def case_bodies(jpeg: bytes, model: str) -> dict[str, bytes]:
-    """The three requests: the runtime's chat body, the runtime's scene body without ``json_schema``, and the
-    runtime's scene body as sent (scene_request_body's bytes)."""
-    with_field = scene_request_body(jpeg, model)
-    request = json.loads(with_field)
-    del request["json_schema"]
-    without_field = json.dumps(request).encode("utf-8")  # scene_request_body's own serialisation
+    """The three requests: the runtime's chat body; the runtime's scene body without its constraint member (since
+    part 20 the ``grammar``; the request every accepted profile measured); and part 17's request (bc8fc91), that body
+    with the top-level ``json_schema`` field in the grammar's place, kept as the reproduction of the failure."""
+    request = json.loads(scene_request_body(jpeg, model))
+    without_field = {key: value for key, value in request.items() if key != "grammar"}
+    with_field = {key: (scene_report_schema() if key == "grammar" else value) for key, value in request.items()}
+    with_field = {("json_schema" if key == "grammar" else key): value for key, value in with_field.items()}
     return {"basic": chat_request_body(jpeg, ChatQuestion(QUESTION), CHAT_MAX_TOKENS, model),
-            "response_format": without_field, "json_schema": with_field}
+            "response_format": json.dumps(without_field).encode("utf-8"),  # scene_request_body's serialisation
+            "json_schema": json.dumps(with_field).encode("utf-8")}
 
 
 def body_difference(without_field: bytes, with_field: bytes) -> dict[str, Any]:
@@ -132,25 +123,6 @@ def body_difference(without_field: bytes, with_field: bytes) -> dict[str, Any]:
     differing = sorted(key for key in set(a) | set(b) if a.get(key) != b.get(key))
     return {"differing_members": differing, "only_json_schema": differing == ["json_schema"],
             "json_schema_in_response_format": "json_schema" not in a and "json_schema" in b}
-
-
-def error_facts(payload: Any) -> dict[str, Any]:
-    """The error envelope's fixed type and the message's category, without the message."""
-    envelope = payload.get("error") if isinstance(payload, Mapping) else None
-    envelope = envelope if isinstance(envelope, Mapping) else {}
-    message = envelope.get("message")
-    message = message if isinstance(message, str) else ""
-    kind = envelope.get("type")
-    facts: dict[str, Any] = {
-        "type": kind if kind in ERROR_TYPES else "other", "envelope": bool(envelope),
-        "category": next((name for name, text in ERROR_CATEGORIES if text in message), "other"),
-        "grammar_prefill_rejected": GRAMMAR_PREFILL in message,
-        "message_sha256": _sha256(message.encode("utf-8")), "message_chars": len(message),
-    }
-    if facts["grammar_prefill_rejected"]:
-        piece = message[message.index(GRAMMAR_PREFILL) + len(GRAMMAR_PREFILL):]
-        facts["piece_is_generation_prompt_start"] = piece.startswith(GENERATION_PROMPT_START)
-    return facts
 
 
 def answer_facts(payload: Any, scene: bool) -> dict[str, Any]:
@@ -321,8 +293,11 @@ def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaS
         bodies = case_bodies(jpeg, chosen.request_model)
         result["picture"] = {"jpeg_bytes": len(jpeg), "sha256": _sha256(jpeg)}
         result["bodies"] = {name: {"bytes": len(body), "sha256": _sha256(body)} for name, body in bodies.items()}
-        result["bodies"]["json_schema"]["is_scene_request_body"] = bodies["json_schema"] == scene_request_body(
-            jpeg, chosen.request_model)
+        request = json.loads(scene_request_body(jpeg, chosen.request_model))
+        result["bodies"]["json_schema"]["is_part_17s_request"] = json.loads(bodies["json_schema"]) == {
+            **{key: value for key, value in request.items() if key != "grammar"}, "json_schema": scene_report_schema()}
+        result["bodies"]["response_format"]["is_scene_request_body_without_grammar"] = \
+            json.loads(bodies["response_format"]) == {k: v for k, v in request.items() if k != "grammar"}
         result["scene_bodies_differ"] = body_difference(bodies["response_format"], bodies["json_schema"])
         if not result["scene_bodies_differ"]["only_json_schema"]:
             problems.append("scene_bodies_differ_beyond_the_field")

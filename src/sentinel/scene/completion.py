@@ -6,9 +6,48 @@ A complete response can hit a character bound; that alone is not truncation.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping
+from importlib import resources
 
 from .report import SceneReport, SceneReportError, parse_scene_report
+
+# The report schema's grammar (scene_report.gbnf), as llama-server b8932's own converter produces it from
+# scene_report_schema() (json_schema_to_grammar; byte for byte examples/json_schema_to_grammar.py's output; session 115,
+# part 20). The request sends it as llama.cpp's top-level ``grammar`` field: a request's own grammar is typed USER by
+# the server and never prefilled with the chat template's generation prompt, which is what made the ``json_schema``
+# field fail before decoding on LFM2.5-VL (part 19). Both pins guard the one source: the schema's canonical SHA-256
+# records what the file was generated from, and the file's SHA-256 records the file; scene_report_grammar() refuses
+# when either differs, so a changed report model or a changed file never sends a stale grammar.
+SCENE_REPORT_SCHEMA_SHA256 = "5fe9e4f17c125253c07dbdbe274e1b9992befc1c84738c47560601b5fff070c0"
+SCENE_REPORT_GRAMMAR_SHA256 = "3cadd9f1401204007290c15ac3536756acfa51226dd59fcad2e3c816fdcb2133"
+
+
+def scene_report_schema_sha256() -> str:
+    """SHA-256 of the canonical JSON of scene_report_schema(): what the pinned grammar was generated from."""
+    return hashlib.sha256(json.dumps(scene_report_schema(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def scene_grammar_problem() -> str | None:
+    """None when the packaged grammar is the pinned conversion of the current schema; else a fixed label."""
+    try:
+        text = resources.files(__package__).joinpath("scene_report.gbnf").read_text(encoding="utf-8")
+    except (OSError, TypeError):
+        return "scene_report_grammar_missing"
+    if hashlib.sha256(text.encode("utf-8")).hexdigest() != SCENE_REPORT_GRAMMAR_SHA256:
+        return "scene_report_grammar_changed"
+    if scene_report_schema_sha256() != SCENE_REPORT_SCHEMA_SHA256:
+        return "scene_report_grammar_stale"
+    return None
+
+
+def scene_report_grammar() -> str:
+    """The pinned grammar text for the scene request; RuntimeError when scene_grammar_problem() finds one."""
+    problem = scene_grammar_problem()
+    if problem is not None:
+        raise RuntimeError(f"{problem}: regenerate scene_report.gbnf from scene_report_schema() and pin both hashes")
+    return resources.files(__package__).joinpath("scene_report.gbnf").read_text(encoding="utf-8")
 
 
 class SceneCompletionError(SceneReportError):

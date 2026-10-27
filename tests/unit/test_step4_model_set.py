@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from sentinel.scene import models
+from sentinel.scene.completion import scene_report_grammar
 from sentinel.scene.llama_server import SCENE_REQUEST_SHA256, scene_request_body
 
 RUNNERS = Path(__file__).resolve().parents[2] / "benchmarks" / "runner"
@@ -94,10 +95,10 @@ def test_the_workloads_request_and_fingerprint_are_the_selected_sets(mods, monke
     monkeypatch.setattr(w, "SCENE_REQUEST_MODEL", NEW.request_model)
     w.scene_request(18081, object())
     assert json.loads(sent[0].data)["model"] == "lfm2.5-vl"
-    # session 115, part 18: the whole body is the runtime's for the set, its top-level json_schema included
+    # session 115, parts 18 and 20: the whole body is the runtime's for the set, its top-level grammar included
     assert json.loads(sent[0].data) == json.loads(scene_request_body(b"jpeg", NEW.request_model))
-    assert json.loads(sent[0].data)["json_schema"] == json.loads(sent[0].data)["response_format"]["json_schema"][
-        "schema"]
+    assert json.loads(sent[0].data)["grammar"] == scene_report_grammar()
+    assert "json_schema" not in json.loads(sent[0].data)
     assert w.scene_request_sha256() == NEW.scene_request_sha256  # what the runtime compares a profile with
 
 

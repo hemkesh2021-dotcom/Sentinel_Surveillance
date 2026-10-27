@@ -726,7 +726,7 @@ def test_the_registry_candidate_matches_the_runtime_and_refuses_it_without_both_
     assert accepted_profile_problem(profile.profile_id) is None
     assert profile.llama_flags == PROFILED_FLAGS + PROMPT_CACHE_FLAGS and profile.cache_ram_mib == 0
     assert profile.engine_sha256 == LEGACY_ENGINE_SHA256
-    # session 115, part 17: the profile keeps the fingerprint of the request without the top-level json_schema field
+    # session 115, parts 17 and 20: the profile keeps the fingerprint of the request without the top-level grammar field
     assert profile.scene_request_sha256 != SCENE_REQUEST_SHA256
     missing = SceneOptions(tmp_path / "no-server", tmp_path / "no-model", tmp_path / "no-mmproj")
     config = parse_config({"config_version": 1, "camera": {"id": "cam-1"}})

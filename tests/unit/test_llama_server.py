@@ -16,7 +16,7 @@ from sentinel.jobs import AnalysisJob, JobPurpose, OutcomeKind
 from sentinel.media.clock import FakeClock
 from sentinel.media.frames import FrameStamper
 from sentinel.scene import llama_server as ls
-from sentinel.scene.completion import scene_response_format
+from sentinel.scene.completion import scene_report_grammar, scene_response_format
 from sentinel.scene.llama_server import (
     LlamaSceneRequest,
     LoopbackTransport,
@@ -135,7 +135,7 @@ def test_the_request_is_the_one_s1_and_check_8_measured() -> None:
         "temperature": 0.05,
         "stream": False,
         "response_format": scene_response_format(),
-        "json_schema": scene_response_format()["json_schema"]["schema"],  # session 115, part 17: the same schema twice
+        "grammar": scene_report_grammar(),  # session 115, part 20: the schema's grammar, never prefilled
         "messages": [
             {"role": "system", "content": workload.SCENE_SYSTEM},
             {"role": "user", "content": [
