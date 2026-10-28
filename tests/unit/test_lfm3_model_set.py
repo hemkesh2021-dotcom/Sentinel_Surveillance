@@ -38,7 +38,7 @@ PART_20 = {"lfm2-vl": "6b65cd33", "lfm2.5-vl": "43494f59"}
 def test_the_default_set_is_lfm3_vl_2b_qad_q4_0_with_its_own_projector_build_and_switch() -> None:
     assert models.DEFAULT_SCENE_MODEL_SET == LFM3.key == "lfm3-vl"
     assert models.FALLBACK_SCENE_MODEL_SET == LFM25.key and models.ROLLBACK_SCENE_MODEL_SET == LFM2.key
-    assert LFM3.profiled is False  # D46: no accepted profile; LFM2.5-VL's is never its evidence
+    assert LFM3.profiled is True  # D106: its own profile; LFM2.5-VL's is never its evidence
     assert LFM3.request_model == "lfm3-vl" and LFM3.model_revision == "lfm3-vl-2b-qad-q4_0"
     assert (LFM3.model.name, LFM3.model.bytes, LFM3.model.sha256) == (
         "LFM3-VL-2B-QAD-Q4_0.gguf", 1_049_615_648,

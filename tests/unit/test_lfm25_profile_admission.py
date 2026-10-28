@@ -68,7 +68,7 @@ def test_the_entry_is_the_default_sets_measurement_and_the_rollback_keeps_its_ow
     assert (lfm25.scene_request_sha256, lfm2.scene_request_sha256) == (BEFORE[LFM25], BEFORE[LFM2])
     assert NEW.scene_request_sha256 != BEFORE[LFM25] and OLD.scene_request_sha256 != BEFORE[LFM2]
     assert models.FALLBACK_SCENE_MODEL_SET == NEW.key and models.ROLLBACK_SCENE_MODEL_SET == OLD.key
-    assert models.DEFAULT_SCENE_MODEL_SET == "lfm3-vl" and not models.scene_model_set("lfm3-vl").profiled  # session 116
+    assert models.DEFAULT_SCENE_MODEL_SET == "lfm3-vl" and models.scene_model_set("lfm3-vl").profiled  # D106
     assert NEW.profiled and OLD.profiled
     # the same build, flags, engine and memory policy; only the model set differs
     for field in ("llama_flags", "cache_ram_mib", "scene_interval_s", "engine_sha256", "llama_server",

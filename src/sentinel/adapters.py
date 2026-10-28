@@ -297,6 +297,28 @@ NVRM_MISMATCH_OBSERVATION = (
     "detector load (printk 642.40-642.42 s), and one boot-time \"NVRM rpcRmApiControl_dce: ... Failed RM ctrl call\"; "
     "not OOM or NvMap candidates and not counted by K_kernel; their source and effect were not established (D105)"
 )
+# D106 (2026-10-28): the LFM3-VL profile's boot showed the same unexplained lines as before, now naming the
+# upgraded user-space driver; still not OOM or NvMap candidates and not counted by K_kernel.
+LFM3_NVRM_OBSERVATION = (
+    "unexplained kernel lines on the profiled boot: \"NVRM: API mismatch: the client has the version 580.178.04, but "
+    "this kernel module has the version 540.4.0\" 5 times 17-23 s after boot and 7 times during the workload's "
+    "detector load (printk 420.71-420.74 s), and one boot-time \"NVRM rpcRmApiControl_dce: ... Failed RM ctrl call\"; "
+    "not OOM or NvMap candidates and not counted by K_kernel; their source and effect were not established (D106)"
+)
+# D106: the measured memory sits inside the acceptance targets but close to the guarded runs' pressure stop.
+LFM3_MEMORY_MARGIN_LIMITATION = (
+    "memory within the acceptance targets (steady max 4,771,803,136 B, 228 MB below 5,000,000,000 B; sampled peak "
+    "4,773,228,544 B, 627 MB below 5,400,000,000 B) but 26,771,456 B below the 4,800,000,000 B pressure stop of every "
+    "guarded run (step5_guard, operator_check), with every steady sample within 100 MB of it and the level rising "
+    "2.6 MB/min over the 600 s interval; the peak was a 0.6 s rise of anonymous memory in steady use, and a 0.2 s "
+    "sampler cannot see what happens between samples; not evidence that sentinel run (camera, rules, incidents, "
+    "outbox, status page, chat) stays under that stop, or that a longer run stays flat (D106)"
+)
+LFM3_BUILD_LIMITATION = (
+    "served by an untagged llama.cpp master commit (19cce6919992fdffd92e0ac152caaf1e2b8f254e, build 11938, the LFM3 "
+    "merge) launched with --log-verbosity 4, which criterion C admits since session 116 part 3; another build is "
+    "another profile (D106)"
+)
 _RUN_DIR = re.compile(r"^demo-profile-\d{8}T\d{6}Z$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _BOOT_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -460,6 +482,81 @@ RESOURCE_PROFILES: Mapping[str, ResourceProfile] = MappingProxyType({
               "unavailable in the run's own report (its start marker 0.119 s past the whole-second bound), covered "
               "by D105's run-specific exception; accepted by the maintainer under D105 (2026-10-26) for the bounded "
               "640x480 replay demo profile only: not recognition accuracy, chat quality or chat admission"),
+        memory_policy=CANDIDATE_POLICY,
+        memory_policy_verified=True,
+    ),
+    # D106 (2026-10-28): the D58 candidate procedure measuring scene model set lfm3-vl, run
+    # step4cand-lfm3-20261028T111507Z; every criterion passed in the run's own report, kernel coverage observed by its
+    # own markers (no exception). Values generated from the run's manifest.json, profile.json, step4cand.json and
+    # identity snapshot.
+    "step4cand-lfm3-20261028T111716Z": ResourceProfile(
+        profile_id="step4cand-lfm3-20261028T111716Z",
+        status=ProfileStatus.ACCEPTED,
+        run_dir="demo-profile-20261028T111716Z",
+        commit="595e1df090531ef380d31c542d69ee1740662455",
+        boot_id="c8c02fc5-71d8-467d-82a9-6b42f5ef71a0",
+        llama_flags=_STEP4_LLAMA_FLAGS + ("--log-verbosity", "4"),
+        cache_ram_mib=0,
+        scene_interval_s=4.0,
+        llm=FileFacts("LFM3-VL-2B-QAD-Q4_0.gguf", 1_049_615_648, "2026-10-27T20:12:38+00:00",
+                      "621c455376cb96a20891697deb9975c6fb47dd5ea98ed3ad1f3b7e8f24f0b1e6"),
+        mmproj=FileFacts("mmproj-LFM3-VL-2B-Q8_0.gguf", 203_031_872, "2026-10-27T20:21:37+00:00",
+                      "c5c5b58d544a18da919172d2d0368090ea1a4a351b6feb7f8a326a264a5918ab"),
+        engine_sha256="08370639f961d2c67148c19562718ef80527c7085e88d2d923176180f1b98637",
+        criteria_id=STEP4_CANDIDATE_CRITERIA_ID,
+        criteria_passed=True,  # the run's own report: 15 of 15 criteria pass, eligible, nothing blocking
+        gpu_guard_ok=True,
+        cache_verdict="disabled_verified",
+        steady_status="complete",
+        steady_coverage=0.9993,
+        steady_max_bytes=4_771_803_136,
+        steady_seconds_above_target=0.0,
+        peak_bytes=4_773_228_544,
+        steady_slope_bytes_per_min=2_632_814,
+        unique_fps=15.0,
+        min_window_fps=15.0,
+        schedule_age_p95_ms=60.6,
+        schedule_age_p99_ms=78.9,
+        face_hz=1.0,
+        face_errors=0,
+        scene_attempts=150,
+        scene_valid=150,
+        scene_truncated=0,
+        scene_errors=0,
+        scene_over_deadline=0,
+        kernel_coverage="observed",
+        oom_candidates=0,
+        nvmap_candidates=0,
+        identity_status="verified",
+        replay_clip_verified=True,
+        llama_server=FileFacts("llama-server", 72_456, "2026-10-27T20:33:42+00:00",
+                      "282105a90e18ee6fdfad9b39ef8e63f4392d094b26ab8ca9c83f7c72e3f50157"),
+        llama_libraries=(
+            FileFacts("libggml-base.so.0.27.0", 876_640, "2026-10-27T20:04:14+00:00",
+                      "34e9910c9c9af7bdd8207efdf6273c3e09b81965c8db815c0cd79429a39a3977"),
+            FileFacts("libggml-cpu.so.0.27.0", 1_069_080, "2026-10-27T20:05:02+00:00",
+                      "a3387274ba47ef77b57c9ee6f88bf07953b9ae5d9362634ffd8ea874ff6db8bd"),
+            FileFacts("libggml-cuda.so.0.27.0", 217_029_768, "2026-10-27T20:27:39+00:00",
+                      "b3f75d922be762f53f3e14a1bfb1095d61d8d98994a76f332046875b1f1f35cc"),
+            FileFacts("libggml.so.0.27.0", 78_104, "2026-10-27T20:27:43+00:00",
+                      "342c810bf640a75626f1ddd222ee4f367994553a6cb17572309cba55adfdcabc"),
+            FileFacts("libllama-common.so.0.7.0", 5_883_112, "2026-10-27T20:32:29+00:00",
+                      "70fe9888374b24d0e46eeecde863372af16b6545dee3cc1ac8c8d630c2d080ad"),
+            FileFacts("libllama-server-impl.so", 7_295_640, "2026-10-27T20:33:42+00:00",
+                      "cbe36690beafe99ef9c4bcd37e62960863078cc7374cddd88138bbd0803c4b72"),
+            FileFacts("libllama.so.0.7.0", 4_987_728, "2026-10-27T20:29:28+00:00",
+                      "5f4716e9c69fbbcd8c280ad40b199026b6838b38a0c5fdeb24c820c6a46299fe"),
+            FileFacts("libmtmd.so.0.7.0", 1_980_040, "2026-10-27T20:32:20+00:00",
+                      "32936304c56481bb34c24666faeec8353ab5d6f5855843f672088af783cde861"),
+        ),
+        scene_request_sha256="5a224e7cb04ab2924865a2a626150eba0e1a81ae2730c8cf38139c127af7d5de",
+        limitations=(STARTUP_IDENTITY_LIMITATION, CANDIDATE_RUNTIME_LIMITATION, LFM3_MEMORY_MARGIN_LIMITATION,
+                     LFM3_BUILD_LIMITATION, LFM3_NVRM_OBSERVATION),
+        note=("D58 candidate run step4cand-lfm3-20261028T111507Z (scene model set lfm3-vl, status record session 116 "
+              "part 4): 15 of 15 criteria of step4cand-wtd-plr-combined-cache-off-v2 pass, kernel coverage observed; "
+              "accepted by the maintainer under D106 for the bounded 640x480 replay demo profile only: not "
+              "recognition accuracy, chat quality or chat admission, and with 26.8 MB of observed margin to the "
+              "guarded runs' pressure stop"),
         memory_policy=CANDIDATE_POLICY,
         memory_policy_verified=True,
     ),

@@ -36,6 +36,7 @@ from sentinel.media.clock import FakeClock
 PROVISIONAL = "provisional-demo-20261003T085010Z"
 CANDIDATE_PROFILE = "step4cand-demo-20261007T090339Z"  # accepted under D59
 LFM25_PROFILE = "step4cand-lfm25-20261026T094728Z"  # accepted under D105, with its run-specific kernel exception
+LFM3_PROFILE = "step4cand-lfm3-20261028T111716Z"  # accepted under D106
 REPORT = '{"persons_visible": 0}'
 
 
@@ -294,18 +295,19 @@ def test_a_valid_synthetic_accepted_profile_admits_scene(tmp_path, accepted_scen
 # ---------------------------------------------------------------- the runtime registry
 
 
-def test_the_runtime_registry_holds_no_synthetic_profile_and_admits_only_the_d59_and_d105_profiles() -> None:
+def test_the_runtime_registry_holds_no_synthetic_profile_and_admits_only_the_d59_d105_and_d106_profiles() -> None:
     """Acceptance only by a maintainer-approved commit that adds an entry with step-4 evidence (D46). D59's acceptance
-    commit added the D58 candidate run, D105's the LFM2.5-VL candidate run with its kernel exception; nothing at
-    runtime can add or accept a profile."""
+    commit added the D58 candidate run, D105's the LFM2.5-VL candidate run with its kernel exception, D106's the
+    LFM3-VL candidate run (observed kernel coverage, no exception); nothing at runtime can add or accept a profile."""
     for profile_id, profile in RESOURCE_PROFILES.items():
         assert profile.profile_id == profile_id
         assert "synthetic" not in profile_id and "SYNTHETIC" not in profile.note
         assert re.match(r"^demo-profile-\d{8}T\d{6}Z$", profile.run_dir)
         assert profile.commit != "0" * 40
     assert [pid for pid in RESOURCE_PROFILES if accepted_profile_problem(pid) is None] == [CANDIDATE_PROFILE,
-                                                                                          LFM25_PROFILE]
+                                                                                          LFM25_PROFILE, LFM3_PROFILE]
     assert list(adapters.KERNEL_COVERAGE_EXCEPTIONS) == [LFM25_PROFILE]  # D105's, and no other
+    assert RESOURCE_PROFILES[LFM3_PROFILE].kernel_coverage == "observed"  # D106's needs none
     assert RESOURCE_PROFILES[CANDIDATE_PROFILE].kernel_coverage == "observed"  # D59's needs none
     lfm25 = RESOURCE_PROFILES[LFM25_PROFILE]
     assert lfm25.status is ProfileStatus.ACCEPTED and lfm25.run_dir == "demo-profile-20261026T094728Z"
@@ -328,7 +330,7 @@ def test_the_runtime_registry_holds_no_synthetic_profile_and_admits_only_the_d59
 
 def test_the_provisional_profile_still_admits_the_detector_and_config_validate_explains_scene(capsys) -> None:
     assert known_profile_ids() == adapters.KNOWN_RESOURCE_PROFILES == frozenset({PROVISIONAL, CANDIDATE_PROFILE,
-                                                                                 LFM25_PROFILE})
+                                                                                 LFM25_PROFILE, LFM3_PROFILE})
     detector = {"adapter_id": "legacy-yolov8n-bytetrack", "contract_version": 1, "implementation_revision": "1",
                 "enabled": True, "input_kinds": ["frame"], "output_kinds": ["person.track"],
                 "resource_profile_id": PROVISIONAL, "timeout_ms": 1000}

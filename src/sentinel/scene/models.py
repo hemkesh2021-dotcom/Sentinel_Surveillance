@@ -19,8 +19,8 @@ placement lines readiness requires (``server_flags``, session 116, part 2). A se
   other sets does not know it. The model thinks by default (``<think>`` opens every answer), so every request of this
   set carries ``chat_template_kwargs: {"enable_thinking": false}``, the checkpoint's own template switch (its "no
   think" mode): the template then prefills an empty thinking block and the sampler pays for no reasoning tokens on the
-  real-time path. No accepted profile has measured this set, so ``--scene`` refuses it until a step-4 measurement is
-  accepted; LFM2.5-VL's profile is never evidence for it.
+  real-time path. The maintainer accepted its own measurement as resource profile step4cand-lfm3-20261028T111716Z
+  (D106, 2026-10-28) for the configuration it measured; LFM2.5-VL's profile is never evidence for it.
 - ``lfm2.5-vl``: the explicit fallback. LiquidAI/LFM2.5-VL-1.6B-GGUF at a pinned revision, Q4_0 with its own Q8_0
   projector, served by b8932. The maintainer accepted its measurement as resource profile
   step4cand-lfm25-20261026T094728Z (D105, 2026-10-26); the request has changed since (the grammar field, session 115,
@@ -118,7 +118,7 @@ class SceneModelSet:
 
 ROLLBACK_SCENE_MODEL_SET = "lfm2-vl"  # the accepted profile step4cand-demo-20261007T090339Z's model (D59)
 FALLBACK_SCENE_MODEL_SET = "lfm2.5-vl"  # the explicit fallback (session 116); never selected automatically
-DEFAULT_SCENE_MODEL_SET = "lfm3-vl"  # session 116: the migration; no accepted profile yet (D46 refuses --scene with it)
+DEFAULT_SCENE_MODEL_SET = "lfm3-vl"  # session 116: the migration; profiled by step4cand-lfm3-20261028T111716Z (D106)
 LFM25_REPOSITORY = "LiquidAI/LFM2.5-VL-1.6B-GGUF"
 LFM25_REVISION = "36fc16bc95133424921bcc3da009e83b2f23ffb5"  # the Hub's main on 2026-10-26; immutable
 LFM3_REPOSITORY = "LiquidAI/LFM3-VL-2B-GGUF"
@@ -162,7 +162,7 @@ SCENE_MODEL_SETS: Mapping[str, SceneModelSet] = MappingProxyType({
         mmproj=FileFacts("mmproj-LFM3-VL-2B-Q8_0.gguf", 203_031_872, "2026-10-27T20:21:37+00:00",
                          "c5c5b58d544a18da919172d2d0368090ea1a4a351b6feb7f8a326a264a5918ab"),
         source=f"{LFM3_REPOSITORY} at {LFM3_REVISION}",
-        profiled=False,  # D46: no accepted resource profile measures this set yet; --scene refuses it until one does
+        profiled=True,  # D106: resource profile step4cand-lfm3-20261028T111716Z measured these files and this request
         llama_server=LLAMA_SERVER_LFM3,
         llama_build=f"master {LFM3_LLAMA_CPP_COMMIT[:9]} (the LFM3 merge)",
         chat_template_kwargs=LFM3_TEMPLATE_KWARGS,
