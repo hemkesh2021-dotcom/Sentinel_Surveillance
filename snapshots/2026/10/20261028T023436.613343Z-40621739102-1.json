@@ -1,0 +1,235 @@
+{
+  "clones": {
+    "clones": [
+      {
+        "count": 0,
+        "timestamp": "2026-10-13T00:00:00Z",
+        "uniques": 0
+      },
+      {
+        "count": 54,
+        "timestamp": "2026-10-14T00:00:00Z",
+        "uniques": 22
+      },
+      {
+        "count": 16,
+        "timestamp": "2026-10-15T00:00:00Z",
+        "uniques": 14
+      },
+      {
+        "count": 1,
+        "timestamp": "2026-10-16T00:00:00Z",
+        "uniques": 1
+      },
+      {
+        "count": 1,
+        "timestamp": "2026-10-17T00:00:00Z",
+        "uniques": 1
+      },
+      {
+        "count": 3,
+        "timestamp": "2026-10-18T00:00:00Z",
+        "uniques": 2
+      },
+      {
+        "count": 18,
+        "timestamp": "2026-10-19T00:00:00Z",
+        "uniques": 9
+      },
+      {
+        "count": 19,
+        "timestamp": "2026-10-20T00:00:00Z",
+        "uniques": 14
+      },
+      {
+        "count": 113,
+        "timestamp": "2026-10-21T00:00:00Z",
+        "uniques": 18
+      },
+      {
+        "count": 17,
+        "timestamp": "2026-10-22T00:00:00Z",
+        "uniques": 12
+      },
+      {
+        "count": 7,
+        "timestamp": "2026-10-23T00:00:00Z",
+        "uniques": 5
+      },
+      {
+        "count": 6,
+        "timestamp": "2026-10-24T00:00:00Z",
+        "uniques": 6
+      },
+      {
+        "count": 16,
+        "timestamp": "2026-10-25T00:00:00Z",
+        "uniques": 10
+      },
+      {
+        "count": 18,
+        "timestamp": "2026-10-26T00:00:00Z",
+        "uniques": 14
+      }
+    ],
+    "count": 289,
+    "uniques": 118
+  },
+  "collected_at": "2026-10-28T02:34:36.613343Z",
+  "paths": [
+    {
+      "count": 15,
+      "path": "/hemkesh2021-dotcom/Sentinel_Surveillance",
+      "title": "Overview",
+      "uniques": 5
+    },
+    {
+      "count": 10,
+      "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/graphs/traffic",
+      "title": "/graphs/traffic",
+      "uniques": 1
+    },
+    {
+      "count": 8,
+      "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/pulse",
+      "title": "/pulse",
+      "uniques": 1
+    },
+    {
+      "count": 6,
+      "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/stargazers",
+      "title": "/stargazers",
+      "uniques": 1
+    },
+    {
+      "count": 3,
+      "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.1",
+      "title": "/releases/tag/v2.0.0-alpha.1",
+      "uniques": 2
+    },
+    {
+      "count": 3,
+      "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/issues",
+      "title": "/issues",
+      "uniques": 1
+    },
+    {
+      "count": 3,
+      "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/pulls",
+      "title": "/pulls",
+      "uniques": 1
+    },
+    {
+      "count": 3,
+      "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/releases",
+      "title": "/releases",
+      "uniques": 1
+    },
+    {
+      "count": 3,
+      "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.2",
+      "title": "/releases/tag/v2.0.0-alpha.2",
+      "uniques": 1
+    },
+    {
+      "count": 3,
+      "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/tags",
+      "title": "/tags",
+      "uniques": 1
+    }
+  ],
+  "referrers": [
+    {
+      "count": 15,
+      "referrer": "github.com",
+      "uniques": 3
+    },
+    {
+      "count": 1,
+      "referrer": "Google",
+      "uniques": 1
+    },
+    {
+      "count": 1,
+      "referrer": "forums.developer.nvidia.com",
+      "uniques": 1
+    }
+  ],
+  "repository": "hemkesh2021-dotcom/Sentinel_Surveillance",
+  "views": {
+    "count": 82,
+    "uniques": 7,
+    "views": [
+      {
+        "count": 14,
+        "timestamp": "2026-10-13T00:00:00Z",
+        "uniques": 2
+      },
+      {
+        "count": 5,
+        "timestamp": "2026-10-14T00:00:00Z",
+        "uniques": 1
+      },
+      {
+        "count": 14,
+        "timestamp": "2026-10-15T00:00:00Z",
+        "uniques": 3
+      },
+      {
+        "count": 4,
+        "timestamp": "2026-10-16T00:00:00Z",
+        "uniques": 2
+      },
+      {
+        "count": 0,
+        "timestamp": "2026-10-17T00:00:00Z",
+        "uniques": 0
+      },
+      {
+        "count": 3,
+        "timestamp": "2026-10-18T00:00:00Z",
+        "uniques": 2
+      },
+      {
+        "count": 0,
+        "timestamp": "2026-10-19T00:00:00Z",
+        "uniques": 0
+      },
+      {
+        "count": 5,
+        "timestamp": "2026-10-20T00:00:00Z",
+        "uniques": 1
+      },
+      {
+        "count": 1,
+        "timestamp": "2026-10-21T00:00:00Z",
+        "uniques": 1
+      },
+      {
+        "count": 0,
+        "timestamp": "2026-10-22T00:00:00Z",
+        "uniques": 0
+      },
+      {
+        "count": 0,
+        "timestamp": "2026-10-23T00:00:00Z",
+        "uniques": 0
+      },
+      {
+        "count": 7,
+        "timestamp": "2026-10-24T00:00:00Z",
+        "uniques": 2
+      },
+      {
+        "count": 16,
+        "timestamp": "2026-10-25T00:00:00Z",
+        "uniques": 1
+      },
+      {
+        "count": 13,
+        "timestamp": "2026-10-26T00:00:00Z",
+        "uniques": 1
+      }
+    ]
+  }
+}
