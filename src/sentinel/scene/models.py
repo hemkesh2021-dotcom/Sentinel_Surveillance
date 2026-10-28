@@ -23,8 +23,8 @@ default warm-up reserves far more than the images sent need (part 7). A set is n
   real-time path. Since session 116, part 7 it is launched with ``--image-max-tokens 256`` (LFM3_IMAGE_MAX_TOKENS):
   the images sent are unchanged and the vision warm-up is 512x512 instead of 1,472x1,472. That configuration is not
   measured: the maintainer's acceptance of step4cand-lfm3-20261028T111716Z (D106, 2026-10-28) covers the launch
-  without the cap only, so admission refuses the set (D46) until a step-4 run of the capped launch is accepted;
-  LFM2.5-VL's profile is never evidence for it.
+  without the cap only. The maintainer accepted its own measurement, step4cand-lfm3cap-20261028T174508Z, under D107
+  (2026-10-29) for the capped launch; LFM2.5-VL's profile is never evidence for it.
 - ``lfm2.5-vl``: the explicit fallback. LiquidAI/LFM2.5-VL-1.6B-GGUF at a pinned revision, Q4_0 with its own Q8_0
   projector, served by b8932. The maintainer accepted its measurement as resource profile
   step4cand-lfm25-20261026T094728Z (D105, 2026-10-26); the request has changed since (the grammar field, session 115,
@@ -133,7 +133,7 @@ class SceneModelSet:
 
 ROLLBACK_SCENE_MODEL_SET = "lfm2-vl"  # the accepted profile step4cand-demo-20261007T090339Z's model (D59)
 FALLBACK_SCENE_MODEL_SET = "lfm2.5-vl"  # the explicit fallback (session 116); never selected automatically
-DEFAULT_SCENE_MODEL_SET = "lfm3-vl"  # session 116: the migration; its capped launch (part 7) is not yet profiled
+DEFAULT_SCENE_MODEL_SET = "lfm3-vl"  # session 116: the migration; capped launch profiled by D107 (2026-10-29)
 LFM25_REPOSITORY = "LiquidAI/LFM2.5-VL-1.6B-GGUF"
 LFM25_REVISION = "36fc16bc95133424921bcc3da009e83b2f23ffb5"  # the Hub's main on 2026-10-26; immutable
 LFM3_REPOSITORY = "LiquidAI/LFM3-VL-2B-GGUF"
@@ -178,8 +178,8 @@ SCENE_MODEL_SETS: Mapping[str, SceneModelSet] = MappingProxyType({
                          "c5c5b58d544a18da919172d2d0368090ea1a4a351b6feb7f8a326a264a5918ab"),
         source=f"{LFM3_REPOSITORY} at {LFM3_REVISION}",
         # D106's profile step4cand-lfm3-20261028T111716Z measured these files and this request launched without the
-        # image-token cap; the capped launch below is a configuration no accepted profile has measured (part 7).
-        profiled=False,
+        # image-token cap; D107 (2026-10-29): step4cand-lfm3cap-20261028T174508Z measured them with the cap, as below.
+        profiled=True,
         llama_server=LLAMA_SERVER_LFM3,
         llama_build=f"master {LFM3_LLAMA_CPP_COMMIT[:9]} (the LFM3 merge)",
         chat_template_kwargs=LFM3_TEMPLATE_KWARGS,

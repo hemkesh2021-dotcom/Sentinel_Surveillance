@@ -83,7 +83,7 @@ def test_the_entry_is_the_runs_record_and_passes_the_registry_rules() -> None:
                        LFM3_BUILD_LIMITATION, LFM3_NVRM_OBSERVATION):
         assert limitation in PROFILE.limitations
     assert "26,771,456 B" in LFM3_MEMORY_MARGIN_LIMITATION and "580.178.04" in LFM3_NVRM_OBSERVATION
-    assert LFM3.profiled is False and models.DEFAULT_SCENE_MODEL_SET == LFM3.key  # part 7: the capped launch
+    assert LFM3.profiled is True and models.DEFAULT_SCENE_MODEL_SET == LFM3.key  # D107 profiled the capped launch
 
 
 def test_the_other_profiles_are_unchanged_and_never_admit_lfm3() -> None:
@@ -111,9 +111,10 @@ def test_a_profile_without_the_log_level_does_not_admit_the_set(measured_launch,
 
 
 def test_the_capped_default_is_refused_and_d106_never_matches_its_launch() -> None:
-    """Part 7: the registry's lfm3-vl (capped) is refused with the D46 reason, and D106's flags are not its launch."""
+    """Part 7 and D107: a manifest naming D106 never admits the registry's lfm3-vl (capped): D106's flags are not its
+    launch."""
     problem, revision = scene_admission(config(), options(), policy=CANDIDATE_POLICY)
-    assert revision is None and "scene model set lfm3-vl has no accepted resource profile (D46)" in problem, problem
+    assert revision is None and "measured llama-server flags" in problem, problem
     mismatch = profile_mismatch(PROFILE, config(), options(), policy=CANDIDATE_POLICY)
     assert mismatch is not None and "measured llama-server flags" in mismatch and "--image-max-tokens 256" in mismatch
 

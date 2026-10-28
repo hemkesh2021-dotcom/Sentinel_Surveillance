@@ -172,11 +172,12 @@ def test_a_profile_matches_the_capped_launch_only_if_it_measured_exactly_its_fla
     assert D106.llama_flags != CAPPED_FLAGS
 
 
-def test_no_registry_profile_admits_the_capped_launch_so_admission_refuses_it(tmp_path) -> None:
-    for profile_id, profile in RESOURCE_PROFILES.items():
-        assert tuple(profile.llama_flags) != CAPPED_FLAGS, profile_id
-    assert LFM3.profiled is False
-    for profile_id in RESOURCE_PROFILES:
+def test_only_d107s_profile_measured_the_capped_launch_and_every_other_refuses_it(tmp_path) -> None:
+    """D107 (2026-10-29): one registry profile, step4cand-lfm3cap-20261028T174508Z, measured exactly the capped launch; every
+    other is refused for the set (its flags, its request or its files), D106's included."""
+    assert [pid for pid, p in RESOURCE_PROFILES.items() if tuple(p.llama_flags) == CAPPED_FLAGS] == ["step4cand-lfm3cap-20261028T174508Z"]
+    assert LFM3.profiled is True
+    for profile_id in (pid for pid in RESOURCE_PROFILES if pid != "step4cand-lfm3cap-20261028T174508Z"):
         problem, revision = scene_admission(config(profile_id), options(tmp_path), policy=CANDIDATE_POLICY)
         assert problem is not None and revision is None, profile_id
 
