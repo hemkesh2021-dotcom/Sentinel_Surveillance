@@ -50,7 +50,7 @@ import http.client
 import json
 import socket
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -108,13 +108,28 @@ def request_fingerprint(
     return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def llama_server_command(binary: Path, model: Path, mmproj: Path, port: int) -> list[str]:
-    """The demo scene server's argv: loopback only, profiled flags, prompt cache off."""
+def log_verbosity_flags(verbosity: int | None) -> tuple[str, ...]:
+    """The launch flags that set a build's log verbosity (session 116), or none.
+
+    Builds after llama.cpp 67b2b7f2f ("logs : reduce", 2026-05-14) print the library's INFO lines only from
+    verbosity 4: the placement lines readiness requires (D27: ``offloaded N/N layers to GPU``, ``CLIP using
+    CUDA0``) are hidden at their default 3. b8932 predates that change and needs none."""
+    if verbosity is None:
+        return ()
+    if isinstance(verbosity, bool) or not isinstance(verbosity, int) or not 0 <= verbosity <= 5:
+        raise ValueError("log verbosity must be an integer from 0 to 5")
+    return ("--log-verbosity", str(verbosity))
+
+
+def llama_server_command(binary: Path, model: Path, mmproj: Path, port: int,
+                         extra_flags: Sequence[str] = ()) -> list[str]:
+    """The demo scene server's argv: loopback only, profiled flags, prompt cache off, then the selected set's own
+    launch flags (``SceneModelSet.server_flags``: its log verbosity, session 116), which nothing else can set."""
     if not 1024 <= port <= 65535:
         raise ValueError("port must be between 1024 and 65535")
     return [
         str(binary), "--model", str(model), "--mmproj", str(mmproj),
-        "--host", LOOPBACK_HOST, "--port", str(port), *PROFILED_FLAGS, *PROMPT_CACHE_FLAGS,
+        "--host", LOOPBACK_HOST, "--port", str(port), *PROFILED_FLAGS, *PROMPT_CACHE_FLAGS, *extra_flags,
     ]
 
 

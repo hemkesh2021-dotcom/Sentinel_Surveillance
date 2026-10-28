@@ -157,8 +157,12 @@ class LlamaServerProcess:
         monotonic: Callable[[], float] = time.monotonic,
         require_system_thp: bool = False,
         thp_enabled: Callable[[int | str], int | None] = read_thp_enabled,
+        extra_flags: Sequence[str] = (),
     ) -> None:
         self._files = {"llama_server_binary": binary, "scene_model": model, "scene_mmproj": mmproj}
+        # the selected set's own launch flags after the profiled ones (SceneModelSet.server_flags: its build's log
+        # verbosity, session 116); the loopback check below still sees the whole argv
+        self._extra_flags = tuple(extra_flags)
         self._port = port
         self._environ = os.environ if environ is None else environ
         self._command = command
@@ -218,7 +222,7 @@ class LlamaServerProcess:
         for label, path in self._files.items():
             if not Path(path).is_file():
                 raise ServerRefused(f"{label}_missing")
-        argv = self._command(*self._files.values(), self._port)
+        argv = [*self._command(*self._files.values(), self._port), *self._extra_flags]
         problem = loopback_problem(argv)
         if problem is not None:
             raise ServerRefused(problem)

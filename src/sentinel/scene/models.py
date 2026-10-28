@@ -6,9 +6,11 @@ with one model and answer questions with another. A set pins its model and that 
 model's), the llama.cpp build that serves them, the name every scene and chat request carries and the chat-template
 arguments the requests send (both part of the request fingerprint, D47), the ``model_revision`` its adapter manifest
 must declare (it reaches every scene evidence record through the producer revision), and where the files came from.
-The launch flags, the request shapes, the sampling values, the token caps, the deadlines and the memory guards are
-the same for every set. A set is never chosen for another: ``--scene-model-set`` selects one, and a set that no
-accepted resource profile measured is refused by admission (D46), not replaced.
+The profiled launch flags, the request shapes, the sampling values, the token caps, the deadlines and the memory
+guards are the same for every set; a set adds only its build's log verbosity when that build's default hides the
+placement lines readiness requires (``server_flags``, session 116, part 2). A set is never chosen for another:
+``--scene-model-set`` selects one, and a set that no accepted resource profile measured is refused by admission
+(D46), not replaced.
 
 - ``lfm3-vl`` (the default since session 116): LiquidAI/LFM3-VL-2B-GGUF at a pinned revision, the Quantization-Aware
   Distillation Q4_0 checkpoint with its own Q8_0 projector. The ``lfm3_vl`` architecture (24-layer LFM3 language
@@ -49,6 +51,7 @@ from .llama_server import (
     SCENE_PROMPT,
     SCENE_SYSTEM,
     TEMPERATURE,
+    log_verbosity_flags,
     request_fingerprint,
 )
 
@@ -64,6 +67,12 @@ LFM3_LLAMA_CPP_COMMIT = "19cce6919992fdffd92e0ac152caaf1e2b8f254e"  # ggml-org/l
 # opens a <think> block; false prefills an empty one). Sent in every request of the set, as llama-server's
 # chat_template_kwargs; a server-side --reasoning flag would do the same but would change the profiled flags.
 LFM3_TEMPLATE_KWARGS: Mapping[str, object] = MappingProxyType({"enable_thinking": False})
+# The LFM3 build's log verbosity (session 116, part 2). Since llama.cpp 67b2b7f2f ("logs : reduce", 2026-05-14) the
+# library's INFO lines are TRACE (4) and the default verbosity is 3, so the build does not print the two placement
+# lines readiness requires (D27) nor the buffer-size and prompt-cache lines the profiler reads; lfm3check-
+# 20261028T101443Z was refused "not_fully_offloaded" with neither line seen. Verbosity 4 adds only metadata lines
+# (lengths, timings, paths); the runtime keeps nothing of the output but the markers, and step 4 only fixed lines.
+LFM3_LOG_VERBOSITY = 4
 
 
 @dataclass(frozen=True)
@@ -81,6 +90,12 @@ class SceneModelSet:
     llama_server: Path = LLAMA_SERVER_B8932  # the llama.cpp build that serves the set (its own directory's libraries)
     llama_build: str = "b8932 (98dc1418e)"  # that build, for the record
     chat_template_kwargs: Mapping[str, object] | None = None  # sent in every request of the set, when not None
+    log_verbosity: int | None = None  # the build's --log-verbosity, when its default hides the placement lines
+
+    @property
+    def server_flags(self) -> tuple[str, ...]:
+        """The set's own launch flags after the profiled ones: its log verbosity, if any (session 116, part 2)."""
+        return log_verbosity_flags(self.log_verbosity)
 
     @property
     def model_path(self) -> Path:
@@ -151,6 +166,7 @@ SCENE_MODEL_SETS: Mapping[str, SceneModelSet] = MappingProxyType({
         llama_server=LLAMA_SERVER_LFM3,
         llama_build=f"master {LFM3_LLAMA_CPP_COMMIT[:9]} (the LFM3 merge)",
         chat_template_kwargs=LFM3_TEMPLATE_KWARGS,
+        log_verbosity=LFM3_LOG_VERBOSITY,
     ),
 })
 

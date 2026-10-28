@@ -805,9 +805,13 @@ def preconditions(args: argparse.Namespace) -> tuple[list[str], dict[str, object
 
 
 def llama_flags(args: argparse.Namespace) -> list[str]:
-    """The tracked flags, plus --cache-ram only when it was given (None keeps the server default)."""
+    """The tracked flags, plus --cache-ram only when it was given (None keeps the server default), plus
+    --log-verbosity only when it was given (session 116: a build whose default hides the placement, buffer-size and
+    prompt-cache lines this script reads; the runtime adds the same for that set)."""
     cache_ram = getattr(args, "llama_cache_ram", None)
-    return LLAMA_FLAGS + ([] if cache_ram is None else ["--cache-ram", str(cache_ram)])
+    verbosity = getattr(args, "llama_log_verbosity", None)
+    return (LLAMA_FLAGS + ([] if cache_ram is None else ["--cache-ram", str(cache_ram)])
+            + ([] if verbosity is None else ["--log-verbosity", str(verbosity)]))
 
 
 def provenance(args: argparse.Namespace, context: dict[str, object], run_id: str) -> dict[str, object]:
@@ -3308,6 +3312,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help="S1: llama-server and scene requests only, one distinct synthetic image per request")
     parser.add_argument("--llama-cache-ram", type=cache_ram_mib, metavar="MIB",
                         help="pass --cache-ram MIB to llama-server (0 disables its prompt cache); default: not passed")
+    parser.add_argument("--llama-log-verbosity", type=int, choices=range(0, 6), metavar="N",
+                        help="session 116: pass --log-verbosity N to llama-server (the selected set's, when its build "
+                             "hides the lines this script reads at its default); default: not passed")
     parser.add_argument("--mr1-release-check", action="store_true",
                         help="MR1 (opt-in): after each model's load and settle, release that model's files from the page "
                              "cache (posix_fadvise DONTNEED, no root) with memory samples around it, then bounded smoke "

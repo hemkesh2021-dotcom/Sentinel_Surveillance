@@ -227,8 +227,10 @@ class FakeServerProcess:
     def __init__(self, fake: FakeLlamaServer) -> None:
         self.fake, self._state = fake, ServerState.NOT_STARTED
 
-    def __call__(self, binary: Any, model: Any, mmproj: Any, port: int) -> "FakeServerProcess":
+    def __call__(self, binary: Any, model: Any, mmproj: Any, port: int,
+                 extra_flags: tuple[str, ...] = ()) -> "FakeServerProcess":
         assert port == self.fake.port
+        self.extra_flags = tuple(extra_flags)  # the set's own launch flags, as LlamaServerProcess takes them
         return self
 
     def start(self, ready_timeout_s: float) -> ServerStatus:

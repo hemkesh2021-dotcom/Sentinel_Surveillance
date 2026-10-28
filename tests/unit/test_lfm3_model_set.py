@@ -56,6 +56,7 @@ def test_the_default_set_is_lfm3_vl_2b_qad_q4_0_with_its_own_projector_build_and
     assert LFM3.llama_build.startswith("master 19cce6919") and LFM25.llama_build.startswith("b8932")
     assert dict(LFM3.chat_template_kwargs) == NO_THINK and LFM25.chat_template_kwargs is None
     assert LFM2.chat_template_kwargs is None
+    assert (LFM3.log_verbosity, LFM25.log_verbosity, LFM2.log_verbosity) == (4, None, None)
 
 
 def test_every_request_of_the_set_carries_the_no_think_switch_and_nothing_else_changes() -> None:
@@ -154,7 +155,33 @@ def test_the_step4_workload_sends_the_runtimes_request_for_the_set(monkeypatch) 
     assert w.scene_request_sha256() == LFM3.scene_request_sha256
     argv = op.scene_model_args("lfm3-vl")
     assert argv[:2] == ["--llama", str(LFM3.llama_server)]
-    assert argv[-2:] == ["--scene-template-kwargs", '{"enable_thinking": false}']
-    assert json.loads(argv[-1]) == NO_THINK
+    assert argv[-4:-2] == ["--scene-template-kwargs", '{"enable_thinking": false}']
+    assert json.loads(argv[-3]) == NO_THINK
+    assert argv[-2:] == ["--llama-log-verbosity", "4"]  # session 116, part 2: the build hides its markers at 3
     assert "--scene-template-kwargs" not in op.scene_model_args("lfm2.5-vl")
+    assert "--llama-log-verbosity" not in op.scene_model_args("lfm2.5-vl")
     assert op.SCENE_MODEL_SET_KEYS == tuple(sorted(models.SCENE_MODEL_SETS))
+
+
+def test_a_profile_of_the_set_must_have_measured_its_launch_flags(tmp_path) -> None:
+    """Session 116, part 2: the set's log-verbosity flags are part of what a profile must have measured."""
+    import dataclasses
+
+    from sentinel.adapters import RESOURCE_PROFILES
+    from sentinel.config import parse_config
+    from sentinel.demo_runtime import SceneOptions, profile_mismatch
+    from sentinel.memory_policy import CANDIDATE_POLICY
+    from sentinel.scene.llama_server import PROFILED_FLAGS, PROMPT_CACHE_FLAGS
+
+    config = parse_config({"config_version": 1, "camera": {"id": "cam-1"}})
+    accepted = RESOURCE_PROFILES["step4cand-lfm25-20261026T094728Z"]
+    measured = dataclasses.replace(accepted, scene_request_sha256=LFM3.scene_request_sha256,
+                                   llama_flags=PROFILED_FLAGS + PROMPT_CACHE_FLAGS + LFM3.server_flags)
+    without = dataclasses.replace(measured, llama_flags=PROFILED_FLAGS + PROMPT_CACHE_FLAGS)
+    options = SceneOptions(tmp_path / "no-server", tmp_path / "no-model", tmp_path / "no-mmproj", model_set=LFM3.key)
+    assert "measured llama-server flags" in profile_mismatch(without, config, options, policy=CANDIDATE_POLICY)
+    assert "measured llama-server flags" not in (profile_mismatch(measured, config, options, policy=CANDIDATE_POLICY)
+                                                 or "")
+    fallback = SceneOptions(tmp_path / "no-server", tmp_path / "no-model", tmp_path / "no-mmproj", model_set=LFM25.key)
+    assert "measured llama-server flags" not in (profile_mismatch(accepted, config, fallback, policy=CANDIDATE_POLICY)
+                                                 or "")  # the other sets' expected flags are unchanged

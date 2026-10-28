@@ -83,7 +83,8 @@ def _scene_server(options: SceneOptions, port: int) -> Any:
     from .scene.server import LlamaServerProcess
 
     return LlamaServerProcess(options.binary, options.model, options.mmproj, port,
-                              require_system_thp=options.require_system_thp)
+                              require_system_thp=options.require_system_thp,
+                              extra_flags=scene_model_set(options.model_set).server_flags)
 
 
 def _face_backend(weights_dir: Path | None) -> Any:

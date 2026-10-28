@@ -702,6 +702,8 @@ def scene_model_args(model_set: str | None) -> list[str]:
             "--scene-request-model", chosen.request_model]
     if chosen.chat_template_kwargs is not None:
         argv += ["--scene-template-kwargs", json.dumps(dict(chosen.chat_template_kwargs), sort_keys=True)]
+    if chosen.log_verbosity is not None:  # the set's build hides its placement lines at its default (session 116)
+        argv += ["--llama-log-verbosity", str(chosen.log_verbosity)]
     return argv
 
 

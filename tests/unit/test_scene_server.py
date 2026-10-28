@@ -244,3 +244,113 @@ def test_libraries_from_outside_the_checked_build_are_refused(files, mapped) -> 
     status = server(files, FakePopen(fake), libraries=mapped).start(30.0)
     assert (status.state, status.problem) == (ServerState.FAILED, "libraries_not_profiled")
     assert fake.signals == ["TERM"]
+
+
+# ---------------------------------------------------------------- session 116, part 2: the LFM3 build's log verbosity
+#
+# Representative output of the pinned LFM3 build (llama.cpp 19cce69), built from its format strings: since 67b2b7f2f
+# ("logs : reduce") the library's INFO lines are TRACE (4), so at the default verbosity 3 the server prints only its
+# own INFO lines and neither placement marker; lfm3check-20261028T101443Z was refused exactly so (layers None, vision
+# False). At verbosity 4 the two markers appear with the usual text.
+
+PINNED_DEFAULT_OUTPUT = [
+    b"log_info: verbosity = 3 (adjust with the `-lv N` CLI arg)\n",
+    b"device_info:\n",
+    b"  - CUDA0   : Orin (7620 MiB, 6500 MiB free)\n",
+    b"main: server is listening on http://127.0.0.1:18081\n",
+]
+PINNED_VERBOSE_OUTPUT = [
+    b"log_info: verbosity = 4 (adjust with the `-lv N` CLI arg)\n",
+    b"device_info:\n",
+    b"  - CUDA0   : Orin (7620 MiB, 6500 MiB free)\n",
+    b"srv          load_model: local path '/synthetic/model.gguf'\n",
+    b"load_tensors: offloaded 25/25 layers to GPU\n",
+    b"clip_ctx: CLIP using CUDA0 backend\n",
+    b"srv          load_model: [mtmd] estimated worst-case memory usage of mmproj is 210.00 MiB (took 3.10 ms)\n",
+    b"main: server is listening on http://127.0.0.1:18081\n",
+]
+
+
+def test_the_pinned_builds_default_output_lacks_both_markers_and_is_still_refused(files) -> None:
+    """Missing evidence is not readiness: the run's refusal is kept for this output."""
+    process_fake = FakeProcess(PINNED_DEFAULT_OUTPUT)
+    status = server(files, FakePopen(process_fake)).start(30.0)
+    assert (status.state, status.problem, status.layers, status.vision_on_gpu) == (
+        ServerState.FAILED, "not_fully_offloaded", None, False)
+    assert process_fake.signals == ["TERM"]
+
+
+def test_the_pinned_builds_verbose_output_is_read_as_full_gpu_placement(files) -> None:
+    status = server(files, FakePopen(FakeProcess(PINNED_VERBOSE_OUTPUT))).start(30.0)
+    assert (status.state, status.problem, status.layers, status.vision_on_gpu) == (ServerState.READY, None, "25/25", True)
+
+
+@pytest.mark.parametrize(("replace", "label"), [
+    ((b"load_tensors: offloaded 25/25 layers to GPU\n", b"load_tensors: offloaded 20/25 layers to GPU\n"),
+     "not_fully_offloaded"),
+    ((b"load_tensors: offloaded 25/25 layers to GPU\n", b"load_tensors: offloaded 0/25 layers to GPU\n"),
+     "not_fully_offloaded"),
+    ((b"clip_ctx: CLIP using CUDA0 backend\n", b"clip_ctx: CLIP using CPU backend\n"), "vision_encoder_not_on_gpu"),
+    ((b"clip_ctx: CLIP using CUDA0 backend\n", b""), "vision_encoder_not_on_gpu"),
+])
+def test_partial_or_cpu_placement_in_the_verbose_output_is_still_refused(files, replace, label) -> None:
+    old, new = replace
+    lines = [new if line == old else line for line in PINNED_VERBOSE_OUTPUT]
+    process_fake = FakeProcess(lines)
+    status = server(files, FakePopen(process_fake)).start(30.0)
+    assert (status.state, status.problem) == (ServerState.FAILED, label)
+    assert process_fake.signals == ["TERM"]
+
+
+def test_the_sets_own_launch_flags_follow_the_profiled_ones_and_keep_loopback(files) -> None:
+    from sentinel.scene.models import SCENE_MODEL_SETS
+
+    lfm3 = SCENE_MODEL_SETS["lfm3-vl"]
+    assert lfm3.server_flags == ("--log-verbosity", "4")
+    assert SCENE_MODEL_SETS["lfm2.5-vl"].server_flags == () == SCENE_MODEL_SETS["lfm2-vl"].server_flags
+    popen = FakePopen(FakeProcess(PINNED_VERBOSE_OUTPUT))
+    process = LlamaServerProcess(
+        files["llama-server"], files["model.gguf"], files["mmproj.gguf"], 18081, environ={"PATH": "/usr/bin"},
+        popen=popen, health=lambda port: True, in_use=lambda port: False, libcuda=lambda pid: [L4T],
+        libraries=lambda pid: [str(files["llama-server"].parent / "libllama.so.0.7.0")], sleep=lambda s: None,
+        extra_flags=lfm3.server_flags)
+    assert process.start(30.0).state is ServerState.READY
+    (argv, _), = popen.calls
+    assert argv[-2:] == ["--log-verbosity", "4"] and loopback_problem(argv) is None
+    assert argv[:-2] == llama_server_command(files["llama-server"], files["model.gguf"], files["mmproj.gguf"], 18081)
+    assert llama_server_command(files["llama-server"], files["model.gguf"], files["mmproj.gguf"], 18081,
+                                lfm3.server_flags) == argv
+
+
+@pytest.mark.parametrize("value", [True, -1, 6, "4", 4.0])
+def test_only_a_real_verbosity_level_makes_flags(value) -> None:
+    from sentinel.scene.llama_server import log_verbosity_flags
+
+    assert log_verbosity_flags(None) == () and log_verbosity_flags(4) == ("--log-verbosity", "4")
+    with pytest.raises(ValueError):
+        log_verbosity_flags(value)
+
+
+def test_the_cli_launches_the_selected_sets_flags(files) -> None:
+    from sentinel import cli
+    from sentinel.demo_runtime import SceneOptions
+
+    for key, flags in (("lfm3-vl", ("--log-verbosity", "4")), ("lfm2.5-vl", ())):
+        options = SceneOptions(files["llama-server"], files["model.gguf"], files["mmproj.gguf"], model_set=key)
+        assert cli._scene_server(options, 18081)._extra_flags == flags
+
+
+def test_the_profiler_passes_the_same_verbosity_only_when_given(tmp_path, monkeypatch) -> None:
+    spec = importlib.util.spec_from_file_location("profile_verbosity", ROOT / "benchmarks/runner/demo_profile.py")
+    profile = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(profile)
+    assert "--log-verbosity" not in profile.llama_flags(profile.parse_args([]))
+    flags = profile.llama_flags(profile.parse_args(["--llama-log-verbosity", "4", "--llama-cache-ram", "0"]))
+    assert flags[-4:] == ["--cache-ram", "0", "--log-verbosity", "4"]
+    launched = []
+    monkeypatch.setattr(profile.subprocess, "Popen", lambda argv, **kwargs: launched.append(argv) or FakeProcess([]))
+    args = Namespace(llama=Path("llama-server"), model=Path("m"), mmproj=Path("p"), port=18081, llama_cache_ram=0,
+                     llama_log_verbosity=4, sanitized_logs=True)
+    _, log = profile.start_llama(args, tmp_path)
+    log.close()
+    assert launched[0][-2:] == ["--log-verbosity", "4"] and loopback_problem(launched[0]) is None

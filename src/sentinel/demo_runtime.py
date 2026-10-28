@@ -1354,7 +1354,7 @@ def profile_mismatch(
     if profile.memory_policy != policy:
         return (f"resource profile {profile.profile_id} measured memory policy ({profile.memory_policy.describe()}), "
                 f"not the runtime's ({policy.describe()})")
-    expected = PROFILED_FLAGS + PROMPT_CACHE_FLAGS
+    expected = PROFILED_FLAGS + PROMPT_CACHE_FLAGS + scene_model_set(scene.model_set).server_flags  # the set's own
     if tuple(profile.llama_flags) != expected:
         return (f"resource profile {profile.profile_id} measured llama-server flags {' '.join(profile.llama_flags)}, "
                 f"not the runtime's {' '.join(expected)}")

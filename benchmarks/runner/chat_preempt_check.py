@@ -691,7 +691,7 @@ def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaS
     if problem is not None:
         problems.append(f"memfree_precheck:{problem}")
         return result
-    server = server_factory(binary, model, mmproj, args.port)
+    server = server_factory(binary, model, mmproj, args.port, extra_flags=chosen.server_flags)
     started = time.monotonic()
     rig = None
     try:  # from the start on: a guard stop (SIGINT) during the load still stops this check's own llama-server

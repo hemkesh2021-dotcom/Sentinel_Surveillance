@@ -188,7 +188,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if problem is not None:
         problems.append(f"memfree_precheck:{problem}")
         return result
-    server = LlamaServerProcess(binary, model, mmproj, args.port)
+    server = LlamaServerProcess(binary, model, mmproj, args.port, extra_flags=chosen.server_flags)
     started = time.monotonic()
     status = server.start(args.ready_timeout_s)
     result["readiness"] = {"state": status.state.value, "problem": status.problem, "layers": status.layers,
