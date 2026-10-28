@@ -324,6 +324,29 @@ def test_each_profile_criterion_fails_or_is_unavailable_on_its_own(runners, chan
     assert runners.criteria.evaluate_profile(profile)[criterion]["status"] == status
 
 
+@pytest.mark.parametrize(("extra", "status"), [
+    ([], "pass"),
+    (["--log-verbosity", "4"], "pass"),  # session 116, part 3: the LFM3 set's declared log level
+    (["--log-verbosity", "9"], "fail"),
+    (["--log-verbosity"], "fail"),
+    (["--log-verbosity", "4", "--log-verbosity", "4"], "fail"),
+    (["--log-verbosity", "4", "--cache-ram", "512"], "fail"),
+    (["--verbose"], "fail"),
+])
+def test_criterion_c_admits_the_profiled_flags_and_at_most_a_declared_log_level(runners, extra, status) -> None:
+    def with_flags(flags: list[str]) -> dict:
+        profile = good_profile()  # its provenance is the shared MANIFEST: replace it, never mutate it
+        server = {**profile["provenance"]["llama_server"], "flags": flags}
+        profile["provenance"] = {**profile["provenance"], "llama_server": server}
+        return profile
+
+    flags = list(MANIFEST["llama_server"]["flags"])
+    assert runners.criteria.evaluate_profile(with_flags([*flags, *extra]))["C_prompt_cache"]["status"] == status
+    reordered = with_flags(["--log-verbosity", "4", *flags])  # never before the profiled ones
+    assert runners.criteria.evaluate_profile(reordered)["C_prompt_cache"]["status"] == "fail"
+    assert MANIFEST["llama_server"]["flags"] == flags
+
+
 def test_an_invalid_run_or_uncertain_evidence_is_never_eligible_and_nothing_is_accepted(runners) -> None:
     c = runners.criteria
     run = dict.fromkeys(("guard_completed", "cleanup_clear", "check9_ok", "drop_declared", "profile_complete",
@@ -1899,7 +1922,8 @@ def test_the_step4cand_cli_measures_the_selected_scene_model_set_end_to_end(runn
               str(prep.identity_path), "--step4-clip", str(prep.files["clip"]), "--operator-dropped-caches",
               "--confirm-step4cand-prerequisites"]
     commands = {}
-    for name, extra in (("default", []), ("lfm2.5-vl", ["--scene-model-set", "lfm2.5-vl"])):
+    for name, extra in (("default", []), ("lfm2.5-vl", ["--scene-model-set", "lfm2.5-vl"]),
+                        ("lfm3-vl", ["--scene-model-set", "lfm3-vl"])):
         b = Backend()
         b.identity_hashes = {label: entry["sha256"] for label, entry in prep.identity["files"].items()}
         b.plr_report = fake_plr_report(runners, tmp_path)
@@ -1907,11 +1931,22 @@ def test_the_step4cand_cli_measures_the_selected_scene_model_set_end_to_end(runn
         assert op.main([*common, *extra], backend=b) == 0
         report = json.loads(capsys.readouterr().out)
         commands[name] = next(c.argv for c in b.children if any(str(a).endswith("demo_profile.py") for a in c.argv))
-        assert report.get("scene_model_set") == (None if name == "default" else "lfm2.5-vl")
+        assert report.get("scene_model_set") == (None if name == "default" else name)
     assert not {"--model", "--mmproj", "--scene-request-model"} & set(commands["default"])
     at = commands["lfm2.5-vl"].index("--model")
     assert commands["lfm2.5-vl"][at:at + 6] == ["--model", str(new.model_path), "--mmproj", str(new.mmproj_path),
                                                 "--scene-request-model", "lfm2.5-vl"]
+    # session 116, part 3: the LFM3 set's own build, files, request name, template switch and log level reach the
+    # profiler, and the profiler then launches its server with the log level after the profiled flags
+    lfm3 = SCENE_MODEL_SETS["lfm3-vl"]
+    at = commands["lfm3-vl"].index("--llama")
+    assert commands["lfm3-vl"][at:at + 12] == [
+        "--llama", str(lfm3.llama_server), "--model", str(lfm3.model_path), "--mmproj", str(lfm3.mmproj_path),
+        "--scene-request-model", "lfm3-vl", "--scene-template-kwargs", '{"enable_thinking": false}',
+        "--llama-log-verbosity", "4"]
+    args = runners.profile.parse_args(commands["lfm3-vl"][2:])
+    assert runners.profile.llama_flags(args) == [*runners.criteria.EXPECTED_LLAMA_FLAGS, "--log-verbosity", "4"]
+    assert runners.criteria.measured_flags_ok(runners.profile.llama_flags(args))
 
 
 # ---------------------------------------------------------------- startup identity checks

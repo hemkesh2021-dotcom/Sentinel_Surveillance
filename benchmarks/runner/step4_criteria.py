@@ -38,6 +38,20 @@ MIN_SCENE_STRICT_VALID_SHARE = 0.95
 MAX_SCENE_LATENCY_MS = 8000.0  # D16 job timeout
 POST_RUN_WAIT_S = 60.0
 EXPECTED_LLAMA_FLAGS = ("--n-gpu-layers", "999", "--ctx-size", "2048", "--parallel", "1", "--cache-ram", "0")
+# Session 116, part 3: a scene model set whose build hides the placement and prompt-cache lines at its default log
+# level (lfm3-vl: llama.cpp 67b2b7f2f makes library INFO a TRACE line) is measured with one more pair after these,
+# --log-verbosity N; it changes what the build prints, not its cache, placement or limits. Nothing else is admitted.
+LOG_VERBOSITY_FLAG = "--log-verbosity"
+LOG_VERBOSITY_LEVELS = frozenset("012345")
+
+
+def measured_flags_ok(flags: Sequence[str]) -> bool:
+    """The profiled flags exactly, or those followed by exactly one ``--log-verbosity N`` (N from 0 to 5)."""
+    flags, base = tuple(flags), EXPECTED_LLAMA_FLAGS
+    if flags == base:
+        return True
+    return (len(flags) == len(base) + 2 and flags[:len(base)] == base and flags[-2] == LOG_VERBOSITY_FLAG
+            and flags[-1] in LOG_VERBOSITY_LEVELS)
 # Step-4 PLR (opt-in, D54): step 4's procedure with each model's file cache released after its load and settle
 # (MR1's release), then step 4's full warm-up and steady phases. Every rule and threshold above applies unchanged,
 # under this distinct identity: a PLR result is never D47's step-4 result, and D46's admission
@@ -301,8 +315,9 @@ def evaluate_profile(profile: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     cache = profile.get("cache_evidence") or {}
     out["C_prompt_cache"] = _check(
         None if cache.get("verdict") in (None, "unverified") else cache["verdict"] == "disabled_verified"
-        and flags == EXPECTED_LLAMA_FLAGS,
-        "flags exactly " + " ".join(EXPECTED_LLAMA_FLAGS) + "; cache off by manifest, running command line, "
+        and measured_flags_ok(flags),
+        "flags exactly " + " ".join(EXPECTED_LLAMA_FLAGS) + " (optionally followed by " + LOG_VERBOSITY_FLAG
+        + " N, a set's declared log level); cache off by manifest, running command line, "
         "installed build, startup log and 0 steady updates",
         {"verdict": cache.get("verdict"), "missing": cache.get("missing"), "flags": list(flags)},
     )
