@@ -121,10 +121,26 @@ def log_verbosity_flags(verbosity: int | None) -> tuple[str, ...]:
     return ("--log-verbosity", str(verbosity))
 
 
+def image_max_tokens_flags(tokens: int | None) -> tuple[str, ...]:
+    """The launch flags that cap a dynamic-resolution projector's image tokens (session 116, part 7), or none.
+
+    The LFM3 build sizes the vision encoder's compute buffer by a warm-up image: by default 46x46 tokens
+    (1,472x1,472 px), which step4cand-lfm3-20261028T111507Z's server reported as 372.08 MiB, while every image Sentinel
+    sends is 480x360 (IMAGE_SIZE: 165 tokens after the build's resize). ``--image-max-tokens N`` lowers the warm-up to
+    floor(sqrt(N))**2 tokens and the largest accepted image to N tokens; an image above N would be downscaled, so N
+    must stay above what is sent. 4096 is the build's own ceiling for LFM3."""
+    if tokens is None:
+        return ()
+    if isinstance(tokens, bool) or not isinstance(tokens, int) or not 1 <= tokens <= 4096:
+        raise ValueError("image max tokens must be an integer from 1 to 4096")
+    return ("--image-max-tokens", str(tokens))
+
+
 def llama_server_command(binary: Path, model: Path, mmproj: Path, port: int,
                          extra_flags: Sequence[str] = ()) -> list[str]:
     """The demo scene server's argv: loopback only, profiled flags, prompt cache off, then the selected set's own
-    launch flags (``SceneModelSet.server_flags``: its log verbosity, session 116), which nothing else can set."""
+    launch flags (``SceneModelSet.server_flags``: its log verbosity and image-token cap, session 116), which nothing
+    else can set."""
     if not 1024 <= port <= 65535:
         raise ValueError("port must be between 1024 and 65535")
     return [

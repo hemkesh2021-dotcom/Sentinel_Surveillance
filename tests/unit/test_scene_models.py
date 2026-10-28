@@ -46,7 +46,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ACCEPTED = "step4cand-demo-20261007T090339Z"
 LFM25_PROFILE = "step4cand-lfm25-20261026T094728Z"  # accepted under D105
 OLD, NEW = models.SCENE_MODEL_SETS["lfm2-vl"], models.SCENE_MODEL_SETS["lfm2.5-vl"]
-LFM3 = models.SCENE_MODEL_SETS["lfm3-vl"]  # session 116: the default; profiled under D106
+LFM3 = models.SCENE_MODEL_SETS["lfm3-vl"]  # session 116: the default; its capped launch (part 7) not yet profiled
 JPEG = b"\xff\xd8synthetic\xff\xd9"
 
 
@@ -343,12 +343,13 @@ def cli_scene_run(tmp_path: Path, monkeypatch, profile_id: str, *flags: str,
 
 def test_the_cli_refuses_an_unprofiled_default_with_the_d46_reason_and_starts_nothing(tmp_path, capsys,
                                                                                     monkeypatch) -> None:
-    """D106: the default, lfm3-vl, is profiled now; the synthetic unprofiled case keeps the D46 refusal."""
-    for profile_id in (ACCEPTED, LFM25_PROFILE):  # another set's profile never admits it
+    """Session 116, part 7: the default, lfm3-vl, is launched with its image-token cap, which no accepted profile
+    measured (D106's measured it uncapped), so the CLI refuses it with the D46 reason whatever profile the manifest
+    names; the synthetic unprofiled case keeps the same refusal."""
+    for profile_id in (ACCEPTED, LFM25_PROFILE, "step4cand-lfm3-20261028T111716Z"):
         capsys.readouterr()
         assert cli_scene_run(tmp_path / profile_id, monkeypatch, profile_id, model_revision=LFM3.model_revision) == 1
-        error = capsys.readouterr().err.strip()
-        assert error.startswith("run: scene_not_admitted: llama-lfm2-vl-scene: ") and "D46" not in error, error
+        assert capsys.readouterr().err.strip() == f"run: {d46_refusal('lfm3-vl')}"
     unprofiled(monkeypatch)
     capsys.readouterr()
     assert cli_scene_run(tmp_path / "synthetic", monkeypatch, LFM25_PROFILE, "--scene-model-set", "lfm2.5-vl") == 1

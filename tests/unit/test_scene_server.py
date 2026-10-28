@@ -306,7 +306,7 @@ def test_the_sets_own_launch_flags_follow_the_profiled_ones_and_keep_loopback(fi
     from sentinel.scene.models import SCENE_MODEL_SETS
 
     lfm3 = SCENE_MODEL_SETS["lfm3-vl"]
-    assert lfm3.server_flags == ("--log-verbosity", "4")
+    assert lfm3.server_flags == ("--log-verbosity", "4", "--image-max-tokens", "256")  # parts 2 and 7
     assert SCENE_MODEL_SETS["lfm2.5-vl"].server_flags == () == SCENE_MODEL_SETS["lfm2-vl"].server_flags
     popen = FakePopen(FakeProcess(PINNED_VERBOSE_OUTPUT))
     process = LlamaServerProcess(
@@ -316,8 +316,8 @@ def test_the_sets_own_launch_flags_follow_the_profiled_ones_and_keep_loopback(fi
         extra_flags=lfm3.server_flags)
     assert process.start(30.0).state is ServerState.READY
     (argv, _), = popen.calls
-    assert argv[-2:] == ["--log-verbosity", "4"] and loopback_problem(argv) is None
-    assert argv[:-2] == llama_server_command(files["llama-server"], files["model.gguf"], files["mmproj.gguf"], 18081)
+    assert argv[-4:] == ["--log-verbosity", "4", "--image-max-tokens", "256"] and loopback_problem(argv) is None
+    assert argv[:-4] == llama_server_command(files["llama-server"], files["model.gguf"], files["mmproj.gguf"], 18081)
     assert llama_server_command(files["llama-server"], files["model.gguf"], files["mmproj.gguf"], 18081,
                                 lfm3.server_flags) == argv
 
@@ -335,7 +335,7 @@ def test_the_cli_launches_the_selected_sets_flags(files) -> None:
     from sentinel import cli
     from sentinel.demo_runtime import SceneOptions
 
-    for key, flags in (("lfm3-vl", ("--log-verbosity", "4")), ("lfm2.5-vl", ())):
+    for key, flags in (("lfm3-vl", ("--log-verbosity", "4", "--image-max-tokens", "256")), ("lfm2.5-vl", ())):
         options = SceneOptions(files["llama-server"], files["model.gguf"], files["mmproj.gguf"], model_set=key)
         assert cli._scene_server(options, 18081)._extra_flags == flags
 

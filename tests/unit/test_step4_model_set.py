@@ -52,13 +52,14 @@ def test_without_a_set_every_step4_command_is_unchanged_and_with_one_it_adds_its
         # session 116: a set with its own build and template arguments adds both
         lfm3 = models.SCENE_MODEL_SETS["lfm3-vl"]
         with_lfm3 = build(out, clip, "lfm3-vl")
-        assert len(with_lfm3) == len(before) + 12 and with_lfm3[at:at + 2] == ["--llama", str(lfm3.llama_server)]
+        assert len(with_lfm3) == len(before) + 14 and with_lfm3[at:at + 2] == ["--llama", str(lfm3.llama_server)]
         assert with_lfm3[at + 8:at + 10] == ["--scene-template-kwargs", '{"enable_thinking": false}']
         assert with_lfm3[at + 10:at + 12] == ["--llama-log-verbosity", "4"]  # session 116, part 2
+        assert with_lfm3[at + 12:at + 14] == ["--llama-image-max-tokens", "256"]  # part 7
         args = mods.profile.parse_args(with_lfm3[2:])
-        assert (args.llama, args.scene_request_model, args.scene_template_kwargs, args.llama_log_verbosity) == (
-            lfm3.llama_server, "lfm3-vl", '{"enable_thinking": false}', 4)
-        assert mods.profile.llama_flags(args)[-2:] == ["--log-verbosity", "4"]
+        assert (args.llama, args.scene_request_model, args.scene_template_kwargs, args.llama_log_verbosity,
+                args.llama_image_max_tokens) == (lfm3.llama_server, "lfm3-vl", '{"enable_thinking": false}', 4, 256)
+        assert mods.profile.llama_flags(args)[-4:] == ["--log-verbosity", "4", "--image-max-tokens", "256"]
     defaults = mods.profile.parse_args([])
     assert (defaults.model, defaults.mmproj) == (OLD.model_path, OLD.mmproj_path)  # the rollback set's files
 

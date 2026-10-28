@@ -485,6 +485,9 @@ RESOURCE_PROFILES: Mapping[str, ResourceProfile] = MappingProxyType({
         memory_policy=CANDIDATE_POLICY,
         memory_policy_verified=True,
     ),
+    # Session 116, part 7: this entry measured lfm3-vl launched WITHOUT --image-max-tokens; since then the set is
+    # launched with the cap, so these flags are no longer the runtime's and the entry admits nothing (profile_mismatch).
+    # It is kept unchanged as the record of D106's acceptance; the capped launch needs its own step-4 profile.
     # D106 (2026-10-28): the D58 candidate procedure measuring scene model set lfm3-vl, run
     # step4cand-lfm3-20261028T111507Z; every criterion passed in the run's own report, kernel coverage observed by its
     # own markers (no exception). Values generated from the run's manifest.json, profile.json, step4cand.json and

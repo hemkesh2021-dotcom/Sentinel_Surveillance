@@ -8,7 +8,8 @@ arguments the requests send (both part of the request fingerprint, D47), the ``m
 must declare (it reaches every scene evidence record through the producer revision), and where the files came from.
 The profiled launch flags, the request shapes, the sampling values, the token caps, the deadlines and the memory
 guards are the same for every set; a set adds only its build's log verbosity when that build's default hides the
-placement lines readiness requires (``server_flags``, session 116, part 2). A set is never chosen for another:
+placement lines readiness requires (``server_flags``, session 116, part 2) and an image-token cap when the build's
+default warm-up reserves far more than the images sent need (part 7). A set is never chosen for another:
 ``--scene-model-set`` selects one, and a set that no accepted resource profile measured is refused by admission
 (D46), not replaced.
 
@@ -19,8 +20,11 @@ placement lines readiness requires (``server_flags``, session 116, part 2). A se
   other sets does not know it. The model thinks by default (``<think>`` opens every answer), so every request of this
   set carries ``chat_template_kwargs: {"enable_thinking": false}``, the checkpoint's own template switch (its "no
   think" mode): the template then prefills an empty thinking block and the sampler pays for no reasoning tokens on the
-  real-time path. The maintainer accepted its own measurement as resource profile step4cand-lfm3-20261028T111716Z
-  (D106, 2026-10-28) for the configuration it measured; LFM2.5-VL's profile is never evidence for it.
+  real-time path. Since session 116, part 7 it is launched with ``--image-max-tokens 256`` (LFM3_IMAGE_MAX_TOKENS):
+  the images sent are unchanged and the vision warm-up is 512x512 instead of 1,472x1,472. That configuration is not
+  measured: the maintainer's acceptance of step4cand-lfm3-20261028T111716Z (D106, 2026-10-28) covers the launch
+  without the cap only, so admission refuses the set (D46) until a step-4 run of the capped launch is accepted;
+  LFM2.5-VL's profile is never evidence for it.
 - ``lfm2.5-vl``: the explicit fallback. LiquidAI/LFM2.5-VL-1.6B-GGUF at a pinned revision, Q4_0 with its own Q8_0
   projector, served by b8932. The maintainer accepted its measurement as resource profile
   step4cand-lfm25-20261026T094728Z (D105, 2026-10-26); the request has changed since (the grammar field, session 115,
@@ -51,6 +55,7 @@ from .llama_server import (
     SCENE_PROMPT,
     SCENE_SYSTEM,
     TEMPERATURE,
+    image_max_tokens_flags,
     log_verbosity_flags,
     request_fingerprint,
 )
@@ -73,6 +78,14 @@ LFM3_TEMPLATE_KWARGS: Mapping[str, object] = MappingProxyType({"enable_thinking"
 # 20261028T101443Z was refused "not_fully_offloaded" with neither line seen. Verbosity 4 adds only metadata lines
 # (lengths, timings, paths); the runtime keeps nothing of the output but the markers, and step 4 only fixed lines.
 LFM3_LOG_VERBOSITY = 4
+# The LFM3 set's image-token cap (session 116, part 7). In fci3-20261028T133616Z chat's gate closed at readiness with the
+# device at 4.75 GB; the largest LFM3-specific allocation found is the vision encoder's compute buffer, 372.08 MiB in
+# step4cand-lfm3-20261028T111507Z's server log (LFM2.5-VL: 30.31 MiB), which the build (19cce69, clip.cpp's LFM3 branch)
+# reserves for a 46x46-token warm-up image, 1,472x1,472 px. Every image Sentinel sends is 480x360 (IMAGE_SIZE), which
+# the build's own resize makes 480x352, 165 tokens, with or without this cap; with it the warm-up is 16x16 tokens,
+# 512x512 px, and the largest accepted image 262,144 px. Its effect on memory is not measured: it is a new configuration,
+# so no accepted profile admits it (D46) until a step-4 run measures it.
+LFM3_IMAGE_MAX_TOKENS = 256
 
 
 @dataclass(frozen=True)
@@ -91,11 +104,13 @@ class SceneModelSet:
     llama_build: str = "b8932 (98dc1418e)"  # that build, for the record
     chat_template_kwargs: Mapping[str, object] | None = None  # sent in every request of the set, when not None
     log_verbosity: int | None = None  # the build's --log-verbosity, when its default hides the placement lines
+    image_max_tokens: int | None = None  # the build's --image-max-tokens, when its default warm-up is oversized
 
     @property
     def server_flags(self) -> tuple[str, ...]:
-        """The set's own launch flags after the profiled ones: its log verbosity, if any (session 116, part 2)."""
-        return log_verbosity_flags(self.log_verbosity)
+        """The set's own launch flags after the profiled ones, in this order: its log verbosity (session 116, part 2)
+        and its image-token cap (part 7), each only when it has one."""
+        return log_verbosity_flags(self.log_verbosity) + image_max_tokens_flags(self.image_max_tokens)
 
     @property
     def model_path(self) -> Path:
@@ -118,7 +133,7 @@ class SceneModelSet:
 
 ROLLBACK_SCENE_MODEL_SET = "lfm2-vl"  # the accepted profile step4cand-demo-20261007T090339Z's model (D59)
 FALLBACK_SCENE_MODEL_SET = "lfm2.5-vl"  # the explicit fallback (session 116); never selected automatically
-DEFAULT_SCENE_MODEL_SET = "lfm3-vl"  # session 116: the migration; profiled by step4cand-lfm3-20261028T111716Z (D106)
+DEFAULT_SCENE_MODEL_SET = "lfm3-vl"  # session 116: the migration; its capped launch (part 7) is not yet profiled
 LFM25_REPOSITORY = "LiquidAI/LFM2.5-VL-1.6B-GGUF"
 LFM25_REVISION = "36fc16bc95133424921bcc3da009e83b2f23ffb5"  # the Hub's main on 2026-10-26; immutable
 LFM3_REPOSITORY = "LiquidAI/LFM3-VL-2B-GGUF"
@@ -162,11 +177,14 @@ SCENE_MODEL_SETS: Mapping[str, SceneModelSet] = MappingProxyType({
         mmproj=FileFacts("mmproj-LFM3-VL-2B-Q8_0.gguf", 203_031_872, "2026-10-27T20:21:37+00:00",
                          "c5c5b58d544a18da919172d2d0368090ea1a4a351b6feb7f8a326a264a5918ab"),
         source=f"{LFM3_REPOSITORY} at {LFM3_REVISION}",
-        profiled=True,  # D106: resource profile step4cand-lfm3-20261028T111716Z measured these files and this request
+        # D106's profile step4cand-lfm3-20261028T111716Z measured these files and this request launched without the
+        # image-token cap; the capped launch below is a configuration no accepted profile has measured (part 7).
+        profiled=False,
         llama_server=LLAMA_SERVER_LFM3,
         llama_build=f"master {LFM3_LLAMA_CPP_COMMIT[:9]} (the LFM3 merge)",
         chat_template_kwargs=LFM3_TEMPLATE_KWARGS,
         log_verbosity=LFM3_LOG_VERBOSITY,
+        image_max_tokens=LFM3_IMAGE_MAX_TOKENS,
     ),
 })
 

@@ -161,7 +161,7 @@ class LlamaServerProcess:
     ) -> None:
         self._files = {"llama_server_binary": binary, "scene_model": model, "scene_mmproj": mmproj}
         # the selected set's own launch flags after the profiled ones (SceneModelSet.server_flags: its build's log
-        # verbosity, session 116); the loopback check below still sees the whole argv
+        # verbosity and image-token cap, session 116); the loopback check below still sees the whole argv
         self._extra_flags = tuple(extra_flags)
         self._port = port
         self._environ = os.environ if environ is None else environ

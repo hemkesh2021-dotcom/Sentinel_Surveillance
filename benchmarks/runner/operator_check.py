@@ -690,8 +690,9 @@ def file_facts(path: Path) -> dict | None:
 
 
 def scene_model_args(model_set: str | None) -> list[str]:
-    """The profiler's --llama, --model, --mmproj, --scene-request-model and, when the set sends any,
-    --scene-template-kwargs for a scene model set (sessions 115 and 116). None adds nothing, so every earlier command
+    """The profiler's --llama, --model, --mmproj, --scene-request-model and, when the set has them,
+    --scene-template-kwargs, --llama-log-verbosity and --llama-image-max-tokens for a scene model set (sessions 115
+    and 116). None adds nothing, so every earlier command
     line is unchanged (the profiler's defaults are the accepted profile's set and build)."""
     if model_set is None:
         return []
@@ -704,6 +705,8 @@ def scene_model_args(model_set: str | None) -> list[str]:
         argv += ["--scene-template-kwargs", json.dumps(dict(chosen.chat_template_kwargs), sort_keys=True)]
     if chosen.log_verbosity is not None:  # the set's build hides its placement lines at its default (session 116)
         argv += ["--llama-log-verbosity", str(chosen.log_verbosity)]
+    if chosen.image_max_tokens is not None:  # the set's image-token cap (session 116, part 7)
+        argv += ["--llama-image-max-tokens", str(chosen.image_max_tokens)]
     return argv
 
 

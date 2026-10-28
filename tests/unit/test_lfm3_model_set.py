@@ -38,7 +38,8 @@ PART_20 = {"lfm2-vl": "6b65cd33", "lfm2.5-vl": "43494f59"}
 def test_the_default_set_is_lfm3_vl_2b_qad_q4_0_with_its_own_projector_build_and_switch() -> None:
     assert models.DEFAULT_SCENE_MODEL_SET == LFM3.key == "lfm3-vl"
     assert models.FALLBACK_SCENE_MODEL_SET == LFM25.key and models.ROLLBACK_SCENE_MODEL_SET == LFM2.key
-    assert LFM3.profiled is True  # D106: its own profile; LFM2.5-VL's is never its evidence
+    assert LFM3.profiled is False  # part 7: its capped launch is unmeasured (D106 measured it uncapped); LFM2.5-VL's
+    # profile is never its evidence either
     assert LFM3.request_model == "lfm3-vl" and LFM3.model_revision == "lfm3-vl-2b-qad-q4_0"
     assert (LFM3.model.name, LFM3.model.bytes, LFM3.model.sha256) == (
         "LFM3-VL-2B-QAD-Q4_0.gguf", 1_049_615_648,
@@ -57,6 +58,7 @@ def test_the_default_set_is_lfm3_vl_2b_qad_q4_0_with_its_own_projector_build_and
     assert dict(LFM3.chat_template_kwargs) == NO_THINK and LFM25.chat_template_kwargs is None
     assert LFM2.chat_template_kwargs is None
     assert (LFM3.log_verbosity, LFM25.log_verbosity, LFM2.log_verbosity) == (4, None, None)
+    assert (LFM3.image_max_tokens, LFM25.image_max_tokens, LFM2.image_max_tokens) == (256, None, None)  # part 7
 
 
 def test_every_request_of_the_set_carries_the_no_think_switch_and_nothing_else_changes() -> None:
@@ -155,16 +157,18 @@ def test_the_step4_workload_sends_the_runtimes_request_for_the_set(monkeypatch) 
     assert w.scene_request_sha256() == LFM3.scene_request_sha256
     argv = op.scene_model_args("lfm3-vl")
     assert argv[:2] == ["--llama", str(LFM3.llama_server)]
-    assert argv[-4:-2] == ["--scene-template-kwargs", '{"enable_thinking": false}']
-    assert json.loads(argv[-3]) == NO_THINK
-    assert argv[-2:] == ["--llama-log-verbosity", "4"]  # session 116, part 2: the build hides its markers at 3
-    assert "--scene-template-kwargs" not in op.scene_model_args("lfm2.5-vl")
-    assert "--llama-log-verbosity" not in op.scene_model_args("lfm2.5-vl")
+    assert argv[-6:-4] == ["--scene-template-kwargs", '{"enable_thinking": false}']
+    assert json.loads(argv[-5]) == NO_THINK
+    assert argv[-4:-2] == ["--llama-log-verbosity", "4"]  # session 116, part 2: the build hides its markers at 3
+    assert argv[-2:] == ["--llama-image-max-tokens", "256"]  # part 7: the set's image-token cap
+    for flag in ("--scene-template-kwargs", "--llama-log-verbosity", "--llama-image-max-tokens"):
+        assert flag not in op.scene_model_args("lfm2.5-vl")
     assert op.SCENE_MODEL_SET_KEYS == tuple(sorted(models.SCENE_MODEL_SETS))
 
 
 def test_a_profile_of_the_set_must_have_measured_its_launch_flags(tmp_path) -> None:
-    """Session 116, part 2: the set's log-verbosity flags are part of what a profile must have measured."""
+    """Session 116, parts 2 and 7: the set's log-verbosity and image-cap flags are part of what a profile must have
+    measured."""
     import dataclasses
 
     from sentinel.adapters import RESOURCE_PROFILES

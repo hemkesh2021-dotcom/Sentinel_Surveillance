@@ -807,11 +807,14 @@ def preconditions(args: argparse.Namespace) -> tuple[list[str], dict[str, object
 def llama_flags(args: argparse.Namespace) -> list[str]:
     """The tracked flags, plus --cache-ram only when it was given (None keeps the server default), plus
     --log-verbosity only when it was given (session 116: a build whose default hides the placement, buffer-size and
-    prompt-cache lines this script reads; the runtime adds the same for that set)."""
+    prompt-cache lines this script reads; the runtime adds the same for that set), plus --image-max-tokens only when
+    it was given (session 116, part 7: the set's image-token cap, after the log level as the runtime orders them)."""
     cache_ram = getattr(args, "llama_cache_ram", None)
     verbosity = getattr(args, "llama_log_verbosity", None)
+    image_tokens = getattr(args, "llama_image_max_tokens", None)
     return (LLAMA_FLAGS + ([] if cache_ram is None else ["--cache-ram", str(cache_ram)])
-            + ([] if verbosity is None else ["--log-verbosity", str(verbosity)]))
+            + ([] if verbosity is None else ["--log-verbosity", str(verbosity)])
+            + ([] if image_tokens is None else ["--image-max-tokens", str(image_tokens)]))
 
 
 def provenance(args: argparse.Namespace, context: dict[str, object], run_id: str) -> dict[str, object]:
@@ -1317,7 +1320,8 @@ def start_llama(args: argparse.Namespace, run_dir: Path):
 
 
 def pump_llama_diagnostics(proc, log, clock=time.monotonic) -> None:
-    """Save only fixed GPU-placement markers, numeric buffer sizes and numeric prompt-cache lines.
+    """Save only fixed GPU-placement markers, numeric buffer sizes, the vision warm-up's numeric image size
+    (session 116, part 7: the evidence that --image-max-tokens took effect) and numeric prompt-cache lines.
 
     Prompt-cache lines get the receipt time.monotonic() so they can be aligned with memory.csv.
     """
@@ -1326,6 +1330,7 @@ def pump_llama_diagnostics(proc, log, clock=time.monotonic) -> None:
             text = line.decode(errors="replace")
             offload = re.search(r"offloaded (\d+)/(\d+) layers to GPU", text)
             buffer = re.search(r"buffer size =\s*([\d.]+) MiB", text)
+            warmup = re.search(r"warmup with image size = (\d{1,5}) x (\d{1,5})", text)
             startup = PROMPT_CACHE_STARTUP.search(text)
             state = PROMPT_CACHE_STATE.search(text)
             marker = next((label for key, label in PROMPT_CACHE_MARKERS.items() if key in text), None)
@@ -1335,6 +1340,8 @@ def pump_llama_diagnostics(proc, log, clock=time.monotonic) -> None:
                 log.write(b"CLIP using CUDA0\n")
             if buffer:
                 log.write(f"diagnostic: buffer size = {buffer[1]} MiB\n".encode())
+            if warmup:
+                log.write(f"diagnostic: vision warmup image size = {warmup[1]} x {warmup[2]}\n".encode())
             stamp = f"t_mono={clock():.3f}"
             if startup:
                 limit = "disabled" if startup[1] == "disabled" else (
@@ -3281,6 +3288,13 @@ def cache_ram_mib(text: str) -> int:
     return value
 
 
+def image_max_tokens(text: str) -> int:
+    value = int(text)
+    if not 1 <= value <= 4096:
+        raise argparse.ArgumentTypeError("use an image-token cap from 1 to 4096 (the LFM3 build's own ceiling)")
+    return value
+
+
 def maps_interval(text: str) -> float:
     value = float(text)
     low, high = MAPS_INTERVAL_RANGE_S
@@ -3315,6 +3329,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--llama-log-verbosity", type=int, choices=range(0, 6), metavar="N",
                         help="session 116: pass --log-verbosity N to llama-server (the selected set's, when its build "
                              "hides the lines this script reads at its default); default: not passed")
+    parser.add_argument("--llama-image-max-tokens", type=image_max_tokens, metavar="N",
+                        help="session 116, part 7: pass --image-max-tokens N to llama-server (the selected set's "
+                             "image-token cap, when it has one); default: not passed")
     parser.add_argument("--mr1-release-check", action="store_true",
                         help="MR1 (opt-in): after each model's load and settle, release that model's files from the page "
                              "cache (posix_fadvise DONTNEED, no root) with memory samples around it, then bounded smoke "

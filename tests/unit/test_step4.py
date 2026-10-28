@@ -27,7 +27,7 @@ import pytest
 from sentinel import adapters
 from sentinel.demo_runtime import profile_mismatch
 from sentinel.config import parse_config
-from sentinel.scene.llama_server import SCENE_REQUEST_SHA256
+from sentinel.scene.llama_server import PROFILED_FLAGS, PROMPT_CACHE_FLAGS, SCENE_REQUEST_SHA256
 
 RUNNERS = Path(__file__).resolve().parents[2] / "benchmarks/runner"
 COMMIT = "a" * 40
@@ -1936,16 +1936,18 @@ def test_the_step4cand_cli_measures_the_selected_scene_model_set_end_to_end(runn
     at = commands["lfm2.5-vl"].index("--model")
     assert commands["lfm2.5-vl"][at:at + 6] == ["--model", str(new.model_path), "--mmproj", str(new.mmproj_path),
                                                 "--scene-request-model", "lfm2.5-vl"]
-    # session 116, part 3: the LFM3 set's own build, files, request name, template switch and log level reach the
-    # profiler, and the profiler then launches its server with the log level after the profiled flags
+    # session 116, parts 3 and 7: the LFM3 set's own build, files, request name, template switch, log level and
+    # image-token cap reach the profiler, which then launches its server with both after the profiled flags
     lfm3 = SCENE_MODEL_SETS["lfm3-vl"]
     at = commands["lfm3-vl"].index("--llama")
-    assert commands["lfm3-vl"][at:at + 12] == [
+    assert commands["lfm3-vl"][at:at + 14] == [
         "--llama", str(lfm3.llama_server), "--model", str(lfm3.model_path), "--mmproj", str(lfm3.mmproj_path),
         "--scene-request-model", "lfm3-vl", "--scene-template-kwargs", '{"enable_thinking": false}',
-        "--llama-log-verbosity", "4"]
+        "--llama-log-verbosity", "4", "--llama-image-max-tokens", "256"]
     args = runners.profile.parse_args(commands["lfm3-vl"][2:])
-    assert runners.profile.llama_flags(args) == [*runners.criteria.EXPECTED_LLAMA_FLAGS, "--log-verbosity", "4"]
+    assert runners.profile.llama_flags(args) == [*runners.criteria.EXPECTED_LLAMA_FLAGS, "--log-verbosity", "4",
+                                                 "--image-max-tokens", "256"]
+    assert tuple(runners.profile.llama_flags(args)) == PROFILED_FLAGS + PROMPT_CACHE_FLAGS + lfm3.server_flags
     assert runners.criteria.measured_flags_ok(runners.profile.llama_flags(args))
 
 

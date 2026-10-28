@@ -3,12 +3,16 @@
 Portable first: the registry's entry is the run's record (generated from its manifest, profile, step-4 report and
 identity snapshot), passes the registry's acceptance rules, carries its limitations (the guarded runs' pressure stop
 26.8 MB above the sampled peak, the untagged build with its log level, the NVRM lines), and refuses configurations it
-did not measure. Then, on this device only (skipped elsewhere): the measured files and build are admitted, and a
-swapped model, projector or binary is refused. Nothing is started: no server, model or camera.
+did not measure. Session 116, part 7: the set is now launched with --image-max-tokens 256, which D106's run did not
+measure, so the default set is refused (D46) and the entry would admit only the launch it measured, shown here with a
+SYNTHETIC uncapped copy of the set (``measured_launch``), never in the registry. Then, on this device only (skipped
+elsewhere): those measured files and build are admitted, and a swapped model, projector or binary is refused. Nothing
+is started: no server, model or camera.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from pathlib import Path
 from typing import Any
@@ -33,6 +37,13 @@ from sentinel.scene.llama_server import PROFILED_FLAGS, PROMPT_CACHE_FLAGS
 LFM3_PROFILE = "step4cand-lfm3-20261028T111716Z"
 LFM3 = models.SCENE_MODEL_SETS["lfm3-vl"]
 PROFILE = RESOURCE_PROFILES[LFM3_PROFILE]
+UNCAPPED = dataclasses.replace(LFM3, image_max_tokens=None, profiled=True)  # SYNTHETIC: the launch D106 measured
+
+
+@pytest.fixture
+def measured_launch(monkeypatch):
+    """SYNTHETIC: lfm3-vl as D106's run launched it (no image-token cap), standing in for the registry's set."""
+    monkeypatch.setattr(models, "SCENE_MODEL_SETS", {**models.SCENE_MODEL_SETS, LFM3.key: UNCAPPED})
 GUARD_PRESSURE_STOP = 4_800_000_000  # operator_check.PRESSURE_STOP, the guarded runs' stop
 
 
@@ -56,7 +67,9 @@ def test_the_entry_is_the_runs_record_and_passes_the_registry_rules() -> None:
     assert PROFILE.run_dir == "demo-profile-20261028T111716Z"
     assert PROFILE.commit == "595e1df090531ef380d31c542d69ee1740662455"
     assert PROFILE.boot_id == "c8c02fc5-71d8-467d-82a9-6b42f5ef71a0"
-    assert PROFILE.llama_flags == PROFILED_FLAGS + PROMPT_CACHE_FLAGS + LFM3.server_flags
+    assert PROFILE.llama_flags == PROFILED_FLAGS + PROMPT_CACHE_FLAGS + ("--log-verbosity", "4")  # as measured
+    assert PROFILE.llama_flags == PROFILED_FLAGS + PROMPT_CACHE_FLAGS + UNCAPPED.server_flags
+    assert PROFILE.llama_flags != PROFILED_FLAGS + PROMPT_CACHE_FLAGS + LFM3.server_flags  # part 7: not the launch now
     assert (PROFILE.llm, PROFILE.mmproj) == (LFM3.model, LFM3.mmproj)
     assert PROFILE.scene_request_sha256 == LFM3.scene_request_sha256
     assert (PROFILE.steady_max_bytes, PROFILE.peak_bytes) == (4_771_803_136, 4_773_228_544)
@@ -70,7 +83,7 @@ def test_the_entry_is_the_runs_record_and_passes_the_registry_rules() -> None:
                        LFM3_BUILD_LIMITATION, LFM3_NVRM_OBSERVATION):
         assert limitation in PROFILE.limitations
     assert "26,771,456 B" in LFM3_MEMORY_MARGIN_LIMITATION and "580.178.04" in LFM3_NVRM_OBSERVATION
-    assert LFM3.profiled is True and models.DEFAULT_SCENE_MODEL_SET == LFM3.key
+    assert LFM3.profiled is False and models.DEFAULT_SCENE_MODEL_SET == LFM3.key  # part 7: the capped launch
 
 
 def test_the_other_profiles_are_unchanged_and_never_admit_lfm3() -> None:
@@ -86,17 +99,23 @@ def test_the_other_profiles_are_unchanged_and_never_admit_lfm3() -> None:
     (config(interval_s=5.0), CANDIDATE_POLICY, f"resource profile {LFM3_PROFILE} measured a 4 s scene interval"),
     (config(revision="lfm2.5-vl-1.6b-q4_0"), CANDIDATE_POLICY, "the manifest declares model_revision"),
 ])
-def test_a_configuration_the_profile_did_not_measure_is_refused(cfg, policy, reason) -> None:
+def test_a_configuration_the_profile_did_not_measure_is_refused(measured_launch, cfg, policy, reason) -> None:
     problem, revision = scene_admission(cfg or config(), options(), policy=policy)
     assert problem is not None and reason in problem and revision is None, problem
 
 
-def test_a_profile_without_the_log_level_does_not_admit_the_set(tmp_path) -> None:
-    import dataclasses
-
+def test_a_profile_without_the_log_level_does_not_admit_the_set(measured_launch, tmp_path) -> None:
     without = dataclasses.replace(PROFILE, llama_flags=PROFILED_FLAGS + PROMPT_CACHE_FLAGS)
     problem = profile_mismatch(without, config(), options(), policy=CANDIDATE_POLICY)
     assert problem is not None and "measured llama-server flags" in problem
+
+
+def test_the_capped_default_is_refused_and_d106_never_matches_its_launch() -> None:
+    """Part 7: the registry's lfm3-vl (capped) is refused with the D46 reason, and D106's flags are not its launch."""
+    problem, revision = scene_admission(config(), options(), policy=CANDIDATE_POLICY)
+    assert revision is None and "scene model set lfm3-vl has no accepted resource profile (D46)" in problem, problem
+    mismatch = profile_mismatch(PROFILE, config(), options(), policy=CANDIDATE_POLICY)
+    assert mismatch is not None and "measured llama-server flags" in mismatch and "--image-max-tokens 256" in mismatch
 
 
 REAL = all(p.exists() for p in (LFM3.llama_server, LFM3.model_path, LFM3.mmproj_path))
@@ -104,7 +123,7 @@ device = pytest.mark.skipif(not REAL, reason="needs this device's LFM3 build and
 
 
 @device
-def test_the_measured_files_and_build_are_admitted() -> None:
+def test_the_measured_files_and_build_are_admitted(measured_launch) -> None:
     assert scene_admission(config(), options(), policy=CANDIDATE_POLICY) == (None, config().adapters[0].producer_revision)
 
 
@@ -123,7 +142,7 @@ def sparse(path: Path, size: int) -> Path:
     ("binary", "llama-server llama-server does not have the profiled SHA-256"),
     ("b8932", "llama-server llama-server does not have the profiled SHA-256"),
 ])
-def test_a_swapped_model_projector_or_binary_is_refused(tmp_path, swap, reason) -> None:
+def test_a_swapped_model_projector_or_binary_is_refused(measured_launch, tmp_path, swap, reason) -> None:
     if swap == "model-other-size":
         paths = {"model": sparse(tmp_path / LFM3.model.name, 1)}
     elif swap == "model-other-time":
