@@ -660,6 +660,7 @@ RESULT = JsonProfile({  # step5_guard.supervise
     "parameters.status_at[].at_s": NUM, "parameters.status_at[].name": vocab(*STATUS_NAMES),
     "parameters.cues[].at_s": NUM, "parameters.cues[].name": vocab(*CUE_NAMES),
     "parameters.require_ready": maybe(READINESS),
+    "parameters.scene_layers": LAYERS,  # session 116: only when --scene-layers was given
     # session 80: the readiness requirement's outcome on the starting line (step5_guard.readiness_problem's label)
     "readiness.required": READINESS, "readiness.met": BOOL, "readiness.reason": maybe(TEXT),
     "readiness.starting_after_s": SECONDS,

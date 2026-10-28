@@ -39,6 +39,13 @@ def _get(item: Any, *path: str) -> Any:
     return item
 
 
+def expected_layers(result: Any) -> str:
+    """The layer count a run's guard required (``parameters.scene_layers``, session 116: ``--scene-layers``), else
+    LAYERS: a run recorded without it is read exactly as before."""
+    value = _get(result, "parameters", "scene_layers")
+    return LAYERS if value is MISSING else value
+
+
 def _list(value: Any) -> list:
     return value if isinstance(value, list) else []
 

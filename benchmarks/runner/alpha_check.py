@@ -314,10 +314,11 @@ def read_chat(run_dir: Path, *, face: bool = False) -> s5.Reading:
     start = s5._startup(r, result, scope=SCOPE, releases=RELEASES) if not face else s5._get(result, "run_output",
                                                                                               "starting")
     server = s5._get(start, "scene_server")
-    r.item("scene server ready, 17/17 layers, vision encoder on GPU; scene admitted",
+    layers = s5.expected_layers(result)  # 17/17, or what the guard was told to require (session 116)
+    r.item(f"scene server ready, {layers} layers, vision encoder on GPU; scene admitted",
            {"scene_server": server, "scene_problem": s5._get(start, "scene_problem")},
            isinstance(server, dict) and server.get("state") == "ready" and server.get("problem") is None
-           and server.get("layers") == s5.LAYERS and server.get("vision_on_gpu") is True
+           and server.get("layers") == layers and server.get("vision_on_gpu") is True
            and s5._get(start, "scene_problem") is None)
     starting = _starting(run_dir)
     r.item("chat offered as a validation run (not admitted); the live view on",
@@ -391,10 +392,11 @@ def read_integration(run_dir: Path, *, trial: bool = False) -> dict[str, s5.Read
            and value["readiness"] == {"required": INTEGRATION_READINESS, "met": True, "reason": None})
     start = s5._startup(r, result, scope=face_check.SCENE_SCOPE, releases=face_check.RELEASES)
     server = s5._get(start, "scene_server")
-    r.item("scene server ready, 17/17 layers, vision encoder on GPU; scene admitted",
+    layers = s5.expected_layers(result)  # 17/17, or what the guard was told to require (session 116)
+    r.item(f"scene server ready, {layers} layers, vision encoder on GPU; scene admitted",
            {"scene_server": server, "scene_problem": s5._get(start, "scene_problem")},
            isinstance(server, dict) and server.get("state") == "ready" and server.get("problem") is None
-           and server.get("layers") == s5.LAYERS and server.get("vision_on_gpu") is True
+           and server.get("layers") == layers and server.get("vision_on_gpu") is True
            and s5._get(start, "scene_problem") is None)
     r.item("face at startup: a validation run of the normal path with one enrolled identity, no face problem",
            {"face": s5._get(start, "face"), "face_problem": s5._get(start, "face_problem")},

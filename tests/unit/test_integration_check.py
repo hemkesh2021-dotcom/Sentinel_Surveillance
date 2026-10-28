@@ -230,3 +230,36 @@ def test_execution_needs_the_decided_run_its_readiness_and_the_account(mods, mad
     parts = mods.check.read_integration(run)
     assert oks(parts)["execution"] is False and oks(parts)["chat completion"] is True and oks(parts)["memory"] is True
     assert mods.check.main(["integration", str(run)]) == 1
+
+
+# ---------------------------------------------------------------- session 116, part 5: another set's layer count
+
+
+def test_the_scene_server_item_uses_the_count_the_guard_required_and_17_of_17_for_older_runs(
+        mods, made, tmp_path) -> None:
+    """A run recorded without --scene-layers is read as before (17/17); a run whose guard required 25/25 (LFM3-VL-2B)
+    passes only with 25/25 reported, and the item says which count it required."""
+    def with_layers(name: str, reported: str, required: str | None) -> Path:
+        run = shutil.copytree(made, tmp_path / name)
+        result = json.loads((run / "result.json").read_text())
+        result["run_output"]["starting"]["scene_server"]["layers"] = reported
+        if required is not None:
+            result["parameters"]["scene_layers"] = required
+        (run / "result.json").write_text(json.dumps(result))
+        return run
+
+    def item(run: Path) -> str:
+        return line_for(text(mods.check.read_integration(run)["execution"]), "scene server ready")
+
+    assert item(made).startswith("PASS scene server ready, 17/17 layers")
+    assert item(with_layers("lfm3", "25/25", "25/25")).startswith("PASS scene server ready, 25/25 layers")
+    assert item(with_layers("old-rule", "25/25", None)).startswith("FAIL scene server ready, 17/17 layers")
+    assert item(with_layers("wrong", "17/17", "25/25")).startswith("FAIL scene server ready, 25/25 layers")
+    assert item(with_layers("partial", "24/25", "25/25")).startswith("FAIL")
+    lfm3 = tmp_path / "lfm3"
+    assert oks(mods.check.read_integration(lfm3)) == oks(mods.check.read_integration(made))  # nothing else changes
+    assert mods.evidence.read(lfm3 / "result.json", "f2").nonconforming == []  # the new parameter fits the profile
+    bad = json.loads((lfm3 / "result.json").read_text())
+    bad["parameters"]["scene_layers"] = "all of them"
+    (tmp_path / "bad.json").write_text(json.dumps(bad))
+    assert mods.evidence.read(tmp_path / "bad.json", "f2", "result.json").nonconforming == ["parameters.scene_layers"]

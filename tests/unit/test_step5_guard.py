@@ -603,3 +603,46 @@ def test_the_runtimes_starting_line_with_face_and_chat_meets_face_chat_and_anyth
     lines = dict(verdict.verdict(result, 1, ("t0",), "face_chat"))
     assert lines["readiness"] == "unmet:chat_not_available_as_validation_run:paused"
     assert lines["verdict"].startswith("incomplete:")
+
+
+# ---------------------------------------------------------------- session 116, part 5: another set's layer count
+
+
+def test_face_chat_requires_the_layer_count_it_was_given_and_17_of_17_without_one(mod, tmp_path, monkeypatch) -> None:
+    """LFM3-VL-2B offloads 25/25 (lfm3check-20261028T103925Z; step4cand-lfm3-20261028T111507Z's G), so its integration
+    run could never meet face_chat at a fixed 17/17. --scene-layers names the selected set's count; nothing changes
+    without it."""
+    from chat_runs import build_run
+
+    loads = type("Mods", (), {"load": importlib.import_module("alpha_load"), "guard": mod})
+    made = build_run(loads, tmp_path, face=True, live=False, duration=10.0, captures_at=())
+    starting = next(json.loads(line) for line in (made / "run.jsonl").read_text().splitlines()
+                    if json.loads(line).get("run") == "starting")
+    seventeen = starting["startup"]
+    twenty_five = {**seventeen, "scene_server": {**seventeen["scene_server"], "layers": "25/25"}}
+    assert mod.readiness_problem("face_chat", seventeen) is None  # the default, unchanged
+    assert mod.readiness_problem("face_chat", twenty_five) == "scene_server_not_ready"
+    assert mod.readiness_problem("face_chat", twenty_five, "25/25") is None
+    assert mod.readiness_problem("face_chat", seventeen, "25/25") == "scene_server_not_ready"
+    partial = {**twenty_five, "scene_server": {**twenty_five["scene_server"], "layers": "24/25"}}
+    assert mod.readiness_problem("face_chat", partial, "25/25") == "scene_server_not_ready"
+    for name, layers, given, met in (("given", "25/25", ["--scene-layers", "25/25"], True),
+                                     ("default", "25/25", [], False), ("old", "17/17", [], True)):
+        line = {**starting, "startup": {**seventeen, "scene_server": {**seventeen["scene_server"], "layers": layers}}}
+        monkeypatch.setattr(mod, "SystemBackend", lambda line=line: FakeBackend(ready_s=1, stop_s=1, starting=line))
+        out = tmp_path / name
+        assert mod.main(["--out", str(out), "--duration-s", "5", "--require-ready", "face_chat", *given,
+                         "--cue-at", "0:t0:go", "--", "true"]) == (0 if met else 1), name
+        result = json.loads((out / "result.json").read_text())
+        assert result["readiness"]["met"] is met
+        assert result["parameters"].get("scene_layers") == ("25/25" if given else None)  # recorded only when given
+        assert ("scene_layers" in result["parameters"]) is bool(given)
+
+
+@pytest.mark.parametrize("text", ["24/25", "0/0", "25", "25/", "/25", "x/y", "025/025", "25/25/25", "+5/+5", " 25/25",
+                                  "25/25 ", "10000/10000", "٢/٢"])
+def test_the_layer_count_must_be_a_full_offload(mod, tmp_path, text, capsys) -> None:
+    with pytest.raises(SystemExit):
+        mod.main(["--out", str(tmp_path / "x"), "--duration-s", "5", "--scene-layers", text, "--", "true"])
+    assert "fully offloaded layer count" in capsys.readouterr().err
+    assert not (tmp_path / "x").exists()

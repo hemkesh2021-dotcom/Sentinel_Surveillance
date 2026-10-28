@@ -36,8 +36,11 @@ problem, no face problem, and the marker ``face.landmark_diagnostic`` holding ex
 ``--require-ready face_chat`` (session 103, the validation-only face + chat integration run) works the same way: no
 detector, face or scene problem; face exactly ``FACE_CHAT_FACE`` (a validation run of the normal path with one
 enrolled identity, no candidate, comparison, experiment, continuity rule or diagnostic marker); the scene server
-ready (17/17 layers, the vision encoder on the GPU); and chat ``available`` with exactly its validation-run reason
-(``CHAT_VALIDATION_AVAILABLE``; chat paused by its memory gate, unavailable or admitted is not this run).
+ready (17/17 layers, or the count ``--scene-layers N/N`` names, and the vision encoder on the GPU); and chat
+``available`` with exactly its validation-run reason (``CHAT_VALIDATION_AVAILABLE``; chat paused by its memory gate,
+unavailable or admitted is not this run). ``--scene-layers`` (session 116, part 5) is for a scene model set whose
+model has another layer count (LFM3-VL-2B: 25/25); it must be fully offloaded, is recorded under ``parameters`` and is
+what the readings then require; without it nothing is recorded and 17/17 is required, as before.
 
 At each ``--status-at SECONDS:NAME`` offset it saves ``status-NAME.json`` from the loopback status page, and it
 classifies the listeners on 18090 and 18081 as loopback, any or other. ``result.json`` holds numbers and fixed labels
@@ -92,7 +95,7 @@ CHAT_VALIDATION_AVAILABLE = {
     "state": "available",
     "reason": ("ask about the picture the camera is showing now (validation run: chat is not admitted; its answers "
                "and their effect on monitoring are being checked)")}
-SCENE_LAYERS = "17/17"
+SCENE_LAYERS = "17/17"  # LFM2-VL and LFM2.5-VL; another set's count is passed with --scene-layers (session 116)
 # What the tracking diagnostic's startup marker must hold before T0: the tracker's settings as the runtime records
 # them under face.tracking_diagnostic.tracker (legacy_ultralytics.diagnostic_settings; equal to
 # sentinel.tracking.diagnostic.SETTING_KEYS, kept so by a test; this script imports nothing from the runtime).
@@ -278,7 +281,7 @@ def _starting_summary(startup: dict) -> dict[str, Any]:
     }
 
 
-def readiness_problem(required: str | None, startup: Any) -> str | None:
+def readiness_problem(required: str | None, startup: Any, scene_layers: str = SCENE_LAYERS) -> str | None:
     """None when ``startup`` (the runtime's ``starting`` line's ``startup``) meets ``required``, else a fixed label
     naming what is missing; None without a requirement. ``tracking_diagnostic``: no ``detector_problem`` and the
     marker ``face.tracking_diagnostic.tracker`` a mapping with every TRACKING_SETTING_KEYS entry a number
@@ -302,7 +305,7 @@ def readiness_problem(required: str | None, startup: Any) -> str | None:
             return "face_not_the_plain_validation_run" if isinstance(face, dict) else "face_missing"
         server = startup.get("scene_server")
         if not (isinstance(server, dict) and server.get("state") == "ready" and server.get("problem") is None
-                and server.get("layers") == SCENE_LAYERS and server.get("vision_on_gpu") is True):
+                and server.get("layers") == scene_layers and server.get("vision_on_gpu") is True):
             return "scene_server_not_ready"
         chat = startup.get("chat")
         if not isinstance(chat, dict):
@@ -395,7 +398,7 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
               status_at: tuple[tuple[float, str], ...] = (), step4_headroom: bool = False, backend=None,
               interrupted=lambda: False, cues: tuple[tuple[float, str, str], ...] = (),
               say=lambda text: (sys.stderr.write(text + "\n"), sys.stderr.flush()),
-              require_ready: str | None = None) -> dict:
+              require_ready: str | None = None, scene_layers: str | None = None) -> dict:
     backend = backend or SystemBackend()
     result: dict[str, Any] = {"schema_version": 1, "mode": "step5_guard", "status": None,
                               "parameters": {"duration_s": duration_s, "from_launch": from_launch,
@@ -403,7 +406,8 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
                                              "step4_headroom": step4_headroom,
                                              "status_at": [{"at_s": at, "name": name} for at, name in status_at],
                                              "cues": [{"at_s": at, "name": name} for at, name, _ in cues],
-                                             "require_ready": require_ready},
+                                             "require_ready": require_ready,
+                                             **({} if scene_layers is None else {"scene_layers": scene_layers})},
                               "limits": {"pressure_stop_bytes": oc.PRESSURE_STOP, "mem_free_floor_bytes": oc.FREE_FLOOR,
                                          "mem_available_floor_bytes": oc.AVAILABLE_FLOOR,
                                          "swap_counters": "unchanged", "max_sample_gap_s": 0.5}}
@@ -469,7 +473,8 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
                     except ValueError:
                         continue
                     if isinstance(item, dict) and item.get("run") == "starting":
-                        problem = readiness_problem(require_ready, item.get("startup"))
+                        problem = readiness_problem(require_ready, item.get("startup"),
+                                                    SCENE_LAYERS if scene_layers is None else scene_layers)
                         if require_ready is not None:
                             result["readiness"] = {"required": require_ready, "met": problem is None,
                                                    "reason": problem, "starting_after_s": round(now - launch, 3)}
@@ -598,6 +603,15 @@ def _cue_at(text: str) -> tuple[float, str, str]:
     return value, name, words
 
 
+def _layers(text: str) -> str:
+    """A fully offloaded count, N/N with N from 1 to 9999: the readiness never asks for a partial offload."""
+    loaded, sep, total = text.partition("/")
+    if not (sep and loaded.isdigit() and loaded == total and len(loaded) <= 4 and int(loaded) > 0
+            and loaded == str(int(loaded))):
+        raise argparse.ArgumentTypeError("use N/N, the fully offloaded layer count (for example 25/25)")
+    return text
+
+
 def _seconds(limit: float):
     def parse(text: str) -> float:
         value = float(text)
@@ -626,6 +640,9 @@ def main(argv: list[str] | None = None) -> int:
                              "and the diagnostic's marker with the tracker's settings; landmark_diagnostic = no "
                              "detector or face problem and the landmark marker as pinned; otherwise the runtime is "
                              "stopped at once, no cue is printed and the exit status is 1")
+    parser.add_argument("--scene-layers", type=_layers, default=None, metavar="N/N",
+                        help="face_chat: the scene server's fully offloaded layer count for the selected model set "
+                             f"(default {SCENE_LAYERS}); recorded under parameters and required by the readings")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="-- then the sentinel run command")
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -642,7 +659,7 @@ def main(argv: list[str] | None = None) -> int:
                            ready_timeout_s=args.ready_timeout_s, stop_grace_s=args.stop_grace_s,
                            status_at=tuple(args.status_at), step4_headroom=args.step4_headroom,
                            interrupted=lambda: flag["set"], cues=tuple(args.cue_at),
-                           require_ready=args.require_ready)
+                           require_ready=args.require_ready, scene_layers=args.scene_layers)
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
