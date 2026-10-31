@@ -1,8 +1,8 @@
 # Repository traffic — hemkesh2021-dotcom/Sentinel_Surveillance
 
-Last successful collection: **2026-10-30T02:56:06.645220Z**. Daily dates are UTC.
+Last successful collection: **2026-10-31T02:42:16.158202Z**. Daily dates are UTC.
 
-Observed daily coverage: **2026-10-05 → 2026-10-28**. Missing dates are unknown, not zero.
+Observed daily coverage: **2026-10-05 → 2026-10-29**. Missing dates are unknown, not zero.
 
 This report measures repository interest, not product usage or validated adoption. Clones may include automation and development activity. The collector uses API calls only, with no git clone/fetch/checkout.
 
@@ -12,8 +12,8 @@ GitHub supplies approximately the last 14 days. These window-level unique counts
 
 | Metric | Events | Unique visitors/cloners in API window | Latest daily bucket |
 | --- | ---: | ---: | --- |
-| Views | 65 | 7 | 2026-10-28 |
-| Clones | 279 | 125 | 2026-10-28 |
+| Views | 61 | 5 | 2026-10-29 |
+| Clones | 271 | 118 | 2026-10-29 |
 
 ## Totals across recorded days
 
@@ -21,8 +21,8 @@ These cover only observed dates, not the repository's lifetime. Daily unique cou
 
 | Metric | Recorded events | Sum of daily uniques | Observed dates |
 | --- | ---: | ---: | ---: |
-| Views | 105 | 21 | 24 |
-| Clones | 350 | 168 | 24 |
+| Views | 115 | 22 | 25 |
+| Clones | 358 | 175 | 25 |
 
 ## Monthly summary
 
@@ -30,7 +30,7 @@ Months may be partial. Separate coverage counts expose gaps in either metric.
 
 | Month | View dates | Views | Visitor-days | Clone dates | Clones | Cloner-days |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 2026-10 | 24 | 105 | 21 | 24 | 350 | 168 |
+| 2026-10 | 25 | 115 | 22 | 25 | 358 | 175 |
 
 ## Referrers in latest response
 
@@ -38,8 +38,7 @@ Absence from the top 10 does not establish zero traffic.
 
 | Referrer | Rolling-window views | Rolling-window uniques |
 | --- | ---: | ---: |
-| github.com | 13 | 2 |
-| Google | 1 | 1 |
+| github.com | 15 | 2 |
 | forums.developer.nvidia.com | 1 | 1 |
 
 ## Historically observed referrer peaks
@@ -49,23 +48,23 @@ Peaks refer to overlapping rolling windows; they are not cumulative totals or cu
 | Referrer | Peak window views | Peak window uniques | Last observed UTC |
 | --- | ---: | ---: | --- |
 | Google | 3 | 2 | 2026-10-30T02:56:06.645220Z |
-| forums.developer.nvidia.com | 1 | 1 | 2026-10-30T02:56:06.645220Z |
-| github.com | 15 | 3 | 2026-10-30T02:56:06.645220Z |
+| forums.developer.nvidia.com | 1 | 1 | 2026-10-31T02:42:16.158202Z |
+| github.com | 15 | 3 | 2026-10-31T02:42:16.158202Z |
 
 ## Popular paths in latest response
 
 | Path | Views | Uniques |
 | --- | ---: | ---: |
-| /hemkesh2021-dotcom/Sentinel_Surveillance | 16 | 5 |
-| /hemkesh2021-dotcom/Sentinel_Surveillance/graphs/traffic | 8 | 1 |
-| /hemkesh2021-dotcom/Sentinel_Surveillance/pulse | 6 | 1 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance | 20 | 5 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance/graphs/traffic | 9 | 1 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance/pulse | 7 | 1 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/stargazers | 4 | 1 |
-| /hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.1 | 3 | 2 |
-| /hemkesh2021-dotcom/Sentinel_Surveillance/releases | 3 | 1 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.2 | 3 | 1 |
-| /hemkesh2021-dotcom/Sentinel_Surveillance/tags | 3 | 1 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/tree/master | 3 | 1 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance/tags | 2 | 1 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/tree/alpha-candidate-2026-10 | 2 | 1 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance/actions | 1 | 1 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance/actions/metrics/performance | 1 | 1 |
 
 ## Daily breakdown
 
@@ -73,6 +72,7 @@ Recent dates may be partial or revised by GitHub. A later response replaces the 
 
 | UTC date | Views | Daily unique visitors | Clones | Daily unique cloners |
 | --- | ---: | ---: | ---: | ---: |
+| 2026-10-29 | 10 | 1 | 8 | 7 |
 | 2026-10-28 | 2 | 1 | 23 | 15 |
 | 2026-10-27 | 0 | 0 | 21 | 13 |
 | 2026-10-26 | 13 | 1 | 18 | 14 |
