@@ -45,6 +45,7 @@ import argparse
 import json
 import math
 import os
+import re
 import statistics
 import sys
 import time
@@ -97,6 +98,7 @@ MAX_FACES_KEPT = 8  # per frame, in a record; the counts are of all of them
 MAX_SAMPLES_PER_WINDOW = 80  # far above what the windows allow: a bound, not a target
 MIN_SAMPLES = 5  # fewer in a window makes the execution incomplete; nothing is extended or repeated to reach it
 EXIT = {"complete": 0, "incomplete": 3, "failed": 1}
+PRIVACY_COUNT = re.compile(r"(\S+) ([a-z_]+)=(\d+)")
 
 
 @dataclass(frozen=True)
@@ -534,6 +536,9 @@ def timeline(session: Session, result: dict[str, Any], emit: Callable[[str], Non
     result["streams"] = wait_for_streams(session, READY_TIMEOUT_S)
     if result["streams"][SUB]["boot_id"] != result["streams"][MAIN]["boot_id"]:
         raise Refused("boot_id_mismatch")
+    sub, main = result["streams"][SUB], result["streams"][MAIN]
+    if sub["width"] * sub["height"] >= main["width"] * main["height"]:
+        raise Refused("main_stream_not_larger_than_substream")  # the URLs swapped, or not the two streams this compares
     result["connections_at_ready"] = session.streams.connections()
     t0_ns = session.clock.monotonic_ns()
     result["t0_mono_ns"] = t0_ns
@@ -744,6 +749,23 @@ def width_ratios(samples: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
     return None if not ratios else {"n": len(ratios), "p50": round(statistics.median(ratios), 2)}
 
 
+def privacy_line(directory: Path) -> tuple[str, bool]:
+    """The session's privacy counts (face_privacy.py's ``<file> <key>=<n>`` lines), summed; file names only."""
+    counted, hits = 0, []
+    for path in sorted(directory.glob("secret-counts-*.txt")):
+        for line in path.read_text().splitlines():
+            found = PRIVACY_COUNT.fullmatch(line)
+            if found:
+                counted += 1
+                if int(found[3]):
+                    hits.append(found[1])
+    if not counted:
+        return "MISSING privacy counts: no camera credential, passphrase or name was counted", True
+    if hits:
+        return f"FAIL privacy: a camera credential, the passphrase or a name was found in {sorted(set(hits))}", False
+    return f"PASS privacy: no camera credential, passphrase or name in {counted} counts", True
+
+
 def read_account(directory: Path) -> dict[str, str]:
     try:
         lines = (directory / "account.txt").read_text().splitlines()
@@ -791,6 +813,8 @@ def reading(directory: Path, *, with_similarity: bool = False) -> tuple[list[str
         off = [key for key, want in expected.items() if account.get(key) != want]
         if off:
             lines.append(f"CONDITION not as planned ({', '.join(off)}): the windows concerned are read with that in mind")
+    privacy, private = privacy_line(directory)
+    lines.append(privacy)
     state, problems = verdict(result)
     lines.append(f"execution: {state}{' (' + '; '.join(problems) + ')' if problems else ''}; status {result.get('status')}; "
                  f"counters {dict(result.get('counters') or {})}")
@@ -836,7 +860,7 @@ def reading(directory: Path, *, with_similarity: bool = False) -> tuple[list[str
                      f"memory {phase['memory']}, streams {phase['streams']}")
     lines.append("CPU decoding with OpenCV's FFmpeg; NVDEC is not measured here")
     lines.append(f"door-range check: execution {state} (descriptive numbers; it validates nothing and admits nothing)")
-    return lines, EXIT[state]
+    return lines, EXIT[state] if private else EXIT["failed"]
 
 
 def main(argv: list[str] | None = None) -> int:

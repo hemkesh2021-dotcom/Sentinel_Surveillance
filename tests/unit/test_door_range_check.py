@@ -497,6 +497,14 @@ def test_bad_urls_are_refused_by_label_only(dr, tmp_path, environ, label) -> Non
     assert "hunter2" not in out.read_text() + "".join(lines)
 
 
+def test_swapped_urls_are_refused_before_t0(dr, tmp_path, monkeypatch) -> None:
+    monkeypatch.setitem(SIZES, "sub", (2304, 1296))
+    monkeypatch.setitem(SIZES, "main", (640, 480))
+    result, lines, streams, _, _ = session(dr, tmp_path)
+    assert result["status"] == "refused:main_stream_not_larger_than_substream" and streams.running == {}
+    assert not any('"starting"' in line for line in lines)
+
+
 def test_a_stale_pair_is_not_analysed(dr, tmp_path) -> None:
     result, _, _, faces, _ = session(dr, tmp_path, stale_after_s=100.0)  # frames stop being new during the seat window
     assert result["counters"]["stale_pair"] > 0
@@ -668,6 +676,17 @@ def test_the_reading_says_when_the_account_differs_or_is_missing(dr, tmp_path) -
     assert "CONDITION not as planned (others_in_view)" in text
     (tmp_path / "account.txt").unlink()
     assert "MISSING the operator's account" in "\n".join(dr.reading(tmp_path)[0])
+
+
+def test_the_reading_counts_privacy_and_a_hit_fails_it(dr, tmp_path) -> None:
+    folder = folder_with(dr, tmp_path, PLANNED)
+    assert "MISSING privacy counts" in "\n".join(dr.reading(folder)[0])
+    (folder / "secret-counts-camera.txt").write_text("run.err userinfo=0\ndoor-range.json userinfo=0\n")
+    lines, code = dr.reading(folder)
+    assert code == 0 and "PASS privacy: no camera credential, passphrase or name in 2 counts" in lines
+    (folder / "secret-counts-identity.txt").write_text("run.err passphrase=1\n")
+    lines, code = dr.reading(folder)
+    assert code == 1 and any(line.startswith("FAIL privacy") and "run.err" in line for line in lines)
 
 
 def test_the_reading_of_a_refused_launch_judges_nothing(dr, tmp_path) -> None:
