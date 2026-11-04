@@ -18,6 +18,7 @@ import importlib
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -705,6 +706,27 @@ def test_the_log_watch_reads_a_real_processs_output_and_leaves_it_for_the_runtim
     process.stdout.close()
     assert watch.attached and [e["task"] for e in watch.events()] == [12]
     assert lines == [b"srv stop: cancel task, id_task = 12\n", b"other\n"]  # what LlamaServerProcess reads, unchanged
+
+
+def test_a_scene_job_is_timed_to_its_own_end_not_the_questions(cp, monkeypatch, tmp_path) -> None:
+    """On a build the rule does not cover, the job goes in at once, ahead of the question, which then takes its time: the job
+    was on time, and the trial is not exercised, never failed for the question's length."""
+    monkeypatch.setattr(cp, "JOB_TIMEOUT_MS", 3000)
+    submit_side = cp.ThreadedSceneAnalyzer.submit_side
+
+    def slow_plan(self, work, *, plan=None, **kwargs):  # the job comes while the question is still being planned: it goes first
+        def planned(window):
+            time.sleep(0.4)
+            return plan(window)
+
+        return submit_side(self, work, plan=planned, **kwargs)
+
+    monkeypatch.setattr(cp.ThreadedSceneAnalyzer, "submit_side", slow_plan)
+    result, _ = checked(cp, monkeypatch, tmp_path, long_s=3.5, build="b9999-0000000")
+    trial = result["trials"][0]
+    assert trial["question_end"]["state"] == "answered" and trial["request"]["ended_after_submission_ms"] > 3000
+    assert trial["scene"]["completed_after_submission_ms"] < 3000
+    assert trial["verdict"] == "NOT EXERCISED"
 
 
 def test_the_real_server_is_given_the_watchs_popen(cp, monkeypatch, tmp_path) -> None:

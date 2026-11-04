@@ -680,6 +680,7 @@ class Rig:
         self.stamper.connect()
         self.frames, self.images = RecentFrames(), RecentImages()
         self.scene_started: dict[str, int] = {}
+        self.scene_done: dict[str, int] = {}
         self.scene_completions: dict[str, Any] = {}
         responses = SceneResponses(transport(port, REQUEST_TIMEOUT_S))
         scene_request = LlamaSceneRequest(responses, encode=encode, model=request_model,
@@ -689,6 +690,7 @@ class Rig:
             self.scene_started[job.job_id] = time.monotonic_ns()
             responses.last = None
             outcome = scene_request(job, image)
+            self.scene_done[job.job_id] = time.monotonic_ns()  # its own end: a question may still be running after it
             self.scene_completions[job.job_id] = responses.last
             return outcome
 
@@ -740,7 +742,8 @@ class Rig:
         _until(lambda: (self.collect() or True) and scene_id in self.outcomes, JOB_TIMEOUT_MS / 1000 + 20.0)
         started_ns, outcome = self.scene_started.get(scene_id), self.outcomes[scene_id]
         return {"start_delay_ms": None if started_ns is None else round((started_ns - submitted_ns) / 1e6, 1),
-                "completed_after_submission_ms": round((time.monotonic_ns() - submitted_ns) / 1e6, 1),
+                "completed_after_submission_ms": round((self.scene_done.get(scene_id, time.monotonic_ns())
+                                                        - submitted_ns) / 1e6, 1),
                 "outcome": outcome.kind.value,
                 **(self.scene_completions.get(scene_id) or {"finish_reason": None, "completion_tokens": None}),
                 **report_facts(outcome.text)}
@@ -911,7 +914,7 @@ class Rig:
         submitted_ns = self._scene_job(scene_id)
         document = self._wait_final(job, 40.0)
         _until(lambda: (self.collect() or True) and scene_id in self.outcomes, JOB_TIMEOUT_MS / 1000 + 20.0)
-        done_ns = time.monotonic_ns()
+        done_ns = self.scene_done.get(scene_id, time.monotonic_ns())
         observers.stop()
         begun, ended, outcome = self.chat_transport.state()
         after = dict(self.analyzer.counters)
