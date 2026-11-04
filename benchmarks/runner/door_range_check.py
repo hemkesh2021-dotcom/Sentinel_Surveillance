@@ -99,6 +99,7 @@ MAX_SAMPLES_PER_WINDOW = 80  # far above what the windows allow: a bound, not a 
 MIN_SAMPLES = 5  # fewer in a window makes the execution incomplete; nothing is extended or repeated to reach it
 EXIT = {"complete": 0, "incomplete": 3, "failed": 1}
 PRIVACY_COUNT = re.compile(r"(\S+) ([a-z_]+)=(\d+)")
+PRIVACY_KEYS = frozenset({"userinfo", "passphrase", "name"})
 
 
 @dataclass(frozen=True)
@@ -755,7 +756,7 @@ def privacy_line(directory: Path) -> tuple[str, bool]:
     for path in sorted(directory.glob("secret-counts-*.txt")):
         for line in path.read_text().splitlines():
             found = PRIVACY_COUNT.fullmatch(line)
-            if found:
+            if found and found[2] in PRIVACY_KEYS:  # not face_privacy's "nonconforming": F2's file profiles, not these files
                 counted += 1
                 if int(found[3]):
                     hits.append(found[1])

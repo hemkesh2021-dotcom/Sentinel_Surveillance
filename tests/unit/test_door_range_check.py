@@ -682,8 +682,9 @@ def test_the_reading_counts_privacy_and_a_hit_fails_it(dr, tmp_path) -> None:
     folder = folder_with(dr, tmp_path, PLANNED)
     assert "MISSING privacy counts" in "\n".join(dr.reading(folder)[0])
     (folder / "secret-counts-camera.txt").write_text("run.err userinfo=0\ndoor-range.json userinfo=0\n")
+    (folder / "secret-counts-identity.txt").write_text("run.err name=0\nrun.err nonconforming=4\n")  # F2's profiles: not these
     lines, code = dr.reading(folder)
-    assert code == 0 and "PASS privacy: no camera credential, passphrase or name in 2 counts" in lines
+    assert code == 0 and "PASS privacy: no camera credential, passphrase or name in 3 counts" in lines
     (folder / "secret-counts-identity.txt").write_text("run.err passphrase=1\n")
     lines, code = dr.reading(folder)
     assert code == 1 and any(line.startswith("FAIL privacy") and "run.err" in line for line in lines)
