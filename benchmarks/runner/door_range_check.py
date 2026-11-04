@@ -114,7 +114,7 @@ WINDOWS = (Window(EMPTY, 35.0, 65.0), Window("seat", 90.0, 130.0), Window("mid",
            Window("door", 210.0, 250.0))
 MARKS_END_S = 250.0
 CUES = (
-    (0.0, "t0", "T0 - start your phone timer for 1:10 and leave the camera's view now; stay out of view until it rings"),
+    (0.0, "t0", "T0 - start your phone stopwatch and leave the camera's view now; stay out of view until it reads 1:10"),
     (70.0, "seat", "1:10 - come back to your seat and face the camera lens; stay there until the next beep"),
     (130.0, "mid", "2:10 - stand on the middle mark and face the camera lens; stay there until the next beep"),
     (190.0, "door", "3:10 - stand on the doorway mark and face the camera lens; stay there until the next beep"),
