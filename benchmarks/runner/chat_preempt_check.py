@@ -3,7 +3,7 @@
 device (session 115, part 11). Operator tooling, not part of the runtime, and separate evidence: it never changes an
 integration run's verdict and never satisfies its "cancellation verified" item.
 
-    chat_preempt_check.py run --model-set lfm2.5-vl --post-load-release --out DIR/chatpreempt.json
+    chat_preempt_check.py run --model-set lfm3-vl --post-load-release --out DIR/chatpreempt.json
     chat_preempt_check.py read DIR        the reading of DIR/chatpreempt.json with the guard's DIR/result.json
 
 It starts one llama-server through the runtime's own LlamaServerProcess, as scene_smoke.py does:
@@ -53,8 +53,32 @@ The check is a short-answer control and at most TRIALS cancellation trials, each
 - **Also checked:** llama-server's /health after the trials and no slot left processing; the stop, with no llama-server
   left and the port closed. Memory is the guard's (step5_guard, its limits unchanged); ``read`` judges its result.
 
-**Overall:** passed when the control is as expected, at least one trial passed, no trial failed and every other check
-passed; not exercised when no trial was exercised and nothing failed; failed otherwise. Exit 0, 3, 1.
+**Three things apart (session 116, part 11).** Besides those trials ("resume" below), for build b11938-19cce6919, LFM3-VL
+and the 256-token image cap:
+- **Waiting-question withdrawal.** A question asked while scene jobs keep the worker busy, given up after CHAT_START_S
+  (chat's ``busy``, the worker's ``side_cancelled``). It must never have reached llama-server: no POST began, and no slot
+  task with the chat's cap was seen. This cancels nothing on the GPU, because nothing started there.
+- **In-flight cancellation.** A question ended through the runtime's own abort path with no scene job involved, once
+  during its prompt and once during its decoding. The server-side evidence is what counts, since a client abort alone
+  proves nothing about the GPU: llama-server's own ``cancel task`` line for this request's task and its ``stop
+  processing`` line, and /slots leaving that task and never returning to it. Without those lines it is NOT EXERCISED.
+- **Resume.** The trials above, with the same server-side evidence, the next task first seen, its decoding seen, and its
+  completion's timings beside those of uninterrupted baseline scene jobs; then a second control.
+
+**What timing can be measured** (TIMING_LIMITS, printed with every reading):
+- the client's abort and the HTTP return, on this process's clock;
+- when /slots last showed the task and first did not: each reading is known only between its sending and its return, and
+  the server answers /slots between its decode steps, so the release lies between two instants, never at one;
+- when the server's log lines reached this process: arrival times, after the log's own buffering;
+- the kernel's GPU load (/sys/.../load), a coarse average that cannot tell one request's work from another's.
+Nothing here observes CUDA kernels. From the pinned source, llama-server notices a closed connection only on its 1 s
+poll (HTTP_POLLING_SECONDS) and only then posts the cancel, so generation may continue for up to about a second after
+the client's abort, and a scene request meanwhile waits in its queue. The worker's scene start, which D80's 2000 ms is
+measured on, is the moment the scene POST begins, which can be earlier than the server's start of that task. Both are
+reported; D80's criterion is not changed here.
+
+**Overall:** passed when both controls are as expected, every section asked for has at least one PASS and no FAIL, and
+every other check passed; not exercised when nothing failed but a section has no PASS; failed otherwise. Exit 0, 3, 1.
 
 The result keeps metadata only:
 - states, the runtime's fixed reason labels, timings, token counts, lengths and counters;
@@ -68,7 +92,7 @@ read. Run it under the existing guard, from the worktree, with the runtime's Pyt
 
     env PYTHONPATH=src ~/sentinel-surveillance/.venv/bin/python benchmarks/runner/step5_guard.py --out DIR \\
       --from-launch --duration-s 600 -- env LD_PRELOAD=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1 \\
-      PYTHONPATH=src ~/onvif_env/bin/python benchmarks/runner/chat_preempt_check.py run --model-set lfm2.5-vl \\
+      PYTHONPATH=src ~/onvif_env/bin/python benchmarks/runner/chat_preempt_check.py run --model-set lfm3-vl \\
       --post-load-release --out DIR/chatpreempt.json
 """
 
@@ -84,7 +108,8 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections import deque
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -108,7 +133,7 @@ from sentinel.media.health import assess_frame  # noqa: E402
 from sentinel.media.recent import RecentFrames  # noqa: E402
 from sentinel.memory_policy import release_component_files  # noqa: E402
 from sentinel.scene.analyzer import PREEMPTED, SIDE_GRACE_S, RecentImages, ThreadedSceneAnalyzer  # noqa: E402
-from sentinel.scene.chat import CHAT_ADMISSION, CHAT_MAX_TOKENS, CHAT_MIN_INTERVAL_S, ChatQuestion, ChatService, \
+from sentinel.scene.chat import CHAT_ADMISSION, CHAT_MAX_TOKENS, CHAT_MIN_INTERVAL_S, CHAT_START_S, ChatQuestion, ChatService, \
     LlamaChatRequest  # noqa: E402
 from sentinel.scene.llama_server import LOOPBACK_HOST, LlamaSceneRequest, LoopbackTransport, TransportError, \
     opencv_jpeg  # noqa: E402
@@ -131,13 +156,45 @@ TRIALS = 3
 IN_FLIGHT_WAIT_S = 10.0  # how long a request has to begin decoding before its trial is not exercised
 POLL_S = 0.01
 SLOTS_DEBUG = "LLAMA_SERVER_SLOTS_DEBUG"  # llama-server puts the prompt and the text generated into /slots when set
-VALIDATED_BUILD = "b8932-98dc1418e"  # the llama-server build whose /slots the decoding rule was checked against
+VALIDATED_BUILD = "b8932-98dc1418e"  # the llama-server build whose /slots the decoding rule was first checked against
+# Session 116, part 11: LFM3-VL's own build, its tools/server/server-context.cpp read. A slot's reset() zeroes its stats
+# and n_predict_max when a task ends, so an idle slot reads 0 decoded and -1 remaining rather than the last task's, and a
+# new task reads 0 and its cap through the prompt. The rule below holds on both: it needs two rising readings of a new
+# task. The source checks are in test_chat_preempt_check.py (on this device).
+VALIDATED_LFM3_BUILD = "b11938-19cce6919"
+VALIDATED_BUILDS = frozenset({VALIDATED_BUILD, VALIDATED_LFM3_BUILD})
 BUILD_INFO = re.compile(r"b\d{1,6}-[0-9a-f]{7,40}")
 ERROR_TYPE = re.compile(r"[a-z_]{1,40}")  # pydantic's error categories
 REPORT_FIELDS = frozenset(SceneReport.model_fields)
 MAX_DETAILS = 10
-SCOPE = ("separate controlled evidence of the runtime's after-grace preemption on this device's llama-server; it is "
-         "not an integration run's 'cancellation verified' item, changes no verdict and admits nothing")
+SCOPE = ("separate controlled evidence of withdrawal, in-flight cancellation and resume on this device's llama-server; "
+         "it is not an integration run's 'cancellation verified' item, changes no verdict, marks no requirement "
+         "satisfied and admits nothing; a client abort alone does not show that GPU work stopped")
+TIMING_LIMITS = (
+    "timing: the client's abort and the HTTP return are this process's own clock",
+    "timing: a /slots reading is known only between its sending and its return, so a release lies between two instants",
+    "timing: log times are arrival at this process, after the server's log buffering",
+    "timing: GPU load is the kernel's coarse average and cannot tell one request from another; no CUDA kernel is observed",
+    "timing: the server polls for a closed connection once a second (pinned source), so generation can outlast the abort",
+    "timing: D80's scene start is when the worker's POST begins, which can precede the server's start of that task",
+)
+WITHDRAWALS = 2  # questions given up while they wait
+CANCEL_PHASES = ("prompt", "decoding", "prompt", "decoding")  # questions ended in flight, no scene job involved
+BASELINES = 3  # uninterrupted scene jobs, for their completion timings
+WITHDRAWAL_JOBS = 5  # scene jobs that may be used to keep the worker busy past CHAT_START_S; a bound, not a target
+ABORT_REASON = "the check ended this question"  # a fixed label: chat keeps the reason it is given
+CANCEL_WAIT_S = 8.0  # how long a slot may take to leave a cancelled task before the trial fails: a bound, not a limit
+TAIL_S = 2.0  # how long the readings continue after the slot left the task
+TIMELINE_POLL_S = 0.025
+LOAD_POLL_S = 0.05
+TIMELINE_KEPT = 4000
+LOAD_KEPT = 2000
+LOG_EVENTS_KEPT = 200
+GPU_LOAD = Path("/sys/devices/platform/bus@0/17000000.gpu/load")  # world-readable; the kernel's per-mille GPU load
+# llama-server's own lines (tools/server/server-queue.cpp's stop() and server-context.cpp's release()); only these
+# matches are kept, never a line
+LOG_CANCEL = re.compile(r"cancel task, id_task = (\d+)")
+LOG_RELEASE = re.compile(r"task (\d+) \| stop processing: n_tokens = (\d+), truncated = (\d+)")
 EXIT = {"passed": 0, "failed": 1, "not_exercised": 3}
 
 
@@ -306,7 +363,7 @@ class DecodingWatch:
         self.before: int | None = None
         self.last: Mapping[str, Any] | None = None
         self.result: str | None = None
-        if build != VALIDATED_BUILD:
+        if build not in VALIDATED_BUILDS:
             self.result = "ambiguous:unvalidated_build"
         elif baseline is None or baseline.get("slots") != 1 or baseline.get("processing") is not False:
             self.result = "ambiguous:no_idle_slot_before_the_question"
@@ -367,14 +424,21 @@ class SceneResponses:
         return data
 
 
+COMPLETION_TIMINGS = ("prompt_n", "prompt_ms", "predicted_n", "predicted_ms", "predicted_per_token_ms")
+
+
 def completion_facts(data: bytes) -> dict[str, Any]:
     try:
         payload = json.loads(data)
     except (ValueError, UnicodeDecodeError):
         return {"finish_reason": "missing", "completion_tokens": None}
     usage = payload.get("usage") if isinstance(payload, Mapping) else None
+    timings = payload.get("timings") if isinstance(payload, Mapping) else None
     return {"finish_reason": scene_completion_finish_reason(payload),
-            "completion_tokens": _count(usage.get("completion_tokens")) if isinstance(usage, Mapping) else None}
+            "completion_tokens": _count(usage.get("completion_tokens")) if isinstance(usage, Mapping) else None,
+            "timings": {key: round(timings[key], 2) for key in COMPLETION_TIMINGS
+                        if isinstance(timings, Mapping) and isinstance(timings.get(key), (int, float))
+                        and not isinstance(timings.get(key), bool)}}
 
 
 def _memory() -> dict[str, int | None]:
@@ -436,6 +500,168 @@ def _safe_loc(loc: tuple[Any, ...]) -> str:
     return ".".join(parts) or "<report>"
 
 
+# ---------------------------------------------------------------- what the server shows
+
+
+class ServerLogWatch:
+    """Which tasks llama-server says it cancelled and released, and when each line reached this process. Only the two
+    fixed patterns are read; every line is dropped at once. ``attached`` is False until a server's output runs through
+    it: then the absence of a line means nothing, and a cancellation cannot be attributed."""
+
+    def __init__(self) -> None:
+        self.attached = False
+        self._lock = threading.Lock()
+        self._events: deque[dict[str, Any]] = deque(maxlen=LOG_EVENTS_KEPT)
+
+    def feed(self, text: str) -> None:
+        cancel, release = LOG_CANCEL.search(text), LOG_RELEASE.search(text)
+        if cancel is None and release is None:
+            return
+        now = time.monotonic_ns()
+        with self._lock:
+            if cancel is not None:
+                self._events.append({"kind": "cancel", "task": int(cancel[1]), "at_ns": now})
+            if release is not None:
+                self._events.append({"kind": "release", "task": int(release[1]), "n_tokens": int(release[2]), "at_ns": now})
+
+    def events(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return list(self._events)
+
+    def popen(self, argv: Any, **kwargs: Any) -> Any:
+        """subprocess.Popen, with the process's output read through this watch (LlamaServerProcess takes ``popen``)."""
+        process = subprocess.Popen(argv, **kwargs)
+        process.stdout = _TeedOutput(process.stdout, self.feed)
+        self.attached = True
+        return process
+
+
+class _TeedOutput:
+    def __init__(self, stream: Any, feed: Callable[[str], None]) -> None:
+        self._stream, self._feed = stream, feed
+
+    def readline(self, *args: Any) -> Any:
+        raw = self._stream.readline(*args)
+        self._feed(raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw))
+        return raw
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+
+def read_gpu_load(path: Path = GPU_LOAD) -> int | None:
+    try:
+        return int(path.read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+class Observers:
+    """For one trial, off its own thread: bounded /slots readings (each with when it was sent and returned) and GPU load
+    samples. Numbers only."""
+
+    def __init__(self, port: int, load: Callable[[], int | None] = read_gpu_load,
+                 reader: Callable[[int], Mapping[str, Any] | None] | None = None) -> None:
+        self.port, self._load = port, load
+        self._reader = reader or slot_reading
+        self.readings: deque[dict[str, Any]] = deque(maxlen=TIMELINE_KEPT)
+        self.loads: deque[tuple[int, int | None]] = deque(maxlen=LOAD_KEPT)
+        self._stop = threading.Event()
+        self._threads = [threading.Thread(target=self._read_slots, daemon=True, name="chatpreempt-slots"),
+                         threading.Thread(target=self._read_load, daemon=True, name="chatpreempt-load")]
+
+    def _read_slots(self) -> None:
+        while not self._stop.is_set():
+            sent = time.monotonic_ns()
+            reading = self._reader(self.port)
+            self.readings.append({"sent": sent, "received": time.monotonic_ns(), **(reading or {"slots": None})})
+            self._stop.wait(TIMELINE_POLL_S)
+
+    def _read_load(self) -> None:
+        while not self._stop.is_set():
+            self.loads.append((time.monotonic_ns(), self._load()))
+            self._stop.wait(LOAD_POLL_S)
+
+    def start(self) -> Observers:
+        for thread in self._threads:
+            thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop.set()
+        for thread in self._threads:
+            thread.join(REQUEST_TIMEOUT_S + 1.0)
+
+    def latest(self) -> Mapping[str, Any] | None:
+        return self.readings[-1] if self.readings else None
+
+
+def _ms(ns: int | None, origin: int) -> float | None:
+    return None if ns is None else round((ns - origin) / 1e6, 1)
+
+
+def server_timing(readings: Sequence[Mapping[str, Any]], loads: Sequence[tuple[int, int | None]],
+                  events: Sequence[Mapping[str, Any]], *, task: int | None, abort_ns: int, attached: bool,
+                  chat_cap: int = CHAT_MAX_TOKENS) -> dict[str, Any]:
+    """What the server shows about one request's end, in milliseconds from the client's abort (TIMING_LIMITS says what
+    each can and cannot mean). ``released_between_ms`` is the interval the slot's leaving this task lies in."""
+    durations = sorted((r["received"] - r["sent"]) / 1e6 for r in readings)
+    out: dict[str, Any] = {
+        "task": task, "log_available": attached, "readings": len(readings),
+        "reading_ms": None if not durations else {"p50": round(durations[len(durations) // 2], 1),
+                                                  "max": round(durations[-1], 1)},
+        "cancel_seen_ms": None, "release_seen_ms": None, "released_n_tokens": None,
+    }
+    for event in events:
+        if event.get("task") != task:
+            continue
+        if event["kind"] == "cancel" and out["cancel_seen_ms"] is None:
+            out["cancel_seen_ms"] = _ms(event["at_ns"], abort_ns)
+        if event["kind"] == "release" and out["release_seen_ms"] is None:
+            out["release_seen_ms"] = _ms(event["at_ns"], abort_ns)
+            out["released_n_tokens"] = event.get("n_tokens")
+    on_task = [r for r in readings if r.get("id_task") == task and r.get("processing") is True]
+    last = on_task[-1] if on_task else None
+    before = [r for r in on_task if r["received"] <= abort_ns]
+    after = [] if last is None else [r for r in readings if r["sent"] >= last["received"]]
+    left = next((r for r in after if r.get("slots") == 1
+                 and (r.get("processing") is False or r.get("id_task") != task)), None)
+    out.update({
+        "n_predict": None if last is None else last.get("n_predict"),
+        "n_decoded_at_abort": before[-1].get("n_decoded") if before else None,
+        "n_decoded_last_seen": None if last is None else last.get("n_decoded"),
+        "last_on_task_sent_ms": None if last is None else _ms(last["sent"], abort_ns),
+        "first_off_task_received_ms": None if left is None else _ms(left["received"], abort_ns),
+        "still_on_task_at_the_end": last is not None and left is None,
+    })
+    if last is not None and left is not None:
+        out["released_between_ms"] = [max(0.0, _ms(last["sent"], abort_ns)), _ms(left["received"], abort_ns)]
+    if isinstance(out["n_decoded_at_abort"], int) and isinstance(out["n_decoded_last_seen"], int):
+        out["tokens_seen_after_abort"] = out["n_decoded_last_seen"] - out["n_decoded_at_abort"]
+    next_task = None if left is None else next((r for r in after if r.get("processing") is True
+                                                and r.get("id_task") not in (None, task)), None)
+    if next_task is not None:
+        out["next_task_first_seen_ms"] = _ms(next_task["received"], abort_ns)
+        out["next_task_is_chat_cap"] = next_task.get("n_predict") == chat_cap
+        same = [r for r in after if r.get("processing") is True and r.get("id_task") == next_task.get("id_task")]
+        rising = next((b for a, b in zip(same, same[1:], strict=False)
+                       if isinstance(a.get("n_decoded"), int) and isinstance(b.get("n_decoded"), int)
+                       and b["n_decoded"] > a["n_decoded"]), None)
+        out["next_task_decoding_seen_ms"] = None if rising is None else _ms(rising["received"], abort_ns)
+    values = [(at, value) for at, value in loads if value is not None]
+    if values:
+        prior = [value for at, value in values if at <= abort_ns]
+        later = [(at, value) for at, value in values if at > abort_ns]
+        zero = next((at for at, value in later if value == 0), None)
+        out["gpu_load"] = {
+            "samples": len(values), "before_abort_p50": sorted(prior)[len(prior) // 2] if prior else None,
+            "first_zero_after_abort_ms": _ms(zero, abort_ns),
+            "max_after_that": None if zero is None else max(value for at, value in later if at >= zero)}
+    else:
+        out["gpu_load"] = None
+    return out
+
+
 # ---------------------------------------------------------------- one trial
 
 
@@ -445,8 +671,10 @@ class Rig:
     def __init__(self, port: int, request_model: str, revision: str, picture: Any,
                  transport: Callable[[int, float], Any] = LoopbackTransport,
                  encode: Callable[[Any], bytes] = opencv_jpeg, build: str | None = None,
-                 chat_template_kwargs: Mapping[str, object] | None = None) -> None:
+                 chat_template_kwargs: Mapping[str, object] | None = None, log: ServerLogWatch | None = None,
+                 load: Callable[[], int | None] = read_gpu_load) -> None:
         self.port, self.picture, self.build = port, picture, build
+        self.log, self.load = log or ServerLogWatch(), load
         self.clock = SystemClock()
         self.stamper = FrameStamper("chatpreempt", self.clock)
         self.stamper.connect()
@@ -498,6 +726,153 @@ class Rig:
         for job_id, outcome in self.analyzer.drain():
             self.outcomes[job_id] = outcome
 
+    def _scene_job(self, scene_id: str) -> int:
+        """Submit one periodic scene job on the newest frame, as the lane does; the time of its submission."""
+        frame = self.frames.latest()[0]
+        self.images.put(frame.key, self.picture)  # the periodic job names a held frame, as the lane's do
+        submitted = time.monotonic_ns()
+        self.analyzer.submit(AnalysisJob(job_id=scene_id, frame=frame, purpose=JobPurpose.PERIODIC,
+                                         deadline_mono_ns=frame.ingest_mono_ns + JOB_TIMEOUT_MS * 1_000_000))
+        return submitted
+
+    def _scene_facts(self, scene_id: str, submitted_ns: int) -> dict[str, Any]:
+        """The finished scene job: when it started and completed after its submission, and its report's form."""
+        _until(lambda: (self.collect() or True) and scene_id in self.outcomes, JOB_TIMEOUT_MS / 1000 + 20.0)
+        started_ns, outcome = self.scene_started.get(scene_id), self.outcomes[scene_id]
+        return {"start_delay_ms": None if started_ns is None else round((started_ns - submitted_ns) / 1e6, 1),
+                "completed_after_submission_ms": round((time.monotonic_ns() - submitted_ns) / 1e6, 1),
+                "outcome": outcome.kind.value,
+                **(self.scene_completions.get(scene_id) or {"finish_reason": None, "completion_tokens": None}),
+                **report_facts(outcome.text)}
+
+    def baseline(self, name: str) -> dict[str, Any]:
+        """One scene job with no question anywhere near it: what an uninterrupted job's completion looks like."""
+        _until(lambda: not self.analyzer.busy(), 10.0)
+        observers = Observers(self.port, self.load).start()
+        try:
+            scene = self._scene_facts(name, self._scene_job(name))
+        finally:
+            observers.stop()
+        problems = scene_ran_problems(scene)  # its time is what is being measured here, so it is never judged
+        return {"name": name, "scene": scene, "verdict": "NOT AS EXPECTED" if problems else "AS EXPECTED",
+                "reasons": problems}
+
+    def withdrawal(self, name: str, question: str) -> dict[str, Any]:
+        """One question asked while scene jobs keep the worker busy past CHAT_START_S: it waits, then is given up, and
+        must never reach llama-server. Scene jobs go first by the runtime's own rule; this check only keeps one waiting."""
+        _until(lambda: not self.analyzer.busy(), 10.0)
+        before = dict(self.analyzer.counters)
+        self.chat_transport.reset()
+        observers = Observers(self.port, self.load).start()
+        submitted = {f"{name}-scene-0": self._scene_job(f"{name}-scene-0")}
+        item: dict[str, Any] = {"name": name, "kind": "withdrawal"}
+        try:
+            _until(lambda: next(iter(submitted)) in self.scene_started, 10.0)
+            code, accepted = self.chat.ask(ChatQuestion(question))
+            item["accepted"] = code
+            if code != 202:
+                item.update(verdict="FAIL", reasons=[f"not_accepted:{accepted.get('state')}"])
+                return item
+            job = accepted["job"]
+            deadline = time.monotonic() + CHAT_START_S + JOB_TIMEOUT_MS / 1000 * 2
+            document = self.chat.poll(job)[1]
+            while document.get("state") == "waiting" and time.monotonic() < deadline:
+                if list(submitted)[-1] in self.scene_started and len(submitted) < WITHDRAWAL_JOBS:
+                    scene_id = f"{name}-scene-{len(submitted)}"
+                    submitted[scene_id] = self._scene_job(scene_id)
+                time.sleep(POLL_S)
+                document = self.chat.poll(job)[1]
+            if document.get("state") != "busy":
+                document = self._wait_final(job, 40.0)
+            scenes = [self._scene_facts(scene_id, at) for scene_id, at in submitted.items()]
+        finally:
+            observers.stop()
+        after = dict(self.analyzer.counters)
+        begun, _, outcome = self.chat_transport.state()
+        readings = list(observers.readings)
+        tasks = {r["id_task"]: r.get("n_predict") for r in readings
+                 if r.get("processing") is True and r.get("id_task") is not None}
+        item.update({
+            "question_end": {"state": document.get("state"), "reason": document.get("reason"),
+                             "wait_ms": document.get("wait_ms")},
+            "request_began": begun is not None, "request_outcome": outcome,
+            "tasks_seen": len(tasks), "chat_cap_task_seen": CHAT_MAX_TOKENS in tasks.values(),
+            "scene_jobs": len(scenes), "scenes": scenes,
+            "counters": {key: after.get(key, 0) - before.get(key, 0) for key in sorted(set(after) | set(before))
+                         if after.get(key, 0) != before.get(key, 0)},
+        })
+        item["verdict"], item["reasons"] = judge_withdrawal(item)
+        return item
+
+    def cancellation(self, name: str, question: str, phase: str) -> dict[str, Any]:
+        """One question ended in flight through the runtime's own abort path, in its prompt or its decoding, with no
+        scene job involved: what the server shows after the client's abort."""
+        _until(lambda: not self.analyzer.busy(), 10.0)
+        before = dict(self.analyzer.counters)
+        self.chat_transport.reset()
+        watch = DecodingWatch(idle_slot(self.port), self.build, CHAT_MAX_TOKENS)
+        observers = Observers(self.port, self.load).start()
+        item: dict[str, Any] = {"name": name, "kind": "cancellation", "phase": phase}
+        try:
+            code, accepted = self.chat.ask(ChatQuestion(question))
+            item["accepted"] = code
+            if code != 202:
+                item.update(verdict="FAIL", reasons=[f"not_accepted:{accepted.get('state')}"])
+                return item
+            job = accepted["job"]
+            deadline = time.monotonic() + IN_FLIGHT_WAIT_S
+            seen = 0
+            while True:
+                _, ended, _ = self.chat_transport.state()
+                if ended is not None or self._final(job):
+                    watch.end("ended_before_the_abort")
+                    break
+                if time.monotonic() > deadline:
+                    watch.end("not_in_this_phase_in_time")
+                    break
+                if len(observers.readings) > seen:
+                    seen = len(observers.readings)
+                    reading = observers.latest()
+                    if self.chat_transport.state()[0] is not None and reading.get("sent", 0) >= (
+                            self.chat_transport.state()[0]):
+                        watch.feed(reading)
+                if watch.result is not None and watch.result != "decoding_observed":
+                    break
+                if phase == "prompt" and watch.task is not None:
+                    break
+                if phase == "decoding" and watch.result == "decoding_observed":
+                    break
+                time.sleep(POLL_S)
+            abort_ns = time.monotonic_ns()
+            aborted = self.chat.abort_running(ABORT_REASON)
+            document = self._wait_final(job, 40.0)
+            release_deadline = time.monotonic() + CANCEL_WAIT_S
+            while time.monotonic() < release_deadline:
+                current = observers.latest() or {}
+                if current.get("sent", 0) > abort_ns and (
+                        current.get("processing") is False or current.get("id_task") not in (None, watch.task)):
+                    break
+                time.sleep(POLL_S)
+            time.sleep(TAIL_S)  # the readings continue: a task that came back would show here
+        finally:
+            observers.stop()
+        after = dict(self.analyzer.counters)
+        begun, ended, outcome = self.chat_transport.state()
+        answer = document.get("answer")
+        item.update({
+            "decoding": watch.record(), "abort_returned": aborted,
+            "request": {"outcome": outcome, "began_before_abort_ms": None if begun is None else _ms(abort_ns, begun),
+                        "http_return_after_abort_ms": None if ended is None else _ms(ended, abort_ns)},
+            "question_end": {"state": document.get("state"), "reason": document.get("reason"),
+                             "answer_chars": len(answer) if isinstance(answer, str) else None},
+            "server": server_timing(list(observers.readings), list(observers.loads), self.log.events(), task=watch.task,
+                                    abort_ns=abort_ns, attached=self.log.attached),
+            "counters": {key: after.get(key, 0) - before.get(key, 0) for key in sorted(set(after) | set(before))
+                         if after.get(key, 0) != before.get(key, 0)},
+        })
+        item["verdict"], item["reasons"] = judge_cancellation(item)
+        return item
+
     def trial(self, name: str, question: str) -> dict[str, Any]:
         """One question and one periodic scene job, measured (see the module's docstring)."""
         _until(lambda: not self.analyzer.busy(), 10.0)
@@ -514,6 +889,7 @@ class Rig:
         job = accepted["job"]
         deadline = time.monotonic() + IN_FLIGHT_WAIT_S
         progress, in_flight = None, False
+        observers = Observers(self.port, self.load).start()
         while watch.result is None:
             begun, ended, _ = self.chat_transport.state()
             if ended is not None or self._final(job):
@@ -529,17 +905,14 @@ class Rig:
                     in_flight = begun is not None and ended is None
                     break
             time.sleep(POLL_S)
-        frame = self.frames.latest()[0]
-        self.images.put(frame.key, self.picture)  # the periodic job names a held frame, as the lane's do
         scene_id = f"{name}-scene"
-        submitted_ns = time.monotonic_ns()
         begun, ended, _ = self.chat_transport.state()
         in_flight = in_flight and ended is None
-        self.analyzer.submit(AnalysisJob(job_id=scene_id, frame=frame, purpose=JobPurpose.PERIODIC,
-                                         deadline_mono_ns=frame.ingest_mono_ns + JOB_TIMEOUT_MS * 1_000_000))
+        submitted_ns = self._scene_job(scene_id)
         document = self._wait_final(job, 40.0)
         _until(lambda: (self.collect() or True) and scene_id in self.outcomes, JOB_TIMEOUT_MS / 1000 + 20.0)
         done_ns = time.monotonic_ns()
+        observers.stop()
         begun, ended, outcome = self.chat_transport.state()
         after = dict(self.analyzer.counters)
         started_ns = self.scene_started.get(scene_id)
@@ -569,7 +942,11 @@ class Rig:
             "counters": {key: after.get(key, 0) - before.get(key, 0) for key in sorted(set(after) | set(before))
                          if after.get(key, 0) != before.get(key, 0)},
         })
-        item["verdict"], item["reasons"] = (judge_control if name == "control" else judge_trial)(item)
+        if ended is not None:  # from the abort's end of the request: the server's side, and the next task's start
+            item["server"] = server_timing(list(observers.readings), list(observers.loads), self.log.events(),
+                                           task=watch.task, abort_ns=ended, attached=self.log.attached)
+            item["server"]["scene_submitted_before_request_end_ms"] = round((ended - submitted_ns) / 1e6, 1)
+        item["verdict"], item["reasons"] = (judge_control if name.startswith("control") else judge_trial)(item)
         return item
 
     def _final(self, job: str) -> bool:
@@ -613,6 +990,18 @@ def scene_problems(item: Mapping[str, Any]) -> list[str]:
     return problems
 
 
+def scene_ran_problems(scene: Mapping[str, Any]) -> list[str]:
+    """Whether a scene job ran at all and gave a valid report, its times aside."""
+    problems = []
+    if scene["outcome"] != OutcomeKind.COMPLETED.value:
+        problems.append(f"scene_job_{scene['outcome']}")
+    if not scene.get("valid"):
+        problems.append(f"scene_report_{scene.get('problem', 'invalid')}")
+    if scene.get("start_delay_ms") is None:
+        problems.append("scene_job_never_started")
+    return problems
+
+
 def judge_trial(item: Mapping[str, Any]) -> tuple[str, list[str]]:
     """PASS only for a request in flight when the scene job came that the grace then ended for it; NOT EXERCISED when
     it ended by itself (before the job, or within the grace); FAIL otherwise. A scene problem always fails."""
@@ -636,7 +1025,65 @@ def judge_trial(item: Mapping[str, Any]) -> tuple[str, list[str]]:
         reasons.append(f"request_{item['request']['outcome']}")
     if counters.get("side_preempted") != 1 or counters.get("side_preempted_after_grace") != 1:
         reasons.append("no_preemption_after_the_grace_counted")
-    return ("FAIL", reasons) if reasons else ("PASS", ["ended by the scene job after the grace, which then ran"])
+    if reasons:
+        return "FAIL", reasons
+    server = item.get("server") or {}
+    if server.get("log_available") and server.get("cancel_seen_ms") is None:
+        return "NOT EXERCISED", ["the client aborted, but the server reported no cancellation of this task"]
+    return "PASS", ["ended by the scene job after the grace, which then ran"]
+
+
+def judge_withdrawal(item: Mapping[str, Any]) -> tuple[str, list[str]]:
+    """PASS: the question waited, was given up as busy and never reached llama-server, and the scene jobs ran. NOT
+    EXERCISED: a gap let it start. Anything else fails, as does any scene job that did not run as monitoring requires."""
+    problems = [f"{index}:{problem}" for index, scene in enumerate(item["scenes"])
+                for problem in scene_ran_problems(scene)]  # these jobs queue on purpose: their times are not judged
+    if problems:
+        return "FAIL", problems
+    end = item["question_end"]
+    if item["request_began"]:
+        if end["state"] == "busy":
+            return "FAIL", ["given up as busy after its request began"]
+        return "NOT EXERCISED", [f"a gap let the question start ({end['state']})"]
+    if end["state"] != "busy":
+        return "FAIL", [f"question_{end['state']}"]
+    if item["counters"].get("side_cancelled") != 1:
+        return "FAIL", ["no_withdrawal_counted"]
+    if item["chat_cap_task_seen"]:
+        return "FAIL", ["a task with the chat's cap was seen on the server"]
+    return "PASS", ["waited, given up as busy, withdrawn; no request began and no chat task was seen on the server"]
+
+
+def judge_cancellation(item: Mapping[str, Any]) -> tuple[str, list[str]]:
+    """PASS needs the server's own evidence: its cancel line for this task, its release line, and /slots leaving the task
+    without coming back. A client abort alone is NOT EXERCISED, an answer that ended first too. Timing is reported,
+    never judged: no limit on it exists yet, and none is invented here."""
+    end, server = item["question_end"], item["server"]
+    result = (item.get("decoding") or {}).get("result")
+    if isinstance(result, str) and result.startswith("ambiguous"):
+        return "NOT EXERCISED", [f"the task could not be attributed ({result})"]
+    if not item["abort_returned"] or end["state"] == "answered":
+        return "NOT EXERCISED", [f"the request had ended before the abort ({end['state']}, {result})"]
+    reasons = []
+    if end["state"] != "cancelled":
+        reasons.append(f"question_{end['state']}")
+    elif end["reason"] != ABORT_REASON:
+        reasons.append("cancelled_for_another_reason")
+    if item["request"]["outcome"] != "aborted":
+        reasons.append(f"request_{item['request']['outcome']}")
+    if reasons:
+        return "FAIL", reasons
+    if server["task"] is None:
+        return "NOT EXERCISED", [f"the abort came before the task was seen on the slot ({result})"]
+    if not server["log_available"]:
+        return "NOT EXERCISED", ["the server's log was not available: a client abort alone proves nothing"]
+    if server["cancel_seen_ms"] is None:
+        return "NOT EXERCISED", ["the client aborted, but the server reported no cancellation of this task"]
+    if server["release_seen_ms"] is None:
+        return "FAIL", ["the server reported the cancellation but no release of the slot"]
+    if server["still_on_task_at_the_end"]:
+        return "FAIL", ["the slot was still on the task at the end of the readings"]
+    return "PASS", ["the server reported cancelling and releasing this task, and /slots left it"]
 
 
 def judge_control(item: Mapping[str, Any]) -> tuple[str, list[str]]:
@@ -648,21 +1095,35 @@ def judge_control(item: Mapping[str, Any]) -> tuple[str, list[str]]:
         "answered within the grace" if item["in_flight_at_submission"] else "answered before the scene job came"])
 
 
-def overall(result: Mapping[str, Any]) -> str:
-    trials = [t["verdict"] for t in result.get("trials", [])]
-    if result["problems"] or result.get("control", {}).get("verdict") != "AS EXPECTED" or "FAIL" in trials \
-            or not trials:
+def section_verdict(items: Sequence[Mapping[str, Any]]) -> str:
+    verdicts = [item["verdict"] for item in items]
+    if "FAIL" in verdicts:
         return "failed"
-    return "passed" if "PASS" in trials else "not_exercised"
+    return "passed" if "PASS" in verdicts else "not_exercised"
+
+
+def overall(result: Mapping[str, Any]) -> str:
+    """Every section asked for has a PASS and no FAIL; both controls as expected; nothing else went wrong."""
+    trials = result.get("trials", [])
+    controls = [result.get("control", {})] + ([result["control_after"]] if "control_after" in result else [])
+    if result["problems"] or not trials or any(c.get("verdict") != "AS EXPECTED" for c in controls) \
+            or any(b.get("verdict") != "AS EXPECTED" for b in result.get("baselines", [])):
+        return "failed"
+    sections = [section_verdict(items) for items in (trials, result.get("withdrawal"), result.get("cancellation"))
+                if items is not None]
+    if "failed" in sections:
+        return "failed"
+    return "passed" if all(section == "passed" for section in sections) else "not_exercised"
 
 
 # ---------------------------------------------------------------- the run
 
 
-def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaServerProcess,
+def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] | None = None,
         environ: Mapping[str, str] = os.environ, transport: Callable[[int, float], Any] = LoopbackTransport,
         servers: Callable[[], list[int]] = llama_servers, meminfo: Callable[[], Any] = read_meminfo,
-        picture: Callable[[], Any] = synthetic_picture, encode: Callable[[Any], bytes] = opencv_jpeg) -> dict[str, Any]:
+        picture: Callable[[], Any] = synthetic_picture, encode: Callable[[Any], bytes] = opencv_jpeg,
+        load: Callable[[], int | None] = read_gpu_load) -> dict[str, Any]:
     """The check. The keyword arguments are the runtime's own pieces; tests and the package's dry run pass stand-ins
     (a fake llama-server, its process, the meminfo reader, a picture and an encoder without OpenCV)."""
     chosen = scene_model_set(args.model_set)
@@ -674,7 +1135,9 @@ def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaS
                               "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                               "limits": {"grace_ms": GRACE_MS, "max_chat_delay_ms": MAX_CHAT_DELAY_MS,
                                          "job_timeout_ms": JOB_TIMEOUT_MS, "chat_max_tokens": CHAT_MAX_TOKENS,
-                                         "trials": args.trials},
+                                         "trials": args.trials, "withdrawals": args.withdrawals,
+                                         "cancellations": args.cancellations, "baselines": args.baselines},
+                              "server_flags": list(chosen.server_flags),
                               "memory": {"before": _memory()}, "problems": []}
     problems: list[str] = result["problems"]
     if environ.get(SLOTS_DEBUG):
@@ -691,7 +1154,13 @@ def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaS
     if problem is not None:
         problems.append(f"memfree_precheck:{problem}")
         return result
-    server = server_factory(binary, model, mmproj, args.port, extra_flags=chosen.server_flags)
+    log = ServerLogWatch()
+    if server_factory is None:  # the runtime's own process and readiness; only its output is also read here
+        server = LlamaServerProcess(binary, model, mmproj, args.port, extra_flags=chosen.server_flags, popen=log.popen)
+    else:
+        server = server_factory(binary, model, mmproj, args.port, extra_flags=chosen.server_flags)
+        if hasattr(server, "attach_log"):  # the fake's lines, the same two patterns
+            server.attach_log(log)
     started = time.monotonic()
     rig = None
     try:  # from the start on: a guard stop (SIGINT) during the load still stops this check's own llama-server
@@ -715,15 +1184,33 @@ def run(args: argparse.Namespace, *, server_factory: Callable[..., Any] = LlamaS
         result["picture"] = {"jpeg_bytes": len(jpeg), "sha256": hashlib.sha256(jpeg).hexdigest()}
         result["server_build"] = server_build(args.port)  # the decoding rule holds for VALIDATED_BUILD only
         rig = Rig(args.port, chosen.request_model, chosen.model_revision, image, transport, encode,
-                  build=result["server_build"], chat_template_kwargs=chosen.chat_template_kwargs)
+                  build=result["server_build"], chat_template_kwargs=chosen.chat_template_kwargs, log=log, load=load)
         rig.start()
+        if args.baselines:
+            result["baselines"] = [rig.baseline(f"baseline-{index}") for index in range(1, args.baselines + 1)]
         result["control"] = rig.trial("control", QUESTIONS["short"])
         result["memory"]["after_control"] = _memory()
+        if args.withdrawals:
+            result["withdrawal"] = []
+            for index in range(1, args.withdrawals + 1):
+                time.sleep(CHAT_MIN_INTERVAL_S)  # chat takes one question every 4 s
+                result["withdrawal"].append(rig.withdrawal(f"withdrawal-{index}", QUESTIONS["long"]))
+            result["memory"]["after_withdrawal"] = _memory()
+        if args.cancellations:
+            result["cancellation"] = []
+            for index, phase in enumerate(CANCEL_PHASES[:args.cancellations], 1):
+                time.sleep(CHAT_MIN_INTERVAL_S)
+                result["cancellation"].append(rig.cancellation(f"cancel-{index}", QUESTIONS["long"], phase))
+            result["memory"]["after_cancellation"] = _memory()
         result["trials"] = []
         for index in range(1, args.trials + 1):
             time.sleep(CHAT_MIN_INTERVAL_S)  # chat takes one question every 4 s
             result["trials"].append(rig.trial(f"trial-{index}", QUESTIONS["long"]))
             result["memory"][f"after_trial_{index}"] = _memory()
+        if args.baselines:  # after everything: does a question and a scene job still run normally?
+            time.sleep(CHAT_MIN_INTERVAL_S)
+            result["control_after"] = rig.trial("control-after", QUESTIONS["short"])
+            result["memory"]["after_control_after"] = _memory()
         progress = slot_progress(args.port)
         result["health"] = {"health_ok": health_ok(args.port), "slots": progress}
         if not result["health"]["health_ok"]:
@@ -800,14 +1287,52 @@ def read(directory: Path) -> tuple[list[str], int]:
     control = check.get("control") or {}
     lines.append(f"{control.get('verdict', 'MISSING')} control (short question): "
                  f"{'; '.join(control.get('reasons', []))} {json.dumps(_summary(control)) if control else ''}".rstrip())
+    for baseline in check.get("baselines", []):
+        lines.append(f"{baseline['verdict']} {baseline['name']} (uninterrupted scene job): "
+                     f"{json.dumps(_scene_summary(baseline['scene']))}")
+    if "withdrawal" in check:
+        lines.append(f"--- waiting-question withdrawal: {section_verdict(check['withdrawal']).replace('_', ' ')}")
+        for item in check["withdrawal"]:
+            lines.append(f"{item['verdict']} {item['name']}: {'; '.join(item['reasons'])} {json.dumps(_withdrawal_summary(item))}")
+    if "cancellation" in check:
+        lines.append(f"--- in-flight cancellation: {section_verdict(check['cancellation']).replace('_', ' ')}")
+        for item in check["cancellation"]:
+            lines.append(f"{item['verdict']} {item['name']} (during its {item['phase']}): {'; '.join(item['reasons'])} "
+                         f"{json.dumps(_cancel_summary(item))}")
+    if "withdrawal" in check or "cancellation" in check:
+        lines.append(f"--- resume after preemption: {section_verdict(check.get('trials', [])).replace('_', ' ')}")
     for trial in check.get("trials", []):
         lines.append(f"{trial['verdict']} {trial['name']} (long question): {'; '.join(trial['reasons'])} "
                      f"{json.dumps(_summary(trial))}")
+    if "control_after" in check:
+        control = check["control_after"]
+        lines.append(f"{control.get('verdict', 'MISSING')} control after everything (short question): "
+                     f"{'; '.join(control.get('reasons', []))} {json.dumps(_summary(control))}".rstrip())
+    if "withdrawal" in check or "cancellation" in check:
+        lines.extend(TIMING_LIMITS)
     cleanup = {"problems": check.get("problems"), "health": check.get("health"), "stop": check.get("stop")}
     lines.append(f"{'PASS' if not check.get('problems') else 'FAIL'} server, health and cleanup: {json.dumps(cleanup)}")
     verdict = check.get("verdict") if supervision and memory else "failed"
     lines.append(f"chat preemption check: {verdict.replace('_', ' ')} ({SCOPE})")
     return lines, EXIT.get(verdict, 1)
+
+
+def _scene_summary(scene: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: scene.get(key) for key in ("outcome", "valid", "finish_reason", "completion_tokens", "start_delay_ms",
+                                            "completed_after_submission_ms", "timings")}
+
+
+def _withdrawal_summary(item: Mapping[str, Any]) -> dict[str, Any]:
+    return {"state": (item.get("question_end") or {}).get("state"), "wait_ms": (item.get("question_end") or {}).get("wait_ms"),
+            "request_began": item.get("request_began"), "chat_cap_task_seen": item.get("chat_cap_task_seen"),
+            "scene_jobs": item.get("scene_jobs"), "scenes_valid": [s.get("valid") for s in item.get("scenes", [])],
+            "counters": item.get("counters")}
+
+
+def _cancel_summary(item: Mapping[str, Any]) -> dict[str, Any]:
+    return {"state": (item.get("question_end") or {}).get("state"), "request": item.get("request"),
+            "decoding": (item.get("decoding") or {}).get("result"), "server": item.get("server"),
+            "counters": item.get("counters")}
 
 
 def _summary(item: Mapping[str, Any]) -> dict[str, Any]:
@@ -821,7 +1346,8 @@ def _summary(item: Mapping[str, Any]) -> dict[str, Any]:
             "scene_start_delay_ms": scene.get("start_delay_ms"),
             "scene_waited_ms": scene.get("waited_behind_question_ms"), "scene_report_valid": scene.get("valid"),
             "scene_finish": scene.get("finish_reason"), "scene_tokens": scene.get("completion_tokens"),
-            "scene_rejection": scene.get("rejection"), "counters": item.get("counters")}
+            "scene_rejection": scene.get("rejection"), "scene_timings": scene.get("timings"),
+            "server": item.get("server"), "counters": item.get("counters")}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -833,6 +1359,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="the llama-server binary (default: the selected set's own pinned build)")
     go.add_argument("--port", type=int, default=PORT)
     go.add_argument("--trials", type=int, default=TRIALS, choices=range(1, TRIALS + 1))
+    go.add_argument("--withdrawals", type=int, default=WITHDRAWALS, choices=range(0, WITHDRAWALS + 1))
+    go.add_argument("--cancellations", type=int, default=len(CANCEL_PHASES), choices=range(0, len(CANCEL_PHASES) + 1))
+    go.add_argument("--baselines", type=int, default=BASELINES, choices=range(0, BASELINES + 1))
     go.add_argument("--ready-timeout-s", type=float, default=180.0)
     go.add_argument("--post-load-release", action="store_true")
     go.add_argument("--out", type=Path, required=True, help="a new JSON file for the result")

@@ -25,6 +25,18 @@ request differently.
 
 /slots also carries a ``generated`` text, and /props a template and a model path. A reader must drop them all (the real
 server sends slot text only with LLAMA_SERVER_SLOTS_DEBUG).
+
+With ``build=LFM3_BUILD`` (session 116, part 11) the slot follows llama-server b11938 (tools/server/server-context.cpp at
+19cce69) instead:
+- **A task's end resets the slot.** ``reset()`` runs ``stats = {}`` and ``n_predict_max = -1``, so an idle slot reads 0
+  decoded and -1 remaining, keeping its last task's id and params (``task_prev``).
+- **A new task reads 0 and its cap through its prompt** (``n_predict_max`` is set at launch; ``stats`` are still zero).
+- **The server notices a closed connection only on its poll** (``close_poll_s``; HTTP_POLLING_SECONDS, 1 s, read from
+  ``recv_with_timeout`` in server-queue.cpp): generation goes on until then, and only then does it cancel. Tests pass a
+  shorter poll.
+- **A second request waits** for the slot (``queue_tasks.defer``). The fake's one slot always did this at launch.
+- **Its log:** ``cancel task, id_task = N`` then ``task N | stop processing: n_tokens = M, truncated = 0`` for a cancelled
+  task, and the second line alone for one that ended by itself, given to ``attach_log``'s watch.
 """
 
 from __future__ import annotations
@@ -44,6 +56,7 @@ ANSWER = "A synthetic answer about labelled shapes."  # never to appear in a che
 GENERATED = "synthetic text the slots reader must drop"
 TEMPLATE = "synthetic chat template the props reader must drop"
 BUILD = "b8932-98dc1418e"  # the installed build the fake follows
+LFM3_BUILD = "b11938-19cce6919"  # LFM3-VL's own build (the slot rules above)
 REPORT = {"persons_visible": 0, "fire_or_smoke": False, "threat": "low", "observations": ["shapes on white"],
           "uncertainty": "low", "summary": "Labelled shapes on a white background."}
 
@@ -53,7 +66,7 @@ class FakeLlamaServer:
                  scene_text: str | None = None, prompt_s: float = 0.0, scene_prompt_s: float = 0.0,
                  scene_tokens: int = 60, build: str = BUILD, slot_task_ids: bool = True,
                  json_schema_error: str | None = None, grammar_error: str | None = None,
-                 grammar_scene_text: str | None = None, reasoning: str | None = None) -> None:
+                 grammar_scene_text: str | None = None, reasoning: str | None = None, close_poll_s: float = 0.0) -> None:
         self.port, self.decode_s, self.tokens_per_s, self.scene_s = port, decode_s, tokens_per_s, scene_s
         self.prompt_s, self.scene_prompt_s, self.scene_tokens = prompt_s, scene_prompt_s, scene_tokens
         self.build, self.slot_task_ids, self.json_schema_error = build, slot_task_ids, json_schema_error
@@ -64,6 +77,9 @@ class FakeLlamaServer:
         self.scene_text = json.dumps(REPORT) if scene_text is None else scene_text
         self.grammar_scene_text = grammar_scene_text  # None: a grammar request is answered with scene_text too
         self._lock = threading.Lock()
+        self.close_poll_s = close_poll_s  # how often a closed connection is noticed; 0: at once
+        self.log = None  # the check's ServerLogWatch (attach_log), when there is one
+        self._slot_free = threading.Lock()  # one slot: another request waits for it, as llama-server defers it
         # one slot; "task" stays the last task's id once it ends (llama-server's task_prev)
         self._slot: dict[str, Any] = {"processing": False, "task": None, "n_predict": None, "n_decoded": 0,
                                       "n_remain": -1}
@@ -73,10 +89,26 @@ class FakeLlamaServer:
         self._httpd: ThreadingHTTPServer | None = None
 
     def _launch(self, n_predict: int) -> None:
-        """A new task in the slot: its id and n_predict now, the counters left as the previous task left them."""
+        """A new task in the slot: its id and n_predict now, the counters left as the previous task left them (on b11938
+        the previous end zeroed them, and n_remain reads the new cap)."""
         with self._lock:
             self._tasks += 1
             self._slot.update(processing=True, task=self._tasks, n_predict=n_predict)
+            if self.build == LFM3_BUILD:
+                self._slot.update(n_decoded=0, n_remain=n_predict)
+
+    def _released(self, *, cancelled: bool) -> None:
+        """The slot's end of a task: the log's lines, and on b11938 reset() zeroing its counters."""
+        with self._lock:
+            task, decoded = self._slot["task"], self._slot["n_decoded"]
+            self._slot.update(processing=False)
+            if self.build == LFM3_BUILD:
+                self._slot.update(n_decoded=0, n_remain=-1)
+        if self.log is not None:
+            if cancelled:
+                self.log.feed(f"srv         stop: cancel task, id_task = {task}\n")
+            self.log.feed(f"slot      release: id  0 | task {task} | stop processing: n_tokens = {decoded + 325}, "
+                          "truncated = 0\n")
 
     def _prompt_done(self) -> None:
         with self._lock:
@@ -139,6 +171,9 @@ class FakeLlamaServer:
             def do_POST(self) -> None:
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 cap = int(body["max_tokens"])
+                server._slot_free.acquire()
+                self._cancelled = False
+                self._launched = time.monotonic()
                 server._launch(cap)
                 try:
                     if server.json_schema_error is not None and "json_schema" in body:
@@ -153,17 +188,27 @@ class FakeLlamaServer:
                     else:
                         self._chat(body, cap)
                 finally:
-                    with server._lock:
-                        server._slot.update(processing=False)
+                    server._released(cancelled=self._cancelled)
+                    server._slot_free.release()
 
             def _wait(self, seconds: float) -> bool:
-                """Waits; False as soon as the client has closed its side of the connection."""
+                """Waits; False as soon as the server notices the client has closed its side of the connection."""
                 end = time.monotonic() + seconds
                 while time.monotonic() < end:
-                    if self._closed():
+                    if self._noticed_closed():
                         return False
                     time.sleep(0.01)
                 return True
+
+            def _noticed_closed(self) -> bool:
+                """Whether the server has noticed the closed connection: at once, or only on its poll's ticks."""
+                poll = server.close_poll_s
+                if poll > 0 and (time.monotonic() - self._launched) % poll > 0.02:
+                    return False
+                if self._closed():
+                    self._cancelled = True
+                    return True
+                return False
 
             def _scene(self, cap: int, text: str, body: dict[str, Any]) -> None:
                 time.sleep(server.scene_prompt_s)
@@ -178,7 +223,9 @@ class FakeLlamaServer:
                 self._json(200, {"choices": [{"finish_reason": "stop", "index": 0, "message": self._message(text, body)}],
                                  "usage": {"completion_tokens": tokens, "prompt_tokens": 325,
                                            "total_tokens": tokens + 325},
-                                 "timings": {"predicted_n": tokens}})
+                                 "timings": {"prompt_n": 325, "prompt_ms": server.scene_prompt_s * 1000.0,
+                                             "predicted_n": tokens, "predicted_ms": server.scene_s * 1000.0,
+                                             "predicted_per_token_ms": server.scene_s * 1000.0 / max(tokens, 1)}})
 
             def _chat(self, body: dict[str, Any], cap: int) -> None:
                 text = body["messages"][-1]["content"][-1]["text"]
@@ -189,7 +236,7 @@ class FakeLlamaServer:
                 server._prompt_done()
                 began = time.monotonic()
                 while time.monotonic() - began < seconds:
-                    if self._closed():
+                    if self._noticed_closed():
                         server.closed_by_client += 1
                         return
                     server._decoded(min(cap, int((time.monotonic() - began) * server.tokens_per_s) + 1))
@@ -232,6 +279,10 @@ class FakeServerProcess:
         assert port == self.fake.port
         self.extra_flags = tuple(extra_flags)  # the set's own launch flags, as LlamaServerProcess takes them
         return self
+
+    def attach_log(self, watch: Any) -> None:
+        """As the real server's output runs through the check's watch: the two lines it looks for."""
+        self.fake.log, watch.attached = watch, True
 
     def start(self, ready_timeout_s: float) -> ServerStatus:
         self.fake.start()
