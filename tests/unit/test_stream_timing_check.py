@@ -628,4 +628,4 @@ def test_an_interrupted_session_reads_incomplete(st, tmp_path) -> None:
     got = session(st, tmp_path, interrupt_at=79.0)
     lines, code = st.reading(folder(st, tmp_path, got, guard={"status": "guard_stop", "child": {}, "guard": {"trigger": "x"}}))
     text = "\n".join(lines)
-    assert code == 3 and "execution: incomplete" in text and "collected, not analysed" in text
+    assert code == 3 and "execution: incomplete" in text and "frames, not analysed" in text
