@@ -283,7 +283,8 @@ class Sim:
         return len(self.running)
 
 
-def session(st, tmp_path, *, lags=(0.18,), light="no", silent=(), sizes=SIZES, paths=None, interrupt_at=None, environ=None, spawn=None):
+def session(st, tmp_path, *, lags=(0.18,), light="no", silent=(), sizes=SIZES, paths=None, interrupt_at=None, environ=None, spawn=None,
+            sensors=None):
     clock = FakeClock()
     sim = Sim(clock, lags, silent=silent, sizes=sizes, paths=paths)
     lines: list[str] = []
@@ -311,7 +312,7 @@ def session(st, tmp_path, *, lags=(0.18,), light="no", silent=(), sizes=SIZES, p
     args = argparse.Namespace(out=tmp_path / "stream-timing.json", light=light)
     result = st.run(args, environ=URLS if environ is None else environ, clock=clock, streams=sim, emit=emit, sleep=sleep,
                     reduce=lambda grid: grid, spawn=spawn or fake_spawn, stop=fake_stop,
-                    sensors=lambda: {"zones_c": {"cpu-thermal": 50.0}, "cpu_khz": [1420800], "gpu_hz": 306000000},
+                    sensors=sensors or (lambda: {"zones_c": {"cpu-thermal": 50.0}, "cpu_khz": [1420800], "gpu_hz": 306000000}),
                     memory=lambda: {"VmRSS": 1})
     return SimpleNamespace(result=result, lines=lines, sim=sim, loads=loads, out=args.out, series=tmp_path / "stream-series.json")
 
@@ -498,6 +499,41 @@ def test_sensors_read_world_readable_files_and_skip_what_cannot_be_read(st, tmp_
     assert got == {"zones_c": {"cpu-thermal": 52.875}, "cpu_khz": [1420800], "gpu_hz": 306000000}
     assert st.read_sensors(thermal, cpu, tmp_path / "missing")["gpu_hz"] is None
     assert st.sensor_summary([]) is None
+
+
+def test_a_sensor_file_that_fails_oddly_is_left_out(st, tmp_path, monkeypatch) -> None:
+    """This device's cv0-cv2 zones have no value, and reading them raises TypeError rather than OSError."""
+    thermal = tmp_path / "thermal"
+    for index, name in enumerate(("cpu-thermal", "cv0-thermal")):
+        zone = thermal / f"thermal_zone{index}"
+        zone.mkdir(parents=True)
+        (zone / "type").write_text(name + "\n")
+        (zone / "temp").write_text("52875\n")
+    real = Path.read_text
+
+    def read_text(self, *args, **kwargs):
+        if self.name == "temp" and self.parent.name == "thermal_zone1":
+            raise TypeError("can't concat NoneType to bytes")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    assert st.read_sensors(thermal, tmp_path, tmp_path / "missing")["zones_c"] == {"cpu-thermal": 52.875}
+
+
+@pytest.mark.skipif(not Path("/sys/class/thermal/thermal_zone0").exists(), reason="only on a device with these files")
+def test_the_real_sensor_files_of_this_device_can_be_read(st) -> None:
+    got = st.read_sensors()
+    assert isinstance(got["zones_c"], dict) and isinstance(got["cpu_khz"], list)
+    assert all(math.isfinite(v) for v in got["zones_c"].values())
+
+
+def test_a_failing_sensor_never_ends_the_session(st, tmp_path) -> None:
+    def broken():
+        raise RuntimeError("a sensor")
+
+    got = session(st, tmp_path, interrupt_at=79.0, sensors=broken)
+    assert got.result["status"] == "stopped" and got.result["sensor_errors"] > 0  # the guard's stop, not the sensor, ended it
+    assert [r["name"] for r in got.result["slots"]] == ["c1"]
 
 
 def test_the_real_grid_on_real_arrays_when_opencv_is_here(st) -> None:

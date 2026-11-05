@@ -477,26 +477,29 @@ def analyse_light(tracks: Mapping[str, Track]) -> dict[str, Any]:
 # ---------------------------------------------------------------- the device's sensors, and the load
 
 
+def _sensor_int(path: Path) -> int | None:
+    """A sensor file's number, or None. Reading this device's cv0-cv2 thermal zones, which have no value, fails with TypeError
+    rather than OSError (the dry run on the real files found it), and a sensor must never end a measurement."""
+    try:
+        return int(path.read_text().strip())
+    except (OSError, ValueError, TypeError):
+        return None
+
+
 def read_sensors(thermal: Path = THERMAL_ROOT, cpu: Path = CPU_ROOT, gpu: Path = GPU_FREQ) -> dict[str, Any]:
     """Temperatures in degrees Celsius by zone, each core's clock in kHz and the GPU's in Hz, from world-readable files. A zone
-    that cannot be read (some report no temperature) is left out."""
+    that cannot be read is left out."""
     zones: dict[str, float] = {}
     for zone in sorted(thermal.glob("thermal_zone*")):
+        value = _sensor_int(zone / "temp")
         try:
-            zones[(zone / "type").read_text().strip()] = int((zone / "temp").read_text().strip()) / 1000
-        except (OSError, ValueError):
+            name = (zone / "type").read_text().strip()
+        except (OSError, ValueError, TypeError):
             continue
-    clocks = []
-    for path in sorted(cpu.glob("cpu[0-9]*/cpufreq/scaling_cur_freq")):
-        try:
-            clocks.append(int(path.read_text().strip()))
-        except (OSError, ValueError):
-            continue
-    try:
-        gpu_hz: int | None = int(gpu.read_text().strip())
-    except (OSError, ValueError):
-        gpu_hz = None
-    return {"zones_c": zones, "cpu_khz": clocks, "gpu_hz": gpu_hz}
+        if value is not None:
+            zones[name] = value / 1000
+    clocks = [v for v in (_sensor_int(p) for p in sorted(cpu.glob("cpu[0-9]*/cpufreq/scaling_cur_freq"))) if v is not None]
+    return {"zones_c": zones, "cpu_khz": clocks, "gpu_hz": _sensor_int(gpu)}
 
 
 def sensor_summary(samples: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
@@ -543,6 +546,7 @@ class Session:
     sensors: Callable[[], dict[str, Any]] = read_sensors
     memory: Callable[[], dict[str, int]] = proc_memory
     samples: list[dict[str, Any]] = field(default_factory=list)
+    sensor_errors: int = 0
     next_sensor_ns: int = 0
 
 
@@ -575,7 +579,10 @@ def _collect(session: Session, tracks: Mapping[str, Track], t0_ns: int, slot: Sl
         now = session.clock.monotonic_ns()
         if now >= session.next_sensor_ns:
             session.next_sensor_ns = now + round(SENSOR_EVERY_S * NS_PER_SECOND)
-            session.samples.append(session.sensors())
+            try:
+                session.samples.append(session.sensors())
+            except Exception:  # noqa: BLE001 - counted: a sensor must never end a measurement
+                session.sensor_errors += 1
 
 
 def _start_streams(session: Session, slot: Slot) -> None:
@@ -746,6 +753,7 @@ def run(args: argparse.Namespace, *, environ: Mapping[str, str] | None = None, c
                 result["workers_stopped"] = f"failed:{type(exc).__name__}"
     result["sensors"] = sensor_summary(session.samples) if session is not None else None
     result["sensor_samples"] = session.samples if session is not None else []
+    result["sensor_errors"] = session.sensor_errors if session is not None else 0
     result["finished_utc"] = clock.utc_now().isoformat()
     result["summary"] = summarize(result)
     result["verdict"], result["problems"] = verdict(result, light)
