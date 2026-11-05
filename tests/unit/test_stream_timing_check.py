@@ -431,6 +431,22 @@ def test_the_guards_stop_keeps_what_was_collected_and_stops_the_streams(st, tmp_
     assert "analysis" not in result["slots"][0]  # nothing is forced after a stop
 
 
+def test_a_stop_in_the_middle_of_a_block_keeps_what_it_collected(st, tmp_path, monkeypatch) -> None:
+    original = st._collect
+
+    def collect(session_, tracks, t0_ns, slot, until_s, series):
+        original(session_, tracks, t0_ns, slot, min(until_s, 40.0), series)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(st, "_collect", collect)
+    got = session(st, tmp_path)
+    result = got.result
+    assert result["status"] == "stopped" and result["verdict"] == "incomplete" and got.sim.running == {}
+    assert [r["name"] for r in result["slots"]] == ["c1"] and result["slots"][0]["collected"]["main"] > 500
+    assert "analysis" not in result["slots"][0]
+    assert len(json.loads(got.series.read_text())["c1"]["main"]) == result["slots"][0]["collected"]["main"]
+
+
 def test_a_stop_during_a_load_block_stops_the_load(st, tmp_path, monkeypatch) -> None:
     original = st._collect
 

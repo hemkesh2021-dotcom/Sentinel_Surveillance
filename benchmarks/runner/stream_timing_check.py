@@ -646,16 +646,17 @@ def timeline(session: Session, result: dict[str, Any], emit: Callable[[str], Non
             record["counts"] = {s: session.streams.counts(s) for s in STREAMS}
             record["loadavg"] = [round(v, 2) for v in os.getloadavg()]
             record["memory"] = session.memory()
-        finally:
+        finally:  # however the slot ends, a guard's stop included, what it collected is kept
             if load:
                 session.stop(load)
             session.streams.stop_all()
-        record["frames_overflow"] = {s: tracks[s].overflow for s in STREAMS}
-        result["slots"].append(record)
-        all_series[slot.name] = series
-        held.append((slot, tracks))
-        session.write(result)
-        series_out(all_series)
+            record["collected"] = {s: len(tracks[s].times) for s in STREAMS}
+            record["frames_overflow"] = {s: tracks[s].overflow for s in STREAMS}
+            result["slots"].append(record)
+            all_series[slot.name] = series
+            held.append((slot, tracks))
+            session.write(result)
+            series_out(all_series)
     result["status"] = "analysing"
     session.write(result)
     started = session.clock.monotonic_ns()
@@ -823,7 +824,7 @@ def reading(directory: Path) -> tuple[list[str], int]:
     lines.append("frame sizes read from the streams: " + ", ".join(f"{k} {v.get('width')}x{v.get('height')}" for k, v in sizes.items()))
     for record in result.get("slots") or []:
         if "analysis" not in record:
-            lines.append(f"{record['name']} {record['condition']}: collected, not analysed")
+            lines.append(f"{record['name']} {record['condition']}: collected {record.get('collected')} frames, not analysed")
         elif record["name"] == LIGHT_SLOT.name:
             a = record["analysis"]
             lines.append(f"light switch ({a['label']}): steps {a['steps']}, paired {a['paired']}, main-stream lags {a['lags_ms']} ms, median "
