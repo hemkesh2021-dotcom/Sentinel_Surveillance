@@ -123,6 +123,7 @@ LIMITS = (
     "limit: compression, the two frame rates and repeated movement can bias or confuse a correlation; an ambiguous block gives no estimate",
     "limit: the load blocks use a synthetic CPU burner, not the combined face, scene and chat workload",
     "limit: the interval covers variation inside a block; differences between connections show only these connections",
+    "limit: the search step is 20 ms and frames arrive 50 and 67 ms apart: a narrower interval shows blocks agreeing, not that accuracy",
     "limit: ownership is judged from measured boxes and speeds (head_windows.safe_skew_s), never from these numbers alone",
 )
 
