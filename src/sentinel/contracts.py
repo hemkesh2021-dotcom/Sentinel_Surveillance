@@ -208,6 +208,25 @@ class FrameRef(Contract):
     def ingest_instant(self) -> MonoInstant:
         return MonoInstant(self.boot_id, self.ingest_mono_ns)
 
+    @property
+    def processed_width(self) -> int:
+        """The width of the image this frame's consumers were handed: the native width unless ``resize`` records a
+        working copy (route B, session 116, part 15)."""
+        return self.resize.output_width
+
+    @property
+    def processed_height(self) -> int:
+        return self.resize.output_height
+
+    @property
+    def whole_picture(self) -> bool:
+        """Whether the processed image is the whole native picture, only scaled (no padding, nothing cut): a normalized
+        box then means the same place in both images, which the face stage's windows rely on (route B)."""
+        r = self.resize
+        return (r.pad_x == 0.0 and r.pad_y == 0.0
+                and abs(self.native_width * r.scale_x - r.output_width) <= _PIXEL_TOLERANCE
+                and abs(self.native_height * r.scale_y - r.output_height) <= _PIXEL_TOLERANCE)
+
 
 def stream_relation(source: StreamIdentity, live: StreamIdentity | None) -> Applicability:
     """CURRENT if ``source`` is the live stream, otherwise the reason it is not.

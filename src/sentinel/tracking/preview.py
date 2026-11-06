@@ -145,8 +145,8 @@ def preview_update(captured: CapturedFrame, result: TrackingResult) -> PreviewUp
     )
     return PreviewUpdate(
         image=captured.image,
-        width=frame.native_width,
-        height=frame.native_height,
+        width=frame.processed_width,  # the image shown: the working copy under route B
+        height=frame.processed_height,
         stream_epoch=frame.stream_epoch,
         frame_seq=frame.frame_seq,
         ingest_utc=frame.ingest_utc,

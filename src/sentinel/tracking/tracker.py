@@ -51,6 +51,26 @@ from .diagnostic import TrackerDiagnostics
 from .tracks import MAX_TRACKS
 
 MIN_BOX_PX = 1.0
+# What counts processed frames rather than time, so its duration follows the rate the tracker runs at (route B, session 116,
+# part 15: the main stream's 20 fps against the substream's 15). Ultralytics 8.4.25, the installed source, read:
+# cfg/trackers/bytetrack.yaml sets track_buffer 30 and trackers/track.py builds BYTETracker(args, frame_rate=30), so
+# max_time_lost = int(30 / 30 * track_buffer) = 30 processed frames whatever the stream's rate. Nothing here changes them.
+BYTETRACK_LOST_TRACK_FRAMES = 30
+SUBSTREAM_FPS = 15.0  # the rate these settings were validated at (the substream's nominal rate)
+
+
+def frame_counted_settings(confirm_detections: int, processed_fps: float | None) -> dict[str, Any]:
+    """The tracker's frame-counted settings and what they last at ``processed_fps`` (measured; None: not yet known) and at
+    the substream's 15 fps, for records: ByteTrack's lost-track buffer, the detections to confirm a track, and the misses
+    after which a confirmed track at the score cap is no longer confirmed (PersonTracker's rule). Settings unchanged."""
+    frames = {"bytetrack_lost_track": BYTETRACK_LOST_TRACK_FRAMES, "confirm_detections": confirm_detections,
+              "unconfirmed_after_misses": confirm_detections + 2}
+
+    def seconds(fps: float | None) -> dict[str, float] | None:
+        return None if not fps or fps <= 0 else {name: round(count / fps, 3) for name, count in frames.items()}
+
+    return {"frames": frames, "processed_fps": processed_fps, "seconds": seconds(processed_fps),
+            "seconds_at_substream_fps": seconds(SUBSTREAM_FPS)}
 
 
 @dataclass(frozen=True)
@@ -121,8 +141,12 @@ class PersonTracker:
         self._confirmed: set[int] = set()
         self.counters: Counter[str] = Counter()
 
+    @property
+    def confirm_detections(self) -> int:
+        return self._confirm
+
     def process(self, frame: FrameRef, image: Any) -> TrackingResult:
-        """Track people on ``image``, the native-resolution picture of ``frame``."""
+        """Track people on ``image``, the processed picture of ``frame`` (native unless ``frame.resize`` records a copy)."""
         skip = self._skip_reason(frame.key)
         if skip is not None:
             self.counters[f"skipped_{skip}"] += 1
@@ -137,8 +161,8 @@ class PersonTracker:
                 return self._failed("reset_failed", type(exc).__name__)
             self._needs_reset = False
         shape = getattr(image, "shape", None)
-        if shape is not None and tuple(shape[:2]) != (frame.native_height, frame.native_width):
-            return self._failed("image_size_mismatch")
+        if shape is not None and tuple(shape[:2]) != (frame.processed_height, frame.processed_width):
+            return self._failed("image_size_mismatch")  # the image handed on is the frame's processed one (route B)
         started = self._timer()
         try:
             raw = list(self._backend.track(image))
@@ -189,7 +213,9 @@ class PersonTracker:
         return TrackingResult(FrameOutcome.FAILED, problem=label, error_type=error_type, backend_ns=backend_ns)
 
     def _observations(self, frame: FrameRef, raw: list[RawTrack]) -> tuple[TrackObservation, ...]:
-        width, height = frame.native_width, frame.native_height
+        # The backend's pixels are those of the image it was given: the frame's processed image (its working copy under
+        # route B, the native picture otherwise). Normalized, a box means the same place in the native picture.
+        width, height = frame.processed_width, frame.processed_height
         ids: set[int] = set()
         kept: list[tuple[float, int, NormalizedBox]] = []
         for track in raw:

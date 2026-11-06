@@ -98,7 +98,7 @@ class VoteRecord:
     key: TrackKey
     ownership: Ownership
     vote: str | None  # an enrolled identity ID, UNKNOWN_VOTE, or None (no vote)
-    label: str  # match, unknown, margin, low_quality, incompatible, no_enrollment, no_face, ambiguous
+    label: str  # match, unknown, margin, low_quality, incompatible, no_enrollment, no_face, ambiguous, not_analysed
     similarity: float | None = None  # the best cosine similarity, when one was computed (match, unknown, margin)
     prototype: int | None = None  # D90: that similarity's prototype position (an opaque index; validation records)
 
@@ -147,6 +147,7 @@ class IdentityResolver:
                 self._last_note[key] = (person.observed_mono_ns, {
                     Ownership.NO_FACE: "no face visible",
                     Ownership.AMBIGUOUS: "face ownership ambiguous",
+                    Ownership.NOT_ANALYSED: "not analysed on that frame",  # route B: never "no face visible"
                 }.get(ownership, ownership.value))
                 records.append(VoteRecord(key, ownership, None, ownership.value))
                 continue

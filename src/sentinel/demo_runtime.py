@@ -120,7 +120,7 @@ from .adapters import (
 from .alerts.outbox import Notifier, OutboxWorker
 from .features import APPLIED, FEATURES, REFUSED, UNCHANGED, Change, FeatureControls
 from .alerts.telegram import NotifierUnavailable, TelegramNotifier
-from .config import CaptureConfig, NotificationsConfig, SentinelConfig
+from .config import STREAM_MAIN_SINGLE, WORKING_SIZE, CaptureConfig, NotificationsConfig, SentinelConfig
 from .contracts import FrameKey, FrameRef, StreamIdentity, TrackStatus
 from .identity.gallery import GalleryDocument, check_consent_date
 from .identity.association import AssociationGeometry
@@ -128,7 +128,15 @@ from .identity.comparison import ComparisonPolicy, FullScaleComparator
 from .identity.experiment import Capture as ExperimentCapture
 from .identity.experiment import ExperimentRefused, Shadow, open_shadow, same_directory
 from .identity.landmarks import marker as landmark_marker
-from .identity.legacy_deepface import DETECTION_DEEPFACE, DETECTION_FULL_SCALE, FaceBackendError, static_difference
+from .identity.legacy_deepface import (
+    DETECTION_DEEPFACE,
+    DETECTION_FULL_SCALE,
+    DETECTION_WINDOWS,
+    FaceBackendError,
+    static_difference,
+)
+from .identity.window_stage import MIN_FACE_INSIDE_FOR_WINDOWS, WindowSettings
+from .identity.window_stage import prepare as prepare_windows
 from .identity.vault import Secret, VaultError
 from .identity.worker import FaceWorker
 from .incidents.service import IncidentService, RecordOutcome
@@ -147,10 +155,19 @@ from .jobs import AnalysisJob, WorkerOutcome
 from .identity.state import IdentityState
 from .live_preview import LivePreview
 from .live_state import Capability, LiveState
-from .media.capture import CapturedFrame, CaptureState, CaptureStatus, LatestFrame, SourceError, VideoSource
+from .media.capture import (
+    CapturedFrame,
+    CaptureState,
+    CaptureStatus,
+    LatestFrame,
+    SourceError,
+    VideoSource,
+    WorkingCopy,
+)
 from .media.clock import NS_PER_SECOND, Clock
 from .media.health import assess_frame
 from .media.jpeg import Encoder, encode_jpeg
+from .media.opencv_source import area_resize
 from .media.recent import RecentFrames
 from .memory_policy import (
     DEFAULT_POLICY,
@@ -171,6 +188,7 @@ from .runtime import (
     IDENTITY_GEOMETRY_SCHEMA,
     IDENTITY_LANDMARK_SCHEMA,
     IDENTITY_RECORD_SCHEMA,
+    IDENTITY_WINDOWS_SCHEMA,
     CoreOutput,
     EdgeCore,
     break_record,
@@ -190,7 +208,7 @@ from .tracking.diagnostic import (
     settings_problem,
     summary_record,
 )
-from .tracking.tracker import FrameOutcome, PersonTracker, TrackerError, TrackingResult
+from .tracking.tracker import FrameOutcome, PersonTracker, TrackerError, TrackingResult, frame_counted_settings
 
 SCENE_ADAPTER_ID = "llama-lfm2-vl-scene"
 DATABASE_NAME = "sentinel.db"
@@ -258,6 +276,7 @@ class FaceRuntime:
     capture: Any = None  # D91: the capture of a working gallery, written at shutdown (identity.experiment.Capture)
     continuity: ContinuityPolicy | None = None  # D97: the continuity rule (--face-continuity, validation runs only)
     landmarks: bool = False  # session 90: the landmark diagnostic (--face-landmark-diagnostic, validation runs only)
+    windows: WindowSettings | None = None  # route B: the head-window stage (main_single, validation runs only)
 
     @property
     def experiment(self) -> str | None:
@@ -362,6 +381,7 @@ class DemoRuntime:
         self._tracking_max_line = 0
         self._tracking_problems: Counter[str] = Counter()
         self._config = config
+        self._decoded_size: tuple[int, int] | None = None  # route B: the last decoded picture's size
         self._clock = clock
         self._capture = capture
         self._slot = slot
@@ -396,6 +416,7 @@ class DemoRuntime:
         # read, never written); with the landmark diagnostic, schema 7 (session 90); other runs, schema 1.
         self._identity_schema = (
             IDENTITY_RECORD_SCHEMA if face is None or not face.validation_run
+            else IDENTITY_WINDOWS_SCHEMA if face.windows is not None  # route B (main_single)
             else IDENTITY_GEOMETRY_SCHEMA if face.detection == DETECTION_FULL_SCALE
             else IDENTITY_COMPARISON_SCHEMA if face.comparison
             else IDENTITY_LANDMARK_SCHEMA if face.landmarks else IDENTITY_FULL_SCALE_SCHEMA)
@@ -590,7 +611,8 @@ class DemoRuntime:
                                                         self._capture.connected, processing_ms=result.processing_ms,
                                                         error=result.error, full_scale=result.full_scale,
                                                         detection=result.detection, geometry=result.geometry,
-                                                        landmarks=self._identity_schema == IDENTITY_LANDMARK_SCHEMA))
+                                                        landmarks=self._identity_schema == IDENTITY_LANDMARK_SCHEMA,
+                                                        windows=result.windows))
             for comparison in self._face.worker.drain_comparisons():  # D87: after their frames' production results
                 self._keep_record(self._core.on_face_comparison(comparison).record(self._identity_schema))
         if self._pending:
@@ -718,6 +740,8 @@ class DemoRuntime:
     def _on_frame(self, captured: CapturedFrame, connected: StreamIdentity | None) -> CoreOutput:
         frame = captured.frame
         self.counters["frames_taken"] += 1
+        if captured.full is not None:  # route B: the decoded size, for the status (one geometry per epoch)
+            self._decoded_size = (frame.native_width, frame.native_height)
         if self._recent is not None:
             self._recent.put(frame, captured.image)  # a reference; the preview judges freshness itself
         self._frames[frame.key] = frame
@@ -739,7 +763,9 @@ class DemoRuntime:
             if self._tracking is not None:
                 self._keep_tracking(frame, result, output)
             if self._face is not None and self._face_on:  # D99: not offered while turned off
-                tick = self._face.worker.consider(frame, result.persons, captured.image)  # copies it if offered
+                # route B: the decoded picture the working copy was made from (the worker copies its windows only)
+                picture = captured.image if captured.full is None else captured.full
+                tick = self._face.worker.consider(frame, result.persons, picture)  # copies it if offered
                 if tick is not None:
                     self._keep_record(tick_record(frame, result.persons, tick, self._identity_schema))
             return output
@@ -964,7 +990,9 @@ class DemoRuntime:
             self._snapshot = snapshot
 
     def _capture_status(self, status: CaptureStatus) -> dict[str, Any]:
+        route_b = self._config.capture.stream_profile == STREAM_MAIN_SINGLE
         return {
+            **({"stream": self._stream_status()} if route_b else {}),  # only then: evidence profiles are strict
             "state": status.state.value,
             "ready": status.state is CaptureState.STREAMING,
             "stream_epoch": status.stream.stream_epoch if status.stream is not None else None,
@@ -975,6 +1003,16 @@ class DemoRuntime:
             "retry_delay_s": status.retry_delay_s,
             "problem": status.problem,
         }
+
+    def _stream_status(self) -> dict[str, Any]:
+        """Route B: the profile, the working copy, the last decoded size, and the tracker's frame-counted settings at the
+        measured processed rate (unchanged settings; their duration follows the rate)."""
+        capture = self._config.capture
+        fps = self._rates().get("processed_fps") if len(self._samples) > 1 else None
+        return {"profile": capture.stream_profile, "decode_threads": capture.stream_decode_threads,
+                "working": list(WORKING_SIZE), "decoded": None if self._decoded_size is None else list(self._decoded_size),
+                "tracker_frame_counted": (frame_counted_settings(self._tracker.confirm_detections, fps)
+                                          if self._tracker is not None else None)}
 
     def _detector_status(self) -> dict[str, Any]:
         if self._tracker is None:
@@ -1261,6 +1299,8 @@ class Devices:
     face_backend: Callable[[Path | None], Any] | None = None  # has load(), compatibility(), faces(), weight_files
     identity_store: Callable[[Path], Any] | None = None  # has exists(), load(secret)
     encode: Encoder = encode_jpeg  # D69/D70 pictures; cv2 is imported only when it runs
+    # Route B: the working copy and a scaled window, (image, width, height) -> a new array; cv2 imported only when it runs
+    resize: Callable[[Any, int, int], Any] = area_resize
     # D74: a question on the scene worker (LlamaChatRequest), with the same three arguments as scene_request
     chat_request: Callable[[int, float, SceneModelSet], Any] | None = None
 
@@ -1582,6 +1622,14 @@ def assemble(
     face_problem: str | None = None
     face_backend = None
     face_weights: Path | None = None
+    # Route B (session 116, part 15): PROPOSED, so only in face validation runs until one passes on it
+    route_b = config.capture.stream_profile == STREAM_MAIN_SINGLE
+    if route_b and (options.face is None or not options.face.validation_run):
+        raise StartupRefused("stream_profile_needs_validation: main_single is for --face --face-validation runs until a "
+                             "validation run passes on it; the substream profile (sub) is the default and the rollback")
+    if route_b and config.identity.min_face_inside < MIN_FACE_INSIDE_FOR_WINDOWS:
+        raise StartupRefused("stream_profile_geometry: main_single's head-window margin covers every candidate face only "
+                             f"for identity.min_face_inside >= {MIN_FACE_INSIDE_FOR_WINDOWS} (identity.window_stage)")
     if options.face is not None:
         if devices.face_backend is None or devices.identity_store is None:
             raise StartupRefused("face_not_admitted: no face backend on this runtime")
@@ -1622,7 +1670,14 @@ def assemble(
                                  "detection and the plain identity rules: no candidate, comparison, experiment, "
                                  "continuity rule or tracking diagnostic")
         _experiment_options(options.face)  # D91: before anything loads
+        if route_b and (candidate or options.face.comparison or options.face.continuity
+                        or options.face.tracking_diagnostic or options.face.landmark_diagnostic
+                        or options.face.shadow_dir is not None or options.face.capture_dir is not None):
+            raise StartupRefused("stream_profile_plain_only: main_single runs its head-window face stage with the plain "
+                                 "identity rules: no candidate, comparison, experiment, continuity rule or diagnostic")
         face_backend = devices.face_backend(options.face.weights_dir)
+        if route_b and not hasattr(face_backend, "select_window_detection"):
+            raise StartupRefused("stream_profile_unavailable: this face backend has no head-window face stage")
         if options.face.comparison and not hasattr(face_backend, "enable_comparison"):
             raise StartupRefused("face_comparison_unavailable: this face backend has no full-scale comparison")
         if candidate and not hasattr(face_backend, "select_full_scale_detection"):
@@ -1751,6 +1806,11 @@ def assemble(
                                **({"comparison": True} if options.face.comparison else {}),
                                **({"detection": DETECTION_FULL_SCALE}
                                   if options.face.detection == DETECTION_FULL_SCALE else {}),
+                               # route B: the head-window stage and its settings (a reader of the substream's runs
+                               # refuses it, never reads it as that path's evidence)
+                               **({"detection": DETECTION_WINDOWS,
+                                   "stage": WindowSettings(head_fraction=config.identity.head_fraction).numbers()}
+                                  if route_b else {}),
                                **({"shadow": True} if options.face.shadow_dir is not None else {}),
                                **({"capture": True} if options.face.capture_dir is not None else {}),
                                **({"continuity": config.identity.continuity_policy().numbers()}
@@ -1768,6 +1828,8 @@ def assemble(
             if face_problem is None and gallery is not None:
                 if options.face.detection == DETECTION_FULL_SCALE:  # D88: assemble() refuses it outside validation
                     face_backend.select_full_scale_detection()  # replaces the detection; no D86 pass repeats it
+                elif route_b:  # the head windows replace the whole-picture path; D86's whole-frame pass never runs
+                    face_backend.select_window_detection()
                 elif options.face.validation_run and hasattr(face_backend, "enable_full_scale"):
                     face_backend.enable_full_scale()  # D86: the diagnostic full-scale pass, validation runs only
                     if options.face.landmark_diagnostic:  # session 90: assemble() refused it anywhere else
@@ -1794,18 +1856,37 @@ def assemble(
                                                                            image, row),
                         AssociationGeometry(config.identity.head_fraction, config.identity.min_face_inside),
                         ComparisonPolicy(max_frame_age_ns=config.identity.face_result_max_age_ns))
-                worker = FaceWorker(
-                    lambda frame, image: backend.faces(frame.key, frame.native_width, frame.native_height, image),
-                    clock, interval_ns=config.identity.face_interval_ns,
-                    pending_max_age_ns=config.identity.face_pending_max_age_ns, comparator=comparator)
+                windows = (WindowSettings(head_fraction=config.identity.head_fraction) if route_b else None)
+                if windows is None:
+                    worker = FaceWorker(
+                        lambda frame, image: backend.faces(frame.key, frame.native_width, frame.native_height, image),
+                        clock, interval_ns=config.identity.face_interval_ns,
+                        pending_max_age_ns=config.identity.face_pending_max_age_ns, comparator=comparator)
+                else:  # route B: the offer copies the frame's head windows only; the worker analyses those
+                    resize, settings = devices.resize, windows
+                    worker = FaceWorker(
+                        lambda frame, images: backend.window_faces(frame.key, images),
+                        clock, interval_ns=config.identity.face_interval_ns,
+                        pending_max_age_ns=config.identity.face_pending_max_age_ns,
+                        prepare=lambda frame, persons, image: prepare_windows(frame, persons, image, resize=resize,
+                                                                               settings=settings))
                 face = FaceRuntime(worker, len(gallery.identities), options.face.validation_run,
                                    comparator is not None, options.face.detection, shadow, experiment_capture,
                                    config.identity.continuity_policy() if options.face.continuity else None,
-                                   options.face.landmark_diagnostic)
+                                   options.face.landmark_diagnostic, windows)
             startup["face_problem"] = face_problem
 
         slot = LatestFrame()
-        capture = CaptureWorker(source, FrameStamper(config.camera.id, clock), slot, config.capture)
+        capture = CaptureWorker(source, FrameStamper(config.camera.id, clock), slot, config.capture,
+                                working=WorkingCopy(*WORKING_SIZE, devices.resize) if route_b else None)
+        if route_b:  # only then, as every new output key (evidence profiles are strict)
+            startup["stream"] = {
+                "profile": config.capture.stream_profile, "decode_threads": config.capture.stream_decode_threads,
+                "working": list(WORKING_SIZE), "resize": "area",
+                # unchanged tracker settings that count processed frames: at a processed rate above the substream's
+                # 15 fps they last proportionally less (the measured rate and durations: the status, capture.stream)
+                "tracker_frame_counted": frame_counted_settings(tracker.confirm_detections, None)
+                if tracker is not None else None}
         runtime = DemoRuntime(
             config, clock, capture=capture, slot=slot, incidents=incidents, outbox=outbox,
             tracker=tracker, detector_problem=detector_problem, scene=scene, scene_problem=scene_problem,

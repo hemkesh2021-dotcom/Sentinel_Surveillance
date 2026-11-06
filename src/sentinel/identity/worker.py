@@ -10,7 +10,9 @@ the worker never shares the array the loop, the tracker or the scene path use, s
 change the pixels being analysed. The copy is released when the analysis returns, also on error.
 
 **Bounds.** At most one job runs and one waits: a newer offer replaces a waiting one (``replaced``), so at most two
-frame copies exist (2 x 921,600 B at 640x480). A waiting job whose frame is older than ``pending_max_age_ns`` when the
+frame copies exist (2 x 921,600 B at 640x480). Route B (session 116, part 15; ``prepare``): the offer makes the worker's
+part from the frame's people instead of copying the picture (identity.window_stage.prepare: the head windows only, at most
+4 x 1,228,800 B per job with the defaults), so the decoded main-stream picture (8,957,952 B at 2304x1296) is never copied. A waiting job whose frame is older than ``pending_max_age_ns`` when the
 worker is free is discarded (``expired_before_start``). Results go to a one-slot outbox: a result the loop has not
 taken yet is replaced by a newer one (``results_replaced``). Results carry boxes, quality and embeddings, never an
 image. The loop applies a result through ``EdgeCore.on_face_outcome``, which rejects it beyond its own age bound.
@@ -50,6 +52,7 @@ COMPARISON_OUTBOX = 32  # outcomes waiting for the loop (it takes them every ste
 TICK_OFFERED = "offered"
 TICK_SKIPPED_NO_PERSON = "skipped_no_person"
 TICK_STOPPING = "stopping"  # a tick after stop(): nothing is offered
+TICK_PREPARE_FAILED = "prepare_failed"  # route B: the frame's windows could not be made; nothing is offered
 
 
 def private_copy(image: Any) -> Any:
@@ -65,7 +68,7 @@ def private_copy(image: Any) -> Any:
 class FaceJob:
     frame: FrameRef
     persons: tuple[TrackObservation, ...]
-    image: Any  # the worker's private copy
+    image: Any  # the worker's private copy, or route B's window images (``prepare``)
 
 
 @dataclass(frozen=True)
@@ -78,6 +81,7 @@ class FaceResult:
     full_scale: Any = None  # D86: the adapter's diagnostic full-scale pass (legacy_deepface.FullScale), when enabled
     detection: Any = None  # D88: the full-scale detection candidate's numbers (legacy_deepface.CandidateDetection)
     geometry: tuple[Any, ...] = ()  # D90: the candidate's FaceGeometry per face, in ``faces``' order
+    windows: Any = None  # route B: the frame's window numbers (identity.window_stage.WindowNumbers)
 
 
 class FaceWorker:
@@ -91,6 +95,7 @@ class FaceWorker:
         copy: Callable[[Any], Any] = private_copy,
         perf_counter: Callable[[], float] = time.perf_counter,
         comparator: FullScaleComparator | None = None,
+        prepare: Callable[[FrameRef, Sequence[TrackObservation], Any], Any] | None = None,
     ) -> None:
         if interval_ns <= 0 or pending_max_age_ns <= 0:
             raise ValueError("interval and pending age must be positive")
@@ -99,6 +104,7 @@ class FaceWorker:
         self._interval_ns = interval_ns
         self._pending_max_age_ns = pending_max_age_ns
         self._copy = copy
+        self._prepare = prepare  # route B: (frame, persons, decoded picture) -> the job's window images
         self._perf_counter = perf_counter
         self._next_tick_ns: int | None = None
         self._condition = threading.Condition()
@@ -116,7 +122,7 @@ class FaceWorker:
 
     def consider(self, frame: FrameRef, persons: Sequence[TrackObservation], image: Any) -> str | None:
         """Called for each processed live frame. None if it is not a tick; otherwise TICK_OFFERED,
-        TICK_SKIPPED_NO_PERSON or TICK_STOPPING."""
+        TICK_SKIPPED_NO_PERSON, TICK_STOPPING or (route B) TICK_PREPARE_FAILED."""
         if self._next_tick_ns is not None and frame.ingest_mono_ns < self._next_tick_ns:
             return None
         self._next_tick_ns = frame.ingest_mono_ns + self._interval_ns
@@ -127,7 +133,18 @@ class FaceWorker:
                 return TICK_SKIPPED_NO_PERSON
             if self._stopping:
                 return TICK_STOPPING
-        job = FaceJob(frame, tuple(persons), self._copy(image))
+        persons = tuple(persons)
+        if self._prepare is None:
+            part = self._copy(image)
+        else:
+            try:
+                part = self._prepare(frame, persons, image)
+            except Exception as exc:  # noqa: BLE001 - counted by class; nothing is offered, monitoring continues
+                with self._condition:
+                    self.counters["prepare_errors"] += 1
+                    self.counters[f"prepare_error:{getattr(exc, 'label', None) or type(exc).__name__}"] += 1
+                return TICK_PREPARE_FAILED
+        job = FaceJob(frame, persons, part)
         with self._condition:
             if self._pending is not None:
                 self.counters["replaced"] += 1
@@ -291,7 +308,7 @@ class FaceWorker:
             self._latencies.append(elapsed)
         return FaceResult(job.frame, job.persons, tuple(run.faces), None, elapsed,
                           getattr(run, "full_scale", None), getattr(run, "detection", None),
-                          tuple(getattr(run, "geometry", ()) or ()))
+                          tuple(getattr(run, "geometry", ()) or ()), getattr(run, "windows", None))
 
 
 def _percentiles(values: Sequence[float]) -> dict[str, float | int | None]:

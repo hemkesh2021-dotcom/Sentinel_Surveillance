@@ -38,6 +38,15 @@ CONFIG_VERSION = 1
 
 Seconds = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 
+# Route B (session 116, part 15): the stream profiles. "sub" is the default and the rollback; "main_single" stays a
+# validation-run configuration until a validation run passes on it.
+STREAM_SUB = "sub"
+STREAM_MAIN_SINGLE = "main_single"
+# The working copy's size under main_single: the substream's own, so the tracker, scene, chat and preview keep the
+# geometry they were validated with (the substream is the camera's squeeze of the main stream's whole picture,
+# dr-20261105T085421Z).
+WORKING_SIZE = (640, 480)
+
 
 class _Section(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -59,8 +68,18 @@ class CaptureConfig(_Section):
     # Wait before reopening; doubles after each connection that delivered no frame.
     reconnect_initial_s: Annotated[float, Field(gt=0, le=60, allow_inf_nan=False)] = 1.0
     reconnect_max_s: Annotated[float, Field(gt=0, le=300, allow_inf_nan=False)] = 15.0
-    # FFmpeg frame threading delays each frame by up to (threads - 1) frames.
+    # FFmpeg frame threading delays each frame by up to (threads - 1) frames. The substream's (profile "sub").
     decode_threads: Annotated[int, Field(ge=1, le=4)] = 1
+    # Route B (session 116, part 15). "sub": the substream, each decoded picture handed on as it is (the default and the
+    # rollback). "main_single": the main stream; the tracker, scene, chat and preview get a WORKING_SIZE copy of each
+    # whole picture, and the face stage cuts head windows from the decoded picture itself (identity.window_stage).
+    # SENTINEL_RTSP_URL must name the stream the profile expects: under main_single a decoded picture not larger than
+    # WORKING_SIZE is refused at ingest. main_single runs only in --face-validation runs until one passes.
+    stream_profile: Literal["sub", "main_single"] = STREAM_SUB
+    # FFmpeg threads for the main stream under main_single; 2 is the initial candidate, an estimate until measured with
+    # the runtime's other work (dr-20261105T085421Z, decoding only: 0.734 cores with 2 threads, 0.562 with 1;
+    # st-20261106T080730Z: a delivery step every 4.0 s with 1 thread, not seen with 2).
+    main_decode_threads: Annotated[int, Field(ge=1, le=4)] = 2
 
     @field_validator("reconnect_max_s")
     @classmethod
@@ -69,6 +88,11 @@ class CaptureConfig(_Section):
         if initial is not None and value < initial:
             raise ValueError(f"must be at least reconnect_initial_s ({value} < {initial})")
         return value
+
+    @property
+    def stream_decode_threads(self) -> int:
+        """The decoder threads for the configured profile's stream."""
+        return self.main_decode_threads if self.stream_profile == STREAM_MAIN_SINGLE else self.decode_threads
 
 
 class FreshnessConfig(_Section):

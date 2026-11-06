@@ -19,7 +19,15 @@ from typing import Any, TextIO
 
 from . import __version__
 from .adapters import resolve
-from .config import CaptureConfig, ConfigError, IncidentsConfig, NotificationsConfig, SentinelConfig, load_config
+from .config import (
+    STREAM_MAIN_SINGLE,
+    CaptureConfig,
+    ConfigError,
+    IncidentsConfig,
+    NotificationsConfig,
+    SentinelConfig,
+    load_config,
+)
 from .demo_runtime import DATABASE_NAME, Devices, FaceOptions, RunOptions, SceneOptions, StartupRefused, assemble
 from .identity.gallery import DEFAULT_IDENTITY_DIR
 from .identity.legacy_deepface import DETECTION_DEEPFACE, DETECTION_FULL_SCALE
@@ -547,6 +555,10 @@ def _capture_probe(
     config: SentinelConfig, seconds: float, capture_source: Callable[[CaptureConfig], VideoSource]
 ) -> int:
     capture = config.capture
+    if capture.stream_profile == STREAM_MAIN_SINGLE:  # route B: no working copy here; measure the substream path only
+        print("capture probe: stream_profile_not_supported (main_single runs only in sentinel run --face-validation)",
+              file=sys.stderr)
+        return 1
     try:
         source = capture_source(capture)
     except SourceError as exc:
@@ -585,6 +597,10 @@ def _track_probe(
     preview_render: Callable[[Any], bytes] | None = None,
 ) -> int:
     capture = config.capture
+    if capture.stream_profile == STREAM_MAIN_SINGLE:  # route B: the tracker would see the decoded picture, not its copy
+        print("track probe: stream_profile_not_supported (main_single runs only in sentinel run --face-validation)",
+              file=sys.stderr)
+        return 1
     try:
         source = capture_source(capture)  # checks the URL before any model is loaded
     except SourceError as exc:

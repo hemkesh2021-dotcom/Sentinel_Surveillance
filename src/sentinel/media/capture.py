@@ -12,6 +12,18 @@ Portable: decoders live behind VideoSource in their own modules (the device's
 OpenCV/FFmpeg source is media.opencv_source), so importing this one loads none.
 Problems are fixed labels or exception class names, never exception text, which
 can contain the camera URL and its credentials.
+
+**Working copy (route B, session 116, part 15; ``working``).** Under the
+main_single stream profile each decoded picture is also resized, whole, to the
+working size in this thread: the frame is stamped with the decoded picture's
+native size and a ``resize`` recording that squeeze, ``CapturedFrame.image`` is
+the working copy (what the tracker, scene, chat and preview are handed, as the
+substream's picture was) and ``CapturedFrame.full`` the decoded picture the face
+stage cuts its windows from. Both belong to the same FrameRef, so every result
+on either names the same frame. Without ``working`` nothing changes: ``full``
+stays None and ``resize`` is the identity. A decoded picture not larger than the
+working size is refused (``not_larger_than_working``): the URL names the wrong
+stream for the profile.
 """
 
 from __future__ import annotations
@@ -24,7 +36,7 @@ from enum import Enum
 from typing import Any, Protocol
 
 from ..config import CaptureConfig
-from ..contracts import FrameRef, PixelFormat, StreamIdentity
+from ..contracts import FrameRef, PixelFormat, ResizeTransform, StreamIdentity
 from .frames import FrameStamper
 
 _LABEL = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -69,7 +81,22 @@ class VideoSource(Protocol):
 @dataclass(frozen=True)
 class CapturedFrame:
     frame: FrameRef
-    image: Any
+    image: Any  # what consumers process: the decoded picture, or its working copy (``frame.resize``)
+    full: Any = None  # route B: the decoded picture when ``image`` is its working copy; None otherwise
+
+
+@dataclass(frozen=True)
+class WorkingCopy:
+    """Route B: resize every decoded picture, whole, to ``width`` x ``height`` (``resize(image, width, height)`` returns a
+    new array of that size; the device's is media.opencv_source.area_resize)."""
+
+    width: int
+    height: int
+    resize: Callable[[Any, int, int], Any]
+
+    def __post_init__(self) -> None:
+        if not all(type(v) is int and v > 0 for v in (self.width, self.height)):
+            raise ValueError("the working size must be positive integers")
 
 
 class LatestFrame:
@@ -158,8 +185,10 @@ class CaptureWorker:
         *,
         wait: Callable[[float], bool] | None = None,
         name: str = "sentinel-capture",
+        working: WorkingCopy | None = None,
     ) -> None:
         self._source = source
+        self._working = working
         self._stamper = stamper
         self._slot = slot
         self._config = config
@@ -261,13 +290,24 @@ class CaptureWorker:
                 if (decoded.width, decoded.height) != size:
                     self._count(None, problem="frame_size_changed")
                     break
+                image, full, resize = decoded.image, None, None
+                if self._working is not None:
+                    working, problem = self._working_copy(decoded)
+                    if working is None:
+                        self._count(None, problem=problem)
+                        break
+                    image, full = working, decoded.image
+                    resize = ResizeTransform(output_width=self._working.width, output_height=self._working.height,
+                                             scale_x=self._working.width / decoded.width,
+                                             scale_y=self._working.height / decoded.height)
                 frame = self._stamper.stamp(
                     native_width=decoded.width,
                     native_height=decoded.height,
                     pixel_format=decoded.pixel_format,
                     source_pts=decoded.source_pts,
+                    resize=resize,
                 )
-                self._slot.publish(CapturedFrame(frame, decoded.image))
+                self._slot.publish(CapturedFrame(frame, image, full))
                 delivered += 1
                 self._count("frames")
         finally:
@@ -279,6 +319,21 @@ class CaptureWorker:
         if not self._stop.is_set():
             self._count("stream_ends")
         return delivered
+
+    def _working_copy(self, decoded: DecodedFrame) -> tuple[Any, str | None]:
+        """Route B: (the working copy, None), or (None, a problem label) when there must be none."""
+        working = self._working
+        assert working is not None
+        if decoded.width <= working.width or decoded.height <= working.height:
+            return None, "not_larger_than_working"
+        try:
+            image = working.resize(decoded.image, working.width, working.height)
+        except Exception as exc:  # noqa: BLE001 - a fixed label and the class; never the provider's text
+            return None, f"working_copy_error:{type(exc).__name__}"
+        shape = getattr(image, "shape", None)
+        if shape is not None and tuple(shape[:2]) != (working.height, working.width):
+            return None, "working_copy_size"
+        return image, None
 
     def _close_source(self) -> None:
         try:

@@ -16,6 +16,11 @@ capture:
   reconnect_initial_s: 1.0  # wait before reopening; doubles while connections deliver nothing
   reconnect_max_s: 15.0
   decode_threads: 1         # FFmpeg frame threading delays frames by up to threads - 1
+  # Route B (session 116, part 15; PROPOSED): main_single reads the main stream, gives the tracker,
+  # scene and chat a 640x480 working copy and finds faces in head windows of the decoded picture.
+  # Face validation runs only until one passes; sub stays the default and the rollback.
+  stream_profile: sub
+  main_decode_threads: 2    # the main stream's under main_single: an initial candidate, not measured in the runtime
 
 freshness:
   # Guide chapter 6 starting targets; verify them under the actual Wi-Fi conditions.

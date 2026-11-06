@@ -24,7 +24,7 @@ from typing import Any
 
 from .config import SentinelConfig
 from .contracts import Evidence, FrameRef, StreamIdentity, TrackKey, TrackObservation, TrackStatus
-from .identity.association import AssociationGeometry, FaceObservation, Ownership, associate
+from .identity.association import AssociationGeometry, FaceObservation, Ownership, associate, withhold
 from .identity.comparison import ComparisonOutcome, Disposition
 from .identity.continuity import Break, ContinuityMonitor, ContinuityPolicy
 from .identity.landmarks import landmark_records
@@ -70,6 +70,10 @@ IDENTITY_GEOMETRY_SCHEMA = 6
 # person "landmarks" (identity.landmarks.landmark_records: an explicit status and, when measured, the derived landmark
 # numbers of the native-scale candidate associated with that person) and the result's "landmark_ms".
 IDENTITY_LANDMARK_SCHEMA = 7
+# Schema 8 (route B, session 116, part 15), what face validation runs under the main_single stream profile write: schema 6,
+# plus each result's "windows" (identity.window_stage.WindowNumbers: the head windows, the people not analysed and the
+# detections dropped); its persons may carry the ownership "not_analysed". Face pixels are the main stream's.
+IDENTITY_WINDOWS_SCHEMA = 8
 DIAGNOSTIC_DECIMALS = 3
 # D90: what a recorded raw detection may span, in frame widths and heights from the frame's top left corner; a value
 # outside is recorded as unavailable (null), never clipped into range.
@@ -84,7 +88,7 @@ FULL_SCALE_COUNTED = YUNET_THRESHOLD
 def _schema(schema: int) -> int:
     if schema not in (IDENTITY_RECORD_SCHEMA, IDENTITY_DIAGNOSTIC_SCHEMA, IDENTITY_FULL_SCALE_SCHEMA,
                       IDENTITY_COMPARISON_SCHEMA, IDENTITY_CANDIDATE_SCHEMA, IDENTITY_GEOMETRY_SCHEMA,
-                      IDENTITY_LANDMARK_SCHEMA):
+                      IDENTITY_LANDMARK_SCHEMA, IDENTITY_WINDOWS_SCHEMA):
         raise ValueError(f"unknown identity record schema {schema!r}")
     return schema
 
@@ -121,7 +125,7 @@ class FaceDiagnostics:
                "face": None if self.face_px is None else {"w_px": self.face_px[0], "h_px": self.face_px[1],
                                                           "score": r(self.face_score)},
                "similarity": r(self.similarity)}
-        if schema == IDENTITY_GEOMETRY_SCHEMA:
+        if schema in (IDENTITY_GEOMETRY_SCHEMA, IDENTITY_WINDOWS_SCHEMA):
             out.update(prototype=self.prototype, geometry=self.geometry, shadow=self.shadow)
         elif schema == IDENTITY_LANDMARK_SCHEMA:
             out["landmarks"] = self.landmarks
@@ -145,6 +149,7 @@ class FaceResultRecord:
     full_scale: dict[str, Any] | None = None  # full_scale_numbers; written with schemas 3 and 4
     detection: dict[str, Any] | None = None  # detection_numbers; written with schemas 5 and 6
     landmark_ms: float | None = None  # session 90: the landmark records' time on an applied result; schema 7
+    windows: dict[str, Any] | None = None  # route B: window_stage.WindowNumbers.numbers(); schema 8
 
     def record(self, schema: int = IDENTITY_RECORD_SCHEMA) -> dict[str, object]:
         persons = [{"track_id": track, "ownership": ownership, "vote": vote, "identity_id": identity, "label": label}
@@ -160,8 +165,10 @@ class FaceResultRecord:
                   "error": self.error, "persons": persons}
         if schema in (IDENTITY_FULL_SCALE_SCHEMA, IDENTITY_COMPARISON_SCHEMA, IDENTITY_LANDMARK_SCHEMA):
             record["full_scale"] = self.full_scale
-        elif schema in (IDENTITY_CANDIDATE_SCHEMA, IDENTITY_GEOMETRY_SCHEMA):
+        elif schema in (IDENTITY_CANDIDATE_SCHEMA, IDENTITY_GEOMETRY_SCHEMA, IDENTITY_WINDOWS_SCHEMA):
             record["detection"] = self.detection
+        if schema == IDENTITY_WINDOWS_SCHEMA:
+            record["windows"] = self.windows
         if schema == IDENTITY_LANDMARK_SCHEMA:
             record["landmark_ms"] = None if self.landmark_ms is None else round(self.landmark_ms, 3)
         return record
@@ -411,6 +418,7 @@ class EdgeCore:
         detection: Any = None,
         geometry: Sequence[Any] = (),
         landmarks: bool = False,
+        windows: Any = None,
     ) -> CoreOutput:
         """A face result for an earlier sampled frame, with the tracker's people on that same frame.
 
@@ -421,7 +429,9 @@ class EdgeCore:
         tracks that are no longer current are dropped by the next ``_finish``; a person whose track has
         expired and come back since that frame gets no vote (identity.state.BEFORE_EXPIRY). With ``landmarks``
         (session 90, the landmark diagnostic) each person on an applied result also gets its landmark record from
-        the native pass (``full_scale``), associated by the same rule.
+        the native pass (``full_scale``), associated by the same rule. With ``windows`` (route B: the result's
+        identity.window_stage.WindowNumbers) the people it lists as not analysed stay in the association, decided over
+        everyone, and get NOT_ANALYSED and no vote (association.withhold).
         """
         freshness = self._freshness.assess(connected)
         now = self._clock.mono()
@@ -443,6 +453,8 @@ class EdgeCore:
         else:
             outcome = "applied"
             association = associate(persons, faces, self._geometry)
+            if windows is not None:  # route B: decided over everyone first, then the people not analysed withheld
+                association = withhold(association, windows.not_analysed)
             for ownership in association.face_ownership:
                 self.face_counters[f"faces_{ownership.value}"] += 1
             votes = self._identities.observe(persons, faces, association)
@@ -467,7 +479,7 @@ class EdgeCore:
                    "none" if v.vote is None else "unknown" if v.vote == UNKNOWN_VOTE else "match",
                    v.vote if v.vote else None, v.label) for v in votes),
             processing_ms, error, diagnostics, full_scale_numbers(full_scale, frame, persons, self._geometry),
-            detection_numbers(detection, frame), landmark_ms)
+            detection_numbers(detection, frame), landmark_ms, None if windows is None else windows.numbers())
         return dataclasses.replace(self._finish(freshness, []), face_result=record)
 
     def on_face_comparison(self, outcome: ComparisonOutcome) -> ComparisonRecord:

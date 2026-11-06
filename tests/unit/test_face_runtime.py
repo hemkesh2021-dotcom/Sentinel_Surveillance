@@ -24,7 +24,7 @@ from sentinel import demo_runtime
 from sentinel.adapters import FACE_ADAPTER_ID, FaceAdmission, FaceAdmissionStatus, FileFacts
 from sentinel.cli import main
 from sentinel.config import parse_config
-from sentinel.contracts import NormalizedBox, PixelFormat
+from sentinel.contracts import NormalizedBox, PixelFormat, ResizeTransform
 from sentinel.demo_runtime import (
     DemoRuntime,
     Devices,
@@ -59,6 +59,16 @@ from sentinel.tracking.tracker import PersonTracker, RawTrack, TrackerError
 SECRET = Secret("a long synthetic passphrase")
 NOW = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
 PERSON = [RawTrack(1, 100.0, 100.0, 200.0, 400.0, 0.9)]  # on a 640x480 frame
+SQUEEZE = ResizeTransform(output_width=640, output_height=480, scale_x=640 / 2304, scale_y=480 / 1296)  # route B
+
+
+class MainPicture:
+    """Route B: a decoded 2304x1296 picture's stand-in; never copied whole (only its windows are)."""
+
+    shape = (1296, 2304, 3)
+
+    def copy(self):
+        raise AssertionError("route B never copies the decoded picture whole")
 FACE_BOX = NormalizedBox(x1=0.19, y1=0.22, x2=0.28, y2=0.35)  # inside that person's head region
 
 
@@ -156,16 +166,19 @@ class Loop:
     def __init__(self, tmp_path: Path, *, analyze=analyze_with(vec(0.97, 0.1, 0.0, 0.05)), face_problem=None,
                  with_face: bool = True, validation: bool = True, comparator=None,
                  detection: str = "deepface", shadow=None, capture=None, continuity=None,
-                 feature_controls: bool = False, perf_counter=None) -> None:
+                 feature_controls: bool = False, perf_counter=None, prepare=None, windows=None) -> None:
         self.clock = FakeClock(utc=NOW)
-        self.config = parse_config({"config_version": 1, "camera": {"id": "cam-1"}})
+        self.main = windows is not None  # route B: main-stream frames with their working copy
+        self.config = parse_config({"config_version": 1, "camera": {"id": "cam-1"},
+                                    **({"capture": {"stream_profile": "main_single"}} if self.main else {})})
         self.slot = LatestFrame()
         self.capture = Capture(self.clock, self.slot)
         self.tracker = Tracker()
         self.db = Database.open(tmp_path / "sentinel.db")
         timing = {} if perf_counter is None else {"perf_counter": perf_counter}  # the worker's own timer by default
-        self.worker = FaceWorker(analyze, self.clock, comparator=comparator, **timing)
-        face = (FaceRuntime(self.worker, 1, validation, comparator is not None, detection, shadow, capture, continuity)
+        self.worker = FaceWorker(analyze, self.clock, comparator=comparator, prepare=prepare, **timing)
+        face = (FaceRuntime(self.worker, 1, validation, comparator is not None, detection, shadow, capture, continuity,
+                            windows=windows)
                 if with_face else None)
         self.runtime = DemoRuntime(
             self.config, self.clock, capture=self.capture, slot=self.slot,
@@ -180,8 +193,13 @@ class Loop:
         it, a held analysis (Held) keeps running while the loop goes on."""
         self.tracker.script.append(list(persons))
         self.clock.advance(1 / 15)
-        frame = self.capture.stamper.stamp(native_width=640, native_height=480, pixel_format=PixelFormat.BGR)
-        self.slot.publish(CapturedFrame(frame, Image()))
+        if self.main:  # route B: the decoded 2304x1296 picture and its 640x480 working copy, one frame
+            frame = self.capture.stamper.stamp(native_width=2304, native_height=1296, pixel_format=PixelFormat.BGR,
+                                               resize=SQUEEZE)
+            self.slot.publish(CapturedFrame(frame, Image(), MainPicture()))
+        else:
+            frame = self.capture.stamper.stamp(native_width=640, native_height=480, pixel_format=PixelFormat.BGR)
+            self.slot.publish(CapturedFrame(frame, Image()))
         self.runtime.step(timeout_s=0)
         if settle:
             self.settle()
@@ -337,12 +355,13 @@ def face_setup(tmp_path, accepted_scene):
 
 def start(setup, *, store=None, backend_error=None, compatibility=COMPAT, validation=True, memfree=7e9,
           identity=None, policy=None, manifests=None, comparison=False, backend_class=None, detection=None,
-          stores=None, face_extra=None, tracker_backend=None):
+          stores=None, face_extra=None, tracker_backend=None, capture=None):
     calls: list[str] = []
     data = setup.tmp / "data"
     data.mkdir(exist_ok=True)
     config = parse_config({"config_version": 1, "camera": {"id": "cam-1"}, "identity": identity or {},
-                           "adapters": [setup.manifest] if manifests is None else manifests})
+                           "adapters": [setup.manifest] if manifests is None else manifests,
+                           **({"capture": capture} if capture is not None else {})})
     devices = Devices(
         capture_source=lambda capture: SimpleNamespace(),
         tracker_backend=lambda engine: Tracker(calls) if tracker_backend is None else tracker_backend(calls),
@@ -1421,3 +1440,106 @@ def test_the_landmark_diagnostic_flag_needs_validation_and_the_plain_rules(tmp_p
         assert main(_cli(tmp_path, "--face", "--face-validation", "--face-landmark-diagnostic", *extra),
                     devices=_refusing_devices()) == 1
         assert "plain identity rules" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------- route B (session 116, part 15): main_single
+
+
+MAIN = {"stream_profile": "main_single"}
+
+
+class WindowBackend(FaceBackend):
+    """A face backend with route B's head-window stage; it records what assemble() selects."""
+
+    def select_window_detection(self) -> None:
+        self.calls.append("select_windows")
+
+    def enable_full_scale(self) -> None:
+        self.calls.append("enable_full_scale")
+
+    def window_faces(self, frame, images):
+        return FaceRun((), 0, 0)
+
+
+def test_main_single_is_refused_outside_a_face_validation_run(face_setup) -> None:
+    with pytest.raises(StartupRefused, match="stream_profile_needs_validation"):
+        start(face_setup, validation=False, capture=MAIN, backend_class=WindowBackend)
+    assert not (face_setup.tmp / "data" / "sentinel.db").exists()
+
+
+@pytest.mark.parametrize("extra", [
+    {"comparison": True}, {"detection": "full_scale"}, {"face_extra": {"continuity": True}},
+    {"face_extra": {"tracking_diagnostic": True}}, {"face_extra": {"landmark_diagnostic": True}},
+])
+def test_main_single_runs_only_the_plain_window_stage(face_setup, extra) -> None:
+    with pytest.raises(StartupRefused, match="stream_profile_plain_only"):
+        start(face_setup, capture=MAIN, backend_class=WindowBackend, **extra)
+
+
+def test_main_single_refuses_an_inside_share_below_the_windows_precondition(face_setup) -> None:
+    with pytest.raises(StartupRefused, match="stream_profile_geometry"):
+        start(face_setup, capture=MAIN, backend_class=WindowBackend, identity={"min_face_inside": 0.5})
+
+
+def test_main_single_needs_a_backend_with_the_window_stage(face_setup) -> None:
+    with pytest.raises(StartupRefused, match="stream_profile_unavailable"):
+        start(face_setup, capture=MAIN)
+
+
+def test_main_single_selects_the_window_stage_records_it_and_the_substream_records_nothing_new(face_setup) -> None:
+    from sentinel.identity.window_stage import WindowSettings
+    from sentinel.runtime import IDENTITY_WINDOWS_SCHEMA
+
+    assembly, calls = start(face_setup, capture=MAIN, backend_class=WindowBackend)
+    assert calls == ["tracker_load", "select_windows", "face_load"]  # the windows chosen before the load; never D86
+    stage = WindowSettings().numbers()
+    assert assembly.startup["face"] == {"validation_run": True, "identities_enrolled": 1, "detection": "head_windows",
+                                        "stage": stage}
+    stream = assembly.startup["stream"]
+    assert (stream["profile"], stream["decode_threads"], stream["working"], stream["resize"]) == (
+        "main_single", 2, [640, 480], "area")
+    assert stream["tracker_frame_counted"]["frames"]["bytetrack_lost_track"] == 30
+    assert stream["tracker_frame_counted"]["seconds"] is None  # no rate measured before the first frame
+    runtime = assembly.runtime
+    assert runtime._identity_schema == IDENTITY_WINDOWS_SCHEMA and runtime._face.windows == WindowSettings()
+    assert (runtime._capture._working.width, runtime._capture._working.height) == (640, 480)
+    assert runtime.snapshot()["components"]["capture"]["stream"]["profile"] == "main_single"
+    assembly.database.close()
+    plain, _ = start(face_setup, backend_class=WindowBackend)
+    assert "stream" not in plain.startup and "stream" not in plain.runtime.snapshot()["components"]["capture"]
+    assert plain.runtime._capture._working is None and plain.runtime._face.windows is None
+    plain.database.close()
+
+
+def test_route_b_offers_the_decoded_picture_and_applies_the_result_to_that_frames_people(tmp_path) -> None:
+    """The loop hands the face stage the decoded picture of the frame the tracker processed as a working copy, the
+    worker prepares its windows from that frame's people, and the result goes to those people on that frame."""
+    from sentinel.identity.window_stage import WindowNumbers, WindowSettings
+
+    prepared: list = []
+
+    def prepare(frame, persons, image):
+        prepared.append((frame.key, tuple(p.frame for p in persons), type(image).__name__))
+        return "windows"
+
+    def analyze(frame, part):
+        assert part == "windows"
+        return dataclasses.replace(analyze_with(vec(0.97, 0.1, 0.0, 0.05))(frame, part), windows=WindowNumbers(
+            1, ((640, 640),), (1.0,), 1, 0, 0, (), 1, 0, 0, 640 * 640 * 3))
+
+    loop = Loop(tmp_path, analyze=analyze, prepare=prepare, windows=WindowSettings())
+    for _ in range(3):
+        loop.frame()
+        loop.clock.advance(1.0)
+    assert [(p[2], p[0] == p[1][0]) for p in prepared] == [("MainPicture", True)] * 3
+    records = loop.runtime.drain_identity_records()
+    results = [r for r in records if r["identity"] == "result"]
+    assert {r["schema"] for r in records} == {8} and [r["outcome"] for r in results] == ["applied"] * 3
+    assert [r["frame_seq"] for r in results] == [key.frame_seq for key, _, _ in prepared]  # each result its frame
+    person = results[0]["persons"][0]
+    assert (person["ownership"], person["label"]) == ("assigned", "match")
+    assert person["face"]["w_px"] == round(0.09 * 2304)  # face pixels are the decoded picture's
+    assert results[0]["windows"]["windows"] == 1
+    stream = loop.runtime.snapshot()["components"]["capture"]["stream"]
+    assert stream["decoded"] == [2304, 1296] and stream["working"] == [640, 480]
+    loop.close()

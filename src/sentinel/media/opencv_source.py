@@ -113,7 +113,7 @@ class OpenCvSource:
         params = [
             cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, round(self._config.open_timeout_s * 1000),
             cv2.CAP_PROP_READ_TIMEOUT_MSEC, round(self._config.read_timeout_s * 1000),
-            cv2.CAP_PROP_N_THREADS, self._config.decode_threads,
+            cv2.CAP_PROP_N_THREADS, self._config.stream_decode_threads,
         ]
         cap = cv2.VideoCapture(self._target, cv2.CAP_FFMPEG, params)
         if not cap.isOpened():
@@ -160,3 +160,11 @@ class OpenCvSource:
                 raise SourceError("opencv_unavailable") from None
             self._cv2 = cv2
         return self._cv2
+
+
+def area_resize(image: Any, width: int, height: int) -> Any:
+    """Route B's working copy (session 116, part 15): the whole picture at ``width`` x ``height`` by area averaging (OpenCV's
+    INTER_AREA), a new array; cv2 is imported here, on first use."""
+    import cv2
+
+    return cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)

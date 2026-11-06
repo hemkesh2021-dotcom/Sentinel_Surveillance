@@ -1,6 +1,7 @@
 """Head windows: where to look for a face in a larger frame, and how far a face may drift and keep its owner (session 116,
-part 14). Standalone and portable: **nothing in the runtime imports this module**, and it stays so until the two streams'
-timing has been measured and a route chosen. It decides no vote and changes no threshold.
+part 14). Portable. Route B (session 116, part 15) uses the windows and the selection through ``identity.window_stage``, the only
+runtime module that imports this one; ``own_candidate_margin`` and ``safe_skew_s`` stay unwired (route B takes each face and its
+people from one frame, so no time difference enters). It decides no vote and changes no threshold.
 
 **The windows.** A tracked person's box (normalized) gives a head region, the part of the box in which ``association`` lets a
 face centre lie. ``plan_windows`` turns the regions of a frame's people into rectangles of that frame's pixels, for a
@@ -62,9 +63,18 @@ class Window:
         """The detector's input (width, height): the window itself at scale 1."""
         return max(1, round(self.w * self.scale)), max(1, round(self.h * self.scale))
 
+    @property
+    def scale_x(self) -> float:
+        """The input's width over the window's: ``scale`` itself unless rounding the input's size moved it."""
+        return self.input_size[0] / self.w
+
+    @property
+    def scale_y(self) -> float:
+        return self.input_size[1] / self.h
+
     def to_frame(self, x: float, y: float) -> tuple[float, float]:
-        """A point of the detector's input, in frame pixels."""
-        return self.x + x / self.scale, self.y + y / self.scale
+        """A point of the detector's input, in frame pixels (each axis by its own exact scale)."""
+        return self.x + x / self.scale_x, self.y + y / self.scale_y
 
 
 @dataclass(frozen=True)
@@ -172,7 +182,7 @@ def plan_windows(persons: Sequence[NormalizedBox], width: int, height: int, *, s
 def detection_to_frame(window: Window, index: int, x: float, y: float, w: float, h: float, score: float) -> FaceBox:
     """A detector row (in the window's input pixels) as a box in frame pixels."""
     left, top = window.to_frame(x, y)
-    return FaceBox(left, top, w / window.scale, h / window.scale, score, index)
+    return FaceBox(left, top, w / window.scale_x, h / window.scale_y, score, index)
 
 
 def touches_window_edge(face: FaceBox, window: Window, width: int, height: int) -> bool:
@@ -198,11 +208,26 @@ def select_faces(faces: Sequence[FaceBox], windows: Sequence[Window], width: int
     """Each face once: partial detections at a window's edge dropped, then duplicates across windows, the highest score
     kept (ties: the earlier window). The order is deterministic."""
     whole = [f for f in faces if not touches_window_edge(f, windows[f.window], width, height)]
+    kept = suppress_duplicates(whole, duplicate_iou)
+    return Selected(tuple(kept), len(faces) - len(whole), len(whole) - len(kept))
+
+
+def suppress_duplicates(faces: Sequence[FaceBox], duplicate_iou: float = DUPLICATE_IOU) -> list[FaceBox]:
+    """Overlapping detections (IoU at least ``duplicate_iou``) as one, the highest score kept (ties: the earlier window, then
+    position); deterministic."""
     kept: list[FaceBox] = []
-    for face in sorted(whole, key=lambda f: (-f.score, f.window, f.x, f.y)):
+    for face in sorted(faces, key=lambda f: (-f.score, f.window, f.x, f.y)):
         if all(_iou(face, other) < duplicate_iou for other in kept):
             kept.append(face)
-    return Selected(tuple(kept), len(faces) - len(whole), len(whole) - len(kept))
+    return kept
+
+
+def inside_share(face: FaceBox, other: FaceBox) -> float:
+    """How much of ``face``'s area lies inside ``other`` (0 to 1)."""
+    w = min(face.x + face.w, other.x + other.w) - max(face.x, other.x)
+    h = min(face.y + face.h, other.y + other.h) - max(face.y, other.y)
+    area = face.w * face.h
+    return 0.0 if w <= 0 or h <= 0 or area <= 0 else (w * h) / area
 
 
 def to_normalized(face: FaceBox, width: int, height: int) -> NormalizedBox | None:

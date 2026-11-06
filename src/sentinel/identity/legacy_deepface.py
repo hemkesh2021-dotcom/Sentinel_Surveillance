@@ -59,6 +59,16 @@ association, ownership, retention, expiry and ambiguity are downstream and uncha
 the enrollment's model, alignment and normalization are this path's too. Failures are FaceBackendError labels, never a
 partial result. D86's diagnostic pass and D87's comparison would repeat this detection and are refused with it.
 
+**Head windows (route B, session 116, part 15; validation runs only, selected explicitly).**
+``select_window_detection()`` makes ``window_faces()`` the face path for the main_single stream profile: D88's steps on each
+head window of the decoded picture (``identity.window_stage``): the warm-up's cached YuNet at the window's input size (at most
+640, so within the candidate's own limit), production's threshold, then DeepFace's own cut, alignment, normalization and the
+cached Facenet512 for the faces kept, one ``represent(skip)`` call per window. Rows, boxes, eyes and reported areas are mapped
+from each window's input pixels to the decoded picture's (``Window.to_frame``, ``window_stage.area_to_frame``), so faces are
+normalized to the whole picture and the D90 geometry is in its pixels. A frame with no face kept is never embedded. ``faces()``
+refuses on this path (a whole picture is never analysed here), and D86, D87 and the landmark diagnostic are excluded, as with
+D88.
+
 **Landmark diagnostic (session 90, validation runs only, diagnostic).** ``enable_landmarks()`` (after
 ``enable_full_scale()``) makes D86's pass also keep each kept candidate's box and five landmarks from the same YuNet row
 (``landmarks.from_row``). There is no extra inference and nothing reaches production's detection, embedding or vote;
@@ -83,6 +93,14 @@ from ..contracts import FrameKey, NormalizedBox
 from .association import FaceObservation
 from .gallery import FaceCompatibility, unit
 from .landmarks import Landmarks, from_row
+from .window_stage import (
+    WindowImages,
+    WindowNumbers,
+    area_to_frame,
+    box_to_frame,
+    select,
+    window_numbers,
+)
 from .yunet import YUNET_THRESHOLD  # DeepFace 0.0.99's default yunet_score_threshold: what production detection keeps
 
 DEEPFACE_VERSION = "0.0.99"
@@ -115,6 +133,7 @@ REGION_FIELDS = {"x", "y", "w", "h", "left_eye", "right_eye", "confidence"}
 # DETECTION_FULL_SCALE is the candidate, selected explicitly for validation runs only.
 DETECTION_DEEPFACE = "deepface"
 DETECTION_FULL_SCALE = "full_scale"
+DETECTION_WINDOWS = "head_windows"  # route B (session 116, part 15): window_faces() under the main_single stream profile
 DETECTOR_METHODS = ("setInputSize", "setScoreThreshold", "detect")  # cv2.FaceDetectorYN, as DeepFace's client uses it
 CONFIDENCE_DECIMALS = 2  # extract_faces reports round(confidence, 2), and represent passes that on
 
@@ -189,6 +208,7 @@ class FaceRun:
     full_scale: FullScale | None = None  # D86, validation runs only
     detection: CandidateDetection | None = None  # D88, the candidate's own numbers
     geometry: tuple[FaceGeometry | None, ...] = ()  # D90, the candidate's: one per face, in ``faces``' order
+    windows: WindowNumbers | None = None  # route B: the frame's windows (window_faces only)
 
 
 @dataclass(frozen=True)
@@ -353,8 +373,19 @@ class LegacyDeepFaceBackend:
 
     @property
     def detection(self) -> str:
-        """The face detection stage: DETECTION_DEEPFACE (production) or DETECTION_FULL_SCALE (D88)."""
+        """The face detection stage: DETECTION_DEEPFACE (production), DETECTION_FULL_SCALE (D88) or DETECTION_WINDOWS
+        (route B)."""
         return self._detection
+
+    def select_window_detection(self) -> None:
+        """Route B: ``window_faces()`` on head windows of the decoded picture replaces the whole-picture path (call before
+        load(); validation runs under the main_single stream profile only). It excludes D86, D87 and the landmark
+        diagnostic, as D88 does."""
+        if self._runtime is not None:
+            raise FaceBackendError("already_loaded")
+        if self._full_scale_wanted:
+            raise FaceBackendError("candidate_excludes_diagnostics")
+        self._detection = DETECTION_WINDOWS
 
     def select_full_scale_detection(self) -> None:
         """D88: the full-scale detection candidate replaces DeepFace's detection (call before load(); validation runs
@@ -374,7 +405,7 @@ class LegacyDeepFaceBackend:
         """D86: also run the full-scale diagnostic pass (call before load(); validation runs only)."""
         if self._runtime is not None:
             raise FaceBackendError("already_loaded")
-        if self._detection == DETECTION_FULL_SCALE:
+        if self._detection != DETECTION_DEEPFACE:
             raise FaceBackendError("candidate_excludes_diagnostics")
         self._full_scale_wanted = True
 
@@ -437,8 +468,8 @@ class LegacyDeepFaceBackend:
         recognition_model = candidate = None
         if self._comparison_wanted:
             recognition_model = _comparison_ready(runtime)  # raises a FaceBackendError label when not
-        if self._detection == DETECTION_FULL_SCALE:
-            candidate = _candidate_ready(runtime)  # D88: the warm-up's own models, or a FaceBackendError label
+        if self._detection in (DETECTION_FULL_SCALE, DETECTION_WINDOWS):
+            candidate = _candidate_ready(runtime)  # D88 and route B: the warm-up's own models, or a FaceBackendError label
         self._runtime = runtime
         self._compatibility = compatibility
         self._recognition_model = recognition_model
@@ -453,6 +484,8 @@ class LegacyDeepFaceBackend:
         """One represent() call on the whole frame (BGR, as decoded)."""
         if self._runtime is None:
             raise FaceBackendError("not_loaded")
+        if self._detection == DETECTION_WINDOWS:
+            raise FaceBackendError("windows_need_window_images")  # route B analyses windows only (window_faces)
         if self._candidate is not None:
             return self._candidate_faces(frame, width, height, image)
         run = to_face_run(frame, width, height, self._runtime.DeepFace.represent(img_path=image, **FACE_ARGS))
@@ -535,6 +568,60 @@ class LegacyDeepFaceBackend:
         run = to_face_run(frame, width, height, items, [item.pop("geometry") for item in items])
         return dataclasses.replace(run, detection=CandidateDetection(
             max(below, key=lambda c: c[0]) if below else None, detect_ms, embed_ms))
+
+    def window_faces(self, frame: FrameKey, images: WindowImages) -> FaceRun:
+        """Route B: one frame's faces from its head windows (the module's note; identity.window_stage). Raises a
+        FaceBackendError label on any failure; never a partial result, and never a model built or loaded."""
+        runtime = self._runtime
+        if runtime is None:
+            raise FaceBackendError("not_loaded")
+        if self._detection != DETECTION_WINDOWS or self._candidate is None:
+            raise FaceBackendError("windows_not_selected")
+        detector, model = self._candidate
+        if _cached_detector(runtime) is not detector:
+            raise FaceBackendError("detector_not_cached")
+        if _cached_recognition_model(runtime) is not model:
+            raise FaceBackendError("model_not_cached")
+        started = time.perf_counter()
+        rows: list[list[FullScaleRow]] = []
+        for window, image in zip(images.windows, images.inputs, strict=True):
+            width, height = window.input_size
+            if width > YUNET_MAX_SIDE or height > YUNET_MAX_SIDE:
+                raise FaceBackendError("window_too_large")  # plan_windows never makes one; YuNet would scale it again
+            try:
+                detector.setInputSize((width, height))
+                detector.setScoreThreshold(FULL_SCALE_FLOOR)  # as D88: the recording floor, then production's 0.9
+                _, found = detector.detect(image)
+            except Exception as exc:  # noqa: BLE001 - a fixed label
+                raise FaceBackendError("windows_failed", type(exc).__name__) from None
+            rows.append(candidate_rows(found))
+        detect_ms = (time.perf_counter() - started) * 1000
+        selection = select(rows, images, YUNET_THRESHOLD)
+        below = [(row.score, box) for window, window_rows in zip(images.windows, rows, strict=True)
+                 for row in window_rows if row.score < YUNET_THRESHOLD
+                 for box in (box_to_frame(window, row, images.width, images.height),) if box is not None]
+        items: list[dict[str, Any]] = []
+        geometry: list[FaceGeometry | None] = []
+        embed_ms = None
+        if selection.kept:
+            started = time.perf_counter()
+            for index in sorted({w for w, _ in selection.kept}):
+                window = images.windows[index]
+                width, height = window.input_size
+                chosen = [rows[index][r] for w, r in selection.kept if w == index]
+                for item in self._embed_candidates(runtime, width, height, images.inputs[index], chosen):
+                    raw = item.pop("geometry")
+                    item["facial_area"] = area_to_frame(window, item["facial_area"])
+                    items.append(item)
+                    geometry.append(None if raw is None else FaceGeometry(
+                        (*window.to_frame(raw.raw_box[0], raw.raw_box[1]), raw.raw_box[2] / window.scale_x,
+                         raw.raw_box[3] / window.scale_y),
+                        window.to_frame(*raw.right_eye), window.to_frame(*raw.left_eye)))
+            embed_ms = (time.perf_counter() - started) * 1000
+        run = to_face_run(frame, images.width, images.height, items, geometry)
+        return dataclasses.replace(run, detection=CandidateDetection(
+            max(below, key=lambda c: c[0]) if below else None, detect_ms, embed_ms),
+            windows=window_numbers(images, selection))
 
     def _embed_candidates(self, runtime: SimpleNamespace, width: int, height: int, image: Any,
                           rows: Sequence[FullScaleRow]) -> list[dict[str, Any]]:

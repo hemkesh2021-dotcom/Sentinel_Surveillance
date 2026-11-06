@@ -174,7 +174,8 @@ RUNTIME = vocab("starting", "running", "stopping", "stopped")  # demo_runtime.Ru
 WORKER = vocab("not_started", "running", "stopped", "not_configured")  # worker/outbox status, or no outbox
 IDENTITY_STATES = ("unresolved", "unknown", "known", "uncertain")  # identity.state.IdentityState
 BASIS = vocab("fresh", "retained")  # identity.state.Basis
-OWNERSHIP = ("assigned", "no_face", "no_person", "ambiguous")  # identity.association.Ownership
+OWNERSHIP = ("assigned", "no_face", "no_person", "ambiguous",  # identity.association.Ownership
+             "not_analysed")  # route B (session 116, part 15): main_single runs only, whose startup no profile here admits
 VOTE_LABELS = ("match", "unknown", "margin", "low_quality", "incompatible", "no_enrollment",  # state._NOTE_LABELS
                "before_break",  # D97: state.BEFORE_BREAK (continuity runs only)
                "before_expiry")  # state.BEFORE_EXPIRY: a late result from the track's earlier life

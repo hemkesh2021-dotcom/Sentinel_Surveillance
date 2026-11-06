@@ -11,7 +11,7 @@ never goes to whichever came first.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from enum import Enum
 
@@ -36,6 +36,9 @@ class Ownership(str, Enum):
     NO_FACE = "no_face"  # person: no face candidate
     NO_PERSON = "no_person"  # face: not inside anyone's head region
     AMBIGUOUS = "ambiguous"  # candidates conflict; nobody gets this face
+    # Route B (session 116, part 15): a person the face stage did not analyse this tick (identity.window_stage), and a
+    # face that was theirs; never produced by associate(), only by withhold()
+    NOT_ANALYSED = "not_analysed"
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,21 @@ def associate(
         for index, keys in enumerate(candidates_of_face)
     )
     return Association(face_of, person_ownership, face_ownership)
+
+
+def withhold(association: Association, keys: Collection[TrackKey]) -> Association:
+    """Route B: the people in ``keys`` were not analysed this tick (identity.window_stage). The association stays the one
+    decided over everyone, so a face that was also theirs stays AMBIGUOUS for all; they get NOT_ANALYSED and no face, and
+    a face that was assigned to one of them is NOT_ANALYSED too: it goes to nobody else."""
+    withheld = set(keys)
+    if not withheld:
+        return association
+    faces = {association.face_of[k] for k in withheld if k in association.face_of}
+    return Association(
+        {k: i for k, i in association.face_of.items() if k not in withheld},
+        {k: Ownership.NOT_ANALYSED if k in withheld else o for k, o in association.person_ownership.items()},
+        tuple(Ownership.NOT_ANALYSED if i in faces else o for i, o in enumerate(association.face_ownership)),
+    )
 
 
 def _is_candidate(face: NormalizedBox, person: NormalizedBox, geometry: AssociationGeometry) -> bool:

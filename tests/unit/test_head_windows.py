@@ -304,8 +304,13 @@ def test_past_the_bound_a_wrong_owner_is_possible_which_is_why_it_is_a_bound() -
 # ---------------------------------------------------------------- standalone
 
 
-def test_nothing_in_the_runtime_imports_the_helper() -> None:
+def test_only_the_window_stage_imports_the_helper_and_the_skew_bound_stays_unwired() -> None:
+    """Route B (session 116, part 15) uses the windows through identity.window_stage only; the ownership bound for a time
+    difference between two pictures stays a validation measure, because route B takes a face and its people from one frame."""
     root = Path(__file__).resolve().parents[2] / "src" / "sentinel"
-    importers = [p for p in root.rglob("*.py")
-                 if p.name != "head_windows.py" and re.search(r"head_windows", p.read_text(encoding="utf-8"))]
-    assert importers == []
+    importers = sorted(p.relative_to(root).as_posix() for p in root.rglob("*.py") if p.name != "head_windows.py"
+                       and re.search(r"from \.head_windows import|head_windows import", p.read_text(encoding="utf-8")))
+    assert importers == ["identity/window_stage.py"]
+    users = [p for p in root.rglob("*.py") if p.name != "head_windows.py"
+             and re.search(r"safe_skew_s|own_candidate_margin", p.read_text(encoding="utf-8"))]
+    assert users == []

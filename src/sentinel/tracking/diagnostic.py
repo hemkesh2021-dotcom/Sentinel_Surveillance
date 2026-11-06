@@ -180,7 +180,7 @@ def _fraction(box: tuple[float, float, float, float], width: int, height: int) -
 def frame_record(frame: FrameRef, diagnostics: TrackerDiagnostics, current: list[int], n: int,
                  backend_ns: int | None, bounds: DiagnosticBounds) -> dict[str, Any]:
     """The frame's record, lists already within the bounds' counts (what they left out is in ``trunc``)."""
-    width, height = frame.native_width, frame.native_height
+    width, height = frame.processed_width, frame.processed_height  # the tracker's own image (route B: the working copy)
     trunc: dict[str, int] = {}
 
     def cut(name: str, items: list[Any], limit: int) -> list[Any]:
