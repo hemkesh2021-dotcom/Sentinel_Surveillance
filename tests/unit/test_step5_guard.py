@@ -543,7 +543,8 @@ def test_readiness_met_needs_the_whole_marker_and_the_keys_are_the_runtimes(mod)
     assert mod.readiness_problem(REQUIRE, READY["startup"]) is None
     assert mod.readiness_problem("something_else", READY["startup"]) == "unknown_requirement"
     assert mod.TRACKING_SETTING_KEYS == SETTING_KEYS
-    assert mod.READINESS == ("tracking_diagnostic", "landmark_diagnostic", "face_chat")  # sessions 90 and 103 added two
+    assert mod.READINESS == ("tracking_diagnostic", "landmark_diagnostic", "face_chat",  # sessions 90 and 103 added two
+                             "face_windows", "face_chat_windows")  # route B (session 116, part 17) added two
 
 
 def test_a_clean_exit_before_the_starting_line_never_meets_the_requirement(mod, tmp_path, monkeypatch) -> None:

@@ -83,7 +83,8 @@ MAX_READY_TIMEOUT_S = 900.0  # the readiness wait keeps its earlier bound
 STOP_GRACE_S = 90.0
 KILL_GRACE_S = 5.0
 READY_TIMEOUT_S = 300.0
-READINESS = ("tracking_diagnostic", "landmark_diagnostic", "face_chat")  # --require-ready values
+READINESS = ("tracking_diagnostic", "landmark_diagnostic", "face_chat",  # --require-ready values
+             "face_windows", "face_chat_windows")  # route B (session 116, part 17): main_single validation runs
 # What the landmark diagnostic's startup marker must be before T0 (sentinel.identity.landmarks.marker(); kept equal by a
 # test; this script imports nothing from the runtime).
 LANDMARK_MARKER = {"version": 1, "score": 0.9, "min_eye_spacing_px": 4.0, "persons_max": 4}
@@ -91,6 +92,12 @@ LANDMARK_MARKER = {"version": 1, "score": 0.9, "min_eye_spacing_px": 4.0, "perso
 # a test; this script imports nothing from the runtime): face recognition on the normal path, nothing else, and chat
 # as a validation run, available now.
 FACE_CHAT_FACE = {"validation_run": True, "identities_enrolled": 1}
+# Route B (session 116, part 17; kept equal to the runtime's by a test): a main_single validation run's face entry, with
+# the head-window stage as pinned (identity.window_stage.WindowSettings().numbers()), and its stream entry's fixed parts.
+WINDOWS_FACE = {**FACE_CHAT_FACE, "detection": "head_windows",
+                "stage": {"kind": "head_windows", "side": 640, "margin": 0.5, "max_windows": 4, "head_fraction": 0.4,
+                          "duplicate_iou": 0.3, "context": 0.5, "explained_share": 0.5}}
+STREAM_MAIN_SINGLE, WORKING_SIZE, BYTETRACK_LOST_TRACK_FRAMES = "main_single", [640, 480], 30
 CHAT_VALIDATION_AVAILABLE = {
     "state": "available",
     "reason": ("ask about the picture the camera is showing now (validation run: chat is not admitted; its answers "
@@ -273,6 +280,7 @@ def _starting_summary(startup: dict) -> dict[str, Any]:
         "scene_problem": startup.get("scene_problem"),
         "detector_problem": startup.get("detector_problem"),
         "face": startup.get("face"),  # sentinel run --face: validation_run and identities_enrolled (a count)
+        **({"stream": startup.get("stream")} if "stream" in startup else {}),  # route B: only main_single runs have it
         "face_problem": startup.get("face_problem"),
         "face_memory_before": startup.get("face_memory_before"),
         "notifier_problems": startup.get("notifier_problems"),
@@ -297,6 +305,21 @@ def readiness_problem(required: str | None, startup: Any, scene_layers: str = SC
     if problem is not None:
         return f"detector_problem:{problem}"
     face = startup.get("face")
+    route = stream_route(startup)  # route B: each requirement names the profile it reads; another is refused
+    if route != ("main_single" if required in ("face_windows", "face_chat_windows") else "sub"):
+        return f"stream_profile_{route}"
+    if required in ("face_windows", "face_chat_windows"):  # route B: the face on head windows, the stream as configured
+        if startup.get("face_problem") is not None:
+            return f"face_problem:{startup.get('face_problem')}"
+        if face != WINDOWS_FACE:
+            return "face_not_the_windows_validation_run" if isinstance(face, dict) else "face_missing"
+        problem = _stream_problem(startup.get("stream"))
+        if problem is not None:
+            return problem
+        if required == "face_windows":
+            return None
+        face = FACE_CHAT_FACE  # the rest exactly as face_chat
+        required = "face_chat"
     if required == "face_chat":  # session 103: face, the scene server and chat as a validation run, all ready together
         for name in ("face_problem", "scene_problem"):
             if startup.get(name) is not None:
@@ -333,6 +356,35 @@ def readiness_problem(required: str | None, startup: Any, scene_layers: str = SC
                 return f"tracker_settings_incomplete:{key}"
         elif isinstance(value, bool) or not isinstance(value, (int, float)):
             return f"tracker_settings_incomplete:{key}"
+    return None
+
+
+def stream_route(startup: dict) -> str:
+    """Which stream profile a starting line shows: ``sub`` (no stream entry and no head-window face), ``main_single``
+    (both), or ``inconsistent`` (one without the other)."""
+    stream, face = startup.get("stream"), startup.get("face")
+    windows = isinstance(face, dict) and face.get("detection") == "head_windows"
+    main = isinstance(stream, dict) and stream.get("profile") == STREAM_MAIN_SINGLE
+    if "stream" not in startup and not windows:
+        return "sub"
+    return "main_single" if main and windows else "inconsistent"
+
+
+def _stream_problem(stream: Any) -> str | None:
+    """Route B's stream entry before T0: the profile, the decoder threads (1 to 4), the working copy and its resize as
+    configured, and the tracker's frame-counted settings recorded with no rate measured yet."""
+    if not isinstance(stream, dict):
+        return "stream_missing"
+    threads = stream.get("decode_threads")
+    if type(threads) is not int or not 1 <= threads <= 4:
+        return "stream_decode_threads"
+    if stream.get("working") != WORKING_SIZE or stream.get("resize") != "area":
+        return "stream_working_copy"
+    counted = stream.get("tracker_frame_counted")
+    frames = counted.get("frames") if isinstance(counted, dict) else None
+    if not (isinstance(frames, dict) and frames.get("bytetrack_lost_track") == BYTETRACK_LOST_TRACK_FRAMES
+            and counted.get("processed_fps") is None and counted.get("seconds") is None):
+        return "stream_tracker_frame_counted"
     return None
 
 

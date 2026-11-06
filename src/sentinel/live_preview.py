@@ -104,8 +104,12 @@ def time_label(quality: SourceTimeQuality) -> str:
 
 
 def frame_facts(frame: FrameRef) -> dict[str, Any]:
-    """A frame's identity within the run and its ingest time; no boot or run ID."""
-    return {
+    """A frame's identity within the run and its ingest time; no boot or run ID. ``native_*`` is the source picture's size
+    (the camera's, as decoded). When the preview was given a smaller copy of it (route B's working copy, under main_single)
+    ``processed_*`` is that copy's size, the image every picture is made from; a picture's own ``width`` and ``height``
+    are the JPEG's, after ``fit_within``. Under the substream profile the two are the same and ``processed_*`` is absent,
+    so its facts are unchanged."""
+    facts = {
         "stream_epoch": frame.stream_epoch,
         "frame_seq": frame.frame_seq,
         "ingest_utc": utc_text(frame.ingest_utc),
@@ -113,6 +117,9 @@ def frame_facts(frame: FrameRef) -> dict[str, Any]:
         "native_width": frame.native_width,
         "native_height": frame.native_height,
     }
+    if (frame.processed_width, frame.processed_height) != (frame.native_width, frame.native_height):
+        facts.update(processed_width=frame.processed_width, processed_height=frame.processed_height)
+    return facts
 
 
 def parse_token(text: str) -> tuple[int, int] | None:
@@ -435,7 +442,11 @@ class LivePreview:
                 self._encode_times.append(now)
             problem = None
             began = time.perf_counter()  # the encode's own duration, for the summary only
+            shape = getattr(image, "shape", None)
             try:
+                if shape is not None and tuple(shape[:2]) != (frame.processed_height, frame.processed_width):
+                    # the image is not the one this frame says consumers were handed (route B: the working copy)
+                    raise EncodeError("image_size_mismatch")
                 encoded = self._encode(image, frame.pixel_format, max_width=PREVIEW_MAX_WIDTH,
                                        max_height=PREVIEW_MAX_HEIGHT, quality=PREVIEW_JPEG_QUALITY)
             except EncodeError as exc:

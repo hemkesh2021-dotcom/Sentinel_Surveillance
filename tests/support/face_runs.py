@@ -73,12 +73,14 @@ def bash_counts(function: str, *args: str, env: dict[str, str] | None = None, ph
 
 def real_face_startup(root: Path, accepted_scene, *, comparison: bool = False,
                       candidate: bool = False, experiment: str | None = None,
-                      continuity: bool = False, tracking: bool = False, landmarks: bool = False) -> dict[str, Any]:
+                      continuity: bool = False, tracking: bool = False, landmarks: bool = False,
+                      windows: bool = False) -> dict[str, Any]:
     """assemble()'s face fields and post_load_release()'s face record, as `sentinel run --face` writes them (with
     ``comparison``, as `--face-validation --face-comparison` writes them, D87; with ``candidate``, as
     `--face-validation --face-full-scale-detection` writes them, D88; with ``continuity``, as `--face-validation
     --face-continuity` writes them, D97; with ``landmarks``, as `--face-validation --face-landmark-diagnostic` writes
-    them, session 90)."""
+    them, session 90; with ``windows``, as a face validation run under ``capture.stream_profile: main_single`` writes
+    them, route B, with its stream entry)."""
     scene = accepted_scene()
     weights = root / "weights"
     weights.mkdir()
@@ -95,11 +97,14 @@ def real_face_startup(root: Path, accepted_scene, *, comparison: bool = False,
                                   "embed_full_scale": lambda *a: FACE} if comparison else {}),
                               **({"select_full_scale_detection": lambda: None} if candidate else {}),
                               **({"enable_full_scale": lambda: None, "enable_landmarks": lambda: None}
-                                 if landmarks else {}))
+                                 if landmarks else {}),
+                              **({"select_window_detection": lambda: None, "window_faces": lambda *a: FaceRun((), 0, 0)}
+                                 if windows else {}))
     config = parse_config({"config_version": 1, "camera": {"id": "cam-1"}, "adapters": [{
         "adapter_id": FACE_ADAPTER_ID, "contract_version": 1, "implementation_revision": "1", "enabled": True,
         "input_kinds": ["frame"], "output_kinds": ["face.observation"], "model_revision": "facenet512-yunet",
-        "resource_profile_id": scene.profile.profile_id, "timeout_ms": 3000}]})
+        "resource_profile_id": scene.profile.profile_id, "timeout_ms": 3000}],
+        **({"capture": {"stream_profile": "main_single"}} if windows else {})})
     devices = Devices(capture_source=lambda c: SimpleNamespace(),
                       tracker_backend=lambda e: (DiagnosticTracker() if tracking else
                                                  SimpleNamespace(load=lambda: None, track=lambda i: [],
@@ -124,7 +129,8 @@ def real_face_startup(root: Path, accepted_scene, *, comparison: bool = False,
     release = post_load_release(MemoryOps(release=lambda path: {"result": "returned_0", "returncode": 0, "error": None,
                                                                 "bytes": 10, "elapsed_s": 0.001},
                                           sleep=lambda s: None), "face", backend.weight_files)
-    return {key: assembly.startup[key] for key in ("face", "face_problem", "face_memory_before")} | {"face_release": release}
+    kept = ("face", "face_problem", "face_memory_before", *(("stream",) if "stream" in assembly.startup else ()))
+    return {key: assembly.startup[key] for key in kept} | {"face_release": release}
 
 
 def startup_line(face: dict[str, Any]) -> dict[str, Any]:
@@ -140,6 +146,7 @@ def startup_line(face: dict[str, Any]) -> dict[str, Any]:
         "scene_server": {"state": "ready", "problem": None, "layers": "17/17", "vision_on_gpu": True},
         "scene_problem": None, "detector_problem": None, "notifier_problems": {},
         "face": face["face"], "face_problem": face["face_problem"], "face_memory_before": face["face_memory_before"],
+        **({"stream": face["stream"]} if "stream" in face else {}),  # route B: only main_single runs have it
         "status_page": "http://127.0.0.1:18090/"}}
 
 

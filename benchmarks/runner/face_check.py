@@ -124,6 +124,7 @@ import re
 import stat
 import statistics
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -140,10 +141,26 @@ COMPARISON_SCHEMA = 4  # runtime.IDENTITY_COMPARISON_SCHEMA: schema 3 plus compa
 CANDIDATE_SCHEMA = 5  # runtime.IDENTITY_CANDIDATE_SCHEMA: schema 2 plus the detection candidate's numbers (D88)
 GEOMETRY_SCHEMA = 6  # runtime.IDENTITY_GEOMETRY_SCHEMA: schema 5 plus each person's prototype, geometry, shadow (D90)
 LANDMARK_SCHEMA = 7  # runtime.IDENTITY_LANDMARK_SCHEMA: schema 3 plus each person's landmark record (session 90)
+WINDOWS_SCHEMA = 8  # runtime.IDENTITY_WINDOWS_SCHEMA: schema 6 plus each result's head windows (route B, main_single)
 SCHEMAS = (SCHEMA, DIAGNOSTIC_SCHEMA, FULL_SCALE_SCHEMA, COMPARISON_SCHEMA, CANDIDATE_SCHEMA, GEOMETRY_SCHEMA,
-           LANDMARK_SCHEMA)
+           LANDMARK_SCHEMA, WINDOWS_SCHEMA)
 CANDIDATE_SCHEMAS = (CANDIDATE_SCHEMA, GEOMETRY_SCHEMA)  # what runs of the candidate write (D88; D90 from 6)
+DETECTION_SCHEMAS = (*CANDIDATE_SCHEMAS, WINDOWS_SCHEMA)  # results carrying detection numbers (D88; route B)
+GEOMETRY_SCHEMAS = (GEOMETRY_SCHEMA, WINDOWS_SCHEMA)  # persons carrying prototype, geometry and shadow (D90; route B)
 F2_FACE = {"validation_run": True, "identities_enrolled": 1}  # the startup's face entry of a production F2 run
+# Route B (session 116, parts 16-17; test-tied): the startup's face and stream entries of a main_single validation run,
+# and what its schema-8 results carry (identity.window_stage.WindowSettings().numbers(), WindowNumbers.numbers())
+DETECTION_WINDOWS = "head_windows"  # legacy_deepface.DETECTION_WINDOWS
+WINDOWS_STAGE = {"kind": DETECTION_WINDOWS, "side": 640, "margin": 0.5, "max_windows": 4, "head_fraction": 0.4,
+                 "duplicate_iou": 0.3, "context": 0.5, "explained_share": 0.5}
+WINDOWS_FACE = {**F2_FACE, "detection": DETECTION_WINDOWS, "stage": WINDOWS_STAGE}
+STREAM_MAIN_SINGLE = "main_single"  # config.STREAM_MAIN_SINGLE
+WORKING_SIZE = [640, 480]  # config.WORKING_SIZE
+WINDOW_COUNT_KEYS = ("windows", "people", "uncovered", "unexplained_windows", "detected", "dropped_at_window_edge",
+                     "dropped_duplicate", "copy_bytes")
+WINDOW_KEYS = {*WINDOW_COUNT_KEYS, "inputs", "scales", "not_analysed"}
+PERSON_OWNERSHIP = {"assigned", "no_face", "ambiguous"}  # association.Ownership for people (no_person is faces' only)
+NOT_ANALYSED = "not_analysed"  # association.Ownership.NOT_ANALYSED: route B only (association.withhold)
 OCCLUSION_SCOPE = ("scope of A (account format 9, D101): retention while the face was hidden in the still posture the "
                    "4:00 cue named, seated, the torso where it was and the chair neither moved nor swivelled; a chair "
                    "swivel or any other movement of the body is not exercised by this run, and nothing in this reading "
@@ -204,7 +221,7 @@ EYES_KEYS = {"roll_deg", "spacing_px"}
 SHADOW_KEYS = {"similarity", "prototype"}  # D91: the similarity to an experiment's working gallery
 RAW_BOUNDS = (-1.0, 2.0)  # runtime.RAW_BOUNDS: what a recorded raw box may span, in frame widths and heights
 MAX_PROTOTYPES = 8  # matching.MAX_PROTOTYPES: a prototype position is 0 to 7
-MAX_PX = 4096.0  # a generous bound on any recorded pixel distance (frames are at most 640 px wide on these paths)
+MAX_PX = 4096.0  # a generous bound on any recorded pixel distance (frames are at most 2304 px wide on these paths)
 FACE_KEYS = {"w_px", "h_px", "score"}
 SIMILARITY_LABELS = {"match", "unknown", "margin"}  # the labels for which the runtime computed a similarity
 TRANSITION_KEYS = {"identity", "schema", "stream_epoch", "track_id", "from", "to", "identity_id", "basis",
@@ -224,6 +241,7 @@ COMPARISON_DISPOSITIONS = (*ATTEMPTED, "skipped_one_per_result", "skipped_stoppi
                            "skipped_no_landmarks", "skipped_stale", "skipped_cap", "skipped_interval", "skipped_quota")
 ERROR_LABEL = re.compile(r"^[a-z_]+(:[A-Za-z0-9_]+)?$")
 TICKS = {"offered", "skipped_no_person", "stopping"}
+WINDOW_TICKS = TICKS | {"prepare_failed"}  # route B (schema 8): identity.worker.TICK_PREPARE_FAILED
 OUTCOMES = {"applied", "failed", "rejected_not_live", "rejected_boot", "rejected_age", "ignored_face_unavailable"}
 STATES = {"unresolved", "unknown", "known", "uncertain", "cleared"}
 MISSING = s5.MISSING
@@ -292,11 +310,13 @@ def _record_problem(kind: Any, item: dict) -> str | None:
         keys = keys | {"full_scale", "landmark_ms"}
     elif kind == "result" and schema in CANDIDATE_SCHEMAS:
         keys = keys | {"detection"}
+    elif kind == "result" and schema == WINDOWS_SCHEMA:
+        keys = keys | {"detection", "windows"}
     if set(item) != keys:
         return f"{kind}: fields {sorted(set(item) ^ keys)} differ from schema {schema}"
     if kind == "tick":
-        if not (_int(item["frame_mono_ns"]) and item["tick"] in TICKS and isinstance(item["tracks"], list)
-                and all(_int(t) for t in item["tracks"])):
+        if not (_int(item["frame_mono_ns"]) and item["tick"] in (WINDOW_TICKS if schema == WINDOWS_SCHEMA else TICKS)
+                and isinstance(item["tracks"], list) and all(_int(t) for t in item["tracks"])):
             return "tick: a field has the wrong type or value"
     elif kind == "result":
         if not (_int(item["frame_mono_ns"]) and _int(item["applied_mono_ns"]) and item["outcome"] in OUTCOMES
@@ -308,9 +328,9 @@ def _record_problem(kind: Any, item: dict) -> str | None:
         if schema == LANDMARK_SCHEMA and not ((item["outcome"] == "applied") == _number(item["landmark_ms"], 0.0, math.inf)
                                               and (item["outcome"] == "applied" or item["landmark_ms"] is None)):
             return "result: its landmark time is missing or present where no landmark record was made"
-        if schema in CANDIDATE_SCHEMAS and not _detection_fits(item["detection"], item["faces"], item["outcome"]):
+        if schema in DETECTION_SCHEMAS and not _detection_fits(item["detection"], item["faces"], item["outcome"]):
             return "result: its detection numbers are malformed"
-        person_keys = (PERSON_KEYS if schema == SCHEMA else GEOMETRY_PERSON_KEYS if schema == GEOMETRY_SCHEMA
+        person_keys = (PERSON_KEYS if schema == SCHEMA else GEOMETRY_PERSON_KEYS if schema in GEOMETRY_SCHEMAS
                        else LANDMARK_PERSON_KEYS if schema == LANDMARK_SCHEMA else DIAGNOSTIC_PERSON_KEYS)
         for person in item["persons"]:
             if not isinstance(person, dict) or set(person) != person_keys or not _int(person["track_id"]) \
@@ -320,16 +340,125 @@ def _record_problem(kind: Any, item: dict) -> str | None:
                 return f"result: a person entry differs from schema {schema}"
             if schema >= DIAGNOSTIC_SCHEMA and not _diagnostics_fit(person):
                 return "result: a person entry's diagnostic numbers do not fit its labels"
-            if schema == GEOMETRY_SCHEMA and not _geometry_fits(person):
+            if schema in GEOMETRY_SCHEMAS and not _geometry_fits(person):
                 return "result: a person entry's geometry, prototype or shadow numbers do not fit"
             if schema == LANDMARK_SCHEMA and not _landmarks_fit(person, item["full_scale"] is not None):
                 return "result: a person entry's landmark record does not fit its status"
+        if schema == WINDOWS_SCHEMA:
+            return _windows_problem(item)
     else:
         if not (_int(item["mono_ns"]) and _int(item["track_id"]) and item["from"] in STATES and item["to"] in STATES
                 and (item["identity_id"] is None or ID.match(str(item["identity_id"])))
                 and ((item["to"] == "known") == (item["identity_id"] is not None))):
             return "transition: a field has the wrong type or value"
     return None
+
+
+def _windows_problem(item: dict) -> str | None:
+    """Route B (schema 8): one result's windows fit the result. They are null exactly when the analysis gave no faces
+    (it failed), and then nobody was judged. Otherwise the counts fit together and the stage's bounds; on an applied
+    result one person per person the windows were made for, the people listed as not analysed exactly those whose
+    ownership is not_analysed, and none of them with a vote; no shadow (route B runs no experiment)."""
+    windows, faces, persons = item["windows"], item["faces"], item["persons"]
+    if windows is None:
+        return None if faces is None and persons == [] else "result: windows missing on an analysed frame"
+    if faces is None:
+        return "result: windows on a frame that was not analysed"
+    if not (isinstance(windows, dict) and set(windows) == WINDOW_KEYS
+            and all(_int(windows[k]) and windows[k] >= 0 for k in WINDOW_COUNT_KEYS)):
+        return "result: its windows differ from schema 8"
+    inputs, scales, withheld = windows["inputs"], windows["scales"], windows["not_analysed"]
+    side, limit = WINDOWS_STAGE["side"], WINDOWS_STAGE["max_windows"]
+    if not (isinstance(inputs, list) and isinstance(scales, list) and isinstance(withheld, list)
+            and len(inputs) == len(scales) == windows["windows"] and 1 <= windows["windows"] <= limit
+            and all(isinstance(s, list) and len(s) == 2 and all(_int(v) and 1 <= v <= side for v in s) for s in inputs)
+            and all(_number(s, 1e-9, 1.0) for s in scales)
+            and all(_int(k) for k in withheld) and withheld == sorted(set(withheld))):
+        return "result: its windows' sizes, scales or people are malformed"
+    # the only causes (window_stage.select): the window budget, and each unexplained window's people (every window has
+    # at least one owner, disjoint from the uncovered; an unexplained window holds a dropped detection)
+    uncovered, unexplained = windows["uncovered"], windows["unexplained_windows"]
+    if not ((len(withheld) == uncovered if unexplained == 0 else uncovered + unexplained <= len(withheld))
+            and len(withheld) <= windows["people"] and windows["people"] >= windows["windows"] + uncovered
+            and unexplained <= min(windows["windows"], windows["dropped_at_window_edge"])
+            and windows["dropped_at_window_edge"] + windows["dropped_duplicate"] <= windows["detected"]
+            and _int(faces) and faces <= windows["detected"] - windows["dropped_at_window_edge"] - windows["dropped_duplicate"]
+            and windows["copy_bytes"] <= sum(w * h * 3 for w, h in inputs)):
+        return "result: its windows' counts do not fit together"
+    if item["outcome"] != "applied":
+        return None if persons == [] else "result: people judged on a result that was not applied"
+    if windows["people"] != len(persons):
+        return "result: its people are not the people its windows were made for"
+    marked = {p["track_id"] for p in persons if p["ownership"] == NOT_ANALYSED}
+    if marked != set(withheld):
+        return "result: the people marked not analysed are not the people its windows left out"
+    for person in persons:
+        own, label = person["ownership"], person["label"]
+        if own not in PERSON_OWNERSHIP | {NOT_ANALYSED} or person["shadow"] is not None:
+            return "result: a person's ownership or shadow cannot occur on route B"
+        if own != "assigned" and (person["vote"] != "none" or person["identity_id"] is not None):
+            return "result: a person without an assigned face has a vote"
+        if (label == NOT_ANALYSED) != (own == NOT_ANALYSED and label != "before_expiry"):
+            return "result: the label not_analysed does not match the person's ownership"
+    return None
+
+
+def frame_problems(records: dict[str, list[dict]]) -> list[str]:
+    """Route B (schema 8): every result names its own frame. Each result's frame (epoch, sequence and ingest time) is one
+    offered tick's, once; an applied result's people are that tick's tracks, and its windows were made for exactly those
+    people; a tick is recorded once per frame, its tracks sorted and unique, skipped exactly when there are none, and
+    frames of an epoch keep their order in time; every identity transition is of a track some earlier tick listed."""
+    problems: list[str] = []
+    ticks: dict[tuple[int, int], dict] = {}
+    for tick in records.get("tick", []):
+        key = (tick["stream_epoch"], tick["frame_seq"])
+        if not all(_int(v) for v in key):
+            problems.append(f"a tick's frame {key} is not two integers")
+            continue
+        if key in ticks:
+            problems.append(f"frame {key} ticked twice")
+        ticks[key] = tick
+        tracks = tick["tracks"]
+        if tracks != sorted(set(tracks)) or (tick["tick"] == "skipped_no_person") != (tracks == []):
+            problems.append(f"frame {key}: its tracks are not sorted and unique, or skipped does not mean nobody")
+    by_epoch: dict[int, list[tuple[int, int]]] = {}
+    for (epoch, seq), tick in ticks.items():
+        by_epoch.setdefault(epoch, []).append((seq, tick["frame_mono_ns"]))
+    for epoch, frames in by_epoch.items():
+        times = [ns for _, ns in sorted(frames)]
+        if times != sorted(times):
+            problems.append(f"epoch {epoch}: frame order and ingest time disagree")
+    answered: set[tuple[int, int]] = set()
+    for result in records.get("result", []):
+        key = (result["stream_epoch"], result["frame_seq"])
+        tick = ticks.get(key) if all(_int(v) for v in key) else None
+        if tick is None or tick["tick"] != "offered" or tick["frame_mono_ns"] != result["frame_mono_ns"]:
+            problems.append(f"result for frame {key}: no offered tick of that frame and ingest time")
+            continue
+        if key in answered:
+            problems.append(f"result for frame {key}: a second result for one frame")
+        answered.add(key)
+        if result["applied_mono_ns"] < result["frame_mono_ns"]:
+            problems.append(f"result for frame {key}: applied before its frame was ingested")
+        windows = result.get("windows")
+        if isinstance(windows, dict):
+            if windows.get("people") != len(tick["tracks"]) or not set(windows.get("not_analysed") or []) <= set(tick["tracks"]):
+                problems.append(f"result for frame {key}: its windows were not made for that tick's people")
+        if result["outcome"] == "applied" and sorted(p["track_id"] for p in result["persons"]) != tick["tracks"]:
+            problems.append(f"result for frame {key}: its people are not that tick's tracks")
+    first_seen: dict[tuple[int, int], int] = {}
+    for tick in sorted(ticks.values(), key=lambda t: t["frame_mono_ns"]):
+        for track in tick["tracks"]:
+            first_seen.setdefault((tick["stream_epoch"], track), tick["frame_mono_ns"])
+    for transition in records.get("transition", []):
+        seen = first_seen.get((transition["stream_epoch"], transition["track_id"]))
+        if seen is None or seen > transition["mono_ns"]:
+            problems.append(f"transition of track {transition['track_id']} in epoch {transition['stream_epoch']}: no "
+                            "earlier tick listed it")
+    for kind in ("comparison", "capture", "break"):
+        if records.get(kind):
+            problems.append(f"{kind} records cannot occur on route B")
+    return problems
 
 
 def _comparison_problem(item: dict) -> str | None:
@@ -713,11 +842,17 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
     # the marker in each capture and its records' schema say which detection produced the faces. Every other run is
     # read exactly as before.
     candidate = s5._get(start, "face") == CANDIDATE_FACE
-    r.item("face admitted for this validation run: one enrolled identity, no problem" if not candidate else
+    # Route B (session 116, part 17): a main_single run is read by the same criteria, with its own marker in the
+    # startup's face entry, its stream entry in the runtime's own starting line, its capture marker and schema 8, each
+    # tied to the others; every other run is read exactly as before.
+    route_b = s5._get(start, "face") == WINDOWS_FACE
+    r.item("face admitted for this validation run: one enrolled identity, no problem" if not (candidate or route_b) else
            "face admitted for this validation run with the full-scale detection candidate (D88): one enrolled "
+           "identity, no problem" if candidate else
+           "face admitted for this validation run on route B (main_single, head windows as pinned): one enrolled "
            "identity, no problem",
            {"face": s5._get(start, "face"), "face_problem": s5._get(start, "face_problem")},
-           s5._get(start, "face") in (F2_FACE, CANDIDATE_FACE) and s5._get(start, "face_problem") is None)
+           s5._get(start, "face") in (F2_FACE, CANDIDATE_FACE, WINDOWS_FACE) and s5._get(start, "face_problem") is None)
     r.item("no notification channel (Telegram disabled)", s5._get(start, "notifier_problems"),
            s5._get(start, "notifier_problems") == {})
 
@@ -727,6 +862,10 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
              "validation_run": s5._get(c, "components", "face", "validation_run"),
              "enrolled": s5._get(c, "components", "face", "identities_enrolled"),
              **({"detection": s5._get(c, "components", "face", "detection")} if candidate else {}),
+             **({"stream": s5._get(c, "components", "capture", "stream", "profile")} if route_b else {}),
+             # route B: the capture's stream marker; on a substream run named only when one is there (it then fails)
+             **({"has_stream": True} if isinstance(c, dict) and "stream" in ((c.get("components") or {}).get("capture") or {})
+                else {"has_stream": False} if route_b else {}),
              "scene": s5._get(c, "components", "scene", "state"), "video": s5._get(c, "live", "video"),
              "channels": s5._get(c, "components", "notifications", "channels"),
              "delivery": s5._get(c, "delivery", "totals")} for c in captures]
@@ -736,7 +875,10 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
            bool(seen) and not s5._has_missing(seen) and all(s["face"] == "available" and s["validation_run"] is True and s["enrolled"] == 1
                               and s["scene"] == "available" and s["video"] == "fresh" and s["channels"] == {}
                               and isinstance(s["delivery"], dict) and not any(s["delivery"].values())
-                              and (not candidate or s["detection"] == DETECTION_FULL_SCALE) for s in seen))
+                              and (not candidate or s["detection"] == DETECTION_FULL_SCALE)
+                              and s.get("has_stream", False) == route_b
+                              and (not route_b or s["stream"] == STREAM_MAIN_SINGLE)
+                              for s in seen))
     s5._listeners(r, result, {18081, 18090})
     stopped = s5._get(result, "run_output", "stopped")
     r.item("clean shutdown: all stopped (the face worker included), database closed", stopped,
@@ -747,7 +889,7 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
     r.item("D48: every stdout line is JSON", counts,
            isinstance(counts, dict) and counts["non_json_lines"] == 0 and (counts["lines"] or 0) >= 2)
 
-    records, problems, _, _ = read_records(directory / "run.jsonl")
+    records, problems, starting, _ = read_records(directory / "run.jsonl")
     total = sum(len(v) for v in records.values())
     schemas = sorted({item["schema"] for kind in records.values() for item in kind})
     if len(schemas) > 1:
@@ -755,6 +897,11 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
     schema = schemas[0] if len(schemas) == 1 else SCHEMA
     if schemas and candidate != (schema in CANDIDATE_SCHEMAS):  # D89: the marker and the records must agree
         problems.append(f"schema {schema} records with the startup's face {s5._get(start, 'face')}")
+    if schemas and route_b != (schema == WINDOWS_SCHEMA):  # route B: the marker and the records must agree too
+        problems.append(f"schema {schema} records with the startup's face {s5._get(start, 'face')}")
+    problems.extend(_route_b_startup_problems(start, starting, route_b))
+    if route_b and schema == WINDOWS_SCHEMA:
+        problems.extend(frame_problems(records))
     last = captures[-1] if captures else MISSING
     dropped = s5._get(last, "components", "face", "records", "dropped")
     r.item(f"identity records: schema {schema}, complete, none dropped",
@@ -823,9 +970,50 @@ def read_f2(directory: Path, f1: Path, gate: tuple[Path, Path, Path | None] | No
     _identity(r, line, windows, enrolled, account, bounds, fmt)
     _counts_items(r, directory)
     _describe(r, result, line, windows, last, bounds, fmt)
+    if route_b:
+        _route_b_items(r, records)
     if schema >= DIAGNOSTIC_SCHEMA:
-        _diagnose(r, line, windows, full_scale=schema == FULL_SCALE_SCHEMA, geometry=schema == GEOMETRY_SCHEMA)
+        _diagnose(r, line, windows, full_scale=schema == FULL_SCALE_SCHEMA, geometry=schema in GEOMETRY_SCHEMAS)
     return r
+
+
+def _route_b_startup_problems(summary: Any, starting: Any, route_b: bool) -> list[str]:
+    """Route B: the runtime's own starting line carries the stream entry exactly when the guard's summary carries route
+    B's face entry, with the profile, working copy and resize as configured, the same face entry in both, and the
+    tracker's frame-counted settings as the runtime records them before any rate exists."""
+    stream = starting.get("stream", MISSING) if isinstance(starting, dict) else MISSING
+    if not route_b:
+        return [] if stream is MISSING else ["a stream entry in the starting line without route B's face entry"]
+    problems = []
+    if not isinstance(starting, dict) or starting.get("face") != s5._get(summary, "face"):
+        problems.append("the starting line's face entry is not the guard summary's")
+    counted = stream.get("tracker_frame_counted") if isinstance(stream, dict) else None
+    frames = counted.get("frames") if isinstance(counted, dict) else None
+    if not (isinstance(stream, dict) and stream.get("profile") == STREAM_MAIN_SINGLE
+            and stream.get("working") == WORKING_SIZE and stream.get("resize") == "area"
+            and _int(stream.get("decode_threads")) and 1 <= stream["decode_threads"] <= 4):
+        problems.append(f"route B's stream entry is missing or not as configured: {stream}")
+    elif not (isinstance(frames, dict) and frames.get("bytetrack_lost_track") == 30
+              and counted.get("processed_fps") is None and counted.get("seconds") is None):
+        problems.append("route B's tracker frame-counted settings are missing or not as the runtime records them")
+    return problems
+
+
+def _route_b_items(r: Reading, records: dict[str, list[dict]]) -> None:
+    """Route B: no tick failed to make its windows (judged: such a frame is never analysed), and what the windows did,
+    described: their number, the people not analysed and why, the detections dropped at a window's edge or as
+    duplicates."""
+    ticks = records.get("tick", [])
+    failed = sum(1 for t in ticks if t["tick"] == "prepare_failed")
+    r.item("route B: every tick with people made its windows (no prepare_failed tick)",
+           {"prepare_failed": failed, "ticks": len(ticks)}, failed == 0)
+    numbers = [w for w in (res.get("windows") for res in records.get("result", [])) if isinstance(w, dict)]
+    totals = {k: sum(w[k] for w in numbers) for k in ("uncovered", "unexplained_windows", "detected",
+                                                      "dropped_at_window_edge", "dropped_duplicate")}
+    r.describe("route B windows over the results: windows per result, people not analysed, unexplained windows, "
+               "detections dropped", {"results": len(numbers),
+                                      "windows": dict(sorted(Counter(w["windows"] for w in numbers).items())),
+                                      "not_analysed_people": sum(len(w["not_analysed"]) for w in numbers), **totals})
 
 
 

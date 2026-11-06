@@ -1406,6 +1406,16 @@ def _live_frame(view: Mapping[str, Any] | None) -> str:
             f"{icon('clock')}<span></span></figcaption></figure>")
 
 
+def _picture_size(shown: Mapping[str, Any], picture: Mapping[str, Any] | None) -> str:
+    """Route B: when the preview was given a copy smaller than the camera's picture, which size is which: the picture shown
+    (the JPEG's), the copy it was made from, and the camera's own. Nothing under the substream profile."""
+    if "processed_width" not in shown:
+        return ""
+    made = f"{_e(picture['width'])}×{_e(picture['height'])} shown, " if picture else ""
+    return (f"<div><dt>Picture size</dt><dd>{made}from a {_e(shown['processed_width'])}×{_e(shown['processed_height'])} "
+            f"copy of the camera's {_e(shown['native_width'])}×{_e(shown['native_height'])} picture</dd></div>")
+
+
 def _live_facts(view: Mapping[str, Any] | None) -> str:
     view = view or PREVIEW_OFF
     if not view.get("enabled"):
@@ -1419,7 +1429,7 @@ def _live_facts(view: Mapping[str, Any] | None) -> str:
                  f"<div><dt>Frame age</dt><dd>{_e(_seconds(age))} <span class=muted>when this update was generated</span></dd></div>"
                  f"<div><dt>Ingest time</dt><dd>{_clock(shown['ingest_utc'])}</dd></div>"
                  f"<div><dt>Frame</dt><dd>stream epoch {_e(shown['stream_epoch'])}, frame {_e(shown['frame_seq'])}</dd></div>"
-                 "</dl>")
+                 f"{_picture_size(shown, picture)}</dl>")
     bounds = view.get("bounds") or {}
     note = (f"With JavaScript, this page asks the device for one picture at a time, the newest, as soon as it has "
             f"shown the last; a picture is shown as live for at most {_e(_seconds(bounds.get('stale_after_ms')))} after "

@@ -64,7 +64,7 @@ from sentinel import demo_runtime
 from sentinel.adapters import FACE_ADAPTER_ID, FaceAdmission, FaceAdmissionStatus
 from sentinel.cli import main, status_line
 from sentinel.config import IdentityConfig, parse_config
-from sentinel.contracts import FrameKey, NormalizedBox, PixelFormat, StreamIdentity
+from sentinel.contracts import FrameKey, NormalizedBox, PixelFormat, ResizeTransform, StreamIdentity
 from sentinel.demo_runtime import (
     DemoRuntime,
     Devices,
@@ -87,8 +87,15 @@ from sentinel.identity.gallery import (
     unit,
 )
 from sentinel.identity.legacy_deepface import EnrollmentFace, FaceRun, static_compatibility_fields
+from sentinel.identity.window_stage import WindowSettings
 from sentinel.identity.vault import SECRET_ENV, Sealer, Secret, VaultError
-from sentinel.identity.worker import TICK_OFFERED, TICK_SKIPPED_NO_PERSON, TICK_STOPPING, FaceWorker
+from sentinel.identity.worker import (
+    TICK_OFFERED,
+    TICK_PREPARE_FAILED,
+    TICK_SKIPPED_NO_PERSON,
+    TICK_STOPPING,
+    FaceWorker,
+)
 from sentinel.incidents.service import IncidentService
 from sentinel.media.capture import CapturedFrame, CaptureState, CaptureStatus, LatestFrame
 from sentinel.media.clock import FakeClock
@@ -116,6 +123,12 @@ ACCOUNT = {"stopwatch_started_at_t0": "yes", "out_of_view_1": "0:12", "seated_fa
            "seated_facing_2": "8:00", "stayed_until_stop": "yes", "other_faces_in_view": "no",
            "notes": "a note that is never printed"}
 CAPTURES = ((60.0, "e1"), (180.0, "k1"), (300.0, "a"), (420.0, "e2"), (540.0, "k2"), (590.0, "end"))
+# Route B (session 116, part 17): the main stream's decoded picture and its 640x480 working copy
+SQUEEZE = ResizeTransform(output_width=640, output_height=480, scale_x=640 / 2304, scale_y=480 / 1296)
+
+
+class MainPicture:
+    shape = (1296, 2304, 3)  # the decoded picture: only the face stage's windows are ever copied from it
 
 
 @pytest.fixture
@@ -132,7 +145,8 @@ def mods(monkeypatch):
 def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: float = 4.0,
              duration: float = 600.0, combined: bool = False, analyze=None, comparator=None,
              captures=CAPTURES, detection: str = "deepface", shadow=None, experiment_capture=None,
-             preview: bool = False, tracking=None, tracking_bounds=None, landmarks: bool = False) -> Path:
+             preview: bool = False, tracking=None, tracking_bounds=None, landmarks: bool = False,
+             route_b: bool = False) -> Path:
     """Run the real runtime through ``script`` and write the F2 directory as the package's blocks would.
 
     ``combined`` (D78): with the live view, incident snapshots and chat in a validation run as well, each used during
@@ -141,11 +155,14 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
     ``tracking`` (session 79): a function (t, state, track) -> TrackerDiagnostics that scripts what the diagnostic
     backend reads on each frame; the run then carries the tracking records within ``tracking_bounds``.
     ``landmarks`` (session 90): the landmark diagnostic is on, so the records are schema 7 (``analyze`` gives each
-    frame's FullScale with its landmarks)."""
+    frame's FullScale with its landmarks). ``route_b`` (session 116, part 17): the main_single profile: 2304x1296
+    frames with their 640x480 working copy, the face stage preparing head windows from each frame's people and each
+    result carrying its windows (schema 8)."""
     out = root / "f2"
     out.mkdir()
     clock = FakeClock(utc=NOW)
-    config = parse_config({"config_version": 1, "camera": {"id": "cam-1"}})
+    config = parse_config({"config_version": 1, "camera": {"id": "cam-1"},
+                           **({"capture": {"stream_profile": "main_single"}} if route_b else {})})
     slot, capture = LatestFrame(), Capture(clock)
     tracker = DiagnosticTracker() if tracking is not None else Tracker()
     t0 = clock.monotonic_ns()
@@ -161,7 +178,24 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
 
     if analyze_override is not None:
         analyze = analyze_override(t0)
-    worker = FaceWorker(analyze, clock, comparator=comparator)
+    prepare = None
+    if route_b:  # one 640x480 window per frame's people, as the stage reports them; the faces as scripted
+        from sentinel.identity.window_stage import WindowNumbers
+
+        plain = analyze
+
+        def prepare(frame, persons, image):
+            assert image.shape == (1296, 2304, 3) and all(p.frame == frame.key for p in persons)
+            return tuple(p.key for p in persons)
+
+        def analyze(frame, people):  # as window_faces reports: detection numbers always, an embedding time with a face
+            from sentinel.identity.legacy_deepface import CandidateDetection
+
+            run = plain(frame, people)
+            return dataclasses.replace(run, fallback_dropped=0, detection=CandidateDetection(
+                None, 25.0, 800.0 if run.faces else None), windows=WindowNumbers(
+                1, ((640, 640),), (1.0,), len(people), 0, 0, (), len(run.faces), 0, 0, 640 * 640 * 3))
+    worker = FaceWorker(analyze, clock, comparator=comparator, prepare=prepare)
     images = RecentImages()
     scene = SceneRuntime(ThreadedSceneAnalyzer(lambda job, image: WorkerOutcome.completed(job.job_id, REPORT), images,
                                                revision="1+lfm2-vl-1.6b-q4_0"), images)
@@ -189,7 +223,8 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
                                                     notifications=config.notifications),
                           tracker=PersonTracker(tracker, diagnostics=tracking is not None), scene=scene,
                           face=FaceRuntime(worker, 1, True, comparator is not None, detection, shadow,
-                                           experiment_capture, landmarks=landmarks),
+                                           experiment_capture, landmarks=landmarks,
+                                           windows=WindowSettings() if route_b else None),
                           enrollment=GALLERY.enrollment(), status_refresh_s=0.0,
                           tracking_diagnostic=((tracking_bounds or DiagnosticBounds()) if tracking is not None
                                                else None), **extra)
@@ -210,8 +245,13 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
         if tracking is not None:
             tracker.diag = tracking(t, state, track, tracker)
         clock.advance(ns=t0 + round(n * 1e9 / fps) - clock.monotonic_ns())
-        frame = capture.stamper.stamp(native_width=640, native_height=480, pixel_format=PixelFormat.BGR)
-        slot.publish(CapturedFrame(frame, Image()))
+        if route_b:
+            frame = capture.stamper.stamp(native_width=2304, native_height=1296, pixel_format=PixelFormat.BGR,
+                                          resize=SQUEEZE)
+            slot.publish(CapturedFrame(frame, Image(), MainPicture()))
+        else:
+            frame = capture.stamper.stamp(native_width=640, native_height=480, pixel_format=PixelFormat.BGR)
+            slot.publish(CapturedFrame(frame, Image()))
         runtime.step(timeout_s=0)
         deadline = time.monotonic() + 5
         while worker.status()["busy"] or worker.status()["waiting"]:
@@ -567,7 +607,7 @@ def test_the_checker_matches_the_runtimes_schema_and_values(mods) -> None:
     numbers = FaceDiagnostics((0.1, 0.2, 0.3, 0.9), 0.8, (40, 50), 0.95, 0.75)
     diagnostic = FaceResultRecord(0, 1, 5, 6, "applied", 1, ((1, "assigned", "match", ENROLLED, "match"),),
                                   diagnostics=(numbers,)).record(IDENTITY_DIAGNOSTIC_SCHEMA)
-    assert (check.DIAGNOSTIC_SCHEMA, check.SCHEMAS) == (IDENTITY_DIAGNOSTIC_SCHEMA, (1, 2, 3, 4, 5, 6, 7))  # 7: session 90
+    assert (check.DIAGNOSTIC_SCHEMA, check.SCHEMAS) == (IDENTITY_DIAGNOSTIC_SCHEMA, (1, 2, 3, 4, 5, 6, 7, 8))  # 8: route B
     # D88: schema 5, the candidate's records, and its constants
     from sentinel.identity.legacy_deepface import DETECTION_FULL_SCALE, FULL_SCALE_FLOOR, CandidateDetection
     from sentinel.runtime import IDENTITY_CANDIDATE_SCHEMA, detection_numbers
@@ -1941,7 +1981,7 @@ def test_the_vocabularies_are_the_codes(mods) -> None:
     assert set(fe.FEATURE_ACTUAL) == set(status_page.FEATURE_ACTUAL)
     assert PAUSED in fe.PREVIEW_STATE.values and fe.PREVIEW_REASON.fit(PAUSED_REASON) == (True, [])
     assert fe.CHAT_REASON.fit(OPERATOR_OFF)[0] and "snapshots_off" in status_page.SNAPSHOT_REASONS
-    assert fe.TICKS.values == {TICK_OFFERED, TICK_SKIPPED_NO_PERSON, TICK_STOPPING}
+    assert fe.TICKS.values == {TICK_OFFERED, TICK_SKIPPED_NO_PERSON, TICK_STOPPING, TICK_PREPARE_FAILED}
     assert fe.RELEASE_RESULTS.values == set(RELEASE_RESULTS)
     assert fe.RELEASE_COMPONENTS.values == set(RELEASE_FILE_ROLES)
     assert fe.RELEASE_ROLES.values == {r for roles in RELEASE_FILE_ROLES.values() for r in roles}
@@ -3677,3 +3717,247 @@ def test_a_non_enrolled_session_needs_its_look_cue_and_a_format_8_account(mods, 
 def test_the_normal_launch_provenance_is_refused_with_nothing_written(framing, lighting, f1, message) -> None:
     done = normal_launch(PIN, BOOT, framing, lighting, f1)
     assert done.returncode == 2 and done.stdout == "" and message in done.stderr
+
+
+# ---------------------------------------------------------------- route B (session 116, part 17): main_single, schema 8
+
+
+@pytest.fixture
+def startup_b(tmp_path, accepted_scene) -> dict:
+    root = tmp_path / "startup-b"
+    root.mkdir()
+    return startup_line(real_face_startup(root, accepted_scene, windows=True))
+
+
+def test_route_bs_reader_constants_are_the_runtimes(mods, startup_b) -> None:
+    from sentinel import config
+    from sentinel.identity import legacy_deepface, state
+    from sentinel.identity.window_stage import WindowNumbers
+    from sentinel.runtime import IDENTITY_WINDOWS_SCHEMA
+    from sentinel.tracking.tracker import BYTETRACK_LOST_TRACK_FRAMES, frame_counted_settings
+
+    check, guard, fe = mods.check, mods.guard, mods.evidence
+    stage = WindowSettings(head_fraction=IdentityConfig().head_fraction).numbers()
+    assert check.WINDOWS_STAGE == stage and set(fe.WINDOW_STAGE) == set(stage)
+    assert check.WINDOWS_FACE == guard.WINDOWS_FACE == startup_b["startup"]["face"]
+    assert check.DETECTION_WINDOWS == legacy_deepface.DETECTION_WINDOWS and check.WINDOWS_SCHEMA == IDENTITY_WINDOWS_SCHEMA
+    assert check.STREAM_MAIN_SINGLE == guard.STREAM_MAIN_SINGLE == config.STREAM_MAIN_SINGLE
+    assert check.WORKING_SIZE == guard.WORKING_SIZE == list(config.WORKING_SIZE)
+    assert guard.BYTETRACK_LOST_TRACK_FRAMES == BYTETRACK_LOST_TRACK_FRAMES
+    numbers = WindowNumbers(1, ((640, 640),), (1.0,), 1, 0, 0, (), 0, 0, 0, 0).numbers()
+    assert set(numbers) == check.WINDOW_KEYS == {*fe.WINDOW_COUNTS, "inputs", "scales", "not_analysed"}
+    assert set(frame_counted_settings(2, None)["frames"]) == set(fe.FRAME_COUNTED_KEYS)
+    assert fe.NOT_ANALYSED_NOTE == state.NOT_ANALYSED_NOTE and check.NOT_ANALYSED == "not_analysed"
+    assert check.WINDOW_TICKS == check.TICKS | {TICK_PREPARE_FAILED}
+    from guard_verdict import READINESS
+    assert READINESS == guard.READINESS
+
+
+def test_a_route_b_run_is_validated_by_its_own_marker_and_every_file_conforms(mods, tmp_path, startup_b, f1_list) -> None:
+    out = simulate(tmp_path, startup_b, route_b=True, preview=True)
+    finish(mods, out)
+    result, text = reading(mods, out, f1_list)
+    assert result.ok, text
+    assert "MISSING" not in text and "FAIL" not in text and "NOT_EXERCISED" not in text
+    assert line_for(text, "face admitted for this validation run on route B").startswith("PASS")
+    assert line_for(text, "identity records: schema 8").startswith("PASS")
+    assert line_for(text, "route B: every tick with people made its windows").startswith("PASS")
+    assert "DESCRIPTIVE route B windows over the results" in text
+    for path in sorted(out.iterdir()):
+        if path.is_file() and path.name not in mods.check.NOT_COUNTED:
+            read = mods.evidence.read(path, "f2")
+            assert read.nonconforming == [], (path.name, read.nonconforming[:5])
+    status = json.loads((out / "status-k1.json").read_text())
+    assert status["components"]["capture"]["stream"]["decoded"] == [2304, 1296]
+    frame = status["preview"]["frame"]
+    assert (frame["native_width"], frame["processed_width"]) == (2304, 640)  # the source and the preview's copy
+
+
+def _first(lines, kind, where=lambda line: True):
+    return next(i for i, line in enumerate(lines) if line.get("identity") == kind and where(line))
+
+
+def _applied(line):
+    return line.get("outcome") == "applied" and line.get("persons")
+
+
+def _edit_result(change):
+    def edit(lines):
+        i = _first(lines, "result", _applied)
+        lines[i] = change(dict(lines[i]))
+        return lines
+    return edit
+
+
+def _edit_tick(change):
+    def edit(lines):
+        result = lines[_first(lines, "result", _applied)]
+        i = _first(lines, "tick", lambda l: (l["stream_epoch"], l["frame_seq"]) == (result["stream_epoch"],
+                                                                                    result["frame_seq"]))
+        lines[i] = change(dict(lines[i]))
+        return lines
+    return edit
+
+
+def _edit_start(change):
+    def edit(lines):
+        lines[0] = {**lines[0], "startup": change(dict(lines[0]["startup"]))}
+        return lines
+    return edit
+
+
+def _duplicate_result(lines):
+    i = _first(lines, "result", _applied)
+    return lines[:i + 1] + [lines[i]] + lines[i + 1:]
+
+
+def _all_schema(schema):
+    def edit(lines):
+        return [{**line, "schema": schema} if "identity" in line else line for line in lines]
+    return edit
+
+
+@pytest.mark.parametrize(("edit", "item"), [
+    (_edit_result(lambda r: {**r, "frame_seq": r["frame_seq"] + 100_000}), "identity records"),  # no such tick
+    (_edit_result(lambda r: {**r, "frame_mono_ns": r["frame_mono_ns"] + 1}), "identity records"),  # another time
+    (_duplicate_result, "identity records"),  # two results for one frame
+    (_edit_result(lambda r: {**r, "persons": [{**r["persons"][0], "track_id": 99}]}), "identity records"),
+    (_edit_result(lambda r: {**r, "windows": {**r["windows"], "people": r["windows"]["people"] + 1}}), "identity records"),
+    (_edit_result(lambda r: {k: v for k, v in r.items() if k != "windows"}), "identity records"),
+    (_edit_result(lambda r: {**r, "windows": {**r["windows"], "not_analysed": [r["persons"][0]["track_id"]]}}),
+     "identity records"),  # listed as left out, but judged
+    (_edit_tick(lambda t: {**t, "tracks": [7]}), "identity records"),  # the result's people are not the tick's
+    (_edit_tick(lambda t: {**t, "tick": "prepare_failed"}), "identity records"),  # a result for an unprepared frame
+    (_all_schema(3), "identity records"),  # route B's marker with substream records
+    (_edit_start(lambda s: {k: v for k, v in s.items() if k != "stream"}), "identity records"),
+    (_edit_start(lambda s: {**s, "stream": {**s["stream"], "profile": "sub"}}), "identity records"),
+    (_edit_start(lambda s: {**s, "stream": {**s["stream"], "working": [2304, 1296]}}), "identity records"),
+    (_edit_start(lambda s: {**s, "face": {**s["face"], "stage": {**s["face"]["stage"], "max_windows": 9}}}),
+     "face admitted for this validation run"),
+])
+def test_route_bs_frame_references_and_markers_must_agree(mods, tmp_path, startup_b, f1_list, edit, item) -> None:
+    """Each inconsistency between a result and its frame, its tick, its people, or the run's markers fails the reading."""
+    out = simulate(tmp_path, startup_b, route_b=True)
+    _mutate(out, edit)
+    finish(mods, out)
+    result, text = reading(mods, out, f1_list)
+    assert not result.ok and line_for(text, item).startswith("FAIL"), text
+
+
+def test_a_substream_startup_never_reads_schema_8_records(mods, tmp_path, startup, f1_list) -> None:
+    out = simulate(tmp_path, startup, route_b=True)  # the records and captures of route B
+    finish(mods, out)
+    result, text = reading(mods, out, f1_list)
+    assert not result.ok and line_for(text, "identity records").startswith("FAIL"), text
+    assert line_for(text, "each status capture").startswith("FAIL")  # a stream marker in a substream run's captures
+
+
+def test_a_prepare_failure_is_judged_and_never_hidden(mods, tmp_path, startup_b, f1_list) -> None:
+    out = simulate(tmp_path, startup_b, route_b=True)
+
+    def edit(lines):  # a tick with people whose windows could not be made, and no result for it, as the worker does
+        last = max(i for i, l in enumerate(lines) if l.get("identity") == "result" and _applied(l))
+        frame = (lines[last]["stream_epoch"], lines[last]["frame_seq"])
+        i = _first(lines, "tick", lambda l: (l["stream_epoch"], l["frame_seq"]) == frame)
+        lines[i] = {**lines[i], "tick": "prepare_failed"}
+        return lines[:last] + lines[last + 1:]
+
+    _mutate(out, edit)
+    finish(mods, out)
+    result, text = reading(mods, out, f1_list)
+    assert not result.ok and line_for(text, "route B: every tick with people made its windows").startswith("FAIL")
+    assert line_for(text, "identity records").startswith("PASS")  # the record itself is a valid schema-8 tick
+
+
+def _route_b_result(mods, persons, *, windows=None, outcome="applied", faces=1):
+    from sentinel.identity.window_stage import WindowNumbers
+    from sentinel.runtime import IDENTITY_WINDOWS_SCHEMA
+
+    numbers = [FaceDiagnostics((0.1, 0.2, 0.3, 0.9), 0.9, (40, 50) if own == "assigned" else None,
+                               0.95 if own == "assigned" else None, 0.9 if own == "assigned" else None,
+                               prototype=0 if own == "assigned" else None, geometry=None if own != "assigned" else
+                               {"box": [0.1, 0.2, 0.12, 0.25], "raw_box": None, "overhang_px": None, "eyes": None})
+               for _, own, *_ in persons]
+    if windows is None:  # as the stage makes them: people not analysed only for an unexplained drop in their window
+        withheld = tuple(SimpleNamespace(track_id=p[0]) for p in persons if p[1] == "not_analysed")
+        cause = 1 if withheld else 0
+        windows = WindowNumbers(1, ((640, 640),), (1.0,), len(persons), 0, cause, withheld, faces + cause, cause, 0,
+                                640 * 640 * 3).numbers()
+    record = FaceResultRecord(0, 1, 5, 6, outcome, faces, tuple(persons), 900.0, None, tuple(numbers),
+                              detection={"best_below_score": None, "best_below_w_px": None, "detect_ms": 25.0,
+                                         "embed_ms": 800.0 if faces else None},
+                              windows=windows).record(IDENTITY_WINDOWS_SCHEMA)
+    return mods.check._record_problem("result", record), record
+
+
+def test_a_schema_8_records_people_must_fit_their_windows(mods) -> None:
+    assigned = (1, "assigned", "match", ENROLLED, "match")
+    withheld = (2, "not_analysed", "none", None, "not_analysed")
+    assert _route_b_result(mods, [assigned, withheld])[0] is None
+    assert _route_b_result(mods, [assigned, (2, "ambiguous", "none", None, "ambiguous")])[0] is None
+    bad = [
+        [assigned, (2, "not_analysed", "unknown", None, "not_analysed")],  # a vote for someone not analysed
+        [assigned, (2, "no_person", "none", None, "no_person")],  # an ownership people never have
+        [assigned, (2, "no_face", "none", None, "not_analysed")],  # the label without the ownership
+    ]
+    for persons in bad:
+        assert _route_b_result(mods, persons)[0] is not None, persons
+    problem, record = _route_b_result(mods, [assigned])
+    for change in ({"inputs": [[641, 640]]}, {"scales": [1.5]}, {"windows": 5, "inputs": [[640, 640]] * 5,
+                                                                  "scales": [1.0] * 5},
+                   {"not_analysed": [3, 1]}, {"copy_bytes": 10**9}, {"dropped_duplicate": 2}):
+        broken = {**record["windows"], **change}
+        assert _route_b_result(mods, [assigned], windows=broken)[0] is not None, change
+    # review finding (session 116, part 17): people withheld only for a recorded cause, and an unexplained window's people
+    # never judged
+    _, pair = _route_b_result(mods, [assigned, withheld])
+    for change in ({"unexplained_windows": 0, "dropped_at_window_edge": 0},  # withheld for no recorded cause
+                   {"dropped_at_window_edge": 0}):  # an unexplained window without a dropped detection
+        assert _route_b_result(mods, [assigned, withheld], windows={**pair["windows"], **change})[0] is not None, change
+    five = [assigned, *((n, "no_face", "none", None, "no_face") for n in (2, 3, 4)), (5, "not_analysed", "none", None,
+                                                                                        "not_analysed")]
+    four = {"windows": 4, "inputs": [[640, 640]] * 4, "scales": [1.0] * 4, "people": 5, "uncovered": 1,
+            "unexplained_windows": 1, "not_analysed": [5], "detected": 2, "dropped_at_window_edge": 1, "dropped_duplicate": 0,
+            "copy_bytes": 4 * 640 * 640 * 3}
+    assert _route_b_result(mods, five, windows=four)[0] is not None  # the unexplained window's owner was judged
+    failed = FaceResultRecord(0, 1, 5, 6, "failed", None, (), 900.0, "analysis_failed:X", (),
+                              detection=None, windows=None).record(8)
+    assert mods.check._record_problem("result", failed) is None
+    assert mods.check._record_problem("result", {**failed, "windows": record["windows"]}) is not None
+    tick = {"identity": "tick", "schema": 8, "stream_epoch": 0, "frame_seq": 1, "frame_mono_ns": 5,
+            "tick": "prepare_failed", "tracks": [1]}
+    assert mods.check._record_problem("tick", tick) is None
+    assert mods.check._record_problem("tick", {**tick, "schema": 3}) is not None  # never on the substream
+
+
+def test_the_guard_reads_route_b_only_with_its_own_requirement(mods, startup, startup_b) -> None:
+    guard = mods.guard
+    main, plain = startup_b["startup"], startup["startup"]
+    assert guard.readiness_problem("face_windows", main) is None
+    assert guard.readiness_problem("face_chat_windows", main) == "chat_missing"  # then everything face_chat needs
+    chat = {**main, "chat": guard.CHAT_VALIDATION_AVAILABLE}
+    assert guard.readiness_problem("face_chat_windows", chat) is None
+    assert guard.readiness_problem("face_windows", plain) == "stream_profile_sub"
+    for requirement in ("face_chat", "tracking_diagnostic", "landmark_diagnostic"):
+        assert guard.readiness_problem(requirement, main) == "stream_profile_main_single"
+    inconsistent = {k: v for k, v in main.items() if k != "stream"}
+    assert guard.readiness_problem("face_windows", inconsistent) == "stream_profile_inconsistent"
+    stream = main["stream"]
+    for change, label in (({"decode_threads": 0}, "stream_decode_threads"),
+                          ({"working": [2304, 1296]}, "stream_working_copy"),
+                          ({"tracker_frame_counted": {**stream["tracker_frame_counted"], "processed_fps": 20.0}},
+                           "stream_tracker_frame_counted")):
+        assert guard.readiness_problem("face_windows", {**main, "stream": {**stream, **change}}) == label
+    assert guard.readiness_problem("face_windows", {**main, "face": {**main["face"], "stage": {}}}) == \
+        "face_not_the_windows_validation_run"
+    assert guard._starting_summary(main)["stream"] == stream and "stream" not in guard._starting_summary(plain)
+
+
+def test_an_undeclared_route_b_field_is_nonconforming(mods, tmp_path, startup_b) -> None:
+    out = simulate(tmp_path, startup_b, route_b=True, duration=70.0)
+    status = json.loads((out / "status-e1.json").read_text())
+    status["components"]["capture"]["stream"]["decoded_by"] = "someone"
+    status["components"]["capture"]["stream"]["profile"] = "sideways"
+    (out / "status-e1.json").write_text(json.dumps(status))
+    read = mods.evidence.read(out / "status-e1.json", "f2")
+    assert len(read.nonconforming) == 2, read.nonconforming

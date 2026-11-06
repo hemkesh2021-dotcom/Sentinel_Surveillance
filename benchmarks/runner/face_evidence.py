@@ -175,7 +175,7 @@ WORKER = vocab("not_started", "running", "stopped", "not_configured")  # worker/
 IDENTITY_STATES = ("unresolved", "unknown", "known", "uncertain")  # identity.state.IdentityState
 BASIS = vocab("fresh", "retained")  # identity.state.Basis
 OWNERSHIP = ("assigned", "no_face", "no_person", "ambiguous",  # identity.association.Ownership
-             "not_analysed")  # route B (session 116, part 15): main_single runs only, whose startup no profile here admits
+             "not_analysed")  # route B: main_single runs only (identity.association.withhold)
 VOTE_LABELS = ("match", "unknown", "margin", "low_quality", "incompatible", "no_enrollment",  # state._NOTE_LABELS
                "before_break",  # D97: state.BEFORE_BREAK (continuity runs only)
                "before_expiry")  # state.BEFORE_EXPIRY: a late result from the track's earlier life
@@ -185,7 +185,21 @@ NOT_CARRIED = tuple(f"not carried over a break in tracking ({why})" for why in (
 CONTINUITY_POLICY = ("max_gap_s", "overlap_iou", "min_step_iou", "retention_s")  # ContinuityPolicy.numbers (D97)
 VOTE_NOTES = ("face matched", "face matched nobody", "face matches more than one identity", "face quality too low",
               "embedding from an incompatible model", "no identities enrolled")  # state._NOTE_LABELS' keys
-TICKS = vocab("offered", "skipped_no_person", "stopping")  # identity.worker TICK_*
+TICKS = vocab("offered", "skipped_no_person", "stopping",  # identity.worker TICK_*
+              "prepare_failed")  # route B: the frame's windows could not be made (main_single runs only)
+NOT_ANALYSED_NOTE = "not analysed on that frame"  # route B: identity.state.NOT_ANALYSED_NOTE
+# Route B (session 116, parts 16-17): identity.window_stage.WindowSettings.numbers(), tracker.frame_counted_settings and
+# window_stage.WindowNumbers.numbers(): numbers and fixed labels only
+WINDOW_STAGE = {"kind": vocab("head_windows"), "side": INT, "margin": NUM, "max_windows": INT, "head_fraction": NUM,
+                "duplicate_iou": NUM, "context": NUM, "explained_share": NUM}
+FRAME_COUNTED_KEYS = ("bytetrack_lost_track", "confirm_detections", "unconfirmed_after_misses")
+FRAME_COUNTED = {"": NULL, "frames": NULL, **{f"frames.{k}": INT for k in FRAME_COUNTED_KEYS}, "processed_fps": SECONDS,
+                 "seconds": NULL, **{f"seconds.{k}": NUM for k in FRAME_COUNTED_KEYS},
+                 "seconds_at_substream_fps": NULL, **{f"seconds_at_substream_fps.{k}": NUM for k in FRAME_COUNTED_KEYS}}
+WINDOW_COUNTS = ("windows", "people", "uncovered", "unexplained_windows", "detected", "dropped_at_window_edge",
+                 "dropped_duplicate", "copy_bytes")
+WINDOWS_RESULT = {"": NULL, **{k: INT for k in WINDOW_COUNTS}, "inputs[][]": INT, "scales[]": NUM,
+                  "not_analysed[]": INT}
 COMPARISON_KINDS = ("full_scale_only", "both")  # identity.comparison.Kind
 CAPTURE_REFUSALS = ("too_few_faces", "too_few_prototypes", "inconsistent_capture", "capture_target_has_gallery",
                     "capture_not_verified", "capture_write_failed",
@@ -214,7 +228,7 @@ CHANNELS = vocab("telegram")
 GUARD_STATUS = Either((vocab("duration_stop", "child_exited", "cleanup_failed", "forced_stop", "guard_stop",
                              "ready_timeout", "operator_interrupt", "readiness_refused"), template(r"refused:(.+)")))
 STOP_BY = maybe(vocab("duration_elapsed", "guard_stop", "ready_timeout", "operator_interrupt", "readiness_refused"))
-READINESS = vocab("tracking_diagnostic", "landmark_diagnostic", "face_chat")  # step5_guard.READINESS (80, 90, 103)
+READINESS = vocab("tracking_diagnostic", "landmark_diagnostic", "face_chat", "face_windows", "face_chat_windows")  # step5_guard.READINESS (80, 90, 103)
 CAPTURE_RESULT = Either((vocab("saved", "too_large", "not_json", "not_reached"), template(r"unavailable:(.+)")))
 LISTENER = {"port": INT, "family": vocab("tcp", "tcp6"), "scope": vocab("loopback", "any", "other")}
 
@@ -234,14 +248,14 @@ DEGRADED = template(r"capture (\S+)(?: \((.+)\))?", r"video (\S+)", r"detector u
                     r"(\d+) rule observation\(s\) lost: not recorded", r"(\S+) unavailable \((.*)\); its alerts stay "
                     r"queued", r"delivery worker problem \((.*)\)", fixed("delivery worker stopped"))
 TRANSITION_REASON = template(*(fixed(t) for t in (
-    *VOTE_NOTES, "no face visible", "face ownership ambiguous", *OWNERSHIP, "no face observed yet",
+    *VOTE_NOTES, "no face visible", "face ownership ambiguous", *OWNERSHIP, NOT_ANALYSED_NOTE, "no face observed yet",
     "consistent faces matched nobody", "contradictory face evidence", "track no longer current", *NOT_CARRIED,
     "face recognition disabled")),  # D99: identities end when face recognition is turned off
     r"(\d+) consistent matches")
 TRACK_STATUS = vocab("tentative", "confirmed")  # contracts.TrackStatus
 # A person's identity reason (D95): the core's own (identity.state, runtime.EdgeCore._identity), never free text.
 IDENTITY_REASON = template(*(fixed(t) for t in (
-    *VOTE_NOTES, "no face visible", "face ownership ambiguous", *OWNERSHIP, "no face observed yet",
+    *VOTE_NOTES, "no face visible", "face ownership ambiguous", *OWNERSHIP, NOT_ANALYSED_NOTE, "no face observed yet",
     "consistent faces matched nobody", "contradictory face evidence", "no identities enrolled",
     "face recognition disabled", "face recognition unavailable", *NOT_CARRIED)),
     r"(\d+) consistent matches")
@@ -372,7 +386,10 @@ OPTIONAL_STATUS = {  # build_status's preview, and DemoRuntime's preview, snapsh
     **FEATURES_STATUS,
     "preview.enabled": BOOL, "preview.state": PREVIEW_STATE, "preview.reason": PREVIEW_REASON, "preview.age_ms": COUNT,
     "preview.frame": NULL, **{f"preview.frame.{k}": INT for k in ("stream_epoch", "frame_seq", "native_width",
-                                                                  "native_height")},
+                                                                  "native_height",
+                                                                  # the image the preview was given, when it is not
+                                                                  # the source picture itself (route B's working copy)
+                                                                  "processed_width", "processed_height")},
     "preview.frame.ingest_utc": ISO, "preview.frame.source_time_quality": TIME_QUALITY,
     "preview.time_label": maybe(TIME_LABEL), "preview.picture": NULL, "preview.problem": maybe(TEXT),
     **{f"preview.bounds.{k}": v for k, v in PREVIEW_BOUNDS.items()},
@@ -418,6 +435,13 @@ OPTIONAL_STATUS_KEYS = {"features.items": vocab(*FEATURES), "features.counters":
 
 def nest(prefix: str, fields: dict[str, Spec]) -> dict[str, Spec]:
     return {f"{prefix}.{path}" if path else prefix: spec for path, spec in fields.items()}
+
+
+# Route B (session 116, part 17): the startup's and the status's stream entries (main_single runs only)
+STREAM_STARTUP = {"": NULL, "profile": vocab("main_single"), "decode_threads": INT, "working[]": INT,
+                  "resize": vocab("area"), **nest("tracker_frame_counted", FRAME_COUNTED)}
+STREAM_STATUS = {"": NULL, "profile": vocab("main_single"), "decode_threads": INT, "working[]": INT, "decoded": NULL,
+                 "decoded[]": INT, **nest("tracker_frame_counted", FRAME_COUNTED)}
 
 
 def _prefixes(path: str) -> Iterator[str]:
@@ -514,7 +538,9 @@ STARTUP = {  # the runtime's ``starting`` line (demo_runtime.assemble and cli)
     "detector_problem": maybe(TEXT), "scene_problem": maybe(TEXT), "face_problem": maybe(TEXT),
     "notifier_problems.*": maybe(TEXT), "face.validation_run": BOOL, "face.identities_enrolled": INT,
     "face.comparison": BOOL,  # D87, only in --face-comparison runs
-    "face.detection": vocab("full_scale"),  # D88, only in --face-full-scale-detection runs
+    "face.detection": vocab("full_scale", "head_windows"),  # D88's runs; route B's (main_single)
+    **nest("face.stage", WINDOW_STAGE),  # route B, only in main_single runs
+    **nest("stream", STREAM_STARTUP),  # route B, only in main_single runs
     "face.shadow": BOOL, "face.capture": BOOL,  # D91, only in the enrollment experiment's runs
     **{f"face.continuity.{k}": NUM for k in CONTINUITY_POLICY},  # D97, only in --face-continuity runs
     **TRACKING_STARTUP,  # session 79, only in --tracking-diagnostic runs
@@ -538,6 +564,7 @@ IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransitio
     "stream_epoch": INT, "cause": vocab(*CONTINUITY_CAUSES),  # D97: runtime.break_record (continuity runs only)
     "frame_seq": INT,
     "frame_mono_ns": INT, "tick": TICKS, "tracks[]": INT, "applied_mono_ns": INT, "outcome": OUTCOMES,
+    **nest("windows", WINDOWS_RESULT),  # schema 8 (route B): the result's windows
     "faces": COUNT, "processing_ms": SECONDS, "error": maybe(TEXT), "persons[].track_id": INT,
     "persons[].ownership": vocab(*OWNERSHIP), "persons[].vote": vocab("none", "unknown", "match"),
     "persons[].identity_id": maybe(IDN), "persons[].label": vocab(*VOTE_LABELS, *OWNERSHIP),
@@ -624,7 +651,9 @@ STARTING_SUMMARY = {  # step5_guard._starting_summary
     "detector_memory_before": NULL, "detector_memory_before.*": COUNT,
     "face_memory_before": NULL, "face_memory_before.*": COUNT,
     "face": NULL, "face.validation_run": BOOL, "face.identities_enrolled": INT, "face.comparison": BOOL,
-    "face.detection": vocab("full_scale"),  # D88
+    "face.detection": vocab("full_scale", "head_windows"),  # D88; route B
+    **nest("face.stage", WINDOW_STAGE),  # route B: the guard keeps the startup's face entry
+    **nest("stream", STREAM_STARTUP),  # route B: the guard keeps the startup's stream entry
     "face.shadow": BOOL, "face.capture": BOOL,  # D91
     **{f"face.continuity.{k}": NUM for k in CONTINUITY_POLICY},  # D97: the guard keeps the startup's face entry
     **TRACKING_STARTUP,  # session 79: likewise
@@ -726,6 +755,7 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
     **{f"components.capture.{k}": COUNT for k in ("connects", "open_failures", "reconnects", "stream_ends",
                                                   "stream_epoch")},
     "components.capture.retry_delay_s": SECONDS,
+    **nest("components.capture.stream", STREAM_STATUS),  # route B, only in main_single runs
     "components.detector.state": CAPABILITY, "components.detector.problem": maybe(TEXT),
     "components.detector.counters.*": INT,
     # session 79: the tracking diagnostic's budget (DemoRuntime._tracking_status), only in its runs
@@ -799,8 +829,10 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
               "started", "results_replaced", "errors", "completed", "faces_detected", "fallback_dropped",
               "faces_returned",
               "yielded_to_comparison", "comparison_outcomes_dropped", "comparison_plan_errors",  # D87
-              "discarded_off"),  # D99
-        template(r"error:([A-Za-z0-9_]+)"))),  # one per exception class (FaceWorker._process)
+              "discarded_off",  # D99
+              "prepare_errors"),  # route B: a frame's windows could not be made
+        template(r"error:([A-Za-z0-9_]+)"),  # one per exception class (FaceWorker._process)
+        template(r"prepare_error:([A-Za-z0-9_]+)"))),  # route B: one per label or class (FaceWorker.consider)
     "components.face.worker.comparison.counters": Either((  # identity.comparison counters; failure labels are content
         vocab(*(f"{stage}_{kind}" for stage in ("eligible", "attempted", "completed", "failed")
                 for kind in COMPARISON_KINDS), *(d for d in COMPARISON_DISPOSITIONS if d.startswith("skipped_"))),

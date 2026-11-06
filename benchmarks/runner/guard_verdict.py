@@ -43,7 +43,8 @@ STATUSES = ("duration_stop", "child_exited", "cleanup_failed", "forced_stop", "g
 LABEL = re.compile(r"[a-z][a-z0-9_]{0,63}")
 REASON = re.compile(r"[A-Za-z0-9_:() .,-]{1,160}")  # step5_guard.readiness_problem's labels (a detector problem's too)
 PREFIX = re.compile(r"[A-Z]{1,4}_")
-READINESS = ("tracking_diagnostic", "landmark_diagnostic", "face_chat")  # step5_guard.READINESS (sessions 80, 90, 103)
+READINESS = ("tracking_diagnostic", "landmark_diagnostic", "face_chat",  # step5_guard.READINESS (sessions 80, 90, 103)
+             "face_windows", "face_chat_windows")  # route B (session 116, part 17)
 
 
 def _status(value: Any) -> str:

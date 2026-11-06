@@ -583,3 +583,49 @@ def test_stop_does_not_wait_for_an_idle_browser(db_path: Path) -> None:
         started = time.monotonic()
         assert server.stop(2.0)
         assert time.monotonic() - started < 1.0
+
+
+# ---------------------------------------------------------------- route B (session 116, part 17): which size is which
+
+
+SQUEEZE_TO_WORKING = (640 / 2304, 480 / 1296)
+
+
+def route_b_frame(rig: Rig, *, image_shape=(480, 640, 3)):
+    """A main_single frame: the camera's 2304x1296 picture, the preview handed its 640x480 working copy."""
+    from sentinel.contracts import ResizeTransform
+
+    rig.clock.advance(FRAME_S)
+    frame = rig.stamper.stamp(native_width=2304, native_height=1296, pixel_format=PixelFormat.BGR,
+                              resize=ResizeTransform(output_width=640, output_height=480, scale_x=SQUEEZE_TO_WORKING[0],
+                                                     scale_y=SQUEEZE_TO_WORKING[1]))
+    image = Image(f"e{frame.stream_epoch}-f{frame.frame_seq}")
+    image.shape = image_shape
+    rig.frames.put(frame, image)
+    return frame
+
+
+def test_the_source_size_and_the_previews_copy_are_told_apart_and_the_picture_keeps_its_own() -> None:
+    rig = Rig()
+    rig.stamper.connect()
+    route_b_frame(rig)
+    view = rig.preview.view(with_picture=True)
+    assert (view["frame"]["native_width"], view["frame"]["native_height"]) == (2304, 1296)  # the camera's picture
+    assert (view["frame"]["processed_width"], view["frame"]["processed_height"]) == (640, 480)  # the preview's copy
+    picture = view["picture"]
+    assert (picture["width"], picture["height"]) == (640, 480) and picture["processed_width"] == 640  # the JPEG's
+    page = render_html(status_page.build_status(HEALTHY, {"state": "available"}, T0, view))
+    assert "<dt>Picture size</dt><dd>640×480 shown, from a 640×480 copy of the camera's 2304×1296 picture</dd>" in page
+    plain = live_rig()  # the substream: one size, and its facts and page exactly as before
+    view = plain.preview.view(with_picture=True)
+    assert "processed_width" not in view["frame"] and "processed_width" not in view["picture"]
+    assert "<dt>Picture size</dt>" not in render_html(status_page.build_status(HEALTHY, {"state": "available"}, T0, view))
+
+
+def test_an_image_that_is_not_the_frames_own_copy_is_never_encoded() -> None:
+    rig = Rig()
+    rig.stamper.connect()
+    route_b_frame(rig, image_shape=(1296, 2304, 3))  # the decoded picture instead of its working copy
+    view = rig.preview.view(with_picture=True)
+    assert view["picture"] is None and rig.encoded == []
+    assert view["problem"] == "image_size_mismatch"

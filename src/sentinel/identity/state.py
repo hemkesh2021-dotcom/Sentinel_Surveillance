@@ -53,6 +53,7 @@ VOTES_KEPT = 5
 UNKNOWN_VOTE = ""  # a good face that matched nobody enrolled
 BEFORE_BREAK = "before_break"  # D97: a face on a frame from before its track's latest break; it is not counted
 BEFORE_EXPIRY = "before_expiry"  # a face on a frame from before its track's current life began; it is not counted
+NOT_ANALYSED_NOTE = "not analysed on that frame"  # route B: outside the face stage's windows that tick; never "no face visible"
 
 
 class IdentityState(str, Enum):
@@ -147,7 +148,7 @@ class IdentityResolver:
                 self._last_note[key] = (person.observed_mono_ns, {
                     Ownership.NO_FACE: "no face visible",
                     Ownership.AMBIGUOUS: "face ownership ambiguous",
-                    Ownership.NOT_ANALYSED: "not analysed on that frame",  # route B: never "no face visible"
+                    Ownership.NOT_ANALYSED: NOT_ANALYSED_NOTE,
                 }.get(ownership, ownership.value))
                 records.append(VoteRecord(key, ownership, None, ownership.value))
                 continue
