@@ -58,6 +58,11 @@ format 6's four separate questions about the whole run under their own header. T
 answers describe what the operator did and who was in view, and the reading uses them only to qualify its descriptive
 recognition lines.
 
+**Format 12** (session 116, part 18; ``enter --format 12``): route B's range session (V3): the empty room at the start
+(yes / no / unknown), then, for each block of holds (the seat, 4.0 m facing, 4.0 m natural, 5.0 m facing, 5.0 m
+natural) and for the walk-ins, the numbers of the holds NOT done as cued (``none``, the numbers, or unknown), then
+other faces in view and notes. The guard's bells pace every hold (RANGE_CUES); range_check reads the account.
+
 ``check`` shows a saved account, read only, with its lock state. Stdlib only.
 """
 
@@ -327,10 +332,95 @@ INTRO_V11 = (
     "on its own: yes or no, or unknown if you are not sure; an unknown answer affects only the lines that depend on\n"
     "it. Nothing here shows an identity result or a chat answer."
 )
-SEPARATE_FORMATS = (6, 7, 8, 10, 11)  # answers read one by one: unknown is accepted, never "incomplete"
+# Format 12 (session 116, part 18): route B's range session (V3). One enrolled person, alone, holds at measured marks
+# (the seat, 4.0 m and 5.0 m), each hold begun from out of the camera's view with the face turned away, then three
+# exploratory walk-ins. The guard's bells pace every hold (RANGE_CUES below); the account says, block by block, which
+# holds were NOT done as cued, so a missed hold is left out by number instead of voiding its block.
+RANGE_FIRST_GO_S = 60  # T0, then the empty room until the first walk bell
+RANGE_APPROACH_S = 15  # walk bell -> hold bell: reach the mark, face turned away, and wait there turned away
+RANGE_ARRIVAL_S = 10  # ... on the mark within this long after the walk bell (the account says so, hold by hold)
+RANGE_HOLD_S = {"facing": 30, "natural": 60}  # part 14's holds: facing the lens; natural activity on the mark
+RANGE_OUT_S = 15  # end bell -> the next walk bell: out of the camera's view, so the next hold starts on a new track
+RANGE_TRANSITION_S = 30  # the same, before the first hold of the next block (another mark's out-of-view spot)
+RANGE_WALK_S = 30  # a walk-in's walk bell -> its end bell
+RANGE_WALK_INS = 3
+RANGE_STOP_S = 15  # the stop bell -> the run's end
+# (account key, cue prefix, kind, mark, the prompts' name); the marks' distances are typed before launch (marks.txt)
+# Cue names are letters and digits only (seat1go, m4f3hold, m5n5end, walk1go): the guard's --cue-at allows letters, digits
+# and dashes, guard_verdict's --cues lowercase letters, digits and underscores.
+RANGE_BLOCKS = (("seat", "seat", "facing", "seat", "Seat"),
+                ("m4_facing", "m4f", "facing", "mark4", "4.0 m facing"),
+                ("m4_natural", "m4n", "natural", "mark4", "4.0 m natural"),
+                ("m5_facing", "m5f", "facing", "mark5", "5.0 m facing"),
+                ("m5_natural", "m5n", "natural", "mark5", "5.0 m natural"))
+RANGE_HOLDS_PER_BLOCK = 5
+RANGE_MARK_WORDS = {"seat": "your seat and sit", "mark4": "the 4.0 m mark", "mark5": "the 5.0 m mark"}
+
+
+def _range_schedule() -> tuple[tuple[tuple[str, int, str], ...], tuple[dict, ...], tuple[dict, ...], int]:
+    """(cues as (name, seconds after T0, text), holds, walk-ins, the run's duration in s): the one schedule the package's
+    guard prints and the range reading reads."""
+    cues = [("t0", 0, "Range check started. Leave the camera's view now and stay out of it until the next bell (1:00).")]
+    holds, walks, at = [], [], RANGE_FIRST_GO_S
+    for index, (block, prefix, kind, mark, name) in enumerate(RANGE_BLOCKS):
+        for number in range(1, RANGE_HOLDS_PER_BLOCK + 1):
+            go, hold = at, at + RANGE_APPROACH_S
+            end = hold + RANGE_HOLD_S[kind]
+            last = number == RANGE_HOLDS_PER_BLOCK
+            following = RANGE_BLOCKS[index + 1][4] if index + 1 < len(RANGE_BLOCKS) else "the walk-ins"
+            cues += [(f"{prefix}{number}go", go, f"{name} {number} of {RANGE_HOLDS_PER_BLOCK}: walk to "
+                      f"{RANGE_MARK_WORDS[mark]}, face turned away from the camera, within {RANGE_ARRIVAL_S} s; wait there "
+                      "turned away"),
+                     (f"{prefix}{number}hold", hold, f"{name} {number}: " + (
+                         "face the camera lens now and hold still until the next bell" if kind == "facing" else
+                         "act naturally on the mark until the next bell: look around, use your phone, talk; stay on "
+                         "the mark")),
+                     (f"{prefix}{number}end", end, f"{name} {number}: turn away from the camera and leave its view; "
+                      + (f"next: {following}, in {RANGE_TRANSITION_S} s; stay out of view until then" if last else
+                         "stay out until the next bell"))]
+            holds.append({"block": block, "number": number, "kind": kind, "mark": mark, "go": go, "hold": hold,
+                          "end": end, "cues": (f"{prefix}{number}go", f"{prefix}{number}hold", f"{prefix}{number}end")})
+            at = end + (RANGE_TRANSITION_S if last else RANGE_OUT_S)
+    for number in range(1, RANGE_WALK_INS + 1):
+        go, end = at, at + RANGE_WALK_S
+        cues += [(f"walk{number}go", go, f"Walk-in {number} of {RANGE_WALK_INS} (exploratory): from out of view beyond "
+                  "the 5.0 m mark, walk to your seat facing the camera at a normal pace; sit facing it"),
+                 (f"walk{number}end", end, f"Walk-in {number}: turn away from the camera and leave its view; stay out "
+                  "until the next bell")]
+        walks.append({"number": number, "go": go, "end": end, "cues": (f"walk{number}go", f"walk{number}end")})
+        at = end + RANGE_OUT_S
+    cues.append(("stop", at, f"All done. Come back to the Mac and type nothing; the run stops by itself in "
+                 f"{RANGE_STOP_S} s."))
+    return tuple(cues), tuple(holds), tuple(walks), at + RANGE_STOP_S
+
+
+RANGE_CUES, RANGE_HOLD_PLAN, RANGE_WALK_PLAN, RANGE_DURATION_S = _range_schedule()
+RANGE_CUE_AT_S = {name: at for name, at, _ in RANGE_CUES}
+HEADER_V12 = "# route B range session account, format 12, entered with benchmarks/runner/face_account.py; values as typed"
+HOLD_NUMBERS_5 = tuple(str(n) for n in range(1, RANGE_HOLDS_PER_BLOCK + 1))
+HOLD_NUMBERS_WALK = tuple(str(n) for n in range(1, RANGE_WALK_INS + 1))
+FIELDS_V12 = (
+    Field("empty_at_start", "choice", "yes / no: from the first bell until the first walk bell (1:00) nobody, you "
+          "included, was in the camera's view", YES_NO),
+    *(Field(f"{block}_holds_not_as_cued", "holds", f"the {name} holds you did NOT do as cued: none, or their numbers "
+            "(1 to 5, e.g. 2 4)", HOLD_NUMBERS_5) for block, _, _, _, name in RANGE_BLOCKS),
+    Field("walk_ins_not_as_cued", "holds", "the walk-ins you did NOT do as cued: none, or their numbers (1 to 3)",
+          HOLD_NUMBERS_WALK),
+    *FIELDS_V1[9:],  # other_faces_in_view, notes
+)
+INTRO_V12 = (
+    "Your range session account (format 12). A hold was done as cued when you were on its mark, face turned away,\n"
+    "within 10 s of its first bell and waited there turned away; then faced the camera lens and held still (facing\n"
+    "holds) or acted naturally on the mark (natural holds) until its third bell; then left the camera's view and\n"
+    "stayed out of it until the next bell. For each\n"
+    "block, type the numbers of the holds you did NOT do that way, or none; unknown if you cannot say. Never type a\n"
+    "name. Nothing here shows an identity result."
+)
+SEPARATE_FORMATS = (6, 7, 8, 10, 11, 12)  # answers read one by one: unknown is accepted, never "incomplete"
 FORMATS = {HEADER_V1: (1, FIELDS_V1), HEADER: (2, FIELDS), HEADER_V3: (3, FIELDS_V3), HEADER_V4: (4, FIELDS_V4),
            HEADER_V5: (5, FIELDS_V5), HEADER_V6: (6, FIELDS_V6), HEADER_V7: (7, FIELDS_V7), HEADER_V8: (8, FIELDS_V8),
-           HEADER_V9: (9, FIELDS_V9), HEADER_V10: (10, FIELDS_V10), HEADER_V11: (11, FIELDS_V11)}
+           HEADER_V9: (9, FIELDS_V9), HEADER_V10: (10, FIELDS_V10), HEADER_V11: (11, FIELDS_V11),
+           HEADER_V12: (12, FIELDS_V12)}
 INTRO = (
     "Your F2 account (format 2). Answer from what you noted; type unknown for anything you did not note or are not\n"
     "sure of. First: how many whole seconds after the T0 cue you started the stopwatch (0 if at the cue, as far as\n"
@@ -357,6 +447,15 @@ def uncertainty_seconds(value: str | None) -> int | None:
 def accepted(field: Field, raw: str) -> tuple[str | None, str | None]:
     """(value to write, None) for an acceptable answer, else (None, why it was not accepted)."""
     text = raw.strip()
+    if field.kind == "holds":  # format 12: none, hold numbers each once (saved in order, comma-separated), or unknown
+        if text.lower() in ("unknown", "u"):
+            return UNKNOWN, None
+        if text.lower() == "none":
+            return "none", None
+        parts = [part for part in re.split(r"[\s,]+", text) if part]
+        if parts and all(part in field.choices for part in parts) and len(set(parts)) == len(parts):
+            return ",".join(sorted(parts, key=int)), None
+        return None, f"none, or hold numbers from 1 to {len(field.choices)}, each once (e.g. 2 4), or unknown"
     if field.kind not in ("seconds", "uncertainty"):
         return _accepted(field, raw)
     if text.lower() in ("unknown", "u"):
@@ -460,7 +559,17 @@ def not_ready(run_dir: Path) -> str | None:
 
 
 _HINTS = {"time": "m:ss or unknown", "text": "one line, may be empty", "seconds": "whole seconds, or unknown",
-          "uncertainty": "1 to 5, or unknown"}
+          "uncertainty": "1 to 5, or unknown", "holds": "none, hold numbers (e.g. 2 4), or unknown"}
+
+
+def hold_numbers(value: str | None) -> frozenset[int] | None:
+    """Format 12: the hold numbers an answer leaves out (none: the empty set); None for unknown, missing or malformed."""
+    if value == "none":
+        return frozenset()
+    if value is None or not re.fullmatch(r"[1-9](,[1-9])*", value):
+        return None
+    numbers = [int(part) for part in value.split(",")]
+    return frozenset(numbers) if numbers == sorted(set(numbers)) else None
 
 
 def _ask(field: Field, number: int, ask: Callable[[str], str], say: Callable[[str], None], total: int) -> str:
@@ -492,7 +601,8 @@ def enter(run_dir: Path, ask: Callable[[str], str] = input, say: Callable[[str],
                              7: (FIELDS_V7, HEADER_V7, INTRO_V7), 8: (FIELDS_V8, HEADER_V8, INTRO_V8),
                              9: (FIELDS_V9, HEADER_V9, INTRO_V9),
                              10: (FIELDS_V10, HEADER_V10, INTRO_V10),
-                             11: (FIELDS_V11, HEADER_V11, INTRO_V11)}.get(account_format_number,
+                             11: (FIELDS_V11, HEADER_V11, INTRO_V11),
+                             12: (FIELDS_V12, HEADER_V12, INTRO_V12)}.get(account_format_number,
                                                                           (FIELDS, HEADER, INTRO))
     checker = review_separate if account_format_number in SEPARATE_FORMATS else review
     problem = not_ready(run_dir)
@@ -574,13 +684,14 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     enter_parser = commands.add_parser("enter", help="answer each item; saving locks the account")
     enter_parser.add_argument("run_dir", type=Path)
-    enter_parser.add_argument("--format", type=int, choices=(2, 3, 4, 5, 6, 7, 8, 9, 10, 11), default=2,
+    enter_parser.add_argument("--format", type=int, choices=(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12), default=2,
                               help="2 (D66, the default), 3 (D79, cued), 4 (D85, cued, the 4:00 head turn stated), 5 "
                                    "(D86, the natural seated check), 6 (D87, the natural recognition comparison), 7 "
                                    "(D91, the enrollment experiment's capture), 8 (D91, a non-enrolled participant's "
                                    "session), 9 (D101, cued, the away posture named by the 4:00 cue) or 10 (session "
                                    "90, the landmark diagnostic's ordinary-use session) or 11 (session 103, the "
-                                   "face and chat integration run); 3 to 11 only with the maintainer's approval")
+                                   "face and chat integration run) or 12 (session 116, route B's range session); 3 "
+                                   "to 12 only with the maintainer's approval")
     commands.add_parser("check", help="show a saved account and its lock state").add_argument("run_dir", type=Path)
     args = parser.parse_args(argv)
     if args.command == "enter":

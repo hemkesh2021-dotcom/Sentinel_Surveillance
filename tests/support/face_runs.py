@@ -133,17 +133,22 @@ def real_face_startup(root: Path, accepted_scene, *, comparison: bool = False,
     return {key: assembly.startup[key] for key in kept} | {"face_release": release}
 
 
-def startup_line(face: dict[str, Any]) -> dict[str, Any]:
+def startup_line(face: dict[str, Any], *, scene: bool = True) -> dict[str, Any]:
+    """The runtime's starting line around ``face``; without ``scene`` (route B's range session, session 116 part 18) as
+    `sentinel run` writes it with no --scene: no scene server, its THP checkpoint or its release."""
     release = {"settle_s": 15.0, "files": {}}
     return {"run": "starting", "startup": {
         "memory_policy": {"thp": "workload_disabled", "model_file_release": "post_load"},
         "thp_scope": {"before_launch": {"runtime": 1}, "llama_ready": {"runtime": 1, "scene_server": 1},
-                      "workload_verified": {"runtime": 0, "scene_server": 1}},
+                      "workload_verified": {"runtime": 0, "scene_server": 1}} if scene else
+                     {"before_launch": {"runtime": 1}, "workload_verified": {"runtime": 0}},
         "thp_disable": {"verified": True, "reason": None, "set_rc": 0, "thp_enabled": 0},
-        "releases": {"scene": {**release, "files": {"llm": {"result": "returned_0"}, "mmproj": {"result": "returned_0"}}},
+        "releases": {**({"scene": {**release, "files": {"llm": {"result": "returned_0"},
+                                                        "mmproj": {"result": "returned_0"}}}} if scene else {}),
                      "detector": {**release, "files": {"engine": {"result": "returned_0"}}},
                      "face": face["face_release"]},
-        "scene_server": {"state": "ready", "problem": None, "layers": "17/17", "vision_on_gpu": True},
+        **({"scene_server": {"state": "ready", "problem": None, "layers": "17/17", "vision_on_gpu": True}}
+           if scene else {}),
         "scene_problem": None, "detector_problem": None, "notifier_problems": {},
         "face": face["face"], "face_problem": face["face_problem"], "face_memory_before": face["face_memory_before"],
         **({"stream": face["stream"]} if "stream" in face else {}),  # route B: only main_single runs have it

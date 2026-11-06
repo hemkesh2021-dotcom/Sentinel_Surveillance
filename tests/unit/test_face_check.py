@@ -146,7 +146,7 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
              duration: float = 600.0, combined: bool = False, analyze=None, comparator=None,
              captures=CAPTURES, detection: str = "deepface", shadow=None, experiment_capture=None,
              preview: bool = False, tracking=None, tracking_bounds=None, landmarks: bool = False,
-             route_b: bool = False) -> Path:
+             route_b: bool = False, scene: bool = True) -> Path:
     """Run the real runtime through ``script`` and write the F2 directory as the package's blocks would.
 
     ``combined`` (D78): with the live view, incident snapshots and chat in a validation run as well, each used during
@@ -157,7 +157,8 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
     ``landmarks`` (session 90): the landmark diagnostic is on, so the records are schema 7 (``analyze`` gives each
     frame's FullScale with its landmarks). ``route_b`` (session 116, part 17): the main_single profile: 2304x1296
     frames with their 640x480 working copy, the face stage preparing head windows from each frame's people and each
-    result carrying its windows (schema 8)."""
+    result carrying its windows (schema 8). Without ``scene`` (route B's range session, session 116 part 18) the
+    runtime runs no scene analysis, as `sentinel run` without --scene."""
     out = root / "f2"
     out.mkdir()
     clock = FakeClock(utc=NOW)
@@ -197,7 +198,7 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
                 1, ((640, 640),), (1.0,), len(people), 0, 0, (), len(run.faces), 0, 0, 640 * 640 * 3))
     worker = FaceWorker(analyze, clock, comparator=comparator, prepare=prepare)
     images = RecentImages()
-    scene = SceneRuntime(ThreadedSceneAnalyzer(lambda job, image: WorkerOutcome.completed(job.job_id, REPORT), images,
+    scene_runtime = SceneRuntime(ThreadedSceneAnalyzer(lambda job, image: WorkerOutcome.completed(job.job_id, REPORT), images,
                                                revision="1+lfm2-vl-1.6b-q4_0"), images)
     db = Database.open(root / "sentinel.db")
     extra: dict[str, Any] = {}
@@ -221,7 +222,8 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
     runtime = DemoRuntime(config, clock, capture=capture, slot=slot,
                           incidents=IncidentService(db, clock, incidents=config.incidents,
                                                     notifications=config.notifications),
-                          tracker=PersonTracker(tracker, diagnostics=tracking is not None), scene=scene,
+                          tracker=PersonTracker(tracker, diagnostics=tracking is not None),
+                          scene=scene_runtime if scene else None,
                           face=FaceRuntime(worker, 1, True, comparator is not None, detection, shadow,
                                            experiment_capture, landmarks=landmarks,
                                            windows=WindowSettings() if route_b else None),
@@ -331,9 +333,9 @@ def save_account(mods, out: Path, account: dict[str, str], cued_format: int = 3)
     """A format-1 account (the face-0f7855e package's) as that helper saved and locked it; a format-2 account through
     the current helper's prompts (an unknown reading's uncertainty is not asked); a cued account (format 3, or 4 when
     asked: the same keys) through the helper's prompts."""
-    if cued_format in (5, 6, 7, 8, 10):  # the natural check's (D86), the comparison's (D87), D91's or session 90's
-        fields = {5: mods.account.FIELDS_V5, 6: mods.account.FIELDS_V6, 7: mods.account.FIELDS_V7,
-                  8: mods.account.FIELDS_V8, 10: mods.account.FIELDS_V10}[cued_format]
+    if cued_format in (5, 6, 7, 8, 10, 12):  # the natural check's (D86), the comparison's (D87), D91's, session 90's
+        fields = {5: mods.account.FIELDS_V5, 6: mods.account.FIELDS_V6, 7: mods.account.FIELDS_V7,  # or the range's
+                  8: mods.account.FIELDS_V8, 10: mods.account.FIELDS_V10, 12: mods.account.FIELDS_V12}[cued_format]
         answers = iter([account[f.key] for f in fields] + ["SAVE"])
         assert mods.account.enter(out, ask=lambda prompt: next(answers), say=lambda text: None,
                                   account_format_number=cued_format) == 0
@@ -1149,8 +1151,9 @@ def test_a_format_4_account_is_schema_text_and_the_helper_offers_it(mods, tmp_pa
     assert read.nonconforming == [] and read.content == [(f"line {len(mods.account.FIELDS_V4) + 1}: notes",
                                                           "a note that is never printed")]
     with pytest.raises(SystemExit):
-        mods.account.main(["enter", str(run), "--format", "12"])  # 6 the comparison's (D87), 7, 8 D91's, 9 D101's,
-        # 10 session 90's (the landmark diagnostic), 11 session 103's (the face and chat integration run)
+        mods.account.main(["enter", str(run), "--format", "13"])  # 6 the comparison's (D87), 7, 8 D91's, 9 D101's,
+        # 10 session 90's (the landmark diagnostic), 11 session 103's (the face and chat integration run), 12 session 116's
+        # (route B's range session)
 
 
 # ---------------------------------------------------------------- D101: format 9, the away posture named by the cue
