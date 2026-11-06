@@ -1,4 +1,16 @@
 import os
+from sentinel.core import BoundingBox, SentinelConfig
+
+# Load deployment settings before importing the expensive ML runtimes so missing
+# secrets or invalid configuration fail fast.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+CONFIG = SentinelConfig.load_and_validate()
+
 # Keep DeepFace/TensorFlow on the CPU (frees GPU memory for YOLO + llama-server) WITHOUT
 # hiding the GPU from PyTorch — yolo.track(device=0) needs torch.cuda to see it.
 # NOTE: the old CUDA_VISIBLE_DEVICES="" hid the GPU from torch too, which crashed YOLO.
@@ -18,42 +30,32 @@ from deepface import DeepFace
 from queue import Queue, Empty
 import argparse, signal, sys
 
-# PATCH 0: load secrets from .env (falls back to real env vars if python-dotenv absent)
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
-
 # ─── CONFIG ───────────────────────────────────────────
-RTSP_URL          = os.environ.get("RTSP_URL")          # PATCH 0: from .env, not hardcoded
-YOLO_MODEL        = "/home/villain8001/yolov8n.engine"
-FACE_DB_PATH      = "/home/villain8001/face_db.pkl"
-BOT_TOKEN         = os.environ.get("BOT_TOKEN")         # PATCH 0
-CHAT_ID           = os.environ.get("CHAT_ID")           # PATCH 0
-DISPLAY_WIDTH     = 640
-DISPLAY_HEIGHT    = 480
-CONF_THRESHOLD    = 0.4
-CONFIRM_FRAMES    = 2
-PERSIST_FRAMES    = 8
-FACE_MATCH_THRESH = 0.40
+# All deployment-specific values come from SentinelConfig. Secrets and paths
+# can be supplied through .env or the process environment.
+RTSP_URL          = CONFIG.stream.rtsp_url
+YOLO_MODEL        = CONFIG.detection.model_path
+FACE_DB_PATH      = CONFIG.biometric.face_db_path
+BOT_TOKEN         = CONFIG.intelligence.telegram_bot_token
+CHAT_ID           = CONFIG.intelligence.telegram_chat_id
+DISPLAY_WIDTH     = CONFIG.stream.display_width
+DISPLAY_HEIGHT    = CONFIG.stream.display_height
+CONF_THRESHOLD    = CONFIG.detection.conf_threshold
+CONFIRM_FRAMES    = CONFIG.detection.confirm_frames
+PERSIST_FRAMES    = CONFIG.detection.persist_frames
+FACE_MATCH_THRESH = CONFIG.biometric.match_threshold
 FACE_CHECK_EVERY  = 3
-YOLO_FRAME_SKIP   = 2
-RESTRICTED_HOURS  = (22, 6)
-MODEL_NAME        = "Facenet512"
-LFM2_SERVER       = "http://localhost:8080"
-LFM2_INTERVAL     = 4.0
-LFM2_IMG_W        = 480
-LFM2_IMG_H        = 360
-LFM2_IMG_QUALITY  = 60
-INTRUDER_LOG      = "/home/villain8001/intruder_log.json"
-STATE_FILE        = "/tmp/surv_state.json"
-FRAME_FILE        = "/tmp/surv_frame.jpg"
-
-# PATCH 0: fail fast with a clear message if secrets are missing
-if not all([RTSP_URL, BOT_TOKEN, CHAT_ID]):
-    raise SystemExit("Missing secrets: set RTSP_URL, BOT_TOKEN and CHAT_ID in .env "
-                     "(or export them) before running.")
+YOLO_FRAME_SKIP   = CONFIG.detection.frame_skip
+RESTRICTED_HOURS  = CONFIG.intelligence.restricted_hours
+MODEL_NAME        = CONFIG.biometric.model_name
+LFM2_SERVER       = CONFIG.intelligence.lfm2_server_url
+LFM2_INTERVAL     = CONFIG.intelligence.lfm2_interval_sec
+LFM2_IMG_W        = CONFIG.intelligence.lfm2_img_width
+LFM2_IMG_H        = CONFIG.intelligence.lfm2_img_height
+LFM2_IMG_QUALITY  = CONFIG.intelligence.lfm2_img_quality
+INTRUDER_LOG      = CONFIG.intelligence.intruder_log_path
+STATE_FILE        = CONFIG.ipc.state_file
+FRAME_FILE        = CONFIG.ipc.frame_file
 
 # PATCH 3.1: headless by default; pass --display (or SENTINEL_DISPLAY=1) to show the OpenCV window
 _ap = argparse.ArgumentParser()
@@ -73,10 +75,10 @@ signal.signal(signal.SIGTERM, _handle_sig)
 signal.signal(signal.SIGINT, _handle_sig)
 
 # ── Face Re-ID config ──
-FACE_MAX_RETRIES  = 15      # more chances before giving up
-REID_THRESHOLD    = 0.48    # slightly lower than match threshold
-MAX_SESSION_EMBS  = 5       # embeddings stored per known person
-STRANGER_RECHECK  = 5.0     # re-verify a Stranger/Unknown track every N seconds
+FACE_MAX_RETRIES  = CONFIG.biometric.max_retry_attempts
+REID_THRESHOLD    = CONFIG.biometric.reid_threshold
+MAX_SESSION_EMBS  = CONFIG.biometric.max_session_embeddings
+STRANGER_RECHECK  = CONFIG.biometric.stranger_recheck_interval_sec
 
 # ── Load face DB ──
 print("Loading face database...")
@@ -422,7 +424,7 @@ def update_tracks(boxes, frame_num):
             tid=int(tid); seen.add(tid)
             s=track_states[tid]
             s.confirm_count=min(s.confirm_count+1,CONFIRM_FRAMES+2)
-            s.last_seen=frame_num; s.last_box=box.cpu().numpy().astype(int)
+            s.last_seen=frame_num; s.last_box=BoundingBox.from_xyxy(box.cpu().numpy().astype(int))
             if s.confirm_count>=CONFIRM_FRAMES: s.visible=True
     for tid in list(track_states.keys()):
         s=track_states[tid]
