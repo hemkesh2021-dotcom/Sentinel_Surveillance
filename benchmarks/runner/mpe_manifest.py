@@ -12,8 +12,9 @@ Classes: ``raw`` (the raw capture), ``candidate`` (the frozen working gallery an
 readings). The cleanup deletes only ``raw``, ``candidate`` and ``working_copy`` entries, and only a listed path that is
 still the same file or directory it listed (the same device and inode, never a link, and a file still its listed
 SHA-256): anything else is reported and left. A cleanup may be limited to one listed path and what lies under it. A listed directory is removed only when nothing unlisted remains in it; an unlisted file there is reported, never
-deleted. ``evidence`` and ``output`` are never deleted here: that is the maintainer's explicit step under the retention
-decision. Whatever the manifest lists, the cleanup never deletes outside the experiment root (deletable entries are
+deleted. ``evidence`` and ``output`` are never deleted by the cleanup; ``retire_candidate`` is decision 11's one
+exception: the frozen candidate and then its frozen record (an ``output`` entry, by its exact name), on the maintainer's
+close-out or withdrawal (mpe_retention). Whatever the manifest lists, the cleanup never deletes outside the experiment root (deletable entries are
 listed only inside it), at, under or above a protected path (the original enrollment, the sessions), or in a sealed
 directory (one holding SHA256SUMS). Nothing outside the manifest is ever deleted: unexpected copies (an unlisted file
 with a listed file's SHA-256 under the roots given, a crash report made since the first entry) are only reported, for
@@ -24,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import stat
@@ -33,6 +35,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 MANIFEST_NAME = "MANIFEST.tsv"
+FROZEN_NAME = "candidate.frozen.json"  # mpe_build's frozen record, in the root
+CANDIDATE_RE = re.compile(r"candidate-mp-b-\d{8}T\d{6}Z")  # a build attempt's candidate directory, named after its B
 CLASSES = ("raw", "candidate", "working_copy", "evidence", "output")
 DELETABLE = ("raw", "candidate", "working_copy")
 KINDS = ("file", "dir")
@@ -392,6 +396,39 @@ def recover(manifest: Manifest, *, writer_exited: bool, protected: tuple[Path, .
             report["closed_absent"].append(str(path))
     classes = ("raw", "working_copy") if frozen is not None and frozen.is_file() else ("raw", "working_copy", "candidate")
     report["cleanup"] = cleanup(manifest, classes, protected=protected)
+    return report
+
+
+def retire_candidate(manifest: Manifest, protected: tuple[Path, ...] = ()) -> dict:
+    """Decision 11's deletion of the frozen candidate (its deadline, the follow-up validation finished, or the
+    maintainer's withdrawal): the candidate directory the frozen record names (its listed ``candidate`` entries, by the
+    cleanup's rules), then, only when nothing of it is left, the frozen record itself: the only ``output`` entry ever
+    deleted, by its exact name in the root, still the file it listed (same inode and SHA-256). Reports what was left."""
+    root = manifest.root
+    record = root / FROZEN_NAME
+    try:
+        frozen = json.loads(record.read_text("ascii"))
+    except FileNotFoundError:
+        return {"deleted": [], "already_absent": [str(record)], "left_changed": [], "left_not_empty": [],
+                "unlisted_inside": [], "left_outside_root": [], "left_protected": [], "left_sealed": []}
+    except ValueError:
+        frozen = {}
+    name = frozen.get("candidate") if isinstance(frozen, dict) else None
+    if not isinstance(name, str) or CANDIDATE_RE.fullmatch(name) is None:
+        raise ManifestError("the frozen record names no candidate directory")
+    report = cleanup(manifest, ("candidate",), within=root / name, protected=protected)
+    if os.path.lexists(root / name) or any(report[k] for k in ("left_changed", "left_not_empty", "left_outside_root",
+                                                                "left_protected", "left_sealed")):
+        return report  # the record stays while anything of its candidate does
+    entry = manifest.entries().get(record)
+    info = os.lstat(record)
+    if entry is None or entry.cls != "output" or entry.deleted or not _same(entry, info) \
+            or entry.sha256 != sha256_file(record):
+        report["left_changed"].append(str(record))
+        return report
+    os.unlink(record)
+    manifest._append("deleted", str(record), manifest._utc_now())
+    report["deleted"].append(str(record))
     return report
 
 

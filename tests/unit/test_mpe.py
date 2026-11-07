@@ -353,7 +353,36 @@ def test_the_comparison_reports_gains_and_losses_on_the_same_faces_from_full_pre
     assert facing["both"] == facing["compared"] and facing["loss"] == facing["gain"] == 0
     # every compared face is counted once, in one class
     assert all(h["both"] + h["loss"] + h["gain"] + h["neither"] == h["compared"] for h in out["holds"])
-    assert out["pending"] == "the gain bar and the facing-loss limit"
+    assert "pending" not in out and out["format"] == "mpe-compare-1"
+    assert out["frozen_prototypes_digest"] == pipeline.frozen["prototypes_digest"]
+    # the replay's own nanoseconds, from which the criteria are computed (the shares are these over the hold)
+    assert all(h["known_ns"][w] / h["length_ns"] == h["known_share"][w] for h in out["holds"]
+               for w in ("baseline", "candidate"))
+
+
+def test_the_criteria_read_the_same_replay_and_the_outcome_follows_the_order_of_precedence(pipeline, mods) -> None:
+    import mpe_outcome
+    em = json.loads(json.dumps(mods.compare.compare(pipeline.em, POLICY, pipeline.frozen)))  # as the record keeps it
+    ep = json.loads(json.dumps(mods.compare.compare(pipeline.ep, POLICY, pipeline.frozen)))
+    criteria = mpe_outcome.em_criteria(em)
+    # the synthetic E_M: the candidate wins the natural turns at both marks and loses the photo-like seat
+    assert criteria["natural_gain_4_0m"]["met"] and criteria["natural_gain_5_0m"]["met"]
+    assert criteria["facing_acquisitions_lost"] == {"count": 3, "bar": "0", "met": False}
+    assert not criteria["pooled_facing"]["met"]
+    evidence = lambda kind, record: {"kind": kind, "name": None, "state": "compared", "compare": record}
+    out = mpe_outcome.evaluate(pipeline.frozen, evidence("E_M", em), evidence("E_P", ep))
+    assert out["outcome"] == "REJECTED"  # the participant's pose-matched left turn: the candidate voted match
+    votes = ep["participant"]["candidate_match_votes"]
+    ep["participant"].update(candidate_match_votes=0, candidate_known_entries=0)
+    out = mpe_outcome.evaluate(pipeline.frozen, evidence("E_M", em), evidence("E_P", ep))
+    assert out["outcome"] == "NOT_SUPPORTED" and out["reasons"] == ["facing_acquisitions_lost", "pooled_facing"]
+    for record in (em, ep):
+        text = json.dumps(record)
+        assert "similarity" not in text and ENROLLED not in text and "idn-" not in text
+    # a run sealed before its comparison is read for REJECTED the way the comparison counts its votes
+    sealed = mpe_outcome.sealed_run_votes(pipeline.ep)
+    assert sealed["candidate_match_votes"] == votes > 0
+    assert sealed["shadow_digest"] == pipeline.frozen["prototypes_digest"] and sealed["others_in_view"] == "no"
 
 
 def test_the_chronological_replay_reproduces_the_recorded_production_history(pipeline, mods) -> None:
@@ -380,7 +409,9 @@ def test_the_hold_reset_analysis_is_printed_apart_and_never_as_runtime_behaviour
     chronological = text.index("CHRONOLOGICAL")
     analysis = text.index("ANALYSIS hold reset")
     assert chronological < analysis and "NOT runtime behaviour, never a criterion" in text
-    assert "PENDING the gain bar and the facing-loss limit" in text and "SUPPORTED or NOT_SUPPORTED verdict" in text
+    assert "PENDING" not in text and "OUTCOME not drawn here: mp-O reads both sealed evaluation sessions" in text
+    assert "CRITERIA (decision 12, E_M's part) natural_gain_4_0m: " in text and "(bar >= +20): met" in text
+    assert "CRITERIA (decision 12, E_M's part) facing_acquisitions_lost: 3 (bar 0): NOT met" in text
     for h in out["holds"]:
         assert set(h["hold_reset_share"]) == {"baseline", "candidate"}  # its own field, never the KNOWN share's
     assert ENROLLED not in text and "similarity" not in text.lower()

@@ -1,6 +1,6 @@
 """The multi-pose comparison's reading of one evaluation session (PROPOSED; validated with synthetic data only).
 
-usage: mpe_compare.py SESSION_DIR --config FACE_YAML --frozen EXP_ROOT/candidate.frozen.json
+usage: mpe_compare.py SESSION_DIR --config FACE_YAML --frozen EXP_ROOT/candidate.frozen.json [--json OUT]
 
 SESSION_DIR holds the guard's result.json, the run's run.jsonl (a route B run with --face-shadow-gallery) and the
 person's account, mpe-account.txt (mpe_schedule.read_account). The schedule (mpe_schedule: E_M or E_P) is identified
@@ -36,9 +36,11 @@ separately), and exposure per window that gave the frozen candidate a prototype,
 POSE_SETTLE_S after the pose bell; NOT_EXERCISED where the participant gave no compared face there; EXCLUDED where
 the account lists the window as not done as cued, its faces still counted in the participant's totals).
 
-**Not decided here:** the gain bar and the facing-loss limit are the maintainer's (PENDING); this reading reports the
-numbers and draws no SUPPORTED or NOT_SUPPORTED verdict. One enrolled and one non-enrolled person, one session each:
-k of n, never a rate; zero candidate matches on the participant is not general false-accept safety.
+**The outcome is not drawn here:** mpe_outcome reads both sealed evaluation sessions' records (``--json``: the
+numbers and labels below, no similarity value or identity ID) in decision 12's order (REJECTED, INCONCLUSIVE,
+NOT_SUPPORTED, SUPPORTED); E_M's reading prints its criteria as mpe_outcome computes them. One enrolled and one
+non-enrolled person, one session each: k of n, never a rate; zero candidate matches on the participant is not general
+false-accept safety.
 """
 
 from __future__ import annotations
@@ -53,6 +55,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import mpe_account
+import mpe_outcome
 import mpe_schedule
 from sentinel.identity.association import Ownership
 from sentinel.identity.matching import EnrolledIdentity, Enrollment
@@ -80,7 +83,7 @@ class Key:
     track_id: int
 
 
-EXCLUDED = "excluded_not_as_cued"  # an E_P window the account lists as not done as cued
+EXCLUDED = mpe_outcome.EXCLUDED  # an E_P window the account lists as not done as cued
 
 class Replay:
     """The production resolver driven by recorded decisions ("match", "unknown" or None per compared face) and, in
@@ -470,6 +473,9 @@ def compare(session: Path, policy: IdentityPolicy, frozen: dict | None) -> dict[
                      "not_as_cued": hold.name in not_as_cued,
                      "excluded": hold.name in not_as_cued or len(inside) < MIN_COMPARED,
                      # replay-derived: only from a valid replay (otherwise WITHHELD, never the hold-reset's)
+                     "length_ns": length,
+                     "known_ns": {"baseline": baseline.known_ns(bell, end),
+                                  "candidate": candidate.known_ns(bell, end)} if replay_valid else None,
                      "known_share": {"baseline": baseline.known_ns(bell, end) / length,
                                      "candidate": candidate.known_ns(bell, end) / length} if replay_valid else None,
                      "at_mark": {"baseline": at_mark(baseline, bell, end),
@@ -494,9 +500,11 @@ def compare(session: Path, policy: IdentityPolicy, frozen: dict | None) -> dict[
                            "gained_acquisitions": sum(1 for r in kept if r["at_mark"]["candidate"] == "acquired"
                                                       and r["at_mark"]["baseline"] != "acquired")
                            if replay_valid else None})
-    out: dict[str, Any] = {"session": kind, "replay": check, "mode": mode, "replay_valid": replay_valid,
-                           "inconclusive": inconclusive, "holds": rows, "conditions": conditions,
-                           "pending": "the gain bar and the facing-loss limit"}
+    out: dict[str, Any] = {"format": mpe_outcome.COMPARE_FORMAT, "session": kind, "replay": check, "mode": mode,
+                           "replay_valid": replay_valid, "inconclusive": inconclusive, "holds": rows,
+                           "conditions": conditions,
+                           "frozen_digest": (frozen or {}).get("digest"),
+                           "frozen_prototypes_digest": (frozen or {}).get("prototypes_digest")}
     if kind == "E_P":
         whole = pairs(faces)  # every compared face of the session, T0 to the run's end: nothing of the participant left out
         out["participant"] = {
@@ -586,7 +594,21 @@ def print_report(out: dict[str, Any]) -> None:
             print(f"  EXPOSURE {name}: " + ("EXCLUDED (the account: not done as cued; its faces still count in the "
                                              "participant's totals)" if count == EXCLUDED else
                                              "NOT_EXERCISED" if not count else f"{count} compared faces"))
-    print(f"PENDING {out['pending']} (the maintainer's decision): no SUPPORTED or NOT_SUPPORTED verdict is drawn")
+    if out["session"] == "E_M":
+        try:
+            criteria = mpe_outcome.em_criteria(out)
+        except (KeyError, TypeError):
+            criteria = None
+        if criteria is None:
+            print(f"CRITERIA (decision 12, E_M's part) {withheld}: the outcome will be INCONCLUSIVE")
+        else:
+            for name, value in criteria.items():
+                number = (f"{value['count']}" if "count" in value else
+                          "n/a" if value["points"] is None else f"{value['points']:+.1f} points")
+                print(f"CRITERIA (decision 12, E_M's part) {name}: {number} (bar {value['bar']}): "
+                      f"{'met' if value['met'] else 'NOT met'}")
+    print("OUTCOME not drawn here: mp-O reads both sealed evaluation sessions in this order: REJECTED, then "
+          "INCONCLUSIVE, then NOT_SUPPORTED, then SUPPORTED")
     print("LIMIT one enrolled and one non-enrolled person, one session each: k of n, never a rate; holds seconds "
           "apart are not independent; zero candidate matches is not general false-accept safety")
 
@@ -597,6 +619,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--frozen", type=Path, required=True)
     parser.add_argument("--f1", type=Path, required=True)
+    parser.add_argument("--json", type=Path, default=None, help="write the reading's numbers and labels here (new file)")
     for flag in ("--run", "--identity-dir", "--recheck-root"):  # the F1 gate, as the launch block ran it
         parser.add_argument(flag, type=Path, default=None)
     args = parser.parse_args(argv)
@@ -624,6 +647,8 @@ def main(argv: list[str] | None = None) -> int:
     print(lines[-1])  # mpe-execution: passed
     policy = identity_policy(load_config(args.config).identity)
     out = compare(session, policy, frozen)
+    if args.json is not None and out.get("session") is not None:
+        mpe_outcome.write_once(args.json, json.dumps(out, sort_keys=True, indent=1) + "\n")
     print_report(out)
     return 1 if out["inconclusive"] else 0
 
