@@ -64,7 +64,8 @@ IDENTITY_COMPARISON_SCHEMA = 4
 IDENTITY_CANDIDATE_SCHEMA = 5
 # Schema 6 (D90), what face validation runs with the candidate write from D90 on: schema 5, plus on each result person
 # the position of the prototype that gave the vote's similarity, the assigned face's geometry (face_geometry_numbers)
-# and "shadow", the similarity to an experiment's separate working gallery (D91; null without one).
+# and "shadow", the similarity to an experiment's separate working gallery, its prototype position and the production
+# decision against it at full precision (D91; null without one).
 IDENTITY_GEOMETRY_SCHEMA = 6
 # Schema 7 (session 90), what face validation runs with --face-landmark-diagnostic write: schema 3, plus on each result
 # person "landmarks" (identity.landmarks.landmark_records: an explicit status and, when measured, the derived landmark
@@ -91,6 +92,20 @@ def _schema(schema: int) -> int:
                       IDENTITY_LANDMARK_SCHEMA, IDENTITY_WINDOWS_SCHEMA):
         raise ValueError(f"unknown identity record schema {schema!r}")
     return schema
+
+
+def identity_policy(identity: Any, continuity_retention_ns: int | None = None) -> IdentityPolicy:
+    """The identity rules the runtime decides with, from the configuration's ``identity`` section (the resolver's; the
+    multi-pose comparison's replay builds the same ones from a session's configuration)."""
+    return IdentityPolicy(
+        match_threshold=identity.match_threshold,
+        margin=identity.margin,
+        min_quality=identity.min_quality,
+        confirmations=identity.confirmations,
+        vote_ttl_ns=identity.vote_ttl_ns,
+        fresh_window_ns=identity.face_result_max_age_ns,
+        continuity_retention_ns=continuity_retention_ns,
+    )
 
 
 def tick_record(frame: FrameRef, persons: Sequence[TrackObservation], tick: str,
@@ -289,15 +304,7 @@ class EdgeCore:
         self._geometry = AssociationGeometry(identity.head_fraction, identity.min_face_inside)
         self._identities = IdentityResolver(
             enrollment,
-            IdentityPolicy(
-                match_threshold=identity.match_threshold,
-                margin=identity.margin,
-                min_quality=identity.min_quality,
-                confirmations=identity.confirmations,
-                vote_ttl_ns=identity.vote_ttl_ns,
-                fresh_window_ns=identity.face_result_max_age_ns,
-                continuity_retention_ns=None if continuity is None else continuity.retention_ns,
-            ),
+            identity_policy(identity, None if continuity is None else continuity.retention_ns),
         )
         # D97 (opt-in): each track's continuity, watched on every processed frame; None: the rules as they were
         self._continuity = None if continuity is None else ContinuityMonitor(continuity)
@@ -458,7 +465,8 @@ class EdgeCore:
             for ownership in association.face_ownership:
                 self.face_counters[f"faces_{ownership.value}"] += 1
             votes = self._identities.observe(persons, faces, association)
-            diagnostics = _diagnostics(frame, persons, faces, association.face_of, votes, geometry, self._shadow)
+            diagnostics = _diagnostics(frame, persons, faces, association.face_of, votes, geometry, self._shadow,
+                                       self._identities.policy)
             if landmarks:  # session 90: diagnostic numbers only; nothing above changes
                 started = time.perf_counter()
                 records = landmark_records(frame, persons, faces, association.face_of, full_scale, self._geometry)
@@ -467,7 +475,9 @@ class EdgeCore:
                 landmark_ms = (time.perf_counter() - started) * 1000
             if self._capture is not None and len(persons) == 1 and len(votes) == 1 \
                     and votes[0].similarity is not None:  # D91: the only person's face, as the vote compared it
-                self._capture.offer(frame.ingest_mono_ns, faces[association.face_of[votes[0].key]].embedding)
+                self._capture.offer(frame.ingest_mono_ns, faces[association.face_of[votes[0].key]].embedding,
+                                    frame_seq=frame.frame_seq, stream_epoch=frame.stream_epoch,
+                                    track_id=votes[0].key.track_id, boot_id=frame.boot_id)
         self.face_counters[f"results_{outcome}"] += 1
         self._production_outcomes[(frame.stream_epoch, frame.frame_seq)] = outcome
         while len(self._production_outcomes) > PRODUCTION_OUTCOMES_KEPT:
@@ -719,11 +729,13 @@ def _diagnostics(
     votes: Sequence[VoteRecord],
     geometry: Sequence[Any] = (),
     shadow: Any = None,
+    policy: Any = None,
 ) -> tuple[FaceDiagnostics, ...]:
     """Each vote's person, in the votes' order: its box and confidence, its assigned face's size and score, and the
     vote's similarity. Only numbers are taken from a face; its embedding stays where it is. D90: the similarity's
     prototype position, and the assigned face's geometry when the face stage gave one per face (``geometry``). D91:
-    with a working gallery (``shadow``), its best similarity and prototype position wherever the vote computed one."""
+    with a working gallery (``shadow``), its best similarity, prototype position and decision wherever the vote computed
+    one, decided with ``policy`` (the resolver's own)."""
     by_key = {person.key: person for person in persons}
     out = []
     for vote in votes:
@@ -738,7 +750,7 @@ def _diagnostics(
             None if face is None else face_geometry_numbers(
                 face, geometry[index] if len(geometry) == len(faces) else None, frame.native_width,
                 frame.native_height),
-            None if shadow is None or face is None or vote.similarity is None else shadow.numbers(face.embedding)))
+            None if shadow is None or face is None or vote.similarity is None else shadow.numbers(face, policy)))
     return tuple(out)
 
 

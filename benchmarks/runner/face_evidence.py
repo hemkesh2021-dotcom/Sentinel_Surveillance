@@ -205,6 +205,8 @@ COMPARISON_KINDS = ("full_scale_only", "both")  # identity.comparison.Kind
 CAPTURE_REFUSALS = ("too_few_faces", "too_few_prototypes", "inconsistent_capture", "capture_target_has_gallery",
                     "capture_not_verified", "capture_write_failed",
                     "capture_audit_incomplete")  # identity.experiment.CAPTURE_REFUSALS (D91)
+RAW_CAPTURE_REFUSALS = ("no_faces", "raw_capture_target_exists", "raw_capture_not_verified",
+                        "raw_capture_write_failed", "raw_capture_left_on_disk")  # identity.experiment.RAW_REFUSALS
 COMPARISON_DISPOSITIONS = ("completed", "failed", "production_not_applied", "skipped_one_per_result",
                            "skipped_stopping", "skipped_production_waiting", "skipped_no_landmarks",
                            "skipped_stale", "skipped_cap", "skipped_interval",
@@ -542,7 +544,7 @@ STARTUP = {  # the runtime's ``starting`` line (demo_runtime.assemble and cli)
     "face.detection": vocab("full_scale", "head_windows"),  # D88's runs; route B's (main_single)
     **nest("face.stage", WINDOW_STAGE),  # route B, only in main_single runs
     **nest("stream", STREAM_STARTUP),  # route B, only in main_single runs
-    "face.shadow": BOOL, "face.capture": BOOL,  # D91, only in the enrollment experiment's runs
+    "face.shadow": BOOL, "face.capture": BOOL, "face.capture_raw": BOOL, "face.shadow_digest": HEX64,  # D91, only in the enrollment experiment's runs
     **{f"face.continuity.{k}": NUM for k in CONTINUITY_POLICY},  # D97, only in --face-continuity runs
     **TRACKING_STARTUP,  # session 79, only in --tracking-diagnostic runs
     **LANDMARK_STARTUP,  # session 90, only in --face-landmark-diagnostic runs
@@ -561,7 +563,7 @@ STATUS_LINE = {  # cli.status_line
     "degraded[]": DEGRADED,
 }
 IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransition, ComparisonRecord
-    "identity": vocab("tick", "result", "transition", "comparison", "capture", "break"), "schema": INT,
+    "identity": vocab("tick", "result", "transition", "comparison", "capture", "capture_raw", "break"), "schema": INT,
     "stream_epoch": INT, "cause": vocab(*CONTINUITY_CAUSES),  # D97: runtime.break_record (continuity runs only)
     "frame_seq": INT,
     "frame_mono_ns": INT, "tick": TICKS, "tracks[]": INT, "applied_mono_ns": INT, "outcome": OUTCOMES,
@@ -587,13 +589,15 @@ IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransitio
     "persons[].geometry.eyes": NULL, "persons[].geometry.eyes.roll_deg": NUM,
     "persons[].geometry.eyes.spacing_px": NUM,
     "persons[].shadow": NULL, "persons[].shadow.similarity": NUM, "persons[].shadow.prototype": INT,
+    "persons[].shadow.decision": vocab(*VOTE_LABELS),  # the production decision against the working gallery
     # schema 7 (session 90, landmarks.landmark_records and FaceResultRecord.landmark_ms): fixed labels and numbers only
     "landmark_ms": maybe(NUM), "persons[].landmarks": NULL,
     "persons[].landmarks.status": vocab(*LANDMARK_STATUSES), "persons[].landmarks.reason": maybe(vocab(*LANDMARK_REASONS)),
     "persons[].landmarks.score": maybe(NUM), "persons[].landmarks.face_iou": maybe(NUM),
     **{f"persons[].landmarks.{k}": maybe(NUM) for k in LANDMARK_MEASURES},
     # D91, the capture's record at the stop (identity.experiment.Capture.finish): fixed labels and numbers only
-    "written": BOOL, "refused": maybe(vocab(*CAPTURE_REFUSALS)), "faces_kept": INT, "faces_dropped_over_cap": INT,
+    "written": BOOL, "refused": maybe(vocab(*CAPTURE_REFUSALS, *RAW_CAPTURE_REFUSALS)), "faces_kept": INT,
+    "faces_dropped_over_cap": INT, "faces_dropped_other_boot": INT,  # ... and the raw capture's (route B)
     "faces_in_span": INT, "prototypes": INT, "min_best_to_others": maybe(NUM), "similarity_to_original[]": NUM,
     "verified": BOOL,
     "track_id": INT, "from": vocab(*IDENTITY_STATES), "to": vocab(*IDENTITY_STATES, "cleared"),
@@ -655,7 +659,7 @@ STARTING_SUMMARY = {  # step5_guard._starting_summary
     "face.detection": vocab("full_scale", "head_windows"),  # D88; route B
     **nest("face.stage", WINDOW_STAGE),  # route B: the guard keeps the startup's face entry
     **nest("stream", STREAM_STARTUP),  # route B: the guard keeps the startup's stream entry
-    "face.shadow": BOOL, "face.capture": BOOL,  # D91
+    "face.shadow": BOOL, "face.capture": BOOL, "face.capture_raw": BOOL, "face.shadow_digest": HEX64,  # D91
     **{f"face.continuity.{k}": NUM for k in CONTINUITY_POLICY},  # D97: the guard keeps the startup's face entry
     **TRACKING_STARTUP,  # session 79: likewise
     **LANDMARK_STARTUP,  # session 90: likewise

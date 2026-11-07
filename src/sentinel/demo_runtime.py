@@ -59,10 +59,12 @@ detector and recognition models, one detection and one embedding per analysed fr
 candidate's own numbers (runtime.detection_numbers) and, per person, the position of the prototype behind the vote's
 similarity and the assigned face's geometry (D90, runtime.face_geometry_numbers). Neither D86's pass nor D87's
 comparison runs with it; everything after the faces (association, votes, identity state, retention, records' privacy)
-is unchanged. The camera-side enrollment experiment (D91, identity.experiment) runs only with it: ``--face-capture-gallery``
+is unchanged. The camera-side enrollment experiment (D91, identity.experiment) runs with it on the substream, or on
+route B (main_single) with the head-window faces: ``--face-capture-gallery``
 keeps the one person's compared faces in memory and writes a separate working gallery at the stop (a "capture" record,
-numbers only), and ``--face-shadow-gallery`` compares each compared face with such a gallery read only (schema 6's
-"shadow"); the original gallery alone votes and is never written.
+numbers only), ``--face-capture-raw`` (route B only) seals those faces for the multi-pose builder instead, and
+``--face-shadow-gallery`` compares each compared face with such a gallery read only, its similarity and the production
+decision (schema 6's or 8's "shadow"); the original gallery alone votes and is never written.
 The gallery is sealed (sentinel.identity.vault) and opened at startup with a passphrase the
 operator types; startup refuses on a sealing error, and a missing or empty gallery leaves face recognition
 unavailable without loading the model. The face adapter needs its own admission record, which starts
@@ -126,7 +128,7 @@ from .identity.gallery import GalleryDocument, check_consent_date
 from .identity.association import AssociationGeometry
 from .identity.comparison import ComparisonPolicy, FullScaleComparator
 from .identity.experiment import Capture as ExperimentCapture
-from .identity.experiment import ExperimentRefused, Shadow, open_shadow, same_directory
+from .identity.experiment import ExperimentRefused, RawCapture, Shadow, open_shadow, same_directory
 from .identity.landmarks import marker as landmark_marker
 from .identity.legacy_deepface import (
     DETECTION_DEEPFACE,
@@ -1227,9 +1229,11 @@ class FaceOptions:
     validation_run: bool = False  # --face-validation: the only way to use a PENDING_VALIDATION admission
     comparison: bool = False  # --face-comparison (D87): the full-scale comparison; validation runs only
     detection: str = DETECTION_DEEPFACE  # --face-full-scale-detection (D88): DETECTION_FULL_SCALE; validation runs only
-    # D91, the camera-side enrollment experiment (validation runs with the candidate only; one of the two):
+    # D91, the camera-side enrollment experiment (validation runs with the candidate, or on route B with its
+    # head-window stage; one of the two):
     shadow_dir: Path | None = None  # --face-shadow-gallery: a working gallery compared read only, never voting
-    capture_dir: Path | None = None  # --face-capture-gallery: where the capture's working gallery is written
+    capture_dir: Path | None = None  # --face-capture-gallery (or --face-capture-raw): where the capture is written
+    capture_raw: bool = False  # --face-capture-raw (route B only): a sealed raw capture for the offline builder
     capture_consent_date: str | None = None  # --face-capture-consent-date, the enrolled person's, for that gallery
     continuity: bool = False  # --face-continuity (D97): the continuity rule; validation runs, production detection only
     # --tracking-diagnostic (session 79): the detector backend's per-frame reading, recorded; validation runs with
@@ -1513,16 +1517,26 @@ def _weights_dir(backend: Any, requested: Path | None) -> Path:
     return default_weights_dir() if requested is None else Path(requested)
 
 
-def _experiment_options(face: FaceOptions) -> None:
-    """D91's refusals that need nothing opened: one experiment at a time, only in a validation run with the
-    full-scale detection candidate, never in the original gallery's directory, and a capture's consent date."""
+def _experiment_options(face: FaceOptions, route_b: bool = False) -> None:
+    """D91's refusals that need nothing opened: one experiment at a time, only in a validation run (on the substream
+    with the full-scale detection candidate; on route B with its own head-window stage, the candidate refused there),
+    never in the original gallery's directory, and a capture's consent date. A raw capture runs on route B only."""
+    if face.capture_raw and face.capture_dir is None:
+        raise StartupRefused("face_capture_raw_needs_directory: a raw capture needs its directory")
     if face.shadow_dir is None and face.capture_dir is None:
         return
     if face.shadow_dir is not None and face.capture_dir is not None:
         raise StartupRefused("face_experiment_one_kind: a capture and a shadow comparison are separate runs")
-    if not face.validation_run or face.detection != DETECTION_FULL_SCALE:
-        raise StartupRefused("face_experiment_needs_candidate: the enrollment experiment runs only in validation runs "
-                             "with --face-full-scale-detection")
+    if route_b:
+        if not face.validation_run:
+            raise StartupRefused("face_experiment_needs_validation: the enrollment experiment runs only in validation "
+                                 "runs")
+    else:
+        if face.capture_raw:
+            raise StartupRefused("face_capture_raw_route_b_only: the raw capture is for main_single validation runs")
+        if not face.validation_run or face.detection != DETECTION_FULL_SCALE:
+            raise StartupRefused("face_experiment_needs_candidate: the enrollment experiment runs only in validation "
+                                 "runs with --face-full-scale-detection")
     directory = face.shadow_dir if face.shadow_dir is not None else face.capture_dir
     if same_directory(directory, face.identity_dir):
         raise StartupRefused("face_experiment_same_gallery: the working gallery is never the original's directory")
@@ -1535,7 +1549,7 @@ def _experiment_options(face: FaceOptions) -> None:
 
 
 def _experiment(face: FaceOptions | None, gallery: GalleryDocument | None, devices: Devices,
-                match_threshold: float) -> tuple[Shadow | None, ExperimentCapture | None]:
+                match_threshold: float) -> tuple[Shadow | None, ExperimentCapture | RawCapture | None]:
     """D91: the working gallery opened read only (shadow), or the capture prepared; refused, with nothing written,
     when the original has no identity or the working gallery does not fit (identity.experiment)."""
     if face is None or (face.shadow_dir is None and face.capture_dir is None):
@@ -1545,6 +1559,9 @@ def _experiment(face: FaceOptions | None, gallery: GalleryDocument | None, devic
     try:
         if face.shadow_dir is not None:
             return open_shadow(devices.identity_store(face.shadow_dir), face.secret, gallery), None
+        if face.capture_raw:  # the multi-pose comparison's raw capture (route B; _experiment_options checked)
+            return None, RawCapture(devices.identity_store(face.capture_dir), face.secret, gallery,
+                                    str(face.capture_consent_date))
         return None, ExperimentCapture(devices.identity_store(face.capture_dir), face.secret, gallery,
                                        str(face.capture_consent_date), match_threshold)
     except ExperimentRefused as exc:
@@ -1669,12 +1686,12 @@ def assemble(
             raise StartupRefused("landmark_diagnostic_plain_only: the landmark diagnostic runs with production "
                                  "detection and the plain identity rules: no candidate, comparison, experiment, "
                                  "continuity rule or tracking diagnostic")
-        _experiment_options(options.face)  # D91: before anything loads
+        _experiment_options(options.face, route_b)  # D91: before anything loads
         if route_b and (candidate or options.face.comparison or options.face.continuity
-                        or options.face.tracking_diagnostic or options.face.landmark_diagnostic
-                        or options.face.shadow_dir is not None or options.face.capture_dir is not None):
+                        or options.face.tracking_diagnostic or options.face.landmark_diagnostic):
+            # D91's capture and shadow comparison run here on the head-window stage's own faces (validation runs)
             raise StartupRefused("stream_profile_plain_only: main_single runs its head-window face stage with the plain "
-                                 "identity rules: no candidate, comparison, experiment, continuity rule or diagnostic")
+                                 "identity rules: no candidate, comparison, continuity rule or diagnostic")
         face_backend = devices.face_backend(options.face.weights_dir)
         if route_b and not hasattr(face_backend, "select_window_detection"):
             raise StartupRefused("stream_profile_unavailable: this face backend has no head-window face stage")
@@ -1812,7 +1829,11 @@ def assemble(
                                    "stage": WindowSettings(head_fraction=config.identity.head_fraction).numbers()}
                                   if route_b else {}),
                                **({"shadow": True} if options.face.shadow_dir is not None else {}),
+                               # route B: which working gallery is compared (a digest of its prototypes, never a value),
+                               # so the multi-pose reading can tie the run to the frozen candidate
+                               **({"shadow_digest": shadow.digest} if route_b and shadow is not None else {}),
                                **({"capture": True} if options.face.capture_dir is not None else {}),
+                               **({"capture_raw": True} if options.face.capture_raw else {}),
                                **({"continuity": config.identity.continuity_policy().numbers()}
                                   if options.face.continuity else {}),
                                # session 79: the marker that keeps such a run out of F2's reading, with the bounds

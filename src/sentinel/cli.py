@@ -413,12 +413,20 @@ def main(
         "private directory, never the original's) from faces chosen at fixed times, sealed with the same passphrase; "
         "nothing votes differently and the original is never written",
     )
+    run.add_argument(
+        "--face-capture-raw", type=Path, metavar="DIR",
+        help="with --face-validation on the main_single profile (route B; the multi-pose comparison): keep the one "
+        "person's compared faces with their frame numbers and at the stop seal them, with the same passphrase, into "
+        "DIR/raw-capture.sealed (a new private directory) for the offline builder; no gallery is written, nothing votes "
+        "differently and the original is never written",
+    )
     run.add_argument("--face-capture-consent-date", metavar="YYYY-MM-DD",
-                     help="with --face-capture-gallery: the enrolled person's consent date for that working gallery")
+                     help="with --face-capture-gallery or --face-capture-raw: the enrolled person's consent date")
     run.add_argument(
         "--face-shadow-gallery", type=Path, metavar="DIR",
-        help="with --face-validation --face-full-scale-detection (D91): open the working gallery in DIR read only and "
-        "record each compared face's similarity to it (schema 6 \"shadow\"); only the original votes",
+        help="with --face-validation --face-full-scale-detection, or --face-validation on the main_single profile (D91): "
+        "open the working gallery in DIR read only and record, for each compared face, its similarity to it and the "
+        "production decision against it (schema 6 or 8 \"shadow\"); only the original votes",
     )
     run.add_argument(
         "--face-continuity", action="store_true",
@@ -796,16 +804,26 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
     if args.face_full_scale_detection and not args.face_validation:
         print("run: --face-full-scale-detection needs --face-validation", file=sys.stderr)
         return 1
+    route_b = config.capture.stream_profile == STREAM_MAIN_SINGLE
     experiment = [flag for flag, value in (("--face-capture-gallery", args.face_capture_gallery),
+                                           ("--face-capture-raw", args.face_capture_raw),
                                            ("--face-shadow-gallery", args.face_shadow_gallery)) if value is not None]
-    if experiment and not (args.face_validation and args.face_full_scale_detection):
+    if experiment and route_b and not args.face_validation:  # route B: its own head-window faces, validation only
+        print(f"run: {experiment[0]} needs --face-validation", file=sys.stderr)
+        return 1
+    if experiment and not route_b and not (args.face_validation and args.face_full_scale_detection):
         print(f"run: {experiment[0]} needs --face-validation and --face-full-scale-detection", file=sys.stderr)
+        return 1
+    if args.face_capture_raw is not None and not route_b:
+        print("run: --face-capture-raw is for the main_single profile (route B) only", file=sys.stderr)
         return 1
     if len(experiment) > 1:
         print("run: a capture and a shadow comparison are separate runs; use one", file=sys.stderr)
         return 1
-    if (args.face_capture_consent_date is not None) != (args.face_capture_gallery is not None):
-        print("run: --face-capture-gallery and --face-capture-consent-date go together", file=sys.stderr)
+    capture_flag = args.face_capture_gallery is not None or args.face_capture_raw is not None
+    if (args.face_capture_consent_date is not None) != capture_flag:
+        flag = "--face-capture-raw" if args.face_capture_raw is not None else "--face-capture-gallery"
+        print(f"run: {flag} and --face-capture-consent-date go together", file=sys.stderr)
         return 1
     if args.face_full_scale_detection and args.face_comparison:
         print("run: --face-full-scale-detection replaces the detection --face-comparison compares with; use one",
@@ -855,8 +873,10 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
                            validation_run=args.face_validation, comparison=args.face_comparison,
                            detection=DETECTION_FULL_SCALE if args.face_full_scale_detection else DETECTION_DEEPFACE,
                            shadow_dir=None if args.face_shadow_gallery is None else args.face_shadow_gallery.expanduser(),
-                           capture_dir=(None if args.face_capture_gallery is None
+                           capture_dir=(args.face_capture_raw.expanduser() if args.face_capture_raw is not None
+                                        else None if args.face_capture_gallery is None
                                         else args.face_capture_gallery.expanduser()),
+                           capture_raw=args.face_capture_raw is not None,
                            capture_consent_date=args.face_capture_consent_date, continuity=args.face_continuity,
                            tracking_diagnostic=args.tracking_diagnostic,
                            landmark_diagnostic=args.face_landmark_diagnostic)

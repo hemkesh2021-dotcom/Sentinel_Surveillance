@@ -219,6 +219,8 @@ LANDMARK_MIN_EYE_SPACING_PX = 4.0
 GEOMETRY_KEYS = {"box", "raw_box", "overhang_px", "eyes"}  # runtime.face_geometry_numbers
 EYES_KEYS = {"roll_deg", "spacing_px"}
 SHADOW_KEYS = {"similarity", "prototype"}  # D91: the similarity to an experiment's working gallery
+SHADOW_DECIDED_KEYS = SHADOW_KEYS | {"decision"}  # ... with the production decision against it (the shadow's own)
+SHADOW_DECISIONS = {"match", "unknown", "margin"}  # state.decision_label where a similarity was computed
 RAW_BOUNDS = (-1.0, 2.0)  # runtime.RAW_BOUNDS: what a recorded raw box may span, in frame widths and heights
 MAX_PROTOTYPES = 8  # matching.MAX_PROTOTYPES: a prototype position is 0 to 7
 MAX_PX = 4096.0  # a generous bound on any recorded pixel distance (frames are at most 2304 px wide on these paths)
@@ -230,6 +232,10 @@ COMPARISON_KEYS = {"identity", "schema", "stream_epoch", "frame_seq", "frame_mon
                    "disposition", "score", "w_px", "similarity", "ms", "error"}  # runtime.ComparisonRecord (D87)
 CAPTURE_KEYS = {"identity", "schema", "written", "refused", "faces_kept", "faces_dropped_over_cap", "faces_in_span",
                 "prototypes", "min_best_to_others", "similarity_to_original", "verified"}  # D91, Capture.finish
+RAW_CAPTURE_KEYS = {"identity", "schema", "written", "refused", "faces_kept", "faces_dropped_over_cap",
+                    "faces_dropped_other_boot", "verified"}  # the multi-pose comparison's RawCapture.finish (route B)
+RAW_CAPTURE_REFUSALS = ("no_faces", "raw_capture_target_exists", "raw_capture_not_verified",
+                        "raw_capture_write_failed", "raw_capture_left_on_disk")  # identity.experiment.RAW_REFUSALS
 CAPTURE_AUDIT_INCOMPLETE = "capture_audit_incomplete"  # identity.experiment: refused, with its gallery written
 CAPTURE_REFUSALS = ("too_few_faces", "too_few_prototypes", "inconsistent_capture", "capture_target_has_gallery",
                     "capture_not_verified", "capture_write_failed",
@@ -294,7 +300,7 @@ def read_records(path: Path) -> tuple[dict[str, list[dict]], list[str], dict | N
 
 def _record_problem(kind: Any, item: dict) -> str | None:
     keys = {"tick": TICK_KEYS, "result": RESULT_KEYS, "transition": TRANSITION_KEYS,
-            "comparison": COMPARISON_KEYS, "capture": CAPTURE_KEYS}.get(kind)
+            "comparison": COMPARISON_KEYS, "capture": CAPTURE_KEYS, "capture_raw": RAW_CAPTURE_KEYS}.get(kind)
     if keys is None:
         return f"unknown identity record {kind!r}"
     schema = item.get("schema")
@@ -304,6 +310,8 @@ def _record_problem(kind: Any, item: dict) -> str | None:
         return _comparison_problem(item)
     if kind == "capture":
         return _capture_problem(item)
+    if kind == "capture_raw":
+        return _raw_capture_problem(item)
     if kind == "result" and schema in (FULL_SCALE_SCHEMA, COMPARISON_SCHEMA):
         keys = keys | {"full_scale"}
     elif kind == "result" and schema == LANDMARK_SCHEMA:
@@ -484,6 +492,21 @@ def _comparison_problem(item: dict) -> str | None:
     return None
 
 
+def _raw_capture_problem(item: dict) -> str | None:
+    """The raw capture's record (route B, schema 8 only): counts and fixed labels; written and verified together,
+    exactly when nothing refused it. Nothing in it is a face's number."""
+    if item["schema"] != WINDOWS_SCHEMA:
+        return f"capture_raw: schema {item['schema']!r}; the raw capture's record is schema {WINDOWS_SCHEMA}"
+    if set(item) != RAW_CAPTURE_KEYS:
+        return f"capture_raw: fields {sorted(set(item) ^ RAW_CAPTURE_KEYS)} differ"
+    counts = ("faces_kept", "faces_dropped_over_cap", "faces_dropped_other_boot")
+    if not (all(_int(item[k]) and item[k] >= 0 for k in counts) and type(item["written"]) is bool
+            and item["verified"] is item["written"] and item["written"] is (item["refused"] is None)
+            and (item["refused"] is None or item["refused"] in RAW_CAPTURE_REFUSALS)):
+        return "capture_raw: a field has the wrong type or value"
+    return None
+
+
 def _capture_problem(item: dict) -> str | None:
     """D91: the capture's record (schema 6 only): written exactly when nothing refused it or its completed audit line
     is missing (CAPTURE_AUDIT_INCOMPLETE: in place, refused for use), verified only when written, a fixed refusal
@@ -546,7 +569,8 @@ def _geometry_fits(person: dict) -> bool:
     """Schema 6 (D90): a prototype position exactly when a similarity was computed; the geometry exactly when a face
     was assigned: the corrected box inside the frame, the detector's raw box within RAW_BOUNDS or null, the overhang
     (four pixel distances, 0 or more) exactly when the raw box is there, the eyes' angle and spacing or null; the
-    shadow (D91) null, or a similarity and a prototype position only where a similarity was computed."""
+    shadow (D91) null, or a similarity and a prototype position (and, from the multi-pose comparison on, the
+    production decision against the working gallery) only where a similarity was computed."""
     prototype, geometry, shadow = person["prototype"], person["geometry"], person["shadow"]
     computed = person["similarity"] is not None
     if (prototype is not None) != computed or (computed and not (_int(prototype) and 0 <= prototype < MAX_PROTOTYPES)):
@@ -566,7 +590,9 @@ def _geometry_fits(person: dict) -> bool:
                                      and _number(eyes["roll_deg"], -180.0, 180.0)
                                      and _number(eyes["spacing_px"], 0.0, MAX_PX)):
             return False
-    if shadow is not None and not (computed and isinstance(shadow, dict) and set(shadow) == SHADOW_KEYS
+    if shadow is not None and not (computed and isinstance(shadow, dict)
+                                   and (set(shadow) == SHADOW_KEYS or (set(shadow) == SHADOW_DECIDED_KEYS
+                                                                       and shadow["decision"] in SHADOW_DECISIONS))
                                    and _number(shadow["similarity"], -1.0, 1.0) and _int(shadow["prototype"])
                                    and 0 <= shadow["prototype"] < MAX_PROTOTYPES):
         return False

@@ -27,6 +27,9 @@ from sentinel.identity.experiment import (
 from sentinel.identity.gallery import CONSENT_SCOPE, FaceCompatibility, GalleryDocument, GalleryIdentity, IdentityStore, unit
 from sentinel.identity.legacy_deepface import static_compatibility_fields
 from sentinel.identity.matching import MAX_PROTOTYPES, best_match
+from sentinel.contracts import FrameKey, NormalizedBox
+from sentinel.identity.association import FaceObservation
+from sentinel.identity.state import IdentityPolicy
 from sentinel.identity.vault import Sealer, Secret, VaultError
 
 SECRET = Secret("a long synthetic passphrase")
@@ -244,16 +247,29 @@ def test_a_capture_that_cannot_build_its_gallery_at_the_stop_is_refused_never_ra
 # ---------------------------------------------------------------- the working gallery, compared read only
 
 
-def test_the_shadow_gives_the_working_gallerys_similarity_and_position_only(tmp_path, sealer) -> None:
+FRAME = FrameKey(camera_id="cam-1", boot_id="boot-1", run_id="run-1", stream_epoch=1, frame_seq=1)
+
+
+def observed(embedding, quality: float = 0.95) -> FaceObservation:
+    return FaceObservation(frame=FRAME, box=NormalizedBox(x1=0.1, y1=0.1, x2=0.2, y2=0.2), quality=quality,
+                           embedding=embedding)
+
+
+def test_the_shadow_gives_the_working_gallerys_similarity_position_and_production_decision_only(tmp_path,
+                                                                                                 sealer) -> None:
     made = capture(tmp_path, sealer)
     feed(made)
     made.finish()
     shadow = open_shadow(made.store, SECRET, ORIGINAL)
     assert shadow.prototypes == CAPTURE_SEGMENTS
     face = near(7)
-    expected = best_match(face, made.store.load(SECRET).enrollment())
-    assert shadow.numbers(face) == {"similarity": round(expected.similarity, 3), "prototype": expected.prototype}
-    assert shadow.numbers(None) is None and shadow.numbers((1.0, 0.0)) is None
+    working = made.store.load(SECRET).enrollment()
+    expected = best_match(face, working)
+    policy = IdentityPolicy(match_threshold=0.70)
+    assert shadow.numbers(observed(face), policy) == {"similarity": round(expected.similarity, 3),
+                                                      "prototype": expected.prototype,
+                                                      "decision": "match" if expected.similarity >= 0.70 else "unknown"}
+    assert shadow.numbers(None, policy) is None and shadow.numbers(observed((1.0, 0.0)), policy) is None
 
 
 def test_a_shadow_must_exist_open_match_and_hold_only_the_originals_identities(tmp_path, sealer) -> None:

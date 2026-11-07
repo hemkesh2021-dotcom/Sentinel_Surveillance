@@ -807,8 +807,8 @@ def test_a_shadow_run_records_the_working_gallerys_numbers_and_votes_only_from_t
     assert strip == without  # only the shadow numbers differ: the votes, labels, states, transitions and times are the same
     assert [r["processing_ms"] for r in with_shadow if r["identity"] == "result"] == [2.5] * 3  # the measurement, carried
     shadows = [r["persons"][0]["shadow"] for r in with_shadow if r["identity"] == "result"]
-    assert shadows[:2] == [{"similarity": 1.0, "prototype": 1}] * 2  # the working gallery's own copy of that face
-    assert shadows[2]["prototype"] in (0, 1) and shadows[2]["similarity"] < 0.70
+    assert shadows[:2] == [{"similarity": 1.0, "prototype": 1, "decision": "match"}] * 2  # its own copy of that face
+    assert shadows[2]["prototype"] in (0, 1) and shadows[2]["similarity"] < 0.70 and shadows[2]["decision"] == "unknown"
     assert [r["persons"][0]["label"] for r in with_shadow if r["identity"] == "result"] == ["match", "match", "unknown"]
     shadowed.close()
     plain.close()
@@ -920,7 +920,7 @@ def test_a_capture_says_written_exactly_when_its_working_gallery_stays_on_disk(t
 
 def test_a_capture_that_raises_at_the_stop_is_reported_and_the_rest_of_the_stop_still_runs(tmp_path) -> None:
     class Raising:  # a capture whose write raises: Capture.finish refuses instead, so this is the backstop
-        def offer(self, frame_ns, embedding) -> None:
+        def offer(self, frame_ns, embedding, **frame_numbers) -> None:
             pass
 
         def finish(self):
@@ -950,6 +950,39 @@ def test_the_experiment_flags_need_the_candidate_and_go_one_at_a_time(tmp_path, 
     assert main(_cli(tmp_path, "--face", "--face-validation", "--face-full-scale-detection", "--face-capture-gallery",
                      str(tmp_path / "x")), devices=_refusing_devices()) == 1
     assert "go together" in capsys.readouterr().err
+
+
+def test_on_main_single_the_experiment_flags_need_validation_only_and_the_raw_capture_is_route_bs(tmp_path,
+                                                                                               monkeypatch,
+                                                                                               capsys) -> None:
+    def cli(*extra: str, main_single: bool = True) -> list[str]:
+        args = _cli(tmp_path, *extra)
+        if main_single:
+            (tmp_path / "config.yaml").write_text("config_version: 1\ncamera: {id: cam-1}\n"
+                                                  "capture: {stream_profile: main_single}\n")
+        return args
+
+    monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
+    assert main(cli("--face", "--face-shadow-gallery", str(tmp_path / "w")), devices=_refusing_devices()) == 1
+    assert "--face-shadow-gallery needs --face-validation" in capsys.readouterr().err
+    monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
+    assert main(cli("--face", "--face-validation", "--face-capture-raw", str(tmp_path / "r"),
+                    "--face-capture-consent-date", "2026-11-07", main_single=False), devices=_refusing_devices()) == 1
+    assert "needs --face-validation and --face-full-scale-detection" in capsys.readouterr().err
+    monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
+    assert main(cli("--face", "--face-validation", "--face-full-scale-detection", "--face-capture-raw",
+                    str(tmp_path / "r"), "--face-capture-consent-date", "2026-11-07", main_single=False),
+                devices=_refusing_devices()) == 1
+    assert "--face-capture-raw is for the main_single profile (route B) only" in capsys.readouterr().err
+    monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
+    assert main(cli("--face", "--face-validation", "--face-capture-raw", str(tmp_path / "r")),
+                devices=_refusing_devices()) == 1
+    assert "go together" in capsys.readouterr().err
+    monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
+    assert main(cli("--face", "--face-validation", "--face-capture-raw", str(tmp_path / "r"), "--face-shadow-gallery",
+                    str(tmp_path / "w"), "--face-capture-consent-date", "2026-11-07"),
+                devices=_refusing_devices()) == 1
+    assert "separate runs" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------- D95: each person's state for the dashboard
@@ -1474,6 +1507,49 @@ def test_main_single_is_refused_outside_a_face_validation_run(face_setup) -> Non
 def test_main_single_runs_only_the_plain_window_stage(face_setup, extra) -> None:
     with pytest.raises(StartupRefused, match="stream_profile_plain_only"):
         start(face_setup, capture=MAIN, backend_class=WindowBackend, **extra)
+
+
+@pytest.mark.parametrize("kind", ["shadow", "capture_raw", "capture"])
+def test_main_single_runs_the_experiment_on_its_own_window_faces_in_validation_runs(face_setup, kind) -> None:
+    """The multi-pose comparison: D91's shadow and capture (raw or gallery) on route B's head-window stage, never with
+    the full-scale candidate; marked at startup; the original alone votes."""
+    extra = ({"shadow_dir": WORK} if kind == "shadow" else
+             {"capture_dir": WORK, "capture_consent_date": "2026-11-07", "capture_raw": kind == "capture_raw"})
+    stores = {WORK: Store(GALLERY if kind == "shadow" else None)}
+    if kind == "capture_raw":
+        stores = {WORK: SimpleNamespace(directory=face_setup.tmp / "raw-new", sealer=None)}
+    assembly, calls = start(face_setup, capture=MAIN, backend_class=WindowBackend, face_extra=extra, stores=stores)
+    assert calls == ["tracker_load", "select_windows", "face_load"]  # never the candidate
+    face = assembly.startup["face"]
+    assert face["detection"] == "head_windows" and face.get("shadow" if kind == "shadow" else "capture") is True
+    assert face.get("capture_raw", False) is (kind == "capture_raw")
+    from sentinel.identity.experiment import prototypes_digest
+
+    expected = prototypes_digest(GALLERY.identities[0].prototypes) if kind == "shadow" else None
+    assert face.get("shadow_digest") == expected  # route B: which working gallery was compared (a digest only)
+    assert assembly.runtime.snapshot()["components"]["face"]["experiment"] == ("shadow" if kind == "shadow"
+                                                                              else "capture")
+
+
+@pytest.mark.parametrize("change, label", [
+    (dict(validation=False), "stream_profile_needs_validation"),  # main_single itself is validation only
+    (dict(detection="full_scale"), "stream_profile_plain_only"),  # the candidate stays refused on route B
+    (dict(face_extra={"shadow_dir": WORK, "continuity": True}), "face_continuity_production_only"),
+])
+def test_main_single_refuses_the_experiment_outside_its_plain_validation_run(face_setup, change, label) -> None:
+    change = dict(change)
+    extra = {"shadow_dir": WORK, **change.pop("face_extra", {})}
+    with pytest.raises(StartupRefused, match=label):
+        start(face_setup, capture=MAIN, backend_class=WindowBackend, face_extra=extra,
+              stores={WORK: Store(GALLERY)}, **change)
+
+
+def test_the_raw_capture_is_refused_on_the_substream_and_needs_its_directory(face_setup) -> None:
+    with pytest.raises(StartupRefused, match="face_capture_raw_route_b_only"):
+        start(face_setup, detection="full_scale", backend_class=CandidateBackend,
+              face_extra={"capture_dir": WORK, "capture_consent_date": "2026-11-07", "capture_raw": True})
+    with pytest.raises(StartupRefused, match="face_capture_raw_needs_directory"):
+        start(face_setup, capture=MAIN, backend_class=WindowBackend, face_extra={"capture_raw": True})
 
 
 def test_main_single_refuses_an_inside_share_below_the_windows_precondition(face_setup) -> None:

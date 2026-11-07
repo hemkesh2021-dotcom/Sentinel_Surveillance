@@ -122,6 +122,11 @@ class IdentityResolver:
         self._lives: dict[TrackKey, int] = {}  # each current track's life began at this frame time (retain_only)
         self.counters: Counter[str] = Counter()  # ownership and vote outcomes, numbers only
 
+    @property
+    def policy(self) -> IdentityPolicy:
+        """The rules this resolver decides with (read only): D91's shadow comparison decides with the same ones."""
+        return self._policy
+
     def observe(
         self,
         persons: Sequence[TrackObservation],
@@ -234,20 +239,8 @@ class IdentityResolver:
 
     def _vote(self, face: FaceObservation) -> tuple[str | None, str, float | None, int | None]:
         """The face's vote (an identity ID or UNKNOWN_VOTE), or None, why, and the best similarity and its prototype's
-        position if computed."""
-        enrollment = self._enrollment
-        if enrollment is None or enrollment.is_empty:
-            return None, "no identities enrolled", None, None
-        if face.quality < self._policy.min_quality or face.embedding is None:
-            return None, "face quality too low", None, None
-        if len(face.embedding) != enrollment.dimension:
-            return None, "embedding from an incompatible model", None, None
-        match = best_match(face.embedding, enrollment)
-        if match.similarity < self._policy.match_threshold:
-            return UNKNOWN_VOTE, "face matched nobody", match.similarity, match.prototype
-        if match.runner_up is not None and match.similarity - match.runner_up < self._policy.margin:
-            return None, "face matches more than one identity", match.similarity, match.prototype
-        return match.identity_id, "face matched", match.similarity, match.prototype
+        position if computed (``decide``, with this resolver's enrollment and policy)."""
+        return decide(face, self._enrollment, self._policy)
 
     def _current_votes(self, key: TrackKey, now: MonoInstant) -> list[_Vote]:
         if key.boot_id != now.boot_id:
@@ -255,6 +248,31 @@ class IdentityResolver:
         votes = self._votes.get(key, ())
         ttl = self._policy.continuity_retention_ns or self._policy.vote_ttl_ns
         return [v for v in votes if 0 <= now.ns - v.at_ns < ttl]
+
+
+def decide(face: FaceObservation, enrollment: Enrollment | None,
+           policy: IdentityPolicy) -> tuple[str | None, str, float | None, int | None]:
+    """The production vote decision for one assigned face, at full precision: (the vote, an identity ID or
+    UNKNOWN_VOTE, or None; why; the best similarity and its prototype's position, when computed). The resolver votes
+    with it; D91's shadow comparison (identity.experiment) decides with it too, against a working gallery that never
+    votes, so the two decisions differ only in the gallery."""
+    if enrollment is None or enrollment.is_empty:
+        return None, "no identities enrolled", None, None
+    if face.quality < policy.min_quality or face.embedding is None:
+        return None, "face quality too low", None, None
+    if len(face.embedding) != enrollment.dimension:
+        return None, "embedding from an incompatible model", None, None
+    match = best_match(face.embedding, enrollment)
+    if match.similarity < policy.match_threshold:
+        return UNKNOWN_VOTE, "face matched nobody", match.similarity, match.prototype
+    if match.runner_up is not None and match.similarity - match.runner_up < policy.margin:
+        return None, "face matches more than one identity", match.similarity, match.prototype
+    return match.identity_id, "face matched", match.similarity, match.prototype
+
+
+def decision_label(note: str) -> str:
+    """A decision's fixed record label (match, unknown, margin, low_quality, incompatible, no_enrollment)."""
+    return _NOTE_LABELS[note]
 
 
 _NOTE_COUNTERS = {

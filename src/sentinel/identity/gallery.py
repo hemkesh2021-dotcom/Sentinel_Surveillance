@@ -291,6 +291,11 @@ class IdentityStore:
         self._held = threading.local()  # this thread's depth in locked(): re-entrant per thread, never across
 
     @property
+    def sealer(self) -> Sealer:
+        """The sealing helper this store seals with (D91's raw capture seals its own file with it)."""
+        return self._sealer
+
+    @property
     def gallery_path(self) -> Path:
         return self.directory / GALLERY_FILE
 
