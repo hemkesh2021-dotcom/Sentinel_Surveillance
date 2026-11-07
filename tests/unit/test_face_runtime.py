@@ -949,7 +949,7 @@ def test_the_experiment_flags_need_the_candidate_and_go_one_at_a_time(tmp_path, 
     monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
     assert main(_cli(tmp_path, "--face", "--face-validation", "--face-full-scale-detection", "--face-capture-gallery",
                      str(tmp_path / "x")), devices=_refusing_devices()) == 1
-    assert "go together" in capsys.readouterr().err
+    assert "run: --face-capture-gallery and --face-capture-consent-date go together" in capsys.readouterr().err
 
 
 def test_on_main_single_the_experiment_flags_need_validation_only_and_the_raw_capture_is_route_bs(tmp_path,
@@ -977,7 +977,11 @@ def test_on_main_single_the_experiment_flags_need_validation_only_and_the_raw_ca
     monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
     assert main(cli("--face", "--face-validation", "--face-capture-raw", str(tmp_path / "r")),
                 devices=_refusing_devices()) == 1
-    assert "go together" in capsys.readouterr().err
+    assert "run: --face-capture-raw and --face-capture-consent-date go together" in capsys.readouterr().err
+    monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")  # the gallery capture: D91's rule, unchanged
+    assert main(cli("--face", "--face-validation", "--face-capture-gallery", str(tmp_path / "g"),
+                    "--face-capture-consent-date", "2026-11-07"), devices=_refusing_devices()) == 1
+    assert "--face-capture-gallery needs --face-validation and --face-full-scale-detection" in capsys.readouterr().err
     monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
     assert main(cli("--face", "--face-validation", "--face-capture-raw", str(tmp_path / "r"), "--face-shadow-gallery",
                     str(tmp_path / "w"), "--face-capture-consent-date", "2026-11-07"),
@@ -1509,10 +1513,10 @@ def test_main_single_runs_only_the_plain_window_stage(face_setup, extra) -> None
         start(face_setup, capture=MAIN, backend_class=WindowBackend, **extra)
 
 
-@pytest.mark.parametrize("kind", ["shadow", "capture_raw", "capture"])
+@pytest.mark.parametrize("kind", ["shadow", "capture_raw"])
 def test_main_single_runs_the_experiment_on_its_own_window_faces_in_validation_runs(face_setup, kind) -> None:
-    """The multi-pose comparison: D91's shadow and capture (raw or gallery) on route B's head-window stage, never with
-    the full-scale candidate; marked at startup; the original alone votes."""
+    """The multi-pose comparison: D91's shadow comparison and the raw capture on route B's head-window stage, never
+    with the full-scale candidate; marked at startup; the original alone votes."""
     extra = ({"shadow_dir": WORK} if kind == "shadow" else
              {"capture_dir": WORK, "capture_consent_date": "2026-11-07", "capture_raw": kind == "capture_raw"})
     stores = {WORK: Store(GALLERY if kind == "shadow" else None)}
@@ -1535,6 +1539,9 @@ def test_main_single_runs_the_experiment_on_its_own_window_faces_in_validation_r
     (dict(validation=False), "stream_profile_needs_validation"),  # main_single itself is validation only
     (dict(detection="full_scale"), "stream_profile_plain_only"),  # the candidate stays refused on route B
     (dict(face_extra={"shadow_dir": WORK, "continuity": True}), "face_continuity_production_only"),
+    # the ordinary gallery capture stays the substream's: the multi-pose comparison needs only the two above
+    (dict(face_extra={"shadow_dir": None, "capture_dir": WORK, "capture_consent_date": "2026-11-07"}),
+     "face_capture_gallery_substream_only"),
 ])
 def test_main_single_refuses_the_experiment_outside_its_plain_validation_run(face_setup, change, label) -> None:
     change = dict(change)

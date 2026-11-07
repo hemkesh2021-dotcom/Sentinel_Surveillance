@@ -59,8 +59,8 @@ detector and recognition models, one detection and one embedding per analysed fr
 candidate's own numbers (runtime.detection_numbers) and, per person, the position of the prototype behind the vote's
 similarity and the assigned face's geometry (D90, runtime.face_geometry_numbers). Neither D86's pass nor D87's
 comparison runs with it; everything after the faces (association, votes, identity state, retention, records' privacy)
-is unchanged. The camera-side enrollment experiment (D91, identity.experiment) runs with it on the substream, or on
-route B (main_single) with the head-window faces: ``--face-capture-gallery``
+is unchanged. The camera-side enrollment experiment (D91, identity.experiment) runs with it on the substream (on route B,
+main_single, only the shadow comparison and the raw capture, with the head-window faces): ``--face-capture-gallery``
 keeps the one person's compared faces in memory and writes a separate working gallery at the stop (a "capture" record,
 numbers only), ``--face-capture-raw`` (route B only) seals those faces for the multi-pose builder instead, and
 ``--face-shadow-gallery`` compares each compared face with such a gallery read only, its similarity and the production
@@ -1229,8 +1229,8 @@ class FaceOptions:
     validation_run: bool = False  # --face-validation: the only way to use a PENDING_VALIDATION admission
     comparison: bool = False  # --face-comparison (D87): the full-scale comparison; validation runs only
     detection: str = DETECTION_DEEPFACE  # --face-full-scale-detection (D88): DETECTION_FULL_SCALE; validation runs only
-    # D91, the camera-side enrollment experiment (validation runs with the candidate, or on route B with its
-    # head-window stage; one of the two):
+    # D91, the camera-side enrollment experiment (validation runs with the candidate; on route B with its head-window
+    # stage, only the shadow comparison and the raw capture; one of the two):
     shadow_dir: Path | None = None  # --face-shadow-gallery: a working gallery compared read only, never voting
     capture_dir: Path | None = None  # --face-capture-gallery (or --face-capture-raw): where the capture is written
     capture_raw: bool = False  # --face-capture-raw (route B only): a sealed raw capture for the offline builder
@@ -1519,8 +1519,9 @@ def _weights_dir(backend: Any, requested: Path | None) -> Path:
 
 def _experiment_options(face: FaceOptions, route_b: bool = False) -> None:
     """D91's refusals that need nothing opened: one experiment at a time, only in a validation run (on the substream
-    with the full-scale detection candidate; on route B with its own head-window stage, the candidate refused there),
-    never in the original gallery's directory, and a capture's consent date. A raw capture runs on route B only."""
+    with the full-scale detection candidate; on route B with its own head-window stage, the candidate refused there,
+    and only the shadow comparison and the raw capture), never in the original gallery's directory, and a capture's
+    consent date. A raw capture runs on route B only, the gallery capture on the substream only."""
     if face.capture_raw and face.capture_dir is None:
         raise StartupRefused("face_capture_raw_needs_directory: a raw capture needs its directory")
     if face.shadow_dir is None and face.capture_dir is None:
@@ -1531,6 +1532,10 @@ def _experiment_options(face: FaceOptions, route_b: bool = False) -> None:
         if not face.validation_run:
             raise StartupRefused("face_experiment_needs_validation: the enrollment experiment runs only in validation "
                                  "runs")
+        if face.capture_dir is not None and not face.capture_raw:  # the multi-pose comparison needs only these two
+            raise StartupRefused("face_capture_gallery_substream_only: on main_single only the raw capture and the "
+                                 "shadow comparison run; the gallery capture runs with the full-scale candidate on the "
+                                 "substream")
     else:
         if face.capture_raw:
             raise StartupRefused("face_capture_raw_route_b_only: the raw capture is for main_single validation runs")

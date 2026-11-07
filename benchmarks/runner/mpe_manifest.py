@@ -13,8 +13,11 @@ readings). The cleanup deletes only ``raw``, ``candidate`` and ``working_copy`` 
 still the same file or directory it listed (the same device and inode, never a link, and a file still its listed
 SHA-256): anything else is reported and left. A cleanup may be limited to one listed path and what lies under it. A listed directory is removed only when nothing unlisted remains in it; an unlisted file there is reported, never
 deleted. ``evidence`` and ``output`` are never deleted here: that is the maintainer's explicit step under the retention
-decision. Nothing outside the manifest is ever deleted: unexpected copies (an unlisted file with a listed file's
-SHA-256 under the roots given, a crash report made since the first entry) are only reported, for review.
+decision. Whatever the manifest lists, the cleanup never deletes outside the experiment root (deletable entries are
+listed only inside it), at, under or above a protected path (the original enrollment, the sessions), or in a sealed
+directory (one holding SHA256SUMS). Nothing outside the manifest is ever deleted: unexpected copies (an unlisted file
+with a listed file's SHA-256 under the roots given, a crash report made since the first entry) are only reported, for
+review. ``make_working_copy`` makes a session's working copy of the original enrollment inside the root and lists it.
 """
 
 from __future__ import annotations
@@ -112,6 +115,8 @@ class Manifest:
             raise ManifestError("a listed path must not pass through a link or hold '..'")
         if path in (self.path, self.root):
             raise ManifestError("the manifest and the experiment root are never listed")
+        if cls in DELETABLE and self.root not in path.parents:
+            raise ManifestError("a deletable entry lies inside the experiment root")
         info = os.lstat(path)
         if stat.S_ISLNK(info.st_mode):
             raise ManifestError("a link is never listed")
@@ -139,15 +144,53 @@ def _same(entry: Entry, info: os.stat_result) -> bool:
         stat.S_ISDIR(info.st_mode) if entry.kind == "dir" else stat.S_ISREG(info.st_mode))
 
 
-def cleanup(manifest: Manifest, classes: tuple[str, ...], within: Path | None = None) -> dict:
+SEAL_NAME = "SHA256SUMS"  # a sealed session's manifest (the packages' sealer): such a directory is evidence
+
+
+def _sealed(path: Path, root: Path) -> bool:
+    """True when ``path`` holds a seal or lies under a directory that does (any of its parents, inside the root or
+    above it: conservative, a seal anywhere above makes nothing there deletable)."""
+    for directory in (path, *path.parents):
+        if (directory / SEAL_NAME).exists():
+            return True
+    return False
+
+
+def _refusal(entry: Entry, root: Path, protected: tuple[Path, ...]) -> str | None:
+    """Why the cleanup must leave a listed entry whatever the manifest says (a manifest is a file; it could be wrong):
+    outside the experiment root, at or under a protected path (the original enrollment, a session), or under a seal."""
+    if not (root in entry.path.parents):
+        return "left_outside_root"
+    if any(entry.path == p or p in entry.path.parents or entry.path in p.parents for p in protected):
+        return "left_protected"
+    if _sealed(entry.path, root):
+        return "left_sealed"
+    return None
+
+
+def cleanup(manifest: Manifest, classes: tuple[str, ...], within: Path | None = None,
+            protected: tuple[Path, ...] = ()) -> dict:
     """Delete the listed entries of ``classes`` (only raw, candidate, working_copy) that are still what was listed,
     limited to ``within`` and what lies under it when given; files first, then directories deepest first and only when
-    empty. Report what was left and why."""
+    empty. Never, whatever is listed: anything outside the experiment root, at, under or holding a ``protected`` path
+    (the original enrollment's directory, the sessions), or in a sealed directory (one holding SHA256SUMS). Report
+    what was left and why."""
     if not classes or any(cls not in DELETABLE for cls in classes):
         raise ManifestError(f"the cleanup deletes only {', '.join(DELETABLE)} entries")
-    report = {"deleted": [], "already_absent": [], "left_changed": [], "left_not_empty": [], "unlisted_inside": []}
-    entries = {p: e for p, e in manifest.entries().items() if e.cls in classes and not e.deleted
-               and (within is None or p == Path(within) or Path(within) in p.parents)}
+    root = manifest.root
+    protected = tuple(Path(p) for p in protected)
+    report = {"deleted": [], "already_absent": [], "left_changed": [], "left_not_empty": [], "unlisted_inside": [],
+              "left_outside_root": [], "left_protected": [], "left_sealed": []}
+    entries = {}
+    for path, entry in manifest.entries().items():
+        if entry.cls not in classes or entry.deleted or not (within is None or path == Path(within)
+                                                             or Path(within) in path.parents):
+            continue
+        why = _refusal(entry, root, protected)
+        if why is not None:
+            report[why].append(str(path))
+            continue
+        entries[path] = entry
     for entry in sorted((e for e in entries.values() if e.kind == "file"), key=lambda e: str(e.path)):
         try:
             info = os.lstat(entry.path)
@@ -181,6 +224,49 @@ def cleanup(manifest: Manifest, classes: tuple[str, ...], within: Path | None = 
         manifest._append("deleted", str(entry.path), manifest._utc_now())
         report["deleted"].append(str(entry.path))
     return report
+
+
+WORKING_COPY_FILES = ("gallery.sealed", "audit.jsonl")  # what a session's working copy of the original holds
+
+
+def make_working_copy(manifest: Manifest, original_dir: Path, copy_dir: Path, creator: str) -> list[Entry]:
+    """A session's working copy of the original enrollment: its sealed gallery (and its audit log, when there is one),
+    byte for byte, in a new private directory inside the experiment root, listed as working_copy. The original is only
+    read, and its files must be unchanged after the copy. ManifestError when a path is relative or not canonical, the
+    original lies inside the root or holds it, the copy is not strictly inside the root, overlaps the original or
+    exists already, the original has no sealed gallery, or the copy is not identical."""
+    original_dir, copy_dir, root = Path(original_dir), Path(copy_dir), manifest.root
+    for path in (original_dir, copy_dir, root):
+        if not path.is_absolute() or path.resolve() != path:
+            raise ManifestError("a working copy's paths must be absolute and canonical")
+    if original_dir == root or root in original_dir.parents or original_dir in root.parents:
+        raise ManifestError("the original enrollment never lies inside the experiment root, nor holds it")
+    if root not in copy_dir.parents:
+        raise ManifestError("a working copy lies inside the experiment root")
+    if copy_dir == original_dir or original_dir in copy_dir.parents or copy_dir in original_dir.parents:
+        raise ManifestError("a working copy never overlaps the original")
+    if os.path.lexists(copy_dir):
+        raise ManifestError("a working copy's directory is new")
+    names = [n for n in WORKING_COPY_FILES if (original_dir / n).is_file()]
+    if "gallery.sealed" not in names:
+        raise ManifestError("the original has no sealed gallery")
+    before = {n: sha256_file(original_dir / n) for n in names}
+    copy_dir.mkdir(mode=0o700)
+    copy_dir.chmod(0o700)
+    made = [manifest.add(copy_dir, "working_copy", creator)]
+    for name in names:
+        data = (original_dir / name).read_bytes()
+        fd = os.open(copy_dir / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(fd, data)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        made.append(manifest.add(copy_dir / name, "working_copy", creator))
+    after = {n: sha256_file(original_dir / n) for n in names}
+    if after != before or any(sha256_file(copy_dir / n) != before[n] for n in names):
+        raise ManifestError("the working copy is not identical to the original")
+    return made
 
 
 def copy_report(manifest: Manifest, roots: list[Path], crash_dir: Path | None = None) -> dict:
@@ -226,21 +312,34 @@ def main(argv: list[str] | None = None) -> int:
     clean = sub.add_parser("cleanup", help="delete listed raw, candidate or working_copy entries")
     clean.add_argument("root", type=Path)
     clean.add_argument("--class", dest="classes", action="append", choices=DELETABLE, required=True)
+    clean.add_argument("--within", type=Path, default=None)
+    clean.add_argument("--protect", type=Path, action="append", default=[],
+                       help="never delete at, under or above this path (the original enrollment, a session)")
+    copy = sub.add_parser("working-copy", help="copy the original enrollment for one session, listed")
+    copy.add_argument("root", type=Path)
+    copy.add_argument("--original", type=Path, required=True)
+    copy.add_argument("--to", type=Path, required=True)
     rep = sub.add_parser("report", help="read-only report of unexpected copies, for review")
     rep.add_argument("root", type=Path)
     rep.add_argument("--search", type=Path, action="append", default=[])
     rep.add_argument("--crash-dir", type=Path, default=None)
     args = parser.parse_args(argv)
-    manifest = Manifest(args.root)
+    manifest = Manifest(args.root.absolute())
+    if args.command == "working-copy":
+        made = make_working_copy(manifest, args.original.absolute(), args.to.absolute(), "mpe_manifest.py working-copy")
+        print(f"working_copy_listed={len(made)}")
+        return 0
     if args.command == "cleanup":
-        result = cleanup(manifest, tuple(args.classes))
+        result = cleanup(manifest, tuple(args.classes), args.within.absolute() if args.within else None,
+                         tuple(p.absolute() for p in args.protect))
     else:
         result = copy_report(manifest, args.search, args.crash_dir)
     for key, values in result.items():
         print(f"{key}={len(values)}")
         for value in values:
             print(f"  {value}")
-    return 0 if args.command == "report" or not (result["left_changed"] or result["left_not_empty"]) else 1
+    left = ("left_changed", "left_not_empty", "left_outside_root", "left_protected", "left_sealed")
+    return 0 if args.command == "report" or not any(result[k] for k in left) else 1
 
 
 if __name__ == "__main__":

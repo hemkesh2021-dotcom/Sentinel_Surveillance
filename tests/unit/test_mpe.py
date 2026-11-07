@@ -8,9 +8,11 @@ photo-like direction, the camera faces another, the cued turns and the participa
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import math
+import os
 import random
 from pathlib import Path
 from types import SimpleNamespace
@@ -710,3 +712,97 @@ def test_the_manifest_never_lists_itself_or_its_root_and_a_cleanup_can_be_limite
     assert not (root / "a").exists() and (root / "b" / "f").exists() and sorted(result["deleted"]) == sorted(
         [str(root / "a" / "f"), str(root / "a")])
     assert all(e.sha256 for e in manifest.entries().values() if e.kind == "file")  # listed with its digest at once
+
+
+# ---------------------------------------------------------------- per-session working copies of the original
+
+
+def original_enrollment(sealer, directory: Path) -> dict[str, str]:
+    store = IdentityStore(directory, sealer)
+    store.ensure_directory()
+    store.save(GALLERY, SECRET)
+    store.audit("enroll", ENROLLED, photos=3)
+    return {name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in ("gallery.sealed", "audit.jsonl")}
+
+
+def test_a_working_copy_is_listed_and_its_cleanup_never_reaches_the_original_or_sealed_evidence(mods, sealer,
+                                                                                                tmp_path) -> None:
+    original = tmp_path / "identity"
+    before = original_enrollment(sealer, original)
+    root = tmp_path / "exp"
+    root.mkdir(mode=0o700)
+    (root / "work").mkdir(mode=0o700)
+    manifest = mods.manifest.Manifest(root)
+    copy = root / "work" / "e_m-identity"
+    made = mods.manifest.make_working_copy(manifest, original, copy, "test")
+    assert [(e.kind, e.cls) for e in made] == [("dir", "working_copy"), ("file", "working_copy"),
+                                                ("file", "working_copy")]
+    assert IdentityStore(copy, sealer).load(SECRET) == GALLERY  # the session runs on the copy, the same enrollment
+    # a sealed session inside the root, listed (wrongly) as a working copy: under its seal, never deleted
+    sealed = root / "sessions" / "e_m"
+    sealed.mkdir(parents=True)
+    (sealed / "run.jsonl").write_text("{}\n")
+    (sealed / "SHA256SUMS").write_text("0  run.jsonl\n")
+    manifest.add(sealed / "run.jsonl", "working_copy", "forged")
+    # the original's own sealed file, forged into the manifest (add() refuses a deletable entry outside the root)
+    with pytest.raises(mods.manifest.ManifestError):
+        manifest.add(original / "gallery.sealed", "working_copy", "forged")
+    info = os.lstat(original / "gallery.sealed")
+    manifest._append("add", str(original / "gallery.sealed"), "file", "working_copy", "forged",
+                     "2026-11-07T00:00:00+00:00", f"{info.st_dev}:{info.st_ino}", before["gallery.sealed"])
+    result = mods.manifest.cleanup(manifest, ("working_copy",))  # no protected list at all: still never reached
+    assert not copy.exists() and sorted(result["deleted"]) == sorted(
+        [str(copy / "gallery.sealed"), str(copy / "audit.jsonl"), str(copy)])
+    assert result["left_sealed"] == [str(sealed / "run.jsonl")] and (sealed / "run.jsonl").exists()
+    assert result["left_outside_root"] == [str(original / "gallery.sealed")]
+    after = {name: hashlib.sha256((original / name).read_bytes()).hexdigest() for name in before}
+    assert after == before  # the original enrollment, byte for byte
+
+
+def test_a_protected_path_is_never_deleted_even_when_listed_inside_the_root(mods, sealer, tmp_path) -> None:
+    original = tmp_path / "identity"
+    original_enrollment(sealer, original)
+    root = tmp_path / "exp"
+    root.mkdir(mode=0o700)
+    manifest = mods.manifest.Manifest(root)
+    copy = root / "e_p-identity"
+    mods.manifest.make_working_copy(manifest, original, copy, "test")
+    result = mods.manifest.cleanup(manifest, ("working_copy",), protected=(copy,))
+    assert sorted(result["left_protected"]) == sorted([str(copy), str(copy / "gallery.sealed"),
+                                                       str(copy / "audit.jsonl")])
+    assert (copy / "gallery.sealed").exists() and result["deleted"] == []
+    result = mods.manifest.cleanup(manifest, ("working_copy",), protected=(copy / "audit.jsonl",))
+    assert (copy / "audit.jsonl").exists() and str(copy) in result["left_protected"]  # nor what holds a protected path
+
+
+@pytest.mark.parametrize("case", ["same", "inside_original", "outside_root", "original_inside_root", "exists",
+                                  "relative", "no_gallery"])
+def test_a_working_copy_is_refused_unless_it_is_new_inside_the_root_and_apart_from_the_original(mods, sealer, tmp_path,
+                                                                                               case) -> None:
+    original = tmp_path / "identity"
+    before = original_enrollment(sealer, original)
+    root = tmp_path / "exp"
+    root.mkdir(mode=0o700)
+    manifest = mods.manifest.Manifest(root)
+    copy = root / "copy"
+    if case == "same":
+        copy = original
+    elif case == "inside_original":
+        copy = original / "copy"
+    elif case == "outside_root":
+        copy = tmp_path / "elsewhere"
+    elif case == "original_inside_root":
+        original = root / "identity"
+        original_enrollment(sealer, original)
+    elif case == "exists":
+        copy.mkdir()
+    elif case == "relative":
+        copy = Path("exp/copy")
+    elif case == "no_gallery":
+        original = tmp_path / "empty"
+        original.mkdir(mode=0o700)
+    with pytest.raises(mods.manifest.ManifestError):
+        mods.manifest.make_working_copy(manifest, original, copy, "test")
+    assert not manifest.entries()
+    if case not in ("original_inside_root", "no_gallery"):
+        assert {n: hashlib.sha256((tmp_path / "identity" / n).read_bytes()).hexdigest() for n in before} == before

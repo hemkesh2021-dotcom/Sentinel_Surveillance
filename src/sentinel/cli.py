@@ -808,12 +808,14 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
     experiment = [flag for flag, value in (("--face-capture-gallery", args.face_capture_gallery),
                                            ("--face-capture-raw", args.face_capture_raw),
                                            ("--face-shadow-gallery", args.face_shadow_gallery)) if value is not None]
-    if experiment and route_b and not args.face_validation:  # route B: its own head-window faces, validation only
-        print(f"run: {experiment[0]} needs --face-validation", file=sys.stderr)
-        return 1
-    if experiment and not route_b and not (args.face_validation and args.face_full_scale_detection):
-        print(f"run: {experiment[0]} needs --face-validation and --face-full-scale-detection", file=sys.stderr)
-        return 1
+    for flag in experiment[:1]:
+        if route_b and flag != "--face-capture-gallery":  # route B: its own head-window faces, validation only
+            if not args.face_validation:
+                print(f"run: {flag} needs --face-validation", file=sys.stderr)
+                return 1
+        elif not (args.face_validation and args.face_full_scale_detection):  # D91's rule, on either profile
+            print(f"run: {flag} needs --face-validation and --face-full-scale-detection", file=sys.stderr)
+            return 1
     if args.face_capture_raw is not None and not route_b:
         print("run: --face-capture-raw is for the main_single profile (route B) only", file=sys.stderr)
         return 1

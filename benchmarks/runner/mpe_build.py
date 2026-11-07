@@ -268,7 +268,8 @@ def build(session: Path, raw_dir: Path, identity_dir: Path, candidate_dir: Path,
         write_private_atomic(frozen_path, (json.dumps(frozen, sort_keys=True, indent=1) + "\n").encode("ascii"))
         manifest.add(frozen_path, "output", "mpe_build.py build")
         report.update(outcome="BUILT", frozen=True, digest=digest)
-        cleaned = mpe_manifest.cleanup(manifest, ("raw",), within=raw_dir)  # this build's raw capture only
+        cleaned = mpe_manifest.cleanup(manifest, ("raw",), within=raw_dir,  # this build's raw capture only
+                                       protected=(identity_dir, session))
         report["raw_deleted"] = not os.path.lexists(raw_dir) and not cleaned["left_changed"] \
             and not cleaned["left_not_empty"]
         if not report["raw_deleted"]:
