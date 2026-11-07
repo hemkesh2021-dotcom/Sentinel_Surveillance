@@ -232,6 +232,7 @@ COMPARISON_KEYS = {"identity", "schema", "stream_epoch", "frame_seq", "frame_mon
                    "disposition", "score", "w_px", "similarity", "ms", "error"}  # runtime.ComparisonRecord (D87)
 CAPTURE_KEYS = {"identity", "schema", "written", "refused", "faces_kept", "faces_dropped_over_cap", "faces_in_span",
                 "prototypes", "min_best_to_others", "similarity_to_original", "verified"}  # D91, Capture.finish
+LIFE_KEYS = {"identity", "schema", "stream_epoch", "track_id", "event", "since_mono_ns", "mono_ns"}  # runtime.TrackLife
 RAW_CAPTURE_KEYS = {"identity", "schema", "written", "refused", "faces_kept", "faces_dropped_over_cap",
                     "faces_dropped_other_boot", "verified"}  # the multi-pose comparison's RawCapture.finish (route B)
 RAW_CAPTURE_REFUSALS = ("no_faces", "raw_capture_target_exists", "raw_capture_not_verified",
@@ -267,8 +268,11 @@ def _int(value: Any) -> bool:
 # ---------------------------------------------------------------- F2 records
 
 
-def read_records(path: Path) -> tuple[dict[str, list[dict]], list[str], dict | None, dict | None]:
-    """(records by kind, schema problems, starting line, stopped line) from the runtime's stdout file."""
+def read_records(path: Path, experiment: str | None = None) -> tuple[dict[str, list[dict]], list[str], dict | None,
+                                                                       dict | None]:
+    """(records by kind, schema problems, starting line, stopped line) from the runtime's stdout file. ``experiment``
+    (the multi-pose comparison's readings only; None everywhere else, as strict as ever): "shadow" admits route B
+    results whose people carry a decided shadow, "capture_raw" nothing more at the record level."""
     records: dict[str, list[dict]] = {"tick": [], "result": [], "transition": []}  # "comparison" only when present
     problems: list[str] = []
     starting = stopped = None
@@ -290,7 +294,7 @@ def read_records(path: Path) -> tuple[dict[str, list[dict]], list[str], dict | N
         kind = item.get("identity")
         if not isinstance(kind, str):
             continue  # not an identity record (e.g. a status line)
-        problem = _record_problem(kind, item)
+        problem = _record_problem(kind, item, experiment)
         if problem is not None:
             problems.append(f"line {number}: {problem}")
         else:
@@ -298,9 +302,10 @@ def read_records(path: Path) -> tuple[dict[str, list[dict]], list[str], dict | N
     return records, problems, starting, stopped
 
 
-def _record_problem(kind: Any, item: dict) -> str | None:
+def _record_problem(kind: Any, item: dict, experiment: str | None = None) -> str | None:
     keys = {"tick": TICK_KEYS, "result": RESULT_KEYS, "transition": TRANSITION_KEYS,
-            "comparison": COMPARISON_KEYS, "capture": CAPTURE_KEYS, "capture_raw": RAW_CAPTURE_KEYS}.get(kind)
+            "comparison": COMPARISON_KEYS, "capture": CAPTURE_KEYS, "capture_raw": RAW_CAPTURE_KEYS,
+            "life": LIFE_KEYS}.get(kind)
     if keys is None:
         return f"unknown identity record {kind!r}"
     schema = item.get("schema")
@@ -312,6 +317,8 @@ def _record_problem(kind: Any, item: dict) -> str | None:
         return _capture_problem(item)
     if kind == "capture_raw":
         return _raw_capture_problem(item)
+    if kind == "life":
+        return _life_problem(item)
     if kind == "result" and schema in (FULL_SCALE_SCHEMA, COMPARISON_SCHEMA):
         keys = keys | {"full_scale"}
     elif kind == "result" and schema == LANDMARK_SCHEMA:
@@ -353,7 +360,7 @@ def _record_problem(kind: Any, item: dict) -> str | None:
             if schema == LANDMARK_SCHEMA and not _landmarks_fit(person, item["full_scale"] is not None):
                 return "result: a person entry's landmark record does not fit its status"
         if schema == WINDOWS_SCHEMA:
-            return _windows_problem(item)
+            return _windows_problem(item, experiment)
     else:
         if not (_int(item["mono_ns"]) and _int(item["track_id"]) and item["from"] in STATES and item["to"] in STATES
                 and (item["identity_id"] is None or ID.match(str(item["identity_id"])))
@@ -362,7 +369,7 @@ def _record_problem(kind: Any, item: dict) -> str | None:
     return None
 
 
-def _windows_problem(item: dict) -> str | None:
+def _windows_problem(item: dict, experiment: str | None = None) -> str | None:
     """Route B (schema 8): one result's windows fit the result. They are null exactly when the analysis gave no faces
     (it failed), and then nobody was judged. Otherwise the counts fit together and the stage's bounds; on an applied
     result one person per person the windows were made for, the people listed as not analysed exactly those whose
@@ -402,8 +409,14 @@ def _windows_problem(item: dict) -> str | None:
         return "result: the people marked not analysed are not the people its windows left out"
     for person in persons:
         own, label = person["ownership"], person["label"]
-        if own not in PERSON_OWNERSHIP | {NOT_ANALYSED} or person["shadow"] is not None:
-            return "result: a person's ownership or shadow cannot occur on route B"
+        if own not in PERSON_OWNERSHIP | {NOT_ANALYSED}:
+            return "result: a person's ownership cannot occur on route B"
+        shadow = person["shadow"]
+        if shadow is not None and not (experiment == "shadow" and isinstance(shadow, dict)
+                                       and set(shadow) == SHADOW_DECIDED_KEYS):
+            return "result: a shadow cannot occur on route B outside a shadow comparison (and there only decided)"
+        if experiment == "shadow" and person["similarity"] is not None and shadow is None:
+            return "result: a compared face of a shadow comparison has no shadow"
         if own != "assigned" and (person["vote"] != "none" or person["identity_id"] is not None):
             return "result: a person without an assigned face has a vote"
         if (label == NOT_ANALYSED) != (own == NOT_ANALYSED and label != "before_expiry"):
@@ -411,7 +424,7 @@ def _windows_problem(item: dict) -> str | None:
     return None
 
 
-def frame_problems(records: dict[str, list[dict]]) -> list[str]:
+def frame_problems(records: dict[str, list[dict]], experiment: str | None = None) -> list[str]:
     """Route B (schema 8): every result names its own frame. Each result's frame (epoch, sequence and ingest time) is one
     offered tick's, once; an applied result's people are that tick's tracks, and its windows were made for exactly those
     people; a tick is recorded once per frame, its tracks sorted and unique, skipped exactly when there are none, and
@@ -466,6 +479,15 @@ def frame_problems(records: dict[str, list[dict]]) -> list[str]:
     for kind in ("comparison", "capture", "break"):
         if records.get(kind):
             problems.append(f"{kind} records cannot occur on route B")
+    if experiment == "capture_raw":
+        if len(records.get("capture_raw", [])) != 1:
+            problems.append("a raw capture run has exactly one capture_raw record")
+    elif records.get("capture_raw"):
+        problems.append("capture_raw records occur only in a raw capture run")
+    if records.get("life") and experiment != "shadow":
+        problems.append("life records occur only in a shadow comparison run")
+    if experiment == "shadow" and not records.get("life"):
+        problems.append("a shadow comparison run records its track lives")
     return problems
 
 
@@ -489,6 +511,19 @@ def _comparison_problem(item: dict) -> str | None:
     if (item["error"] is not None) != failed or (failed and not (isinstance(item["error"], str)
                                                                  and ERROR_LABEL.match(item["error"]))):
         return "comparison: a fixed error label exactly when failed"
+    return None
+
+
+def _life_problem(item: dict) -> str | None:
+    """A track life's start or end (route B's shadow comparison, schema 8 only): numbers and a fixed event only."""
+    if item["schema"] != WINDOWS_SCHEMA:
+        return f"life: schema {item['schema']!r}; a life record is schema {WINDOWS_SCHEMA}"
+    if set(item) != LIFE_KEYS:
+        return f"life: fields {sorted(set(item) ^ LIFE_KEYS)} differ"
+    if not (item["event"] in ("began", "ended") and all(_int(item[k]) and item[k] >= 0 for k in
+                                                        ("stream_epoch", "track_id", "since_mono_ns", "mono_ns"))
+            and item["since_mono_ns"] <= item["mono_ns"]):
+        return "life: a field has the wrong type or value"
     return None
 
 

@@ -544,7 +544,8 @@ def test_readiness_met_needs_the_whole_marker_and_the_keys_are_the_runtimes(mod)
     assert mod.readiness_problem("something_else", READY["startup"]) == "unknown_requirement"
     assert mod.TRACKING_SETTING_KEYS == SETTING_KEYS
     assert mod.READINESS == ("tracking_diagnostic", "landmark_diagnostic", "face_chat",  # sessions 90 and 103 added two
-                             "face_windows", "face_chat_windows")  # route B (session 116, part 17) added two
+                             "face_windows", "face_chat_windows",  # route B (session 116, part 17) added two
+                             "face_windows_capture_raw", "face_windows_shadow")  # the multi-pose comparison's two
 
 
 def test_a_clean_exit_before_the_starting_line_never_meets_the_requirement(mod, tmp_path, monkeypatch) -> None:
@@ -573,6 +574,36 @@ def test_the_requirement_is_a_fixed_choice_on_the_command_line(mod, tmp_path, mo
     monkeypatch.setattr(mod, "supervise", lambda command, out, **kw: seen.update(kw) or {"status": "x"})
     mod.main(["--out", str(tmp_path / "y"), "--duration-s", "5", "--require-ready", REQUIRE, "--", "true"])
     assert seen["require_ready"] == REQUIRE
+
+
+def test_the_shadow_digest_goes_only_with_the_shadow_requirement_and_is_recorded(mod, tmp_path, monkeypatch,
+                                                                                     capsys) -> None:
+    """Session 116 part 22: --shadow-digest (the frozen candidate's prototypes digest) is required exactly with
+    --require-ready face_windows_shadow, as 64 lowercase hex characters; the guard records it in its parameters."""
+    digest = "a" * 64
+    for given in ([],  # the shadow requirement without its digest
+                  ["--shadow-digest", "A" * 64], ["--shadow-digest", "a" * 63], ["--shadow-digest", "g" * 64]):
+        with pytest.raises(SystemExit):
+            mod.main(["--out", str(tmp_path / "x"), "--duration-s", "5", "--require-ready", "face_windows_shadow",
+                      *given, "--", "true"])
+        assert "--shadow-digest" in capsys.readouterr().err
+    for requirement in ([], ["--require-ready", "face_windows"], ["--require-ready", "face_windows_capture_raw"]):
+        with pytest.raises(SystemExit):  # a digest without the shadow requirement
+            mod.main(["--out", str(tmp_path / "x"), "--duration-s", "5", *requirement, "--shadow-digest", digest,
+                      "--", "true"])
+        assert "--shadow-digest" in capsys.readouterr().err
+    assert not (tmp_path / "x").exists()  # refused before anything was made
+    seen = {}
+    monkeypatch.setattr(mod, "supervise", lambda command, out, **kw: seen.update(kw) or {"status": "x"})
+    mod.main(["--out", str(tmp_path / "y"), "--duration-s", "5", "--require-ready", "face_windows_shadow",
+              "--shadow-digest", digest, "--", "true"])
+    assert seen["require_ready"] == "face_windows_shadow" and seen["shadow_digest"] == digest
+    monkeypatch.undo()
+    monkeypatch.setattr(mod, "SystemBackend", lambda: FakeBackend(exit_s=1.0, exit_rc=0))
+    out = tmp_path / "z"
+    mod.main(["--out", str(out), "--duration-s", "5", "--require-ready", "face_windows_shadow", "--shadow-digest",
+              digest, "--", "true"])
+    assert json.loads((out / "result.json").read_text())["parameters"]["shadow_digest"] == digest
 
 
 # ---------------------------------------------------------------- session 103: face_chat readiness before T0

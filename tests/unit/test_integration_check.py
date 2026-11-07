@@ -124,7 +124,8 @@ def test_face_chat_readiness_needs_the_plain_face_run_the_ready_scene_server_and
         assert mods.verdict.REASON.fullmatch(reason)  # guard_verdict prints it as a fixed label
     assert problem("face_chat", None) == "startup_missing"
     assert mods.guard.READINESS == mods.verdict.READINESS == ("tracking_diagnostic", "landmark_diagnostic", "face_chat",
-                                                              "face_windows", "face_chat_windows")  # route B
+                                                              "face_windows", "face_chat_windows",  # route B
+                                                              "face_windows_capture_raw", "face_windows_shadow")
     assert mods.evidence.READINESS.values == frozenset(mods.guard.READINESS)  # result.json's readiness fits the profile
 
 

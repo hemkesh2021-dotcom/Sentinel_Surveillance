@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from face_runs import COMPAT, ENROLLED, FACE_BOX, GALLERY, RUNNERS, vec
+from face_runs import COMPAT, ENROLLED, FACE_BOX, GALLERY, RUNNERS, real_face_startup, startup_line, vec
 from sentinel.config import parse_config
 from sentinel.contracts import FrameKey, NormalizedBox
 from sentinel.identity.association import FaceObservation, Ownership
@@ -68,6 +68,8 @@ def mods():
                                manifest=importlib.import_module("mpe_manifest"),
                                build=importlib.import_module("mpe_build"),
                                compare=importlib.import_module("mpe_compare"),
+                               account=importlib.import_module("mpe_account"),
+                               check=importlib.import_module("mpe_check"),
                                sim=importlib.import_module("test_face_check"))
     finally:
         sys.path.remove(str(RUNNERS))
@@ -177,7 +179,7 @@ def presence(mods, kind: str) -> tuple[tuple, list]:
 
 
 def run_session(mods, root: Path, kind: str, face_of, *, shadow=None, capture=None, tail: bool = False,
-                approach: str | None = None) -> Path:
+                approach: str | None = None, lives: bool = True) -> Path:
     """A session through the real runtime on route B, then result.json (the cues as the guard prints them, 0.1 s
     late), provenance.txt (the boot) and an account. ``tail``: the person stays in view after the last end bell and
     faces the camera until the run ends (back at the Mac). ``approach``: in that hold the face is seen from the walk
@@ -206,16 +208,17 @@ def run_session(mods, root: Path, kind: str, face_of, *, shadow=None, capture=No
     cues = mods.schedule.SESSIONS[kind]
     startup = {"run": "starting", "startup": {"face": {"validation_run": True, "identities_enrolled": 1,
                                                       "detection": "head_windows",
-                                                      **({"shadow": True, "shadow_digest": shadow.digest}
-                                                         if shadow is not None else {}),
+                                                      **({"shadow": True, "shadow_digest": shadow.digest,
+                                                          "lives": True} if shadow is not None and lives else {}),
                                                       **({"capture": True, "capture_raw": True} if capture else {})}}}
     out = mods.sim.simulate(root, startup,
                             script=script, analyze=analyze_for, duration=float(mods.schedule.duration_s(cues)),
-                            route_b=True, scene=False, shadow=shadow, experiment_capture=capture)
+                            route_b=True, scene=False, shadow=shadow, experiment_capture=capture,
+                            lives=shadow is not None and lives, captures=mods.schedule.STATUS_AT[kind])
     (out / "result.json").write_text(json.dumps({"cues": [{"name": n, "at_s": float(a), "printed_mono_s": 1.0 + a + 0.1}
                                                           for n, a, _ in cues], "child": {"ready_mono_s": 1.0}}))
     (out / "provenance.txt").write_text(f"boot_id={BOOT}\n")
-    (out / "mpe-account.txt").write_text(f"format=mpe-account-1\nsession={kind}\nothers_in_view=no\nnot_as_cued=none\n")
+    mods.account.enter(out, kind, others_in_view="no", not_as_cued="none")  # the account step, locked
     return out
 
 
@@ -250,10 +253,12 @@ def pipeline(tmp_path_factory, sealer, mods):
     original.save(GALLERY, SECRET)
     raw = base / "experiment" / "raw"
     (base / "experiment").mkdir(mode=0o700)
+    mods.manifest.Manifest(base / "experiment").reserve(raw, "raw", "raw", "test: the B launch block")
     capture = RawCapture(IdentityStore(raw, sealer), SECRET, GALLERY, CONSENT)
     (base / "b").mkdir()
     b = run_session(mods, base / "b", "B", build_face, capture=capture)
     raw_report = capture.finished
+    mods.manifest.claim(mods.manifest.Manifest(base / "experiment"), raw, writer_exited=True)
     candidate = base / "experiment" / "candidate"
     report = mods.build.build(b, raw, base / "identity", candidate, base / "experiment", secret=SECRET, sealer=sealer,
                               match_threshold=POLICY.match_threshold)
@@ -385,6 +390,52 @@ def test_the_reader_refuses_a_session_that_is_not_an_evaluation_schedule(pipelin
 # ---------------------------------------------------------------- the builder's refusals
 
 
+def _unlock(session: Path) -> None:
+    """Test-only: take a session's account and its lock and reading lines out, to enter another one."""
+    account = session / "mpe-account.txt"
+    if account.exists():
+        account.chmod(0o600)
+        account.unlink()
+    provenance = session / "provenance.txt"
+    keep = [line for line in provenance.read_text().splitlines()
+            if not line.startswith(("account_sha256=", "account_saved_utc=", "reading_started_utc="))]
+    provenance.write_text("".join(f"{line}\n" for line in keep))
+
+
+def reenter(session: Path, kind: str, *, others_in_view: str = "no", not_as_cued: str = "none") -> None:
+    _unlock(session)
+    MPE_ACCOUNT().enter(session, kind, others_in_view=others_in_view, not_as_cued=not_as_cued)
+
+
+def force_account(session: Path, text: str) -> None:
+    """Test-only: an account the entry step would refuse, written and locked as if it had been saved."""
+    _unlock(session)
+    (session / "mpe-account.txt").write_text(text)
+    with open(session / "provenance.txt", "a") as provenance:
+        provenance.write(f"account_sha256={hashlib.sha256(text.encode()).hexdigest()}\n"
+                         "account_saved_utc=2026-11-07T00:00:00+00:00\n")
+
+
+def MPE_MANIFEST():
+    import sys
+
+    sys.path.insert(0, str(RUNNERS))
+    try:
+        return importlib.import_module("mpe_manifest")
+    finally:
+        sys.path.remove(str(RUNNERS))
+
+
+def MPE_ACCOUNT():
+    import sys
+
+    sys.path.insert(0, str(RUNNERS))
+    try:
+        return importlib.import_module("mpe_account")
+    finally:
+        sys.path.remove(str(RUNNERS))
+
+
 def copy_session(source: Path, target: Path) -> Path:
     target.mkdir()
     for name in ("result.json", "run.jsonl", "provenance.txt", "mpe-account.txt"):
@@ -395,6 +446,8 @@ def copy_session(source: Path, target: Path) -> Path:
 def raw_from(pipeline, sealer, directory: Path, *, extra=None, boot: str = BOOT) -> Path:
     """A raw capture of B's own compared faces (rebuilt from the records' frame numbers with the build faces), with an
     optional face that B's records never offered."""
+    manifest = MPE_MANIFEST().Manifest(directory.parent)
+    manifest.reserve(directory, "raw", "raw", "test: the B launch block")
     capture = RawCapture(IdentityStore(directory, sealer), SECRET, GALLERY, CONSENT)
     for line in (pipeline.b / "run.jsonl").read_text().splitlines():
         r = json.loads(line)
@@ -405,6 +458,7 @@ def raw_from(pipeline, sealer, directory: Path, *, extra=None, boot: str = BOOT)
     if extra is not None:
         capture.offer(extra, LENS, frame_seq=10**6, stream_epoch=1, track_id=1, boot_id=boot)
     assert capture.finish()["written"]
+    MPE_MANIFEST().claim(manifest, directory, writer_exited=True)
     return directory
 
 
@@ -428,11 +482,9 @@ def test_the_builder_refuses_before_writing_anything(pipeline, mods, sealer, tmp
     elif case == "account_missing":
         (session / "mpe-account.txt").unlink()
     elif case == "others":
-        (session / "mpe-account.txt").write_text("format=mpe-account-1\nsession=B\nothers_in_view=unknown\n"
-                                                 "not_as_cued=none\n")
+        reenter(session, "B", others_in_view="unknown")
     elif case == "account_bad":
-        (session / "mpe-account.txt").write_text("format=mpe-account-1\nsession=B\nothers_in_view=no\n"
-                                                 "not_as_cued=b9:sideways\n")
+        force_account(session, "format=mpe-account-1\nsession=B\nothers_in_view=no\nnot_as_cued=b9:sideways\n")
     elif case == "target":
         candidate.mkdir()
     elif case == "original_dir":
@@ -451,8 +503,7 @@ def test_the_builder_refuses_before_writing_anything(pipeline, mods, sealer, tmp
 def test_a_window_not_done_as_cued_gives_no_prototype_and_too_few_or_inconsistent_faces_build_nothing(
         pipeline, mods, sealer, tmp_path) -> None:
     session = copy_session(pipeline.b, tmp_path / "b")
-    (session / "mpe-account.txt").write_text("format=mpe-account-1\nsession=B\nothers_in_view=no\n"
-                                             "not_as_cued=b5:left,b5:right\n")
+    reenter(session, "B", not_as_cued="b5:left,b5:right")
     root = tmp_path / "exp"
     root.mkdir(mode=0o700)
     raw = raw_from(pipeline, sealer, root / "raw")
@@ -463,8 +514,7 @@ def test_a_window_not_done_as_cued_gives_no_prototype_and_too_few_or_inconsisten
     assert set(report["faces_per_window"]) == {"bs:lens", "bs:down", "b4:lens", "b4:left", "b4:right", "b5:lens"}
     # all eight windows excluded but three: under the minimum of four prototypes
     session2 = copy_session(pipeline.b, tmp_path / "b2")
-    (session2 / "mpe-account.txt").write_text("format=mpe-account-1\nsession=B\nothers_in_view=no\n"
-                                              "not_as_cued=bs:lens,bs:down,b4:lens,b4:left,b5:lens\n")
+    reenter(session2, "B", not_as_cued="bs:lens,bs:down,b4:lens,b4:left,b5:lens")
     root2 = tmp_path / "exp2"
     root2.mkdir(mode=0o700)
     report = mods.build.build(session2, raw_from(pipeline, sealer, root2 / "raw"), pipeline.base / "identity",
@@ -491,9 +541,11 @@ def test_the_selection_never_depends_on_what_the_original_decided(pipeline, mods
     store.save(other, SECRET)
     raw = tmp_path / "exp" / "raw"
     (tmp_path / "exp").mkdir(mode=0o700)
+    mods.manifest.Manifest(tmp_path / "exp").reserve(raw, "raw", "raw", "test: the B launch block")
     capture = RawCapture(IdentityStore(raw, sealer), SECRET, other, CONSENT)
     (tmp_path / "b").mkdir()
     b = run_session(mods, tmp_path / "b", "B", build_face, capture=capture)
+    mods.manifest.claim(mods.manifest.Manifest(tmp_path / "exp"), raw, writer_exited=True)
     votes = {p["vote"] for line in (b / "run.jsonl").read_text().splitlines()
              if (r := json.loads(line)).get("identity") == "result" for p in r["persons"]}
     assert "match" not in votes  # the original decided "unknown" for every face this time
@@ -623,7 +675,7 @@ def test_a_wrong_raw_path_is_refused_before_anything_is_listed_and_a_build_delet
     decoy = root / "decoy"  # inside the root but not a raw capture: a copy of a gallery's directory
     decoy.mkdir(mode=0o700)
     (decoy / "gallery.sealed").write_bytes(original)
-    assert build(decoy)["refused"] == "raw_capture_unexpected_files"
+    assert build(decoy)["refused"] == "raw_capture_not_claimed"  # never reserved and claimed: never read or listed
     assert build(Path("relative/raw"))["refused"] == "path_not_canonical"
     assert build(root / "raw", candidate=root / "raw" / "candidate")["refused"] == "paths_overlap"
     assert not (root / "MANIFEST.tsv").exists() or not mods.manifest.Manifest(root).entries()  # nothing listed
@@ -667,10 +719,10 @@ def test_the_replay_check_fails_on_a_missing_or_moved_recorded_transition(pipeli
     run = mods.compare.replay(data, POLICY, "baseline")
     others = [i for i, r in enumerate(data["transitions"]) if r["to"] != "cleared"]
     missing = [r for i, r in enumerate(data["transitions"]) if i != others[3]]
-    assert mods.compare.check_replay(run, missing)["extra"] == 1
+    assert mods.compare.check_replay(run, missing, clears=True)["extra"] == 1
     moved = [dict(r, mono_ns=r["mono_ns"] + 1_000_000_000) if i == others[5] else r
              for i, r in enumerate(data["transitions"])]
-    result = mods.compare.check_replay(run, moved)
+    result = mods.compare.check_replay(run, moved, clears=True)
     assert result["unmatched"] == 1 and result["extra"] >= 1
 
 
@@ -682,16 +734,14 @@ def test_the_reading_is_inconclusive_without_the_frozen_record_its_shadow_digest
     session = copy_session(pipeline.em, tmp_path / "em")
     (session / "mpe-account.txt").unlink()
     assert "account_missing" in mods.compare.compare(session, POLICY, pipeline.frozen)["inconclusive"]
-    (session / "mpe-account.txt").write_text("format=mpe-account-1\nsession=E_M\nothers_in_view=no\n"
-                                             "not_as_cued=m4n2\n")
+    reenter(session, "E_M", not_as_cued="m4n2")
     out = mods.compare.compare(session, POLICY, pipeline.frozen)
     assert out["inconclusive"] == []
     hold = next(h for h in out["holds"] if h["hold"] == "m4n2")
     assert hold["not_as_cued"] and hold["excluded"]
     natural = next(c for c in out["conditions"] if (c["spot"], c["kind"]) == ("4", "natural"))
     assert natural["not_as_cued"] == 1 and natural["excluded"] == 1 and "gained_acquisitions" in natural
-    (session / "mpe-account.txt").write_text("format=mpe-account-1\nsession=E_M\nothers_in_view=yes\n"
-                                             "not_as_cued=none\n")
+    reenter(session, "E_M", others_in_view="yes")
     assert "account_others_in_view_not_no" in mods.compare.compare(session, POLICY, pipeline.frozen)["inconclusive"]
 
 
@@ -806,3 +856,628 @@ def test_a_working_copy_is_refused_unless_it_is_new_inside_the_root_and_apart_fr
     assert not manifest.entries()
     if case not in ("original_inside_root", "no_gallery"):
         assert {n: hashlib.sha256((tmp_path / "identity" / n).read_bytes()).hexdigest() for n in before} == before
+
+
+# ---------------------------------------------------------------- track lives: recorded, replayed, and harmless
+
+
+TWO = GalleryDocument(compatibility=COMPAT, identities=(
+    GalleryIdentity(identity_id=ENROLLED, enrolled_utc=GALLERY.identities[0].enrolled_utc, consent_date="2026-10-08",
+                    consent_scope=CONSENT_SCOPE, prototypes=(vec(1.0),)),
+    GalleryIdentity(identity_id="idn-00000000000b", enrolled_utc=GALLERY.identities[0].enrolled_utc,
+                    consent_date="2026-10-08", consent_scope=CONSENT_SCOPE, prototypes=(vec(0.0, 1.0),))))
+BETWEEN = vec(1.0, 1.0)  # as close to both enrolled identities: the original's margin rule, so no vote at all
+NEAR_A = vec(1.0, 0.1)  # the first identity's, for the original; the candidate (its prototype BETWEEN) matches it too
+
+
+def gap_run(mods, root: Path, shadow, *, lives: bool, script=None, face_at=None) -> Path:
+    """Track 7 in view, a one-face first life, gone 1.5 s (longer than the 1.0 s track expiry: its life ends), back
+    under the same number with faces every tick."""
+    script = script or ((60, 66, "facing", 7), (66, 67.5, "absent", None), (67.5, 85, "facing", 7))
+
+    def analyze_for(t0):
+        def analyze(frame, image):
+            t = (frame.ingest_mono_ns - t0) / 1e9
+            face = face_at(t) if face_at else (BETWEEN if 60.5 <= t < 61.5 else NEAR_A if t >= 67.5 else None)
+            if face is None:
+                return FaceRun((), 0, 1)
+            return FaceRun((FaceObservation(frame=frame.key, box=FACE_BOX, quality=0.9, embedding=face),), 1, 0)
+        return analyze
+
+    root.mkdir()
+    startup = {"run": "starting", "startup": {"face": {"validation_run": True, "identities_enrolled": 2,
+                                                      "detection": "head_windows", "shadow": True,
+                                                      **({"lives": True} if lives else {})}}}
+    out = mods.sim.simulate(root, startup, script=script, analyze=analyze_for, duration=90.0, route_b=True,
+                            scene=False, shadow=shadow, lives=lives)
+    (out / "result.json").write_text(json.dumps({"cues": []}))
+    return out
+
+
+@pytest.fixture
+def two_identities(mods, sealer, tmp_path, monkeypatch):
+    monkeypatch.setattr(mods.sim, "GALLERY", TWO)  # the simulated runtime's original: two enrolled identities
+    store = IdentityStore(tmp_path / "candidate", sealer)
+    store.ensure_directory()
+    store.save(GalleryDocument(compatibility=COMPAT, identities=(GalleryIdentity(
+        identity_id=ENROLLED, enrolled_utc=GALLERY.identities[0].enrolled_utc, consent_date="2026-11-07",
+        consent_scope=CONSENT_SCOPE, prototypes=(BETWEEN,)),)), SECRET)
+    return open_shadow(store, SECRET, TWO)
+
+
+def records(run: Path, kind: str | None = None) -> list[dict]:
+    lines = [json.loads(line) for line in (run / "run.jsonl").read_text().splitlines()]
+    return [r for r in lines if kind is None or r.get("identity") == kind]
+
+
+def test_life_records_change_nothing_else_the_runtime_writes_or_decides(mods, two_identities, tmp_path) -> None:
+    on = gap_run(mods, tmp_path / "on", two_identities, lives=True)
+    off = gap_run(mods, tmp_path / "off", two_identities, lives=False)
+    def timeless(run_records):  # processing_ms is the face stage's wall-clock time: it differs between any two runs
+        return [{k: v for k, v in r.items() if k != "processing_ms"} for r in run_records]
+
+    without = timeless(r for r in records(on) if r.get("identity") != "life" and r.get("run") != "starting")
+    plain = timeless(r for r in records(off) if r.get("run") != "starting")
+    assert len(without) == len(plain) > 100
+    assert without == plain  # every result, vote, shadow decision, tick, transition, status line and the stop: equal
+    assert records(on, "life") and not records(off, "life")
+
+
+def test_a_returning_track_number_is_recorded_as_a_life_ended_and_a_new_life_begun(mods, two_identities,
+                                                                                  tmp_path) -> None:
+    run = gap_run(mods, tmp_path / "on", two_identities, lives=True)
+    lives = [(r["event"], r["track_id"], r["since_mono_ns"]) for r in records(run, "life")]
+    sevens = [life for life in lives if life[1] == 7]
+    assert [e for e, _, _ in sevens][:3] == ["began", "ended", "began"]
+    first, ended, again = sevens[:3]
+    assert first[2] == ended[2] < again[2]  # the same life ended; the number began a new one later
+    assert all(r["schema"] == 8 for r in records(run, "life"))
+
+
+def test_a_stale_vote_that_moves_only_the_candidate_is_caught_by_the_lives_never_by_baseline_agreement(
+        mods, two_identities, tmp_path) -> None:
+    """The first life's one face is a margin for the original (no vote) and a match for the candidate. The number
+    returns: without the life boundaries the candidate keeps that stale vote and reads KNOWN one face early, while the
+    baseline's replay still agrees with every recorded transition. Only the recorded lives make the candidate right."""
+    run = gap_run(mods, tmp_path / "on", two_identities, lives=True)
+    data = mods.compare.read_session(run)
+    assert mods.compare.lives_problem(data) is None
+    with_lives = {which: mods.compare.replay(data, POLICY, which, "lives") for which in ("baseline", "candidate")}
+    legacy = {which: mods.compare.replay(data, POLICY, which, "legacy") for which in ("baseline", "candidate")}
+    # the baseline agrees with the record in both modes (legacy: clears as inputs; lives: clears compared too)
+    check = mods.compare.check_replay(legacy["baseline"], data["transitions"])
+    assert check["unmatched"] == check["extra"] == 0 and check["recorded"] > 0
+    check = mods.compare.check_replay(with_lives["baseline"], data["transitions"], clears=True)
+    assert check["unmatched"] == check["extra"] == 0
+    # the candidate: one face earlier without the boundaries (the stale vote from the ended life)
+    entry = {mode: min(t for t, key, _ in runs["candidate"].entries if key.track_id == 7)
+             for mode, runs in (("lives", with_lives), ("legacy", legacy))}
+    assert entry["legacy"] < entry["lives"]
+    assert entry["lives"] - entry["legacy"] >= 500_000_000  # a face tick apart, not a timing tolerance
+    # the reading: without life records the candidate's history is never taken from baseline agreement
+    stripped = copy_session_records(run, tmp_path / "stripped", drop_lives=True)
+    data = mods.compare.read_session(stripped)
+    assert mods.compare.lives_problem(data) == "life_records_missing"
+
+
+def copy_session_records(run: Path, target: Path, *, drop_lives: bool) -> Path:
+    target.mkdir()
+    lines = []
+    for record in records(run):
+        if drop_lives and record.get("identity") == "life":
+            continue
+        if drop_lives and record.get("run") == "starting":
+            record = json.loads(json.dumps(record))
+            record["startup"]["face"].pop("lives", None)
+        lines.append(json.dumps(record))
+    (target / "run.jsonl").write_text("\n".join(lines) + "\n")
+    for name in ("result.json", "provenance.txt", "mpe-account.txt"):
+        if (run / name).exists():
+            (target / name).write_bytes((run / name).read_bytes())
+    return target
+
+
+def test_without_life_records_the_reading_withholds_every_replay_number_though_the_baseline_agrees(pipeline, mods,
+                                                                                                  tmp_path) -> None:
+    stripped = copy_session_records(pipeline.em, tmp_path / "em", drop_lives=True)
+    out = mods.compare.compare(stripped, POLICY, pipeline.frozen)
+    assert "life_records_missing" in out["inconclusive"] and not out["replay_valid"]
+    assert out["replay"]["unmatched"] == out["replay"]["extra"] == 0  # the baseline still agrees (legacy mode)
+    assert all(h["known_share"] is None and h["at_mark"] is None for h in out["holds"])
+    assert all(c["known_share"] is None and c["lost_acquisitions"] is None for c in out["conditions"])
+    assert all(h["compared"] > 0 for h in out["holds"])  # the per-face pairs need no replay: still reported
+    full = mods.compare.compare(pipeline.em, POLICY, pipeline.frozen)
+    assert full["replay_valid"] and full["mode"] == "lives" and full["replay"]["clears_compared"]
+
+
+@pytest.mark.parametrize("damage, label", [("ended_unbegun", "life_records_inconsistent"),
+                                           ("tick_without_life", "life_records_incomplete")])
+def test_life_records_that_do_not_hold_together_make_the_reading_inconclusive(pipeline, mods, tmp_path, damage,
+                                                                              label) -> None:
+    data = mods.compare.read_session(pipeline.em)
+    if damage == "ended_unbegun":
+        data["lives"] = [r for r in data["lives"] if not (r["event"] == "began" and r is data["lives"][0])]
+    else:
+        tick = next(t for t in data["ticks"] if t.get("tracks"))
+        data["ticks"].append(dict(tick, tracks=[999]))
+    assert mods.compare.lives_problem(data) == label
+
+
+# ---------------------------------------------------------------- the account step: before any result, locked
+
+
+def test_the_account_is_entered_once_read_only_and_locked_by_its_digest(mods, tmp_path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "provenance.txt").write_text(f"boot_id={BOOT}\n")
+    asked = iter(["no", "m4n2, m5f1"])
+    digest = mods.account.enter(run, "E_M", ask=lambda prompt: next(asked), say=lambda text: None)
+    text = (run / "mpe-account.txt").read_bytes()
+    assert hashlib.sha256(text).hexdigest() == digest and oct((run / "mpe-account.txt").stat().st_mode)[-3:] == "400"
+    assert f"account_sha256={digest}" in (run / "provenance.txt").read_text()
+    with pytest.raises(mods.account.AccountRefused, match="account_already_saved"):
+        mods.account.enter(run, "E_M", others_in_view="no", not_as_cued="none")
+    account = mods.account.require(run, "E_M")
+    assert account == {"others_in_view": "no", "not_as_cued": {"m4n2", "m5f1"}}
+    assert "reading_started_utc=" in (run / "provenance.txt").read_text()
+
+
+@pytest.mark.parametrize("answers, label", [(("maybe", "none"), "account_invalid"),
+                                            (("no", "m9n9"), "account_invalid"),
+                                            (("no", "m4n2,m4n2"), "account_invalid")])
+def test_the_account_step_refuses_answers_it_cannot_lock(mods, tmp_path, answers, label) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    with pytest.raises(mods.account.AccountRefused, match=label):
+        mods.account.enter(run, "E_M", others_in_view=answers[0], not_as_cued=answers[1])
+    assert not (run / "mpe-account.txt").exists()
+
+
+def test_no_reading_shows_anything_before_the_locked_account_and_none_after_an_edit_or_a_late_account(
+        pipeline, mods, sealer, tmp_path, capsys) -> None:
+    session = copy_session(pipeline.em, tmp_path / "em")
+    _unlock(session)  # no account yet
+    out = mods.compare.compare(session, POLICY, pipeline.frozen)
+    mods.compare.print_report(out)
+    text = capsys.readouterr().out
+    assert out["stopped"] == "account_not_locked" and text.startswith("STOP: enter the account first")
+    assert "CHRONOLOGICAL" not in text and "compared" not in text and "KNOWN" not in text
+    # a reading started before the account: the account step refuses, and every later reading refuses too
+    provenance = session / "provenance.txt"
+    provenance.write_text(provenance.read_text() + "reading_started_utc=2026-11-07T00:00:00+00:00\n")
+    with pytest.raises(mods.account.AccountRefused, match="reading_already_started"):
+        mods.account.enter(session, "E_M", others_in_view="no", not_as_cued="none")
+    force_account(session, "format=mpe-account-1\nsession=E_M\nothers_in_view=no\nnot_as_cued=none\n")
+    provenance.write_text("reading_started_utc=2026-11-07T00:00:00+00:00\n" + provenance.read_text())
+    assert mods.compare.compare(session, POLICY, pipeline.frozen)["stopped"] == "account_saved_after_a_reading"
+    # an account changed after it was locked
+    reenter(session, "E_M")
+    account = session / "mpe-account.txt"
+    account.chmod(0o600)
+    account.write_text(account.read_text().replace("not_as_cued=none", "not_as_cued=m4n1"))
+    assert mods.compare.compare(session, POLICY, pipeline.frozen)["stopped"] == "account_changed"
+    # the builder: refused before anything is read or listed
+    b = copy_session(pipeline.b, tmp_path / "b")
+    _unlock(b)
+    root = tmp_path / "exp"
+    root.mkdir(mode=0o700)
+    raw = raw_from(pipeline, sealer, root / "raw")  # registered at its creation, as the launch block does
+    listed = set(mods.manifest.Manifest(root).entries())
+    report = mods.build.build(b, raw, pipeline.base / "identity", root / "candidate", root, secret=SECRET,
+                              sealer=sealer, match_threshold=POLICY.match_threshold)
+    assert report["refused"] == "account_not_locked"
+    assert set(mods.manifest.Manifest(root).entries()) == listed == {raw, raw / RAW_FILE}  # the builder added nothing
+
+
+# ---------------------------------------------------------------- reservation, recovery and scoped cleanup
+
+
+def recovery_setup(sealer, tmp_path):
+    original = tmp_path / "identity"
+    before = original_enrollment(sealer, original)
+    root = tmp_path / "exp"
+    root.mkdir(mode=0o700)
+    sealed = tmp_path / "sessions" / "mp-20261107T100000Z"
+    sealed.mkdir(parents=True)
+    (sealed / "run.jsonl").write_text("{}\n")
+    (sealed / "SHA256SUMS").write_text("0  run.jsonl\n")
+    return original, before, root, sealed
+
+
+def unchanged(original: Path, before: dict) -> bool:
+    return {n: hashlib.sha256((original / n).read_bytes()).hexdigest() for n in before} == before
+
+
+def test_an_aborted_capture_is_claimed_only_after_the_runtime_exits_and_its_temporary_is_cleaned(mods, sealer,
+                                                                                                tmp_path) -> None:
+    original, before, root, sealed = recovery_setup(sealer, tmp_path)
+    manifest = mods.manifest.Manifest(root)
+    raw = root / "raw-mp-1"
+    manifest.reserve(raw, "raw", "raw", "test")
+    raw.mkdir(mode=0o700)  # the runtime was killed while sealing: its temporary is all there is
+    (raw / ".raw-capture.sealed.4242.tmp").write_bytes(b"partial sealed bytes")
+    (raw / "notes.txt").write_text("not the writer's")
+    with pytest.raises(mods.manifest.ManifestError, match="writer has exited"):
+        mods.manifest.claim(manifest, raw, writer_exited=False)
+    assert not mods.manifest.runtime_exited({"child": {"returncode": None}}, processes=[])
+    assert not mods.manifest.runtime_exited({"child": {"returncode": 0}},
+                                            processes=[[b"/venv/bin/sentinel", b"run", b"face.yaml"]])
+    assert not mods.manifest.runtime_exited({"child": {"returncode": 0}},  # the package's own launch
+                                            processes=[[b"/env/bin/python", b"-m", b"sentinel.cli", b"run", b"f.yaml"]])
+    assert mods.manifest.runtime_exited({"child": {"returncode": 0}}, processes=[[b"bash"]])
+    result = mods.manifest.claim(manifest, raw, writer_exited=True)
+    assert result["listed"] == [str(raw), str(raw / ".raw-capture.sealed.4242.tmp")]
+    assert result["unexpected"] == [str(raw / "notes.txt")]
+    cleaned = mods.manifest.cleanup(manifest, ("raw",), within=raw, protected=(original, sealed))
+    assert not (raw / ".raw-capture.sealed.4242.tmp").exists() and (raw / "notes.txt").exists()
+    assert cleaned["left_not_empty"] == [str(raw)]  # the unexpected file is reported, never deleted
+    assert unchanged(original, before) and (sealed / "run.jsonl").exists()
+
+
+def test_a_reservation_is_once_inside_the_root_and_closes_as_absent_only_when_nothing_was_recorded_written(
+        mods, sealer, tmp_path) -> None:
+    original, before, root, sealed = recovery_setup(sealer, tmp_path)
+    manifest = mods.manifest.Manifest(root)
+    for bad in (root / "exists", tmp_path / "outside", Path("relative")):
+        if bad.name == "exists":
+            bad.mkdir()
+        with pytest.raises(mods.manifest.ManifestError):
+            manifest.reserve(bad, "raw", "raw", "test")
+    with pytest.raises(mods.manifest.ManifestError):
+        manifest.reserve(root / "x", "evidence", "raw", "test")
+    raw = root / "raw-mp-2"
+    manifest.reserve(raw, "raw", "raw", "test")
+    with pytest.raises(mods.manifest.ManifestError, match="reserved once"):
+        manifest.reserve(raw, "raw", "raw", "test")
+    with pytest.raises(mods.manifest.ManifestError, match="recorded a write"):
+        mods.manifest.close_absent(manifest, raw, writer_exited=True, recorded_written=True)
+    mods.manifest.close_absent(manifest, raw, writer_exited=True, recorded_written=False)
+    assert manifest.reservations()[raw].closed == "absent"
+    with pytest.raises(mods.manifest.ManifestError, match="reserved once"):
+        manifest.reserve(raw, "raw", "raw", "test")  # a retry takes a new name
+
+
+def test_a_failed_build_removes_only_the_candidate_it_wrote(pipeline, mods, sealer, tmp_path, monkeypatch) -> None:
+    root = tmp_path / "exp"
+    root.mkdir(mode=0o700)
+    session = copy_session(pipeline.b, tmp_path / "b")
+    raw = raw_from(pipeline, sealer, root / "raw")
+
+    def half_written(store, *args, **kwargs):  # the writer stops after its staging file and a vault temporary
+        store.directory.mkdir(mode=0o700)
+        (store.directory / ".gallery.sealed.staged").write_bytes(b"sealed but never verified")
+        (store.directory / "..gallery.sealed.staged.777.tmp").write_bytes(b"half")
+        return False, "capture_not_verified"
+
+    monkeypatch.setattr(mods.build, "write_working_gallery", half_written)
+    report = mods.build.build(session, raw, pipeline.base / "identity", root / "candidate", root, secret=SECRET,
+                              sealer=sealer, match_threshold=POLICY.match_threshold)
+    assert report["refused"] == "capture_not_verified" and report["candidate_removed"] is True
+    assert not (root / "candidate").exists() and report["original_unchanged"]
+    assert (raw / RAW_FILE).exists()  # the raw capture waits for the closing block's scoped cleanup
+    # an earlier build's frozen candidate in place: a later refused build never touches it
+    (root / "candidate").mkdir()
+    (root / "candidate" / "gallery.sealed").write_bytes(b"an earlier candidate")
+    report = mods.build.build(session, raw, pipeline.base / "identity", root / "candidate", root, secret=SECRET,
+                              sealer=sealer, match_threshold=POLICY.match_threshold)
+    assert report["refused"] == "candidate_target_exists" and (root / "candidate" / "gallery.sealed").exists()
+
+
+def test_recovery_after_a_killed_build_and_an_abandoned_session_claims_cleans_and_keeps_what_it_must(
+        mods, sealer, tmp_path) -> None:
+    original, before, root, sealed = recovery_setup(sealer, tmp_path)
+    manifest = mods.manifest.Manifest(root)
+    copy = root / "wc-mp-3"
+    mods.manifest.make_working_copy(manifest, original, copy, "test: m-F")  # listed at creation
+    raw = root / "raw-mp-3"
+    manifest.reserve(raw, "raw", "raw", "test: m-V")
+    raw.mkdir(mode=0o700)
+    (raw / "raw-capture.sealed").write_bytes(b"sealed raw faces")
+    candidate = root / "candidate-mp-3"
+    manifest.reserve(candidate, "candidate", "gallery", "test: m-X")  # the build was killed while writing
+    candidate.mkdir(mode=0o700)
+    (candidate / "gallery.sealed").write_bytes(b"sealed candidate")
+    (candidate / "inbox").mkdir()
+    unsealed = sealed.parent / "mp-20261107T120000Z"
+    unsealed.mkdir()
+    status = mods.manifest.status(manifest, sealed.parent)
+    assert status["open_reservations"] == sorted([str(raw), str(candidate)])
+    assert status["working_copies_left"] and status["unsealed_sessions"] == [str(unsealed)]
+    with pytest.raises(mods.manifest.ManifestError):
+        mods.manifest.recover(manifest, writer_exited=False, protected=(original, sealed.parent))
+    report = mods.manifest.recover(manifest, writer_exited=True, protected=(original, sealed.parent))
+    assert sorted(report["claimed"]) == sorted([str(raw), str(candidate)])
+    assert not raw.exists() and not candidate.exists() and not copy.exists()
+    after = mods.manifest.status(manifest, sealed.parent)
+    assert not (after["open_reservations"] or after["raw_left"] or after["working_copies_left"]
+                or after["unfrozen_candidate_left"])
+    assert after["unsealed_sessions"] == [str(unsealed)]  # evidence: sealed as it is by m-H, never deleted
+    assert unchanged(original, before) and (sealed / "run.jsonl").exists() and unsealed.exists()
+
+
+def test_recovery_never_deletes_a_frozen_candidate(mods, sealer, tmp_path) -> None:
+    original, before, root, sealed = recovery_setup(sealer, tmp_path)
+    manifest = mods.manifest.Manifest(root)
+    candidate = root / "candidate"
+    manifest.reserve(candidate, "candidate", "gallery", "test")
+    candidate.mkdir(mode=0o700)
+    (candidate / "gallery.sealed").write_bytes(b"frozen candidate")
+    mods.manifest.claim(manifest, candidate, writer_exited=True)
+    frozen = root / "candidate.frozen.json"
+    frozen.write_text("{}")
+    mods.manifest.recover(manifest, writer_exited=True, protected=(original,), frozen=frozen)
+    assert (candidate / "gallery.sealed").exists()  # waits for the retention decision (m-Z)
+    assert mods.manifest.status(manifest, frozen=frozen)["unfrozen_candidate_left"] == []
+
+
+# ---------------------------------------------------------------- optional spoken cues, timed synthetically
+
+
+def guard_like_printer(mods, kind: str, log: Path, scale: float, extra_lines=()) -> list[dict]:
+    """Print the session's cues into ``log`` as the guard does (``\\a[m:ss] TEXT`` at each cue's time, scaled down),
+    recording each printed_mono_s as the guard's result.json does."""
+    import threading
+    import time as _time
+
+    printed: list[dict] = []
+    start = _time.monotonic()
+
+    def run():
+        with open(log, "a", encoding="ascii") as out:
+            for line in extra_lines:
+                out.write(line + "\n")
+                out.flush()
+            for name, at, text in mods.schedule.SESSIONS[kind]:
+                while _time.monotonic() - start < at * scale:
+                    _time.sleep(0.002)
+                out.write(f"\a[{at // 60}:{at % 60:02d}] {text}\n")
+                out.flush()
+                printed.append({"name": name, "at_s": float(at), "printed_mono_s": _time.monotonic()})
+                if name == "bs:lens" or at == 0:
+                    out.write("a line the guard prints that is no cue\n")
+                    out.flush()
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    return printed, thread
+
+
+def test_spoken_cues_follow_the_printed_schedule_within_half_a_second_and_never_wait_for_a_slow_voice(
+        mods, tmp_path) -> None:
+    import sys as _sys
+    import threading
+
+    speak = MPE_SPEAK()
+    log = tmp_path / "cues.log"
+    log.write_text("")
+    voice = [_sys.executable, "-c", "import sys, time; time.sleep(1.5)"]  # a slow voice: 1.5 s per cue
+    spoken_log = tmp_path / "spoken.jsonl"
+    spoken: list = []
+    follower = threading.Thread(target=lambda: spoken.extend(
+        speak.follow(log, "B", voice, spoken_log, give_up_s=5.0)))
+    follower.start()
+    printed, printer = guard_like_printer(mods, "B", log, scale=0.02,
+                                          extra_lines=["STOP: not a cue", "\a[9:99] Walk to your seat"])
+    printer.join()
+    follower.join(timeout=30)
+    assert not follower.is_alive()
+    result = speak.check(spoken, {"cues": printed})
+    assert result["ok"], result
+    assert result["spoken"] == len(mods.schedule.B_CUES) and result["missing"] == [] and result["in_order"]
+    assert result["max_lag_s"] < speak.MAX_LAG_S
+    logged = [json.loads(line) for line in spoken_log.read_text().splitlines()]
+    assert [e["name"] for e in logged] == [n for n, _, _ in mods.schedule.B_CUES]  # each once, in order
+
+
+def test_a_cue_is_matched_only_at_its_own_time_and_text(mods) -> None:
+    speak = MPE_SPEAK()
+    assert speak.cue_of("B", "\a[1:15] Now face the camera lens until the next bell")[0] == "bslens"
+    assert speak.cue_of("B", "\a[1:16] Now face the camera lens until the next bell")[0] == "bslens"  # one late
+    assert speak.cue_of("B", "\a[1:17] Now face the camera lens until the next bell") is None
+    assert speak.cue_of("B", "[1:15] Now face the camera lens until the next bell")[0] == "bslens"  # no bell char
+    assert speak.cue_of("E_M", "\a[1:15] Now face the camera lens until the next bell") is None  # another session's
+    assert speak.cue_of("B", "STOP: the camera probe failed") is None
+    late = speak.check([{"name": "t0", "spoken_mono_s": 10.9}], {"cues": [{"name": "t0", "printed_mono_s": 10.0}]})
+    assert not late["ok"] and late["late"] == {"t0": 0.9}
+
+
+def MPE_SPEAK():
+    import sys
+
+    sys.path.insert(0, str(RUNNERS))
+    try:
+        return importlib.import_module("mpe_speak")
+    finally:
+        sys.path.remove(str(RUNNERS))
+
+
+# ---------------------------------------------------------------- the execution check on guarded sessions (mpe_check)
+
+GUARD_REQUIRED = {"B": "face_windows_capture_raw", "E_M": "face_windows_shadow", "E_P": "face_windows_shadow"}
+MARKS = {"seat_m": "0.90", "mark4_m": "4.02", "mark5_m": "4.97", "measured_with": "tape", "out_of_view_spot": "yes"}
+STATUS_LISTENERS = [{"family": "tcp", "port": 18090, "scope": "loopback"}]  # the status page alone: no scene server
+GUARDED_BOOT = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"  # the launch block records the kernel's boot UUID (the privacy
+# profile admits nothing else); FakeClock's "fake-boot-1" in the records is a test name the execution check never reads
+
+
+def RUNNER(name: str):
+    import sys
+
+    sys.path.insert(0, str(RUNNERS))
+    try:
+        return importlib.import_module(name)
+    finally:
+        sys.path.remove(str(RUNNERS))
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def guarded(mods, run: Path, kind: str, target: Path, accepted_scene, *, digest: str | None = None,
+            given_digest: str | None = None, account: bool = True, face: dict | None = None,
+            required: str | None = None, launch_last: bool = True, edit_lines=None) -> Path:
+    """A pipeline session (the real runtime's run.jsonl and status captures) laid out as the package leaves it: the
+    runtime's full starting line on route B with the session's own face entry (``face`` replaces it), the guard's
+    result.json (its readiness, the frozen candidate's digest it was given, the cues printed 0.1 s late, the status
+    captures), the session's face.yaml, marks and launch lines, then the account and the counts, in the package's
+    order. ``edit_lines`` changes the run's records (a list of JSON lines) before the guard's summary reads them."""
+    session = target / f"mp-{kind}"
+    out = session / "run"
+    out.mkdir(parents=True)
+    for p in run.iterdir():
+        if p.name == "run.jsonl" or p.name.startswith("status-"):
+            (out / p.name).write_bytes(p.read_bytes())
+    startup_root = target / "startup"
+    startup_root.mkdir()
+    real = real_face_startup(startup_root, accepted_scene, windows=True)
+    own = {"capture": True, "capture_raw": True} if kind == "B" else {"shadow": True, "shadow_digest": digest,
+                                                                       "lives": True}
+    real["face"] = face if face is not None else {**real["face"], **own}
+    lines = (out / "run.jsonl").read_text().splitlines()
+    assert json.loads(lines[0])["run"] == "starting"
+    lines[0] = json.dumps(startup_line(real, scene=False))
+    (out / "run.jsonl").write_text("\n".join(edit_lines(lines) if edit_lines else lines) + "\n")
+    cues, statuses = mods.schedule.SESSIONS[kind], mods.schedule.STATUS_AT[kind]
+    duration = float(mods.schedule.duration_s(cues))
+    readiness = {"required": required or GUARD_REQUIRED[kind], "met": True, "reason": None, "starting_after_s": 70.0}
+    parameters = {"duration_s": duration, "status_at": [{"at_s": float(a), "name": n} for a, n in statuses],
+                  "cues": [{"at_s": float(a), "name": n} for n, a, _ in cues], "require_ready": readiness["required"],
+                  **({} if kind == "B" else {"shadow_digest": given_digest or digest})}
+    guard = SimpleNamespace(guard=RUNNER("step5_guard"), check=RUNNER("face_check"))
+    mods.sim.finish(guard, out, account=None, counts={}, cues={n: float(a) for n, a, _ in cues}, duration_s=duration,
+                    captures=statuses, readiness=readiness, provenance=f"boot_id={GUARDED_BOOT}\n",
+                    result_update={"parameters": parameters, "captures": [
+                        {"name": n, "at_s": float(a), "status": "saved", "listeners": STATUS_LISTENERS}
+                        for a, n in statuses]})
+    rc = mods.check.rc
+    (session / "face.yaml").write_text(rc.RANGE_CONFIG)
+    marks = "".join(f"{k}={v}\n" for k, v in MARKS.items())
+    (session / "marks.txt").write_text(marks)
+    launch = [f"marks_sha256={_sha(marks)}", f"MV_config_sha256={_sha(rc.RANGE_CONFIG)}",
+              "MV_launch_utc=2026-11-07T09:00:00Z"]
+    (session / "provenance.txt").write_text("".join(f"{line}\n" for line in (launch if launch_last else launch[::-1])))
+    if account:
+        mods.account.enter(out, kind, others_in_view="no", not_as_cued="none")
+    for function, name in (("face_counts_camera", "secret-counts-camera.txt"),
+                           ("face_counts_f2", "secret-counts-identity.txt")):  # after the account, as the block does
+        done = mods.sim.bash_counts(function, str(out))
+        assert done.returncode == 0, done.stderr
+        (out / name).write_text(done.stdout)
+    return out
+
+
+@pytest.fixture
+def f1_list(tmp_path) -> Path:
+    f1 = tmp_path / "f1"
+    f1.mkdir()
+    (f1 / "list.json").write_text(json.dumps({"identity": "list", "identities": [
+        {"identity_id": ENROLLED, "prototypes": 3, "consent_date": "2026-10-08",
+         "enrolled_utc": "2026-10-08T09:00:00+00:00"}]}))
+    return f1
+
+
+def execution(mods, out: Path, kind: str, f1: Path, frozen=None) -> tuple[bool, str]:
+    reading = mods.check.read_mpe_execution(out, f1, kind, frozen)
+    return reading.ok, "\n".join(reading.lines)
+
+
+def test_each_guarded_session_passes_the_execution_check_with_its_own_entry_records_and_account(
+        pipeline, mods, tmp_path, accepted_scene, f1_list) -> None:
+    digest = pipeline.frozen["prototypes_digest"]
+    for kind, run in (("B", pipeline.b), ("E_M", pipeline.em), ("E_P", pipeline.ep)):
+        out = guarded(mods, run, kind, tmp_path / kind, accepted_scene, digest=digest)
+        ok, text = execution(mods, out, kind, f1_list, None if kind == "B" else pipeline.frozen)
+        assert ok, text
+        assert text.splitlines()[-1] == "mpe-execution: passed"
+        assert digest not in text and ENROLLED not in text  # neither the digest nor the identity ID is printed
+        assert "FAIL" not in text and "MISSING" not in text
+        provenance = (out / "provenance.txt").read_text().splitlines()
+        assert [line.split("=")[0] for line in provenance].count("reading_started_utc") == 1  # a reading, marked
+
+
+@pytest.mark.parametrize("kind, change, expected", [
+    ("E_M", "no_account", "account_not_locked"),
+    ("B", "readiness", "the guard's readiness"),
+    ("B", "ordinary_capture_entry", "face admitted for this validation run"),
+    ("B", "raw_face_dropped", "the raw capture"),
+    ("E_M", "given_digest", "the guard was given the frozen candidate's digest"),
+    ("E_M", "lives_dropped", "identity records"),
+    ("E_P", "launched_first", "face.yaml"),
+])
+def test_the_execution_check_fails_a_session_that_is_not_the_runs_own(pipeline, mods, tmp_path, accepted_scene,
+                                                                         f1_list, kind, change, expected) -> None:
+    digest = pipeline.frozen["prototypes_digest"]
+    run = {"B": pipeline.b, "E_M": pipeline.em, "E_P": pipeline.ep}[kind]
+    options = {}
+    if change == "no_account":
+        options["account"] = False
+    elif change == "readiness":
+        options["required"] = "face_windows"
+    elif change == "ordinary_capture_entry":  # the ordinary gallery capture's entry: never route B's raw capture run
+        options["face"] = {**mods.check.fc.WINDOWS_FACE, "capture": True}
+    elif change == "raw_face_dropped":
+        def fewer(lines):
+            out = []
+            for line in lines:
+                record = json.loads(line)
+                if record.get("identity") == "capture_raw":
+                    record["faces_kept"] -= 1
+                out.append(json.dumps(record))
+            return out
+        options["edit_lines"] = fewer
+    elif change == "given_digest":
+        options["given_digest"] = "0" * 64
+    elif change == "lives_dropped":
+        options["edit_lines"] = lambda lines: [line for line in lines if json.loads(line).get("identity") != "life"]
+    elif change == "launched_first":
+        options["launch_last"] = False
+    out = guarded(mods, run, kind, tmp_path, accepted_scene, digest=digest, **options)
+    ok, text = execution(mods, out, kind, f1_list, None if kind == "B" else pipeline.frozen)
+    assert not ok and text.splitlines()[-1].startswith("mpe-execution: not passed")
+    failed = [line for line in text.splitlines() if line.startswith(("FAIL", "MISSING"))]
+    assert failed and any(expected in line for line in failed), text
+    assert digest not in text and "0" * 64 not in text
+    if change == "no_account":  # nothing of the session is judged or shown: the account item alone
+        assert len(failed) == 1 and "STOP: enter the account first" in text
+        assert "status captures" not in text and "identity records" not in text
+        assert "reading_started_utc" not in (out / "provenance.txt").read_text()
+
+
+def test_the_builder_and_the_comparison_refuse_a_session_that_has_not_passed_or_another_config(
+        pipeline, mods, tmp_path, accepted_scene, f1_list, monkeypatch, capsys) -> None:
+    digest = pipeline.frozen["prototypes_digest"]
+    frozen = tmp_path / "frozen.json"
+    frozen.write_text(json.dumps(pipeline.frozen))
+    em = guarded(mods, pipeline.em, "E_M", tmp_path / "em", accepted_scene, digest=digest)
+    other = tmp_path / "other.yaml"
+    other.write_text(mods.check.rc.RANGE_CONFIG + "# changed\n")
+    # the comparison: another configuration, then a session without its account, then the session as run
+    assert mods.compare.main([str(em), "--config", str(other), "--frozen", str(frozen), "--f1", str(f1_list)]) == 1
+    assert "STOP: config_not_the_sessions" in capsys.readouterr().out
+    unaccounted = guarded(mods, pipeline.em, "E_M", tmp_path / "em2", accepted_scene, digest=digest, account=False)
+    config = unaccounted.parent / "face.yaml"
+    assert mods.compare.main([str(unaccounted), "--config", str(config), "--frozen", str(frozen),
+                              "--f1", str(f1_list)]) == 1
+    text = capsys.readouterr().out
+    assert "STOP: execution_not_passed" in text and "STOP: enter the account first" in text
+    assert "compared" not in text and "CHRONOLOGICAL" not in text and "KNOWN" not in text
+    mods.compare.main([str(em), "--config", str(em.parent / "face.yaml"), "--frozen", str(frozen),
+                       "--f1", str(f1_list)])
+    text = capsys.readouterr().out
+    assert "mpe-execution: passed" in text and "STOP" not in text and "CHRONOLOGICAL" in text
+    # the builder: refused before anything is read or listed
+    monkeypatch.setenv("SENTINEL_IDENTITY_PASSPHRASE", "a long synthetic passphrase")
+    b = guarded(mods, pipeline.b, "B", tmp_path / "b", accepted_scene, account=False)
+    root = tmp_path / "exp"
+    root.mkdir(mode=0o700)
+    common = ["build", "--session", str(b), "--raw", str(root / "raw"), "--identity-dir",
+              str(pipeline.base / "identity"), "--candidate", str(root / "candidate"), "--root", str(root),
+              "--f1", str(f1_list)]
+    assert mods.build.main(common + ["--config", str(other)]) == 1
+    assert "STOP: config_not_the_sessions" in capsys.readouterr().err
+    monkeypatch.setenv("SENTINEL_IDENTITY_PASSPHRASE", "a long synthetic passphrase")
+    assert mods.build.main(common + ["--config", str(b.parent / "face.yaml")]) == 1
+    seen = capsys.readouterr()
+    assert "STOP: execution_not_passed" in seen.err and "STOP: enter the account first" in seen.out
+    assert sorted(p.name for p in root.iterdir()) == []  # nothing reserved, listed or written

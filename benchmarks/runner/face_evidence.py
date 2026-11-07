@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 import face_account
+import mpe_schedule
 
 # Files written after the counts, or the counts themselves; never counted (face_check uses the same set).
 NOT_COUNTED = frozenset({"SHA256SUMS", "check.txt", "secret-counts-camera.txt", "secret-counts-identity.txt"})
@@ -42,7 +43,9 @@ CUE_NAMES = ("t0", "k1", "a", "e2", "k2", "stop", "look", "turn", "n2",  # F2's,
              "leave", "back", "pause", "resume",  # D95's live dashboard check
              "away", "faceoff", "faceon", "liveoff", "liveon", "ask", "sceneoff", "askoff", "sceneon", "chatoff",
              "chaton", "snapoff", "snapon",  # the feature-controls check's (D99, features_check)
-             *(name for name in face_account.RANGE_CUE_AT_S if name not in ("t0", "stop")))  # route B's range session
+             *(name for name in face_account.RANGE_CUE_AT_S if name not in ("t0", "stop")),  # route B's range session
+             *sorted({name for cues in mpe_schedule.SESSIONS.values() for name, _, _ in cues} -
+                     {"t0", "stop", *face_account.RANGE_CUE_AT_S}))  # the multi-pose comparison's B, E_M and E_P
 RECHECK_NAME = r"face-\d{8}T\d{6}Z-f1-[0-9a-f]{7}-\d{8}T\d{6}Z"  # ~/sentinel-runs/recheck/<run>-f1-<pin>-<UTC>
 SESSION_NAME = r"exp-\d{8}T\d{6}Z"  # an enrollment-experiment session (D91)
 CAPTURE_RECHECK_NAME = SESSION_NAME + r"-xc-[0-9a-f]{7}-\d{8}T\d{6}Z"  # ~/sentinel-runs/recheck/<session>-xc-<pin>-<UTC>
@@ -231,7 +234,8 @@ CHANNELS = vocab("telegram")
 GUARD_STATUS = Either((vocab("duration_stop", "child_exited", "cleanup_failed", "forced_stop", "guard_stop",
                              "ready_timeout", "operator_interrupt", "readiness_refused"), template(r"refused:(.+)")))
 STOP_BY = maybe(vocab("duration_elapsed", "guard_stop", "ready_timeout", "operator_interrupt", "readiness_refused"))
-READINESS = vocab("tracking_diagnostic", "landmark_diagnostic", "face_chat", "face_windows", "face_chat_windows")  # step5_guard.READINESS (80, 90, 103)
+READINESS = vocab("tracking_diagnostic", "landmark_diagnostic", "face_chat", "face_windows", "face_chat_windows",
+                  "face_windows_capture_raw", "face_windows_shadow")  # step5_guard.READINESS (80, 90, 103)
 CAPTURE_RESULT = Either((vocab("saved", "too_large", "not_json", "not_reached"), template(r"unavailable:(.+)")))
 LISTENER = {"port": INT, "family": vocab("tcp", "tcp6"), "scope": vocab("loopback", "any", "other")}
 
@@ -544,7 +548,7 @@ STARTUP = {  # the runtime's ``starting`` line (demo_runtime.assemble and cli)
     "face.detection": vocab("full_scale", "head_windows"),  # D88's runs; route B's (main_single)
     **nest("face.stage", WINDOW_STAGE),  # route B, only in main_single runs
     **nest("stream", STREAM_STARTUP),  # route B, only in main_single runs
-    "face.shadow": BOOL, "face.capture": BOOL, "face.capture_raw": BOOL, "face.shadow_digest": HEX64,  # D91, only in the enrollment experiment's runs
+    "face.shadow": BOOL, "face.capture": BOOL, "face.capture_raw": BOOL, "face.shadow_digest": HEX64, "face.lives": BOOL,  # D91, only in the enrollment experiment's runs
     **{f"face.continuity.{k}": NUM for k in CONTINUITY_POLICY},  # D97, only in --face-continuity runs
     **TRACKING_STARTUP,  # session 79, only in --tracking-diagnostic runs
     **LANDMARK_STARTUP,  # session 90, only in --face-landmark-diagnostic runs
@@ -563,7 +567,8 @@ STATUS_LINE = {  # cli.status_line
     "degraded[]": DEGRADED,
 }
 IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransition, ComparisonRecord
-    "identity": vocab("tick", "result", "transition", "comparison", "capture", "capture_raw", "break"), "schema": INT,
+    "identity": vocab("tick", "result", "transition", "comparison", "capture", "capture_raw", "break", "life"),
+    "schema": INT, "event": vocab("began", "ended"), "since_mono_ns": INT,  # runtime.TrackLife (route B shadow runs)
     "stream_epoch": INT, "cause": vocab(*CONTINUITY_CAUSES),  # D97: runtime.break_record (continuity runs only)
     "frame_seq": INT,
     "frame_mono_ns": INT, "tick": TICKS, "tracks[]": INT, "applied_mono_ns": INT, "outcome": OUTCOMES,
@@ -659,7 +664,7 @@ STARTING_SUMMARY = {  # step5_guard._starting_summary
     "face.detection": vocab("full_scale", "head_windows"),  # D88; route B
     **nest("face.stage", WINDOW_STAGE),  # route B: the guard keeps the startup's face entry
     **nest("stream", STREAM_STARTUP),  # route B: the guard keeps the startup's stream entry
-    "face.shadow": BOOL, "face.capture": BOOL, "face.capture_raw": BOOL, "face.shadow_digest": HEX64,  # D91
+    "face.shadow": BOOL, "face.capture": BOOL, "face.capture_raw": BOOL, "face.shadow_digest": HEX64, "face.lives": BOOL,  # D91
     **{f"face.continuity.{k}": NUM for k in CONTINUITY_POLICY},  # D97: the guard keeps the startup's face entry
     **TRACKING_STARTUP,  # session 79: likewise
     **LANDMARK_STARTUP,  # session 90: likewise
@@ -696,6 +701,7 @@ RESULT = JsonProfile({  # step5_guard.supervise
     "parameters.cues[].at_s": NUM, "parameters.cues[].name": vocab(*CUE_NAMES),
     "parameters.require_ready": maybe(READINESS),
     "parameters.scene_layers": LAYERS,  # session 116: only when --scene-layers was given
+    "parameters.shadow_digest": HEX64,  # the multi-pose comparison: only with face_windows_shadow
     # session 80: the readiness requirement's outcome on the starting line (step5_guard.readiness_problem's label)
     "readiness.required": READINESS, "readiness.met": BOOL, "readiness.reason": maybe(TEXT),
     "readiness.starting_after_s": SECONDS,
@@ -853,6 +859,8 @@ F2_PROVENANCE = KeyValueProfile({
     "f2_launch_utc": ISO, "boot_id": UUID, "commit": HEX40, "pin_commit": HEX40, "run": RUN_NAME,
     "f1_gate": vocab("passed"), "f1_basis": vocab("original", "accepted_recheck"), "f1_recheck": form(RECHECK_NAME),
     "f1_accepted_utc": ISO, "f1_identity_id": IDN, "account_sha256": HEX64,
+    # the multi-pose comparison's account step (mpe_account): when it was saved, and each reading after it
+    "account_saved_utc": ISO, "reading_started_utc": ISO,
     # D91's framing record: the capture block's fixed line, and the answer an evaluation block accepts before writing
     "framing_baseline": vocab("this_capture"), "framing_since_capture": vocab("none", "changed", "unsure"),
     # D91's evaluation sessions (experiment_launch.sh): the room light answered before the launch, and the capture gate
@@ -866,6 +874,10 @@ RUN_ERR = LogProfile((
     re.compile(r"[IWEF]\d{4} \d{2}:\d{2}:\d{2}\.\d+ +\d+ (.*)"),  # abseil's logger
 ))
 ACCOUNT = AccountProfile()
+MPE_ACCOUNT = KeyValueProfile({  # mpe_account.enter: the multi-pose comparison's account, names from the card only
+    "format": vocab("mpe-account-1"), "session": vocab("B", "E_M", "E_P"), "others_in_view": vocab("no", "yes", "unknown"),
+    "not_as_cued": Either((vocab("none"), form(r"[a-z0-9]+(:[a-z]+)?(,[a-z0-9]+(:[a-z]+)?)*"))),
+})
 
 # D80: alpha_load's records in a combined run (chat questions and a live viewer): numbers and fixed labels only; the
 # answers' text is never recorded. Every reason the runtime can give a question is declared as fixed text.
@@ -972,6 +984,7 @@ F1_PROFILES: dict[str, Any] = {"dryrun.json": ENROLL, "enroll.json": ENROLL, "li
                                "provenance.txt": F1_PROVENANCE, "audit.jsonl": AUDIT}
 F2_PROFILES: dict[str, Any] = {"result.json": RESULT, "guard.jsonl": GUARD, "run.jsonl": RUN, "run.err": RUN_ERR,
                                "account.txt": ACCOUNT, "provenance.txt": F2_PROVENANCE,
+                               "mpe-account.txt": MPE_ACCOUNT,  # the multi-pose comparison's account step
                                "chat-load.jsonl": CHAT_LOAD, "viewer.jsonl": VIEWER,  # a combined run's load (D80)
                                "grounding.jsonl": GROUNDING, "grounding-staging.txt": GROUNDING_STAGING,
                                "grounding-judgments.txt": GROUNDING_JUDGMENTS,  # the grounding check G (session 106)

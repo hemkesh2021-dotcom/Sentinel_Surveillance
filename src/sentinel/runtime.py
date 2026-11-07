@@ -240,6 +240,24 @@ class IdentityTransition:
                 "last_vote_age_ms": self.last_vote_age_ms, "reason": self.reason, "mono_ns": self.mono_ns}
 
 
+@dataclass(frozen=True)
+class TrackLife:
+    """A track life's start or end as the track table saw it at one step (validation runs only, route B's shadow
+    comparison): numbers only, no identity. ``since_mono_ns`` is the life's first measurement; ``mono_ns`` the step at
+    which the runtime found the life begun or ended (a life also ends when its track number starts a new life)."""
+
+    stream_epoch: int
+    track_id: int
+    event: str  # "began" or "ended"
+    since_mono_ns: int
+    mono_ns: int
+
+    def record(self, schema: int = IDENTITY_RECORD_SCHEMA) -> dict[str, object]:
+        return {"identity": "life", "schema": _schema(schema), "stream_epoch": self.stream_epoch,
+                "track_id": self.track_id, "event": self.event, "since_mono_ns": self.since_mono_ns,
+                "mono_ns": self.mono_ns}
+
+
 def break_record(item: Break, schema: int = IDENTITY_RECORD_SCHEMA) -> dict[str, object]:
     """D97: one break in a track's continuity (identity.continuity): the track, the cause and its frame's time; numbers
     and fixed labels only. Written only by runs with a continuity monitor."""
@@ -256,6 +274,7 @@ class CoreOutput:
     identity_transitions: tuple[IdentityTransition, ...] = ()
     face_result: FaceResultRecord | None = None  # set by on_face_outcome
     identity_breaks: tuple[Break, ...] = ()  # D97: breaks in track continuity found by this step
+    track_lives: tuple[TrackLife, ...] = ()  # validation runs with record_lives: lives begun or ended at this step
 
 
 class EdgeCore:
@@ -273,8 +292,13 @@ class EdgeCore:
         shadow: Any = None,
         capture: Any = None,
         continuity: ContinuityPolicy | None = None,
+        record_lives: bool = False,
     ) -> None:
         self._config = config
+        # Validation runs (route B's shadow comparison): each track life's start and end as records, read from the
+        # track table this step already consults; it decides nothing and changes no state
+        self._record_lives = record_lives
+        self._lives: dict[TrackKey, int] = {}
         # D91, the enrollment experiment (validation runs with the candidate only; assemble() decides): a working
         # gallery compared read only (identity.experiment.Shadow), or a capture collecting the one person's faces for
         # a working gallery written at shutdown (identity.experiment.Capture). Neither ever votes.
@@ -550,7 +574,9 @@ class EdgeCore:
                        for e in new)
         view = self._scene.view(live, now)
         tracks = self._tracks.current(live, now)
-        self._identities.retain_only({t.key: self._tracks.since(t.key) for t in tracks})
+        lives = {t.key: self._tracks.since(t.key) for t in tracks}
+        self._identities.retain_only(lives)
+        track_lives = self._track_lives(lives, now) if self._record_lives else ()
         if self._continuity is not None:
             self._continuity.retain_only(t.key for t in tracks)
         breaks, self._new_breaks = tuple(self._new_breaks), []
@@ -569,7 +595,19 @@ class EdgeCore:
             zones=tuple(zones),
             identity_transitions=transitions,
             identity_breaks=breaks,
+            track_lives=track_lives,
         )
+
+    def _track_lives(self, lives: dict[TrackKey, int], now: MonoInstant) -> tuple[TrackLife, ...]:
+        """Lives ended since the last step (gone, or their number began again), then lives begun (new, or again)."""
+        ended = [TrackLife(key.stream_epoch, key.track_id, "ended", since, now.ns)
+                 for key, since in sorted(self._lives.items(), key=lambda item: (item[0].stream_epoch, item[0].track_id))
+                 if lives.get(key) != since]
+        began = [TrackLife(key.stream_epoch, key.track_id, "began", since, now.ns)
+                 for key, since in sorted(lives.items(), key=lambda item: (item[0].stream_epoch, item[0].track_id))
+                 if self._lives.get(key) != since]
+        self._lives = dict(lives)
+        return tuple(ended + began)
 
     def _transitions(
         self, tracks: tuple[TrackObservation, ...], identities: dict[TrackKey, TrackIdentity], now: MonoInstant

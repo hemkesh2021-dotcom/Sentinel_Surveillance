@@ -52,6 +52,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+import mpe_account
 import mpe_manifest
 import mpe_schedule
 from sentinel.identity.experiment import (
@@ -80,10 +81,11 @@ class BuildRefused(Exception):
 
 
 def read_account(session: Path, kind: str, windows: set[str]) -> dict[str, Any]:
-    """The session's account (mpe_schedule.read_account), its fixed labels as refusals."""
+    """The session's locked account (mpe_account.verify: there, the session's, unchanged since it was saved, saved
+    before any reading began), its fixed labels as refusals."""
     try:
-        return mpe_schedule.read_account(session, kind, windows)
-    except mpe_schedule.AccountError as exc:
+        return mpe_account.verify(session, kind)
+    except mpe_account.AccountRefused as exc:
         raise BuildRefused(exc.label) from None
 
 
@@ -195,28 +197,33 @@ def build(session: Path, raw_dir: Path, identity_dir: Path, candidate_dir: Path,
                               "frozen": False, "raw_deleted": False}
     original_file = IdentityStore(identity_dir, sealer).gallery_path
     before = mpe_manifest.sha256_file(original_file) if original_file.is_file() else None
+    reserved = made = False  # made: this build reserved (and so owns) the candidate directory
     try:
         problem = _paths_problem(session, raw_dir, identity_dir, candidate_dir, root)
         if problem is not None:
             raise BuildRefused(problem)
         if len(mpe_schedule.B_WINDOWS) > MAX_PROTOTYPES:
             raise BuildRefused("too_many_windows")
+        try:  # the account step comes first: nothing of the session is read or shown before its locked account
+            mpe_account.require(session, "B")
+        except mpe_account.AccountRefused as exc:
+            raise BuildRefused(exc.label) from None
         manifest = mpe_manifest.Manifest(root)
         frozen_path = root / FROZEN_NAME
         listed = manifest.entries()
         if os.path.lexists(frozen_path) or frozen_path in listed:
             raise BuildRefused("frozen_record_exists")
-        if os.path.lexists(candidate_dir) or candidate_dir in listed:
+        if os.path.lexists(candidate_dir) or candidate_dir in listed or candidate_dir in manifest.reservations():
             raise BuildRefused("candidate_target_exists")
         if not os.path.lexists(raw_dir):
             raise BuildRefused("raw_capture_missing")
+        raw_entry = listed.get(raw_dir)  # the launch block reserved it before the run and claimed it after
+        if raw_entry is None or raw_entry.cls != "raw" or raw_entry.deleted or raw_dir / RAW_FILE not in listed:
+            raise BuildRefused("raw_capture_not_claimed")
         result, account, raw = _read_inputs(session, raw_dir, secret=secret, sealer=sealer)  # its own checks first
         if account["others_in_view"] != "no":
             raise BuildRefused("others_in_view")
         report["windows_excluded"] = sorted(account["not_as_cued"])
-        for path in (raw_dir, raw_dir / RAW_FILE):  # exactly what the runtime made, after open_raw_capture's checks
-            if path not in listed:
-                manifest.add(path, "raw", "sentinel run --face-capture-raw")
         original = IdentityStore(identity_dir, sealer).load(secret)
         if len(original.identities) != 1:
             raise BuildRefused("original_needs_one_identity")
@@ -251,10 +258,17 @@ def build(session: Path, raw_dir: Path, identity_dir: Path, candidate_dir: Path,
         if candidate_digest(again[0], again[1]) != digest:
             raise BuildRefused("build_not_reproducible")
         store = IdentityStore(candidate_dir, sealer)
+        manifest.reserve(candidate_dir, "candidate", "gallery", "mpe_build.py build")  # a kill from here: recoverable
+        reserved = made = True
         written, refused = write_working_gallery(store, secret, original, raw["consent_date"], prototypes, utc_now(),
                                                  faces_in_span=report["faces_in_windows"])
-        if os.path.lexists(candidate_dir):  # a new directory this build made: everything in it is the experiment's
-            manifest.add_tree(candidate_dir, "candidate", "mpe_build.py build")
+        if os.path.lexists(candidate_dir):  # what D91's writer left in the reserved directory, nothing else
+            manifest_claim = mpe_manifest.claim(manifest, candidate_dir, writer_exited=True)
+            if manifest_claim["unexpected"]:
+                raise BuildRefused("candidate_unexpected_files")
+        else:
+            mpe_manifest.close_absent(manifest, candidate_dir, writer_exited=True, recorded_written=False)
+        reserved = False
         if not written or refused is not None:
             raise BuildRefused(refused or "capture_write_failed")
         back = store.load(secret)
@@ -283,9 +297,31 @@ def build(session: Path, raw_dir: Path, identity_dir: Path, candidate_dir: Path,
     except Exception as exc:  # noqa: BLE001 - a fixed label only: an exception's text can hold a path or an ID
         report["refused"] = f"failed:{type(exc).__name__}"
     finally:
+        if report["outcome"] != "BUILT" and made:  # only what this build made; never an earlier build's candidate
+            report["candidate_removed"] = _remove_failed_candidate(candidate_dir, root, reserved,
+                                                                   (identity_dir, session))
         after = mpe_manifest.sha256_file(original_file) if original_file.is_file() else None
         report["original_unchanged"] = before is not None and before == after
     return report
+
+
+def _remove_failed_candidate(candidate_dir: Path, root: Path, reserved: bool, protected: tuple[Path, ...]) -> bool:
+    """A build that did not freeze its candidate removes what it wrote: only listed candidate entries under the
+    candidate's own directory (claimed first if the write stopped half-way), never anything protected. True when no
+    candidate directory is left."""
+    try:
+        manifest = mpe_manifest.Manifest(root)
+        if reserved and candidate_dir in manifest.reservations() and \
+                manifest.reservations()[candidate_dir].closed is None:
+            if os.path.lexists(candidate_dir):
+                mpe_manifest.claim(manifest, candidate_dir, writer_exited=True)
+            else:
+                mpe_manifest.close_absent(manifest, candidate_dir, writer_exited=True, recorded_written=False)
+        if candidate_dir in manifest.entries():
+            mpe_manifest.cleanup(manifest, ("candidate",), within=candidate_dir, protected=protected)
+    except Exception:  # noqa: BLE001 - a fixed outcome only; recovery (mpe_manifest recover) finishes the work
+        pass
+    return not os.path.lexists(candidate_dir)
 
 
 def verify_frozen(candidate_dir: Path, root: Path, identity_dir: Path, *, secret: Secret, sealer: Sealer) -> dict:
@@ -315,8 +351,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
     b = sub.add_parser("build")
-    for flag in ("--session", "--raw", "--identity-dir", "--candidate", "--root", "--config"):
+    for flag in ("--session", "--raw", "--identity-dir", "--candidate", "--root", "--config", "--f1"):
         b.add_argument(flag, type=Path, required=True)
+    for flag in ("--run", "--f1-identity-dir", "--recheck-root"):  # the F1 gate, as the launch block ran it
+        b.add_argument(flag, type=Path, default=None)
     v = sub.add_parser("verify-frozen")
     for flag in ("--candidate", "--root", "--identity-dir"):
         v.add_argument(flag, type=Path, required=True)
@@ -329,6 +367,21 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if result["frozen_candidate"] == "matches" else 1
     from sentinel.config import load_config
 
+    import mpe_check
+
+    session = args.session.absolute()
+    if not (session.parent / "face.yaml").is_file() or args.config.read_bytes() != (session.parent /
+                                                                                     "face.yaml").read_bytes():
+        print("STOP: config_not_the_sessions (--config must be the session's own face.yaml)", file=sys.stderr)
+        return 1
+    gate = (args.run, args.f1_identity_dir, args.recheck_root) if args.run else None
+    ok, lines = mpe_check.passed(session, args.f1, "B", None, gate)  # the execution check first (and the account)
+    if not ok:
+        print("\n".join(lines))
+        print("STOP: execution_not_passed (nothing is read or built from a session that has not passed)",
+              file=sys.stderr)
+        return 1
+    print(lines[-1])  # mpe-execution: passed
     threshold = load_config(args.config).identity.match_threshold
     report = build(args.session.absolute(), args.raw.absolute(), args.identity_dir.absolute(),
                    args.candidate.absolute(), args.root.absolute(), secret=secret, sealer=sealer,

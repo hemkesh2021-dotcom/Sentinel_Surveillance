@@ -279,6 +279,9 @@ class FaceRuntime:
     continuity: ContinuityPolicy | None = None  # D97: the continuity rule (--face-continuity, validation runs only)
     landmarks: bool = False  # session 90: the landmark diagnostic (--face-landmark-diagnostic, validation runs only)
     windows: WindowSettings | None = None  # route B: the head-window stage (main_single, validation runs only)
+    # route B's shadow comparison (the multi-pose comparison): each track life's start and end recorded, so a reading
+    # can replay both galleries with the runtime's own life boundaries; it decides nothing
+    lives: bool = False
 
     @property
     def experiment(self) -> str | None:
@@ -410,6 +413,7 @@ class DemoRuntime:
             shadow=face.shadow if face is not None else None,
             capture=face.capture if face is not None else None,
             continuity=face.continuity if face is not None else None,
+            record_lives=face.lives if face is not None else False,
         )
         self._identity_records: deque[dict[str, Any]] = deque()
         # A face validation run's records carry the diagnostic numbers (schema 3, D84 and D86), with the full-scale
@@ -788,6 +792,8 @@ class DemoRuntime:
                 self._live = current.state
                 if current.face_result is not None:
                     self._keep_record(current.face_result.record(self._identity_schema))
+                for life in current.track_lives:  # the lives this step began or ended, before its transitions
+                    self._keep_record(life.record(self._identity_schema))
                 for item in current.identity_breaks:  # D97: before the transitions they cause
                     self._keep_record(break_record(item, self._identity_schema))
                 for transition in current.identity_transitions:
@@ -1836,7 +1842,8 @@ def assemble(
                                **({"shadow": True} if options.face.shadow_dir is not None else {}),
                                # route B: which working gallery is compared (a digest of its prototypes, never a value),
                                # so the multi-pose reading can tie the run to the frozen candidate
-                               **({"shadow_digest": shadow.digest} if route_b and shadow is not None else {}),
+                               **({"shadow_digest": shadow.digest, "lives": True}
+                                  if route_b and shadow is not None else {}),
                                **({"capture": True} if options.face.capture_dir is not None else {}),
                                **({"capture_raw": True} if options.face.capture_raw else {}),
                                **({"continuity": config.identity.continuity_policy().numbers()}
@@ -1899,7 +1906,8 @@ def assemble(
                 face = FaceRuntime(worker, len(gallery.identities), options.face.validation_run,
                                    comparator is not None, options.face.detection, shadow, experiment_capture,
                                    config.identity.continuity_policy() if options.face.continuity else None,
-                                   options.face.landmark_diagnostic, windows)
+                                   options.face.landmark_diagnostic, windows,
+                                   lives=route_b and shadow is not None)
             startup["face_problem"] = face_problem
 
         slot = LatestFrame()

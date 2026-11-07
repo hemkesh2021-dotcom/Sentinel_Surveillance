@@ -146,7 +146,7 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
              duration: float = 600.0, combined: bool = False, analyze=None, comparator=None,
              captures=CAPTURES, detection: str = "deepface", shadow=None, experiment_capture=None,
              preview: bool = False, tracking=None, tracking_bounds=None, landmarks: bool = False,
-             route_b: bool = False, scene: bool = True) -> Path:
+             route_b: bool = False, scene: bool = True, lives: bool = False) -> Path:
     """Run the real runtime through ``script`` and write the F2 directory as the package's blocks would.
 
     ``combined`` (D78): with the live view, incident snapshots and chat in a validation run as well, each used during
@@ -226,7 +226,7 @@ def simulate(root: Path, startup: dict, *, script=SCRIPT, away_face=None, fps: f
                           scene=scene_runtime if scene else None,
                           face=FaceRuntime(worker, 1, True, comparator is not None, detection, shadow,
                                            experiment_capture, landmarks=landmarks,
-                                           windows=WindowSettings() if route_b else None),
+                                           windows=WindowSettings() if route_b else None, lives=lives),
                           enrollment=GALLERY.enrollment(), status_refresh_s=0.0,
                           tracking_diagnostic=((tracking_bounds or DiagnosticBounds()) if tracking is not None
                                                else None), **extra)

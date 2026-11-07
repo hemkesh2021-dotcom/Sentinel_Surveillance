@@ -193,3 +193,59 @@ def read_account(session: Path, kind: str, allowed: set[str]) -> dict:
     if not listed <= allowed or "" in listed:
         raise AccountError("account_invalid")
     return {"others_in_view": fields["others_in_view"], "not_as_cued": listed}
+
+
+# ---------------------------------------------------------------- the launch blocks' lines and the people's actions
+
+# Status captures within each run (names from face_evidence.STATUS_NAMES; "end" between the stop bell and the end)
+STATUS_AT = {"B": ((30, "c1"), (200, "c2"), (345, "end")),
+             "E_M": ((30, "c1"), (600, "c2"), (1100, "c3"), (1205, "end")),
+             "E_P": ((30, "c1"), (470, "c2"), (915, "end"))}
+WHO = {"B": "you (the enrolled person)", "E_M": "you (the enrolled person)", "E_P": "the participant"}
+
+
+def cue_lines(kind: str) -> list[str]:
+    """The guard's --cue-at values, SECONDS:NAME:TEXT, in schedule order."""
+    return [f"{at}:{name}:{text}" for name, at, text in SESSIONS[kind]]
+
+
+def instructions(kind: str) -> list[str]:
+    """Action by action, from T0: when, who, where and what. The guard prints each line as it comes (and the optional
+    spoken cues say it): nobody memorizes a card or starts a stopwatch."""
+    who = WHO[kind]
+    out = [f"Session {kind}: {duration_s(SESSIONS[kind]) // 60}:{duration_s(SESSIONS[kind]) % 60:02d} from T0. "
+           f"In view: {who} only. Everyone else stays at the out-of-view spot for the whole run.",
+           "Before T0: the person in view stands at the out-of-view spot; nobody types; no face on any screen in view."]
+    for name, at, text in SESSIONS[kind]:
+        out.append(f"[{at // 60}:{at % 60:02d}] {name}: {text}")
+    out.append("After the stop bell: wait for the run to end by itself, then the account step (mpe_account.py enter) "
+               "before anything else is shown.")
+    return out
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="the multi-pose comparison's schedules, for the launch blocks")
+    parser.add_argument("what", choices=("cues", "names", "duration", "status", "instructions", "digest"))
+    parser.add_argument("kind", choices=tuple(SESSIONS))
+    args = parser.parse_args(argv)
+    if args.what == "cues":
+        print("\n".join(cue_lines(args.kind)))
+    elif args.what == "names":
+        print(",".join(name for name, _, _ in SESSIONS[args.kind]))
+    elif args.what == "duration":
+        print(duration_s(SESSIONS[args.kind]))
+    elif args.what == "status":
+        print("\n".join(f"{at}:{name}" for at, name in STATUS_AT[args.kind]))
+    elif args.what == "digest":
+        print(SCHEDULE_DIGESTS[args.kind])
+    else:
+        print("\n".join(instructions(args.kind)))
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(main())

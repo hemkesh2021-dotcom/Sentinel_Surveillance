@@ -58,6 +58,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -84,7 +85,9 @@ STOP_GRACE_S = 90.0
 KILL_GRACE_S = 5.0
 READY_TIMEOUT_S = 300.0
 READINESS = ("tracking_diagnostic", "landmark_diagnostic", "face_chat",  # --require-ready values
-             "face_windows", "face_chat_windows")  # route B (session 116, part 17): main_single validation runs
+             "face_windows", "face_chat_windows",  # route B (session 116, part 17): main_single validation runs
+             "face_windows_capture_raw", "face_windows_shadow")  # the multi-pose comparison's B and E runs
+ROUTE_B_READINESS = ("face_windows", "face_chat_windows", "face_windows_capture_raw", "face_windows_shadow")
 # What the landmark diagnostic's startup marker must be before T0 (sentinel.identity.landmarks.marker(); kept equal by a
 # test; this script imports nothing from the runtime).
 LANDMARK_MARKER = {"version": 1, "score": 0.9, "min_eye_spacing_px": 4.0, "persons_max": 4}
@@ -97,6 +100,10 @@ FACE_CHAT_FACE = {"validation_run": True, "identities_enrolled": 1}
 WINDOWS_FACE = {**FACE_CHAT_FACE, "detection": "head_windows",
                 "stage": {"kind": "head_windows", "side": 640, "margin": 0.5, "max_windows": 4, "head_fraction": 0.4,
                           "duplicate_iou": 0.3, "context": 0.5, "explained_share": 0.5}}
+# The multi-pose comparison (kept equal to the runtime's by a test): B's raw capture, and E's shadow comparison with
+# its working gallery's prototypes digest (given as --shadow-digest, the frozen candidate's) and its track lives.
+WINDOWS_CAPTURE_RAW_FACE = {**WINDOWS_FACE, "capture": True, "capture_raw": True}
+SHADOW_DIGEST = re.compile(r"[0-9a-f]{64}")
 STREAM_MAIN_SINGLE, WORKING_SIZE, BYTETRACK_LOST_TRACK_FRAMES = "main_single", [640, 480], 30
 CHAT_VALIDATION_AVAILABLE = {
     "state": "available",
@@ -289,7 +296,8 @@ def _starting_summary(startup: dict) -> dict[str, Any]:
     }
 
 
-def readiness_problem(required: str | None, startup: Any, scene_layers: str = SCENE_LAYERS) -> str | None:
+def readiness_problem(required: str | None, startup: Any, scene_layers: str = SCENE_LAYERS,
+                      shadow_digest: str | None = None) -> str | None:
     """None when ``startup`` (the runtime's ``starting`` line's ``startup``) meets ``required``, else a fixed label
     naming what is missing; None without a requirement. ``tracking_diagnostic``: no ``detector_problem`` and the
     marker ``face.tracking_diagnostic.tracker`` a mapping with every TRACKING_SETTING_KEYS entry a number
@@ -306,17 +314,28 @@ def readiness_problem(required: str | None, startup: Any, scene_layers: str = SC
         return f"detector_problem:{problem}"
     face = startup.get("face")
     route = stream_route(startup)  # route B: each requirement names the profile it reads; another is refused
-    if route != ("main_single" if required in ("face_windows", "face_chat_windows") else "sub"):
+    if route != ("main_single" if required in ROUTE_B_READINESS else "sub"):
         return f"stream_profile_{route}"
-    if required in ("face_windows", "face_chat_windows"):  # route B: the face on head windows, the stream as configured
+    if required in ROUTE_B_READINESS:  # route B: the face on head windows, the stream as configured
         if startup.get("face_problem") is not None:
             return f"face_problem:{startup.get('face_problem')}"
-        if face != WINDOWS_FACE:
-            return "face_not_the_windows_validation_run" if isinstance(face, dict) else "face_missing"
+        expected = {"face_windows_capture_raw": WINDOWS_CAPTURE_RAW_FACE,
+                    "face_windows_shadow": {**WINDOWS_FACE, "shadow": True, "shadow_digest": shadow_digest,
+                                            "lives": True}}.get(required, WINDOWS_FACE)
+        if required == "face_windows_shadow" and isinstance(face, dict) and face.get("shadow_digest") != shadow_digest \
+                and {k: v for k, v in face.items() if k != "shadow_digest"} == \
+                {k: v for k, v in expected.items() if k != "shadow_digest"}:
+            return "shadow_digest_not_the_frozen_candidate"  # another working gallery: stopped before T0
+        if face != expected:
+            if not isinstance(face, dict):
+                return "face_missing"
+            return {"face_windows_capture_raw": "face_not_the_raw_capture_run",
+                    "face_windows_shadow": "face_not_the_shadow_run"}.get(required,
+                                                                         "face_not_the_windows_validation_run")
         problem = _stream_problem(startup.get("stream"))
         if problem is not None:
             return problem
-        if required == "face_windows":
+        if required in ("face_windows", "face_windows_capture_raw", "face_windows_shadow"):
             return None
         face = FACE_CHAT_FACE  # the rest exactly as face_chat
         required = "face_chat"
@@ -450,7 +469,8 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
               status_at: tuple[tuple[float, str], ...] = (), step4_headroom: bool = False, backend=None,
               interrupted=lambda: False, cues: tuple[tuple[float, str, str], ...] = (),
               say=lambda text: (sys.stderr.write(text + "\n"), sys.stderr.flush()),
-              require_ready: str | None = None, scene_layers: str | None = None) -> dict:
+              require_ready: str | None = None, scene_layers: str | None = None,
+              shadow_digest: str | None = None) -> dict:
     backend = backend or SystemBackend()
     result: dict[str, Any] = {"schema_version": 1, "mode": "step5_guard", "status": None,
                               "parameters": {"duration_s": duration_s, "from_launch": from_launch,
@@ -459,7 +479,8 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
                                              "status_at": [{"at_s": at, "name": name} for at, name in status_at],
                                              "cues": [{"at_s": at, "name": name} for at, name, _ in cues],
                                              "require_ready": require_ready,
-                                             **({} if scene_layers is None else {"scene_layers": scene_layers})},
+                                             **({} if scene_layers is None else {"scene_layers": scene_layers}),
+                                             **({} if shadow_digest is None else {"shadow_digest": shadow_digest})},
                               "limits": {"pressure_stop_bytes": oc.PRESSURE_STOP, "mem_free_floor_bytes": oc.FREE_FLOOR,
                                          "mem_available_floor_bytes": oc.AVAILABLE_FLOOR,
                                          "swap_counters": "unchanged", "max_sample_gap_s": 0.5}}
@@ -526,7 +547,8 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
                         continue
                     if isinstance(item, dict) and item.get("run") == "starting":
                         problem = readiness_problem(require_ready, item.get("startup"),
-                                                    SCENE_LAYERS if scene_layers is None else scene_layers)
+                                                    SCENE_LAYERS if scene_layers is None else scene_layers,
+                                                    shadow_digest)
                         if require_ready is not None:
                             result["readiness"] = {"required": require_ready, "met": problem is None,
                                                    "reason": problem, "starting_after_s": round(now - launch, 3)}
@@ -695,8 +717,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scene-layers", type=_layers, default=None, metavar="N/N",
                         help="face_chat: the scene server's fully offloaded layer count for the selected model set "
                              f"(default {SCENE_LAYERS}); recorded under parameters and required by the readings")
+    parser.add_argument("--shadow-digest", default=None, metavar="SHA256",
+                        help="face_windows_shadow (required with it, refused otherwise): the frozen candidate's "
+                             "prototypes digest; a run comparing another working gallery stops before T0")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="-- then the sentinel run command")
     args = parser.parse_args(argv)
+    if (args.require_ready == "face_windows_shadow") != (args.shadow_digest is not None):
+        parser.error("--shadow-digest goes with --require-ready face_windows_shadow, and only with it")
+    if args.shadow_digest is not None and not SHADOW_DIGEST.fullmatch(args.shadow_digest):
+        parser.error("--shadow-digest is 64 lowercase hexadecimal characters")
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command:
         parser.error("give the command after --")
@@ -711,7 +740,8 @@ def main(argv: list[str] | None = None) -> int:
                            ready_timeout_s=args.ready_timeout_s, stop_grace_s=args.stop_grace_s,
                            status_at=tuple(args.status_at), step4_headroom=args.step4_headroom,
                            interrupted=lambda: flag["set"], cues=tuple(args.cue_at),
-                           require_ready=args.require_ready, scene_layers=args.scene_layers)
+                           require_ready=args.require_ready, scene_layers=args.scene_layers,
+                           shadow_digest=args.shadow_digest)
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)

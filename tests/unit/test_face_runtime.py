@@ -1559,6 +1559,53 @@ def test_the_raw_capture_is_refused_on_the_substream_and_needs_its_directory(fac
         start(face_setup, capture=MAIN, backend_class=WindowBackend, face_extra={"capture_raw": True})
 
 
+def _guard():
+    import importlib
+    import sys
+
+    runners = str(Path(__file__).resolve().parents[2] / "benchmarks" / "runner")
+    sys.path.insert(0, runners)
+    try:
+        return importlib.import_module("step5_guard")
+    finally:
+        sys.path.remove(runners)
+
+
+def test_the_guard_admits_each_multi_pose_run_only_with_its_own_requirement(face_setup) -> None:
+    """The real startups of a raw capture run and a shadow run on route B against the guard's two readiness values:
+    each meets only its own, the shadow run only with the frozen candidate's digest, and route B's plain values still
+    refuse both (nothing loosened)."""
+    from sentinel.identity.experiment import prototypes_digest
+
+    guard = _guard()
+    def started(**kwargs):  # each startup alone: the assembly's database released before the next one
+        assembly, _ = start(face_setup, capture=MAIN, backend_class=WindowBackend, **kwargs)
+        assembly.database.close()
+        return assembly
+
+    raw = started(face_extra={"capture_dir": face_setup.tmp / "raw-new", "capture_consent_date": "2026-11-07",
+                              "capture_raw": True},
+                  stores={face_setup.tmp / "raw-new": SimpleNamespace(directory=face_setup.tmp / "raw-new",
+                                                                      sealer=None)})
+    shadow = started(face_extra={"shadow_dir": WORK}, stores={WORK: Store(GALLERY)})
+    plain = started()
+    digest = prototypes_digest(GALLERY.identities[0].prototypes)
+    assert raw.startup["face"] == guard.WINDOWS_CAPTURE_RAW_FACE  # kept equal to the runtime's
+    assert shadow.startup["face"] == {**guard.WINDOWS_FACE, "shadow": True, "shadow_digest": digest, "lives": True}
+    problem = guard.readiness_problem
+    assert problem("face_windows_capture_raw", raw.startup) is None
+    assert problem("face_windows_shadow", shadow.startup, shadow_digest=digest) is None
+    assert problem("face_windows_shadow", shadow.startup, shadow_digest="0" * 64) == \
+        "shadow_digest_not_the_frozen_candidate"
+    assert problem("face_windows_capture_raw", shadow.startup) == "face_not_the_raw_capture_run"
+    assert problem("face_windows_shadow", raw.startup, shadow_digest=digest) == "face_not_the_shadow_run"
+    assert problem("face_windows_shadow", plain.startup, shadow_digest=digest) == "face_not_the_shadow_run"
+    for startup in (raw.startup, shadow.startup):  # the plain route B values refuse both: nothing loosened
+        assert problem("face_windows", startup) == "face_not_the_windows_validation_run"
+        assert problem("face_chat_windows", startup) == "face_not_the_windows_validation_run"
+    assert problem("face_windows", plain.startup) is None
+
+
 def test_main_single_refuses_an_inside_share_below_the_windows_precondition(face_setup) -> None:
     with pytest.raises(StartupRefused, match="stream_profile_geometry"):
         start(face_setup, capture=MAIN, backend_class=WindowBackend, identity={"min_face_inside": 0.5})
