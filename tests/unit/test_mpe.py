@@ -1105,6 +1105,10 @@ def test_an_aborted_capture_is_claimed_only_after_the_runtime_exits_and_its_temp
     assert not mods.manifest.runtime_exited({"child": {"returncode": 0}},  # the package's own launch
                                             processes=[[b"/env/bin/python", b"-m", b"sentinel.cli", b"run", b"f.yaml"]])
     assert mods.manifest.runtime_exited({"child": {"returncode": 0}}, processes=[[b"bash"]])
+    refused = {"status": "refused:initial_headroom_refused"}  # the guard launched nothing: no child to wait for
+    assert mods.manifest.runtime_exited(refused, processes=[[b"bash"]])
+    assert not mods.manifest.runtime_exited(refused, processes=[[b"python", b"-m", b"sentinel.cli", b"run"]])
+    assert not mods.manifest.runtime_exited({"status": "duration_stop"}, processes=[[b"bash"]])  # launched, no exit
     result = mods.manifest.claim(manifest, raw, writer_exited=True)
     assert result["listed"] == [str(raw), str(raw / ".raw-capture.sealed.4242.tmp")]
     assert result["unexpected"] == [str(raw / "notes.txt")]

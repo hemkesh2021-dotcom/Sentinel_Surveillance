@@ -389,8 +389,10 @@ def _process_argvs() -> list[list[bytes]]:
 def runtime_exited(result: dict | None, processes: list[list[bytes]] | None = None) -> bool:
     """The writer of a session's raw capture (the runtime) has exited: the guard recorded the child's exit, and no
     runtime is left on this machine (its own process group may outlive a killed guard): neither the ``sentinel``
-    script's ``run`` nor ``python -m sentinel.cli run``, the package's own launch."""
-    if not result or (result.get("child") or {}).get("returncode") is None:
+    script's ``run`` nor ``python -m sentinel.cli run``, the package's own launch. A guard that refused before the launch
+    (status ``refused:...``) started no runtime: only the process check applies."""
+    refused = isinstance(result, dict) and str(result.get("status") or "").startswith("refused:")
+    if not refused and (not result or (result.get("child") or {}).get("returncode") is None):
         return False
     for argv in (_process_argvs() if processes is None else processes):
         if b"run" in argv and any(a.endswith(b"sentinel") or a == b"sentinel.cli" for a in argv):
