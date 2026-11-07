@@ -14,6 +14,7 @@ import json
 import math
 import os
 import random
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -785,9 +786,11 @@ def test_a_working_copy_is_listed_and_its_cleanup_never_reaches_the_original_or_
     manifest = mods.manifest.Manifest(root)
     copy = root / "work" / "e_m-identity"
     made = mods.manifest.make_working_copy(manifest, original, copy, "test")
-    assert [(e.kind, e.cls) for e in made] == [("dir", "working_copy"), ("file", "working_copy"),
-                                                ("file", "working_copy")]
+    assert [(e.kind, e.cls) for e in made] == [("dir", "working_copy"), ("dir", "working_copy"),
+                                                ("file", "working_copy"), ("file", "working_copy")]
     assert IdentityStore(copy, sealer).load(SECRET) == GALLERY  # the session runs on the copy, the same enrollment
+    inbox = os.lstat(copy / "inbox")  # an identity directory's empty private inbox, as the F1 gate checks it
+    assert stat.S_ISDIR(inbox.st_mode) and stat.S_IMODE(inbox.st_mode) == 0o700 and not any((copy / "inbox").iterdir())
     # a sealed session inside the root, listed (wrongly) as a working copy: under its seal, never deleted
     sealed = root / "sessions" / "e_m"
     sealed.mkdir(parents=True)
@@ -802,7 +805,7 @@ def test_a_working_copy_is_listed_and_its_cleanup_never_reaches_the_original_or_
                      "2026-11-07T00:00:00+00:00", f"{info.st_dev}:{info.st_ino}", before["gallery.sealed"])
     result = mods.manifest.cleanup(manifest, ("working_copy",))  # no protected list at all: still never reached
     assert not copy.exists() and sorted(result["deleted"]) == sorted(
-        [str(copy / "gallery.sealed"), str(copy / "audit.jsonl"), str(copy)])
+        [str(copy / "gallery.sealed"), str(copy / "audit.jsonl"), str(copy / "inbox"), str(copy)])
     assert result["left_sealed"] == [str(sealed / "run.jsonl")] and (sealed / "run.jsonl").exists()
     assert result["left_outside_root"] == [str(original / "gallery.sealed")]
     after = {name: hashlib.sha256((original / name).read_bytes()).hexdigest() for name in before}
@@ -819,7 +822,7 @@ def test_a_protected_path_is_never_deleted_even_when_listed_inside_the_root(mods
     mods.manifest.make_working_copy(manifest, original, copy, "test")
     result = mods.manifest.cleanup(manifest, ("working_copy",), protected=(copy,))
     assert sorted(result["left_protected"]) == sorted([str(copy), str(copy / "gallery.sealed"),
-                                                       str(copy / "audit.jsonl")])
+                                                       str(copy / "audit.jsonl"), str(copy / "inbox")])
     assert (copy / "gallery.sealed").exists() and result["deleted"] == []
     result = mods.manifest.cleanup(manifest, ("working_copy",), protected=(copy / "audit.jsonl",))
     assert (copy / "audit.jsonl").exists() and str(copy) in result["left_protected"]  # nor what holds a protected path

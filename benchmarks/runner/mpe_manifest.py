@@ -49,7 +49,7 @@ WRITERS = {
     "gallery": ({"gallery.sealed", ".gallery.sealed.staged", ".gallery.sealed.previous", ".gallery.lock",
                  "audit.jsonl", "inbox"},  # D91's writer (IdentityStore.commit), and the vault's temporaries
                 re.compile(r"\.\.?gallery\.sealed(\.staged)?\.\d+\.tmp")),
-    "working_copy": ({"gallery.sealed", "audit.jsonl"}, re.compile(r"(?!)")),  # make_working_copy (O_EXCL, no temp)
+    "working_copy": ({"gallery.sealed", "audit.jsonl", "inbox"}, re.compile(r"(?!)")),  # make_working_copy (no temp)
 }
 
 
@@ -405,7 +405,8 @@ WORKING_COPY_FILES = ("gallery.sealed", "audit.jsonl")  # what a session's worki
 
 def make_working_copy(manifest: Manifest, original_dir: Path, copy_dir: Path, creator: str) -> list[Entry]:
     """A session's working copy of the original enrollment: its sealed gallery (and its audit log, when there is one),
-    byte for byte, in a new private directory inside the experiment root, listed as working_copy. The original is only
+    byte for byte, and an empty private inbox (an identity directory has one: the F1 gate checks it), in a new private
+    directory inside the experiment root, listed as working_copy. The original is only
     read, and its files must be unchanged after the copy. ManifestError when a path is relative or not canonical, the
     original lies inside the root or holds it, the copy is not strictly inside the root, overlaps the original or
     exists already, the original has no sealed gallery, or the copy is not identical."""
@@ -428,6 +429,8 @@ def make_working_copy(manifest: Manifest, original_dir: Path, copy_dir: Path, cr
     manifest.reserve(copy_dir, "working_copy", "working_copy", creator)  # a kill from here on leaves it recoverable
     copy_dir.mkdir(mode=0o700)
     copy_dir.chmod(0o700)
+    (copy_dir / "inbox").mkdir(mode=0o700)
+    (copy_dir / "inbox").chmod(0o700)
     for name in names:
         data = (original_dir / name).read_bytes()
         fd = os.open(copy_dir / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
