@@ -70,7 +70,14 @@ def _poses(spot: str) -> tuple[str, ...]:
     return SEAT_POSES if spot == "s" else MARK_POSES
 
 
-def _build(blocks: tuple[tuple, ...]) -> tuple[tuple[tuple[str, int, str], ...], tuple[PoseWindow, ...], tuple[Hold, ...]]:
+STOP_TEXT = "All done. Come back to the Mac and type nothing; the run stops by itself in 15 s."
+# E_P: every face of the session counts as the participant's, so nobody comes into view until the run has ended
+STOP_TEXT_PARTICIPANT = ("All done. Everyone stays out of the camera's view: the run stops by itself in 15 s; come back "
+                         "one minute after this bell.")
+
+
+def _build(blocks: tuple[tuple, ...], stop_text: str = STOP_TEXT) -> tuple[tuple[tuple[str, int, str], ...],
+                                                                         tuple[PoseWindow, ...], tuple[Hold, ...]]:
     cues: list[tuple[str, int, str]] = [("t0", 0, "Session started. Leave the camera's view now and stay out of it "
                                                   "until your next bell (1:00).")]
     windows: list[PoseWindow] = []
@@ -111,8 +118,7 @@ def _build(blocks: tuple[tuple, ...]) -> tuple[tuple[tuple[str, int, str], ...],
                                                      "your next bell"))
                 holds.append(Hold(stem, who, spot, kind, f"{stem}go", f"{stem}hold", f"{stem}end"))
                 t = last_end + (OUT_S if n < count or last else TRANSITION_S)
-    cues.append(("stop", last_end + OUT_S, "All done. Come back to the Mac and type nothing; the run stops by itself "
-                                           "in 15 s."))
+    cues.append(("stop", last_end + OUT_S, stop_text))
     return tuple(cues), tuple(windows), tuple(holds)
 
 
@@ -121,7 +127,8 @@ EM_CUES, _, EM_HOLDS = _build((("holds", "m", "s", "facing", HOLDS), ("holds", "
                                ("holds", "m", "4", "natural", HOLDS), ("holds", "m", "5", "facing", HOLDS),
                                ("holds", "m", "5", "natural", HOLDS)))
 EP_CUES, EP_WINDOWS, EP_HOLDS = _build((("pose", "p", "s"), ("pose", "p", "4"), ("pose", "p", "5"),
-                                        ("holds", "p", "4", "natural", HOLDS), ("holds", "p", "5", "natural", HOLDS)))
+                                        ("holds", "p", "4", "natural", HOLDS), ("holds", "p", "5", "natural", HOLDS)),
+                                       STOP_TEXT_PARTICIPANT)
 SESSIONS = {"B": B_CUES, "E_M": EM_CUES, "E_P": EP_CUES}
 
 
@@ -210,16 +217,25 @@ def cue_lines(kind: str) -> list[str]:
 
 
 def instructions(kind: str) -> list[str]:
-    """Action by action, from T0: when, who, where and what. The guard prints each line as it comes (and the optional
-    spoken cues say it): nobody memorizes a card or starts a stopwatch."""
+    """Action by action, from T0: when, who, where and what, numbered bell by bell. The guard prints each line as its
+    bell rings (and the optional spoken cues say it); without them the printed sheet is followed one numbered line
+    per bell: nobody memorizes it or starts a stopwatch."""
     who = WHO[kind]
-    out = [f"Session {kind}: {duration_s(SESSIONS[kind]) // 60}:{duration_s(SESSIONS[kind]) % 60:02d} from T0. "
-           f"In view: {who} only. Everyone else stays at the out-of-view spot for the whole run.",
-           "Before T0: the person in view stands at the out-of-view spot; nobody types; no face on any screen in view."]
-    for name, at, text in SESSIONS[kind]:
-        out.append(f"[{at // 60}:{at % 60:02d}] {name}: {text}")
-    out.append("After the stop bell: wait for the run to end by itself, then the account step (mpe_account.py enter) "
-               "before anything else is shown.")
+    length = duration_s(SESSIONS[kind])
+    out = [f"Session {kind}: {length // 60}:{length % 60:02d} from T0. In view: {who} only. Everyone else stays at "
+           "the out-of-view spot for the whole run.",
+           "At each bell, do the next numbered line (the spoken cue, when on, says the same words)."]
+    if kind == "E_P":
+        out.append("Before T0: the participant waits at the out-of-view spot; whoever pastes the launch block leaves "
+                   "the camera's view at once, while the models load, and stays out until one minute after the stop "
+                   "bell; nobody types; no face on any screen in view.")
+    else:
+        out.append("Before T0: the person in view pastes the launch block and waits at the Mac for the first bell; "
+                   "nobody types; no face on any screen in view.")
+    for number, (name, at, text) in enumerate(SESSIONS[kind], 1):
+        out.append(f"{number:2d}. [{at // 60}:{at % 60:02d}] {name}: {text}")
+    out.append("After the stop bell: the run ends by itself; then the account step (mpe_account.py enter) before "
+               "anything else is shown.")
     return out
 
 

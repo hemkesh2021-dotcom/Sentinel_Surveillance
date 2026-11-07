@@ -285,7 +285,9 @@ def cleanup(manifest: Manifest, classes: tuple[str, ...], within: Path | None = 
 def claim(manifest: Manifest, path: Path, *, writer_exited: bool) -> dict:
     """List what the writer of an open reservation left there, once that writer has exited (never while it may still
     write): the directory and, below it, only regular files and directories named as that writer names them (never
-    a link, never opened). Anything else is reported and left. Closes the reservation as claimed."""
+    a link, never opened). Anything else is reported and left. Closes the reservation as claimed. Resumable: a claim
+    interrupted after some of its lines keeps them when each still names the same kind, inode and SHA-256 (a listed
+    child that no longer does is reported, never relisted or deleted)."""
     path = Path(path)
     reservation = manifest.reservations().get(path)
     if reservation is None or reservation.closed is not None:
@@ -296,7 +298,10 @@ def claim(manifest: Manifest, path: Path, *, writer_exited: bool) -> dict:
     if not stat.S_ISDIR(info.st_mode):
         raise ManifestError("a reserved path is a directory, never a link or a file")
     names, temporary = WRITERS[reservation.writer]
-    listed = [str(manifest.add(path, reservation.cls, reservation.creator).path)]
+    earlier = manifest.entries()
+    if _listed_once(manifest, path, reservation, earlier) is None:
+        raise ManifestError("an interrupted claim's entry for the reserved directory no longer matches it")
+    listed = [str(path)]
     unexpected = []
     for current, dirs, files in os.walk(path, followlinks=False):
         for name in sorted(dirs) + sorted(files):
@@ -304,13 +309,27 @@ def claim(manifest: Manifest, path: Path, *, writer_exited: bool) -> dict:
             relative = child.relative_to(path)
             child_info = os.lstat(child)
             known = (str(relative) in names or temporary.fullmatch(str(relative)) is not None) and len(relative.parts) == 1
-            if known and (stat.S_ISREG(child_info.st_mode) or stat.S_ISDIR(child_info.st_mode)):
-                listed.append(str(manifest.add(child, reservation.cls, reservation.creator).path))
+            if known and (stat.S_ISREG(child_info.st_mode) or stat.S_ISDIR(child_info.st_mode)) \
+                    and _listed_once(manifest, child, reservation, earlier) is not None:
+                listed.append(str(child))
             else:
                 unexpected.append(str(child))
         dirs[:] = [d for d in dirs if d in names and len(Path(current, d).relative_to(path).parts) == 1]
     manifest._append("closed", str(path), manifest._utc_now(), "claimed")
     return {"listed": listed, "unexpected": unexpected}
+
+
+def _listed_once(manifest: Manifest, path: Path, reservation: Reservation, earlier: dict[Path, Entry]) -> Path | None:
+    """List ``path`` for a claim, or keep the line an interrupted claim already wrote for it when it still names the
+    same kind, inode and (for a file) SHA-256; None when such a line no longer matches."""
+    entry = earlier.get(path)
+    if entry is None:
+        return manifest.add(path, reservation.cls, reservation.creator).path
+    if entry.deleted or entry.cls != reservation.cls or not _same(entry, os.lstat(path)):
+        return None
+    if entry.kind == "file" and entry.sha256 != sha256_file(path):
+        return None
+    return path
 
 
 def close_absent(manifest: Manifest, path: Path, *, writer_exited: bool, recorded_written: bool) -> None:
@@ -333,7 +352,8 @@ def status(manifest: Manifest, sessions: Path | None = None, prefix: str = "mp-"
            frozen: Path | None = None) -> dict:
     """What an abandoned or unfinished session left open, for the session-start block to STOP on: reservations not
     yet claimed or closed, raw captures and working copies listed and not deleted, a candidate listed and not
-    deleted while no frozen record names it, and session folders of this package not sealed."""
+    deleted while no frozen record names it, and session folders with the prefix not sealed, whichever package made
+    them (the package's blocks tell its own from another's by the pin each session records)."""
     reservations = manifest.reservations()
     entries = manifest.entries()
     frozen_ok = frozen is not None and frozen.is_file()

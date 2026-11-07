@@ -33,7 +33,8 @@ excluded). It is an analysis of the holds, not what the runtime did.
 **The participant (E_P):** every compared face of the session, from T0 to the run's end (nothing of theirs left out):
 candidate match votes and KNOWN (REJECTED if any), the original's (a finding about the current system, reported
 separately), and exposure per window that gave the frozen candidate a prototype, over the builder's own window (from
-POSE_SETTLE_S after the pose bell; NOT_EXERCISED where the participant gave no compared face there).
+POSE_SETTLE_S after the pose bell; NOT_EXERCISED where the participant gave no compared face there; EXCLUDED where
+the account lists the window as not done as cued, its faces still counted in the participant's totals).
 
 **Not decided here:** the gain bar and the facing-loss limit are the maintainer's (PENDING); this reading reports the
 numbers and draws no SUPPORTED or NOT_SUPPORTED verdict. One enrolled and one non-enrolled person, one session each:
@@ -79,6 +80,8 @@ class Key:
     track_id: int
 
 
+EXCLUDED = "excluded_not_as_cued"  # an E_P window the account lists as not done as cued
+
 class Replay:
     """The production resolver driven by recorded decisions ("match", "unknown" or None per compared face) and, in
     the lives mode, by the runtime's own recorded track lives."""
@@ -103,8 +106,12 @@ class Replay:
         self.lives[key] = since_ns
 
     def end_life(self, key: Key, at_ns: int) -> None:
-        """The life is no longer current at this step: a reported state ends as "cleared", as the runtime records it."""
+        """Lives mode: the life is no longer current at this step. Its reported state is settled at the step's decision,
+        as EdgeCore._transitions does: a number with no current life then reports "cleared"; a number that began a
+        new life at the same step reports its old state going to the new life's (no clear)."""
         self.lives.pop(key, None)
+
+    def _cleared(self, key: Key, at_ns: int) -> None:
         before = self.reported.pop(key, None)
         if before is not None:
             self.changes.append((at_ns, key, before[0], "cleared", None, None, None))
@@ -124,7 +131,8 @@ class Replay:
 
     def clear(self, key: Key, at_ns: int) -> None:
         """Legacy mode: a recorded clear taken as an input."""
-        self.end_life(key, at_ns)
+        self.lives.pop(key, None)
+        self._cleared(key, at_ns)
         self.sync()
 
     def evaluate(self, now_ns: int) -> None:
@@ -144,6 +152,8 @@ class Replay:
                 self.reported.pop(key, None)
             else:
                 self.reported[key] = value
+        for key in [k for k in self.reported if k not in self.lives]:  # no current life: the runtime's clear
+            self._cleared(key, now_ns)
 
     def known_ns(self, start: int, end: int, keys=None) -> int:
         """Time in [start, end) during which any (chosen) track was KNOWN (the union over tracks)."""
@@ -317,7 +327,7 @@ def replay(data: dict, policy: IdentityPolicy, which: str, mode: str = "lives") 
             else:
                 run.start_life(key, payload["since_mono_ns"])
         elif kind == "clear":
-            run.end_life(payload, t)
+            run.clear(payload, t)
         if index + 1 < len(events) and events[index + 1][0] == t:
             continue  # the rest of this step first: the runtime decides once per step, after all of it
         run.sync()
@@ -499,17 +509,21 @@ def compare(session: Path, policy: IdentityPolicy, frozen: dict | None) -> dict[
         # a KNOWN needs match votes: any candidate match vote rejects, with or without a valid replay
         out["rejected"] = out["participant"]["candidate_match_votes"] > 0 or bool(
             out["participant"]["candidate_known_entries"])
-        exposure = {}
+        exposure: dict[str, int | str | None] = {}
         by_name = {w.name: w for w in mpe_schedule.EP_WINDOWS}
         for name, _ in (frozen or {}).get("windows", []):
             window = by_name.get("p" + name[1:])
-            if window is None or window.name in not_as_cued:
+            if window is None:
                 exposure[name] = None
+                continue
+            if window.name in not_as_cued:  # the account's exclusion, never read as "no face there"
+                exposure[name] = EXCLUDED
                 continue
             start, end = printed[window.bell] + settle, printed[window.until]  # the builder's window
             exposure[name] = sum(1 for f in faces if start <= f["frame"] < end)
         out["exposure"] = exposure
         out["not_exercised"] = sorted(n for n, v in exposure.items() if not v)
+        out["excluded_windows"] = sorted(n for n, v in exposure.items() if v == EXCLUDED)
     return out
 
 
@@ -569,7 +583,9 @@ def print_report(out: dict[str, Any]) -> None:
         print(f"NON-ENROLLED original gallery (the current system, reported apart): match votes "
               f"{p['baseline_match_votes']}, KNOWN entries {entries}")
         for name, count in out["exposure"].items():
-            print(f"  EXPOSURE {name}: {'NOT_EXERCISED' if not count else f'{count} compared faces'}")
+            print(f"  EXPOSURE {name}: " + ("EXCLUDED (the account: not done as cued; its faces still count in the "
+                                             "participant's totals)" if count == EXCLUDED else
+                                             "NOT_EXERCISED" if not count else f"{count} compared faces"))
     print(f"PENDING {out['pending']} (the maintainer's decision): no SUPPORTED or NOT_SUPPORTED verdict is drawn")
     print("LIMIT one enrolled and one non-enrolled person, one session each: k of n, never a rate; holds seconds "
           "apart are not independent; zero candidate matches is not general false-accept safety")

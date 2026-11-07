@@ -307,7 +307,8 @@ def test_the_build_freezes_one_deployable_candidate_of_at_most_eight_prototypes_
     assert [w for w, _ in frozen["windows"]] == ["bs:lens", "bs:down", "b4:lens", "b4:left", "b4:right", "b5:lens",
                                                  "b5:left", "b5:right"]
     assert set(frozen) == {"format", "digest", "prototypes_digest", "prototypes", "windows", "faces_per_window",
-                           "faces_in_windows", "windows_excluded", "built_utc"}  # no vector anywhere in the record
+                           "faces_in_windows", "windows_excluded", "built_utc", "candidate"}  # no vector anywhere
+    assert frozen["candidate"] == pipeline.candidate.name  # the directory it was built in, inside the root
     assert all(isinstance(name, str) and isinstance(t, int) for name, t in frozen["windows"])  # names, frame times
 
 
@@ -315,15 +316,26 @@ def test_verify_frozen_matches_only_the_exact_candidate(pipeline, mods, sealer, 
     root = pipeline.base / "experiment"
     assert mods.build.verify_frozen(pipeline.candidate, root, pipeline.base / "identity", secret=SECRET,
                                     sealer=sealer)["frozen_candidate"] == "matches"
-    other = IdentityStore(tmp_path / "other", sealer)
-    other.ensure_directory()
+    # another root whose frozen record names its own candidate directory: the same prototypes match there, and a
+    # change of 1e-6 in one value of one prototype does not (only the prototypes differ between the two)
+    other_root = tmp_path / "other-root"
+    other_root.mkdir(mode=0o700)
+    frozen = json.loads((root / mods.build.FROZEN_NAME).read_text())
+    (other_root / mods.build.FROZEN_NAME).write_text(json.dumps({**frozen, "candidate": "candidate-x"}))
     document = IdentityStore(pipeline.candidate, sealer).load(SECRET)
+    same = IdentityStore(other_root / "candidate-x", sealer)
+    same.ensure_directory()
+    same.save(document, SECRET)
+    verify = lambda directory, at: mods.build.verify_frozen(directory, at, pipeline.base / "identity", secret=SECRET,
+                                                            sealer=sealer)["frozen_candidate"]
+    assert verify(other_root / "candidate-x", other_root) == "matches"
+    assert verify(pipeline.candidate, other_root) == "differs"  # not the directory the record names
     changed = list(document.identities[0].prototypes)
     changed[3] = unit(tuple(x + (1e-6 if i == 7 else 0.0) for i, x in enumerate(changed[3])))
-    other.save(document.model_copy(update={"identities": (document.identities[0].model_copy(
+    (other_root / "candidate-x" / "gallery.sealed").unlink()
+    same.save(document.model_copy(update={"identities": (document.identities[0].model_copy(
         update={"prototypes": tuple(changed)}),)}), SECRET)
-    assert mods.build.verify_frozen(tmp_path / "other", root, pipeline.base / "identity", secret=SECRET,
-                                    sealer=sealer)["frozen_candidate"] == "differs"
+    assert verify(other_root / "candidate-x", other_root) == "differs"
 
 
 def test_the_comparison_reports_gains_and_losses_on_the_same_faces_from_full_precision_decisions(pipeline,
@@ -382,6 +394,19 @@ def test_the_participants_session_reports_candidate_matches_as_rejected_and_its_
     assert p["candidate_match_votes"] > 0 and out["rejected"]
     assert set(out["exposure"]) == {w for w, _ in pipeline.frozen["windows"]}
     assert all(count and count > 0 for count in out["exposure"].values()) and out["not_exercised"] == []
+    assert out["excluded_windows"] == []
+
+
+def test_an_e_p_window_the_account_excludes_is_reported_as_excluded_never_as_no_face(pipeline, mods, tmp_path,
+                                                                                     capsys) -> None:
+    session = copy_session(pipeline.ep, tmp_path / "ep")
+    reenter(session, "E_P", not_as_cued="p4:left")
+    out = mods.compare.compare(session, POLICY, pipeline.frozen)
+    assert out["exposure"]["b4:left"] == mods.compare.EXCLUDED and out["excluded_windows"] == ["b4:left"]
+    assert out["not_exercised"] == []  # the participant did give faces there: an exclusion, not an absence
+    mods.compare.print_report(out)
+    line = next(l for l in capsys.readouterr().out.splitlines() if "EXPOSURE b4:left" in l)
+    assert "EXCLUDED" in line and "NOT_EXERCISED" not in line
 
 
 def test_the_reader_refuses_a_session_that_is_not_an_evaluation_schedule(pipeline, mods) -> None:
@@ -873,9 +898,9 @@ BETWEEN = vec(1.0, 1.0)  # as close to both enrolled identities: the original's 
 NEAR_A = vec(1.0, 0.1)  # the first identity's, for the original; the candidate (its prototype BETWEEN) matches it too
 
 
-def gap_run(mods, root: Path, shadow, *, lives: bool, script=None, face_at=None) -> Path:
+def gap_run(mods, root: Path, shadow, *, lives: bool, script=None, face_at=None, fps: float = 4.0) -> Path:
     """Track 7 in view, a one-face first life, gone 1.5 s (longer than the 1.0 s track expiry: its life ends), back
-    under the same number with faces every tick."""
+    under the same number with faces every tick. ``fps``: the frame (and step) rate."""
     script = script or ((60, 66, "facing", 7), (66, 67.5, "absent", None), (67.5, 85, "facing", 7))
 
     def analyze_for(t0):
@@ -892,7 +917,7 @@ def gap_run(mods, root: Path, shadow, *, lives: bool, script=None, face_at=None)
                                                       "detection": "head_windows", "shadow": True,
                                                       **({"lives": True} if lives else {})}}}
     out = mods.sim.simulate(root, startup, script=script, analyze=analyze_for, duration=90.0, route_b=True,
-                            scene=False, shadow=shadow, lives=lives)
+                            scene=False, shadow=shadow, lives=lives, fps=fps)
     (out / "result.json").write_text(json.dumps({"cues": []}))
     return out
 
@@ -961,6 +986,32 @@ def test_a_stale_vote_that_moves_only_the_candidate_is_caught_by_the_lives_never
     stripped = copy_session_records(run, tmp_path / "stripped", drop_lives=True)
     data = mods.compare.read_session(stripped)
     assert mods.compare.lives_problem(data) == "life_records_missing"
+
+
+def test_a_number_that_returns_at_the_first_step_past_its_expiry_is_replayed_as_the_runtime_records_it(
+        mods, two_identities, tmp_path) -> None:
+    """Frames 0.34 s apart: the person, KNOWN, is undetected for two frames and back under the same number at the first
+    step 1.02 s after the last measurement, with no step between that saw the expiry. The runtime ends the life and
+    begins a new one at that step, and records the old state going to the new life's (KNOWN to UNRESOLVED), no clear.
+    The replay must predict exactly that, or every replay number of a whole session would be withheld."""
+    fps = 1 / 0.34
+    frames = [n / fps for n in range(1, int(90 * fps) + 1)]
+    last = max(t for t in frames if t < 66.0)
+    back = next(t for t in frames if t - last > 1.0)
+    assert back - last < 1.1 and not any(last < t < back and t - last > 1.0 for t in frames)
+    script = ((60, 66, "facing", 7), (66, back - 0.01, "absent", None), (back - 0.01, 85, "facing", 7))
+    run = gap_run(mods, tmp_path / "on", two_identities, lives=True, script=script, fps=fps,
+                  face_at=lambda t: NEAR_A if 60.5 <= t < 66 or t >= back else None)
+    sevens = [r for r in records(run, "life") if r["track_id"] == 7]
+    ended = next(r for r in sevens if r["event"] == "ended")
+    assert any(r["event"] == "began" and r["mono_ns"] == ended["mono_ns"] for r in sevens)  # the same step
+    at_return = [t for t in records(run, "transition") if t["mono_ns"] == ended["mono_ns"] and t["track_id"] == 7]
+    assert [(t["from"], t["to"]) for t in at_return] == [("known", "unresolved")]  # no clear recorded
+    data = mods.compare.read_session(run)
+    assert mods.compare.lives_problem(data) is None
+    check = mods.compare.check_replay(mods.compare.replay(data, POLICY, "baseline", "lives"), data["transitions"],
+                                      clears=True)
+    assert check["unmatched"] == check["extra"] == 0 and check["recorded"] == len(data["transitions"]) >= 3
 
 
 def copy_session_records(run: Path, target: Path, *, drop_lives: bool) -> Path:
@@ -1121,6 +1172,33 @@ def test_an_aborted_capture_is_claimed_only_after_the_runtime_exits_and_its_temp
     assert unchanged(original, before) and (sealed / "run.jsonl").exists()
 
 
+@pytest.mark.parametrize("changed", [False, True])
+def test_a_claim_killed_part_way_is_resumed_by_recovery_and_a_changed_file_is_never_relisted(mods, sealer, tmp_path,
+                                                                                          changed) -> None:
+    original, before, root, sealed = recovery_setup(sealer, tmp_path)
+    manifest = mods.manifest.Manifest(root)
+    raw = root / "raw-mp-1"
+    manifest.reserve(raw, "raw", "raw", "test")
+    raw.mkdir(mode=0o700)
+    (raw / "raw-capture.sealed").write_bytes(b"sealed bytes")
+    manifest.add(raw, "raw", "test")  # the claim's first two lines, then the kill: no "closed" line
+    manifest.add(raw / "raw-capture.sealed", "raw", "test")
+    assert manifest.reservations()[raw].closed is None
+    if changed:  # the listed file is no longer the one listed (another inode, other bytes)
+        (raw / "raw-capture.sealed").unlink()
+        (raw / "raw-capture.sealed").write_bytes(b"other bytes")
+    result = mods.manifest.recover(manifest, writer_exited=True, protected=(original, sealed))
+    assert result["claimed"] == [str(raw)] and manifest.reservations()[raw].closed == "claimed"
+    if changed:
+        assert result["unexpected"] == [str(raw / "raw-capture.sealed")]  # reported, never relisted or deleted
+        assert (raw / "raw-capture.sealed").read_bytes() == b"other bytes"
+        assert str(raw) in result["cleanup"]["left_not_empty"]
+    else:
+        assert not raw.exists() and sorted(result["cleanup"]["deleted"]) == [str(raw), str(raw / "raw-capture.sealed")]
+    assert mods.manifest.status(manifest)["open_reservations"] == []
+    assert unchanged(original, before) and (sealed / "run.jsonl").exists()
+
+
 def test_a_reservation_is_once_inside_the_root_and_closes_as_absent_only_when_nothing_was_recorded_written(
         mods, sealer, tmp_path) -> None:
     original, before, root, sealed = recovery_setup(sealer, tmp_path)
@@ -1168,6 +1246,12 @@ def test_a_failed_build_removes_only_the_candidate_it_wrote(pipeline, mods, seal
     report = mods.build.build(session, raw, pipeline.base / "identity", root / "candidate", root, secret=SECRET,
                               sealer=sealer, match_threshold=POLICY.match_threshold)
     assert report["refused"] == "candidate_target_exists" and (root / "candidate" / "gallery.sealed").exists()
+    # a later attempt in its own directory builds: the failed attempt's reservation never blocks it
+    monkeypatch.undo()
+    report = mods.build.build(session, raw, pipeline.base / "identity", root / "candidate-2", root, secret=SECRET,
+                              sealer=sealer, match_threshold=POLICY.match_threshold)
+    assert report["outcome"] == "BUILT"
+    assert json.loads((root / mods.build.FROZEN_NAME).read_text())["candidate"] == "candidate-2"
 
 
 def test_recovery_after_a_killed_build_and_an_abandoned_session_claims_cleans_and_keeps_what_it_must(

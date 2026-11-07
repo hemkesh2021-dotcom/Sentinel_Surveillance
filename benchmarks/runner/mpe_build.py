@@ -278,7 +278,8 @@ def build(session: Path, raw_dir: Path, identity_dir: Path, candidate_dir: Path,
         frozen = {"format": FROZEN_FORMAT, "digest": digest, "prototypes_digest": prototypes_digest(read_back),
                   "prototypes": len(prototypes), "windows": [[name, t] for name, t in windows],
                   "faces_per_window": counts, "faces_in_windows": report["faces_in_windows"],
-                  "windows_excluded": report["windows_excluded"], "built_utc": utc_now().isoformat(timespec="seconds")}
+                  "windows_excluded": report["windows_excluded"], "built_utc": utc_now().isoformat(timespec="seconds"),
+                  "candidate": candidate_dir.name}  # its directory in the root: each build attempt has its own name
         write_private_atomic(frozen_path, (json.dumps(frozen, sort_keys=True, indent=1) + "\n").encode("ascii"))
         manifest.add(frozen_path, "output", "mpe_build.py build")
         report.update(outcome="BUILT", frozen=True, digest=digest)
@@ -325,8 +326,9 @@ def _remove_failed_candidate(candidate_dir: Path, root: Path, reserved: bool, pr
 
 
 def verify_frozen(candidate_dir: Path, root: Path, identity_dir: Path, *, secret: Secret, sealer: Sealer) -> dict:
-    """For an evaluation session's gate: the candidate in ``candidate_dir`` is exactly the frozen one (its prototypes'
-    digest with the frozen windows), opens as a shadow of the original, and holds at most MAX_PROTOTYPES prototypes."""
+    """For an evaluation session's gate: the candidate in ``candidate_dir`` is exactly the frozen one (the directory
+    its record names in the root, its prototypes' digest with the frozen windows), opens as a shadow of the original,
+    and holds at most MAX_PROTOTYPES prototypes."""
     frozen = json.loads((Path(root) / FROZEN_NAME).read_text("ascii"))
     if frozen.get("format") != FROZEN_FORMAT:
         return {"frozen_candidate": "invalid_record"}
@@ -336,6 +338,7 @@ def verify_frozen(candidate_dir: Path, root: Path, identity_dir: Path, *, secret
     same_identity = [i.identity_id for i in document.identities] == [i.identity_id for i in original.identities]
     digest = candidate_digest([tuple(w) for w in frozen["windows"]], prototypes)
     ok = digest == frozen["digest"] and prototypes_digest(prototypes) == frozen.get("prototypes_digest") \
+        and Path(candidate_dir).parent == Path(root) and Path(candidate_dir).name == frozen.get("candidate") \
         and len(prototypes) == frozen["prototypes"] <= MAX_PROTOTYPES and same_identity \
         and document.compatibility.first_difference(original.compatibility) is None
     return {"frozen_candidate": "matches" if ok else "differs", "prototypes": len(prototypes)}
