@@ -959,8 +959,11 @@ def _identity_counts(live: dict[str, Any]) -> str | None:
     counts = live.get("identity") if live else None
     if not counts:
         return None
-    return (f"known {counts.get('known')} (fresh {counts.get('fresh')}, retained {counts.get('retained')}) · "
+    line = (f"known {counts.get('known')} (fresh {counts.get('fresh')}, retained {counts.get('retained')}) · "
             f"unknown {counts.get('unknown')} · uncertain {counts.get('uncertain')} · unresolved {counts.get('unresolved')}")
+    if "associations_retained" in counts:  # part 28: kept apart from the raw counts above, which say the latest evidence
+        line += f" · associations retained from an earlier match {counts.get('associations_retained')}"
+    return line
 
 
 # ---------------------------------------------------------------- recognition (D95)
@@ -997,8 +1000,70 @@ def _seconds_text(ms: object) -> str | None:
     return f"{ms / 1000:.1f} s" if isinstance(ms, int) and not isinstance(ms, bool) and ms >= 0 else None
 
 
-def _vote_time(published: object, vote_age_ms: object) -> str:
-    """When the newest face result on a track was observed: its age at the report, and the clock time that implies."""
+# Track retention (session 116, part 28; PROPOSED, --identity-retention runs only): an established identity kept on a
+# continuously followed track, shown apart from the latest face evidence (identity.retention)
+RETAINED_ASSOCIATION = "Known — retained from an earlier match"
+RETENTION_FLAG = "Experimental · track retention"
+ASSOCIATION_EVIDENCE = {  # identity.retention.Evidence, in plain words
+    "none": "no face result since that match",
+    "match": "the newest face result matched the same enrolled identity, but more consistent results are needed to confirm it now",
+    "unknown": "the newest face result matched nobody enrolled",
+    "different_identity": "the newest face result matched a different enrolled identity",
+    "too_small": "the newest face was too small to weigh against this identity",
+    "low_quality": "the newest face was too unclear to compare",
+    "margin": "the newest face was too close to more than one enrolled identity to choose",
+    "incompatible": "the newest face could not be compared (a different model made the enrollment)",
+    "no_face": "no face was visible on this track in the newest result",
+    "not_analysed": "this track was not analysed in the newest face result",
+}
+ASSOCIATION_ENDED = {  # identity.retention.EndReason, in plain words
+    "continuity_gap": "the track was lost for a moment (a detection gap)",
+    "continuity_jump": "the track's box jumped",
+    "continuity_overlap": "another detection overlapped this track",
+    "ambiguous_ownership": "a face could have belonged to more than one person",
+    "track_not_current": "the track ended",
+    "new_track_life": "this track number began a new track",
+    "stream_epoch_change": "the video stream reconnected",
+    "video_not_live": "the video was not live",
+    "recognition_disabled": "face recognition was turned off",
+    "max_since_match": "the time limit after its last successful match was reached",
+    "sustained_contradiction": "reliable face results kept contradicting it",
+    "conflicting_identity": "consistent faces matched a different enrolled identity",
+}
+
+
+def _association_text(association: Mapping[str, Any], retention: object) -> str:
+    """A retained association's row: its last successful match, the newest evidence in plain words and its age, the
+    counts toward the ends when there are any, and the bound. A retained identity says retained; a current one never
+    comes here. The contradicting count states the whole rule, votes and span: a count at its number with the span not
+    yet reached has not ended it. Numbers and fixed labels only (no identity ID, D61)."""
+    evidence = ASSOCIATION_EVIDENCE.get(str(association.get("evidence")), "the newest face result is not known")
+    evidence_age = _seconds_text(association.get("evidence_age_ms"))
+    bound_ms = association.get("max_since_match_ms")
+    minutes = _number(bound_ms / 60_000) if isinstance(bound_ms, int) and not isinstance(bound_ms, bool) else None
+    bound = f"{minutes} min" if minutes else "–"
+    span = _number(retention.get("contradiction_span_s")) if isinstance(retention, Mapping) else None
+    limits = (f" Reliable contradicting results so far: {_e(association.get('contradictions'))} (it ends at "
+              f"{_e(association.get('contradiction_limit'))} or more spanning at least {_e(span or '–')} s)."
+              if association.get("contradictions") else "")
+    limits += (f" {_e(association.get('conflicts'))} of {_e(association.get('conflict_limit'))} consecutive results "
+               "for a different enrolled identity." if association.get("conflicts") else "")
+    since = f" ({_e(evidence_age)} ago)" if evidence_age else ""
+    return ("Kept on this track from an earlier match, not confirmed by the latest faces. "
+            f"Latest evidence{since}: {_e(evidence)}.{limits} Kept only while this track stays continuous, at most "
+            f"{bound} after the last match.")
+
+
+def _association_ended_text(ended: Mapping[str, Any]) -> str:
+    """Why a track that had an association no longer has one, in one line: the most recent end on this track's life."""
+    reason = ASSOCIATION_ENDED.get(str(ended.get("reason")), str(ended.get("reason")))
+    age = _seconds_text(ended.get("age_ms"))
+    return f" An earlier established identity on this track ended{f' {_e(age)} ago' if age else ''}: {_e(reason)}."
+
+
+def _vote_time(published: object, vote_age_ms: object, label: str = "Newest face result") -> str:
+    """When the newest face result on a track (or, for a retained association, its last successful match, part 28)
+    was observed: its age at the report, and the clock time that implies."""
     age = _seconds_text(vote_age_ms)
     if age is None:
         return "No face result on this track yet."
@@ -1009,7 +1074,7 @@ def _vote_time(published: object, vote_age_ms: object) -> str:
             when = f" (about {_clock(observed.isoformat())})"
         except (ValueError, TypeError, OverflowError):
             when = ""
-    return f"Newest face result {age} before this report{when}."
+    return f"{label} {age} before this report{when}."
 
 
 def _person(entry: Mapping[str, Any], published: object, policy: Mapping[str, Any]) -> str:
@@ -1017,12 +1082,20 @@ def _person(entry: Mapping[str, Any], published: object, policy: Mapping[str, An
     face result was observed. A current match is a current claim (D71); a retained identity says it is retained."""
     track, epoch = entry.get("track_id"), entry.get("stream_epoch")
     state, basis = entry.get("state"), entry.get("basis")
+    # Part 28: track retention, in --identity-retention runs only: a retained association wins over the raw state's
+    # wording below (only that wording: the raw state itself stays in the status and the data attributes)
+    association = entry.get("association") if isinstance(entry.get("association"), Mapping) else None
+    ended = entry.get("association_ended") if isinstance(entry.get("association_ended"), Mapping) else None
+    retained_association = association is not None and association.get("state") == "retained"
     ttl = _number(policy.get("vote_ttl_s"))
     continuity = policy.get("continuity") if isinstance(policy.get("continuity"), Mapping) else None
     fresh_s = _number(policy.get("fresh_window_s"))
     needed = _number(policy.get("confirmations"))
     who = "an enrolled identity"  # the status carries no identity ID (D61, D95)
-    if state == "known" and basis == "fresh":
+    if retained_association:
+        verdict = _badge("done", RETAINED_ASSOCIATION, glyph="clock")
+        what = _association_text(association, policy.get("retention"))
+    elif state == "known" and basis == "fresh":
         verdict = _claim(_badge("ok", "Known · current match", glyph="check"),
                          _badge("off", "Was a current match", glyph="clock"))
         what = f"Matches {who} ({_e(entry.get('reason'))}; the newest within {_e(fresh_s or '–')} s)."
@@ -1052,11 +1125,29 @@ def _person(entry: Mapping[str, Any], published: object, policy: Mapping[str, An
         measured = _seconds_text(entry.get("last_measured_age_ms"))
         track_text += f"; position predicted, last detected {measured or '–'} before"
     rule = f" Recognition needs {_e(needed)} consistent face results." if needed and state == "unresolved" else ""
+    if not retained_association and ended is not None:  # part 28: why no association stands now (one line)
+        rule += _association_ended_text(ended)
+        if state == "known":  # after an end the badge above can only be the raw rule, on votes it still counts
+            rule += " The state shown is the raw recognition rule, still counting face results from before that end."
+    # Part 28: only in --identity-retention runs, so every other run's rows stay exactly as they were
+    # Part 28: a retained association's time line is its last successful match, not the newest raw vote's (which may
+    # have expired while the identity is still retained); after an end, a track with no current vote is not one that
+    # never had a result
+    if retained_association:
+        time_line = _vote_time(published, association.get("last_match_age_ms"), "Last successful match")
+    elif ended is not None and entry.get("vote_age_ms") is None:
+        time_line = "No current face result on this track since that end."
+    else:
+        time_line = _vote_time(published, entry.get("vote_age_ms"))
+    data = ("" if "association" not in entry else
+            f' data-association="{_e(association.get("state") if association else "none")}"'
+            + (f' data-association-ended="{_e(ended.get("reason"))}"' if ended is not None else "")
+            + (f' data-evidence="{_e(association.get("evidence"))}"' if association else ""))
     return (f'<li class=person data-key="p-{_e(epoch)}-{_e(track)}" data-state="{_e(state)}" '
-            f'data-basis="{_e(basis or "none")}"><div class=who><strong>{icon("user")}Track {_e(track)}</strong>'
+            f'data-basis="{_e(basis or "none")}"{data}><div class=who><strong>{icon("user")}Track {_e(track)}</strong>'
             f"<span class=muted>stream epoch {_e(epoch)} · {_e(track_text)}</span></div>"
             f"<div class=verdict>{verdict}</div><p class=what>{what}{rule}</p>"
-            f"<p class=when>{_vote_time(published, entry.get('vote_age_ms'))}</p></li>")
+            f"<p class=when>{time_line}</p></li>")
 
 
 def _faces(status: Mapping[str, Any]) -> str:
@@ -1069,6 +1160,10 @@ def _faces(status: Mapping[str, Any]) -> str:
     # D92: shown wherever face recognition runs before its validation (a --face-validation run, the only way it can run
     # while its admission is PENDING_VALIDATION); an admitted run would carry no flag.
     flag = f"<span class=flag>{icon('flask')}{FACE_FLAG}</span>" if _face_experimental(components) else ""
+    retention = (face.get("policy") or {}).get("retention")
+    retention = retention if isinstance(retention, Mapping) else None
+    if retention is not None:  # part 28: this run also keeps an established identity on its track, experimentally
+        flag += f"<span class=flag>{icon('flask')}{RETENTION_FLAG}</span>"
     if state is None:
         return (f"<p class=empty>{icon('clock')}<span><strong>Not reported yet.</strong> The runtime has not reported "
                 "face recognition yet.</span></p>")
@@ -1131,10 +1226,42 @@ def _faces(status: Mapping[str, Any]) -> str:
         f"newest of them is at most {_e(_number(policy.get('fresh_window_s')) or '–')} s old at the report; otherwise "
         f"the result is {kept}. A track that ends takes its result with it; a new "
         "track starts unresolved. Contradicting results make it uncertain at once.</p>"
+        f"{_retention_paragraph(retention, policy)}"
         "<p class=muted>Thresholds, tracking and expiry are the runtime's own and are not changed by this page. Face "
         "data, similarities, names and identity IDs are never shown here.</p>"),
         key="faces")
     return f"{lede}{context}{people}{extra}{report}{rules}"
+
+
+def _retention_paragraph(retention: Mapping[str, Any] | None, policy: Mapping[str, Any]) -> str:
+    """Part 28: the track-retention rule, explained apart from raw face recognition, with its limitation stated."""
+    if retention is None:
+        return ""
+    seconds = retention.get("max_since_match_s")
+    minutes = _number(seconds / 60) if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) else None
+    width = retention.get("min_face_width_fraction")
+    percent = _number(round(width * 100, 3)) if isinstance(width, float) else None
+    gap, step, overlap = (_number(retention.get(name)) or "–" for name in ("max_gap_s", "min_step_iou", "overlap_iou"))
+    return (
+        "<p><strong>Track retention (experimental, separate from the recognition rule above; PROPOSED values, not "
+        f"validated).</strong> A track whose identity was established ({_e(_number(policy.get('confirmations')) or '–')} "
+        "consistent matches after its last break) keeps that identity, labelled retained from an earlier match, while "
+        "the track stays continuous and for at most "
+        f"{_e(minutes or '–')} min after its last successful match of that identity: this is not whole-track retention. "
+        f"It ends at once at a break in tracking (a detection gap over {_e(gap)} s, its box overlapping its previous box "
+        f"by less than {_e(step)}, or another detection overlapping it by at least {_e(overlap)}; overlap is intersection "
+        "over union, geometry only), when a face could belong to more than one person, when the track ends or starts "
+        "again, when the video is no longer live (a stall or a stream reconnect) and when face recognition is turned "
+        "off; after at least "
+        f"{_e(_number(retention.get('contradiction_votes')) or '–')} reliable contradicting results spanning at least "
+        f"{_e(_number(retention.get('contradiction_span_s')) or '–')} s since its last match; or at once on "
+        f"{_e(_number(retention.get('conflict_votes')) or '–')} consecutive results for a different enrolled identity "
+        f"within {_e(_number(retention.get('conflict_window_s')) or '–')} s (the recognition rule's vote expiry), "
+        "which is then reported only on its own matches. A non-matching face narrower than "
+        f"{_e(percent or '–')} % of the frame's width is degraded evidence and does not count toward the contradicting "
+        "results, and neither does no face, a low-quality face or an unanalysed frame. Nothing carries over to a new "
+        "track or a restart.</p>"
+    )
 
 
 # ---------------------------------------------------------------- features (D99)

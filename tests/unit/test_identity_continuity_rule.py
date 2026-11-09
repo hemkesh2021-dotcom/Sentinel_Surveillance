@@ -266,6 +266,13 @@ def test_a_jump_drops_the_identity_even_when_the_track_number_stays() -> None:
                                "mono_ns": room.breaks[-1]["mono_ns"]}
 
 
+def test_every_break_is_a_record_here_even_through_a_sustained_overlap() -> None:
+    """Part 28 keeps a track-retention run to one record per same-cause stretch; this rule's records stay one per break."""
+    room = Room()
+    room.frames(1.0, (1, (100.0, 100.0, 300.0, 460.0)), (2, (160.0, 100.0, 360.0, 460.0)))
+    assert len(room.breaks) == 20 and {b["cause"] for b in room.breaks} == {"overlap"}  # ten frames, two tracks
+
+
 def test_an_occlusion_beyond_the_gap_bound_drops_the_identity_even_within_the_track_expiry() -> None:
     room = known(Room())
     room.frames(0.8)  # the chair hides the person for 0.8 s: the track stays current (expiry 1.0 s) but is not seen

@@ -411,6 +411,28 @@ def test_f2_never_reads_a_continuity_run_by_its_plain_rule(mods, tmp_path, start
     assert line_for(text, item).startswith("FAIL"), text
 
 
+def test_f2_never_reads_a_track_retention_run_either_by_its_marker_or_its_records(mods, tmp_path, startup, f1_list) -> None:
+    """Session 116, part 28: a track-retention run is never an F2 attempt. Its marker is at the top level of the starting
+    line, so the guard's exact comparison of the startup's face entry still holds and the F2 reading's face item passes;
+    read_records refuses the marker itself, and its association records are unknown identity records as well."""
+    out = simulate(tmp_path, startup)
+    numbers = {"max_since_match_s": 300.0, "contradiction_votes": 10, "contradiction_span_s": 10.0,
+               "min_face_width_fraction": 0.03, "conflict_votes": 2}
+
+    def edit(lines):
+        for line in lines:
+            if line.get("run") == "starting":
+                line["startup"]["identity_retention"] = numbers
+        return lines
+
+    _mutate(out, edit)
+    finish(mods, out)
+    result, text = reading(mods, out, f1_list)
+    assert not result.ok
+    assert line_for(text, "identity records").startswith("FAIL") and "identity_retention" in text, text
+    assert line_for(text, "face admitted for this validation run").startswith("PASS"), text
+
+
 def test_the_scripted_live_run_is_validated_from_the_runtimes_own_output(mods, tmp_path, startup, f1_list) -> None:
     out = simulate(tmp_path, startup)
     finish(mods, out)

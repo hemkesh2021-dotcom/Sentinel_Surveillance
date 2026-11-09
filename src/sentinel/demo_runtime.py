@@ -184,6 +184,7 @@ from .memory_policy import (
 )
 from .rules.zones import ZonePhase
 from .identity.continuity import ContinuityPolicy
+from .identity.retention import RetentionPolicy, reported_numbers
 from .runtime import (
     IDENTITY_COMPARISON_SCHEMA,
     IDENTITY_FULL_SCALE_SCHEMA,
@@ -193,6 +194,7 @@ from .runtime import (
     IDENTITY_WINDOWS_SCHEMA,
     CoreOutput,
     EdgeCore,
+    association_record,
     break_record,
     tick_record,
 )
@@ -282,6 +284,7 @@ class FaceRuntime:
     # route B's shadow comparison (the multi-pose comparison): each track life's start and end recorded, so a reading
     # can replay both galleries with the runtime's own life boundaries; it decides nothing
     lives: bool = False
+    retention: RetentionPolicy | None = None  # part 28: the track-retention rule (--identity-retention, validation runs)
 
     @property
     def experiment(self) -> str | None:
@@ -414,6 +417,7 @@ class DemoRuntime:
             capture=face.capture if face is not None else None,
             continuity=face.continuity if face is not None else None,
             record_lives=face.lives if face is not None else False,
+            retention=face.retention if face is not None else None,
         )
         self._identity_records: deque[dict[str, Any]] = deque()
         # A face validation run's records carry the diagnostic numbers (schema 3, D84 and D86), with the full-scale
@@ -798,6 +802,8 @@ class DemoRuntime:
                     self._keep_record(break_record(item, self._identity_schema))
                 for transition in current.identity_transitions:
                     self._keep_record(transition.record(self._identity_schema))
+                for change in current.identity_associations:  # part 28: track retention (only in those runs)
+                    self._keep_record(association_record(change, self._identity_schema))
                 self._annotate(current)
                 for zone in current.zones:
                     enrich = zone.last_source if zone.phase is ZonePhase.ENTERED else None
@@ -1058,6 +1064,7 @@ class DemoRuntime:
         if self._face is None:
             state = Capability.DISABLED if self._face_problem is None else Capability.UNAVAILABLE
             return {"state": state.value, "problem": self._face_problem}
+        retention = self._core.retention_numbers  # part 28: the rule this core applies; None without track retention
         return {
             "state": (Capability.AVAILABLE if self._face_on else Capability.DISABLED).value,
             "problem": None,
@@ -1071,7 +1078,11 @@ class DemoRuntime:
                        "vote_ttl_s": self._config.identity.vote_ttl_s,
                        "fresh_window_s": self._config.identity.face_result_max_age_s,
                        **({"continuity": self._face.continuity.numbers()} if self._face.continuity is not None
-                          else {})},
+                          else {}),
+                       # part 28: PROPOSED, a validation run's retention rule, with the monitor's values that decide its
+                       # breaks (not as "continuity": that key means --face-continuity's rule, votes and all)
+                       **({"retention": {**retention, "experimental": True, "values": "proposed"}}
+                          if retention is not None else {})},
             "worker": self._face.worker.status(),
             "results": self._core.identity_counters,
             **({"comparison_results": dict(sorted(self._core.comparison_counters.items()))}
@@ -1123,9 +1134,13 @@ class DemoRuntime:
                 **{state.value: sum(1 for p in live.people if p.identity is state) for state in IdentityState},
                 **{basis: sum(1 for p in live.people if p.identity_basis is not None and p.identity_basis.value == basis)
                    for basis in ("fresh", "retained")},
+                **({"associations_retained": sum(1 for p in live.people if p.association is not None
+                                                 and p.association.state.value == "retained")}
+                   if self._face is not None and self._face.retention is not None else {}),  # part 28
             },
             "published_utc": live.published_utc.isoformat(),
-            **(self._face_rows(live, self._face.continuity is not None)
+            **(self._face_rows(live, self._face.continuity is not None or self._face.retention is not None,
+                               self._face.retention is not None)
                if self._face is not None and self._face_on else {}),  # D99: no rows while turned off
             "scene": live.scene.value,
             "scene_reason": live.scene_reason,
@@ -1139,12 +1154,13 @@ class DemoRuntime:
         }
 
     @staticmethod
-    def _face_rows(live: LiveState, continuity: bool = False) -> dict[str, Any]:
+    def _face_rows(live: LiveState, continuity: bool = False, retention: bool = False) -> dict[str, Any]:
         """D95: each current person's recognition state as the core derived it for this publication (identity.state):
         the track it lives on, KNOWN/UNKNOWN/UNCERTAIN/UNRESOLVED with its basis (fresh or retained) and the newest
         current vote's age. Numbers and fixed labels only: no identity ID (the status stays free of IDs, D61; with one
         enrolled identity KNOWN names it unambiguously). Bounded to MAX_FACE_ROWS (the rest counted). The page shows
-        it; nothing here votes, retains, expires or changes a state."""
+        it; nothing here votes, retains, expires or changes a state. Part 28 (``retention``): each row also carries the
+        track's established association, numbers and fixed labels only, and its most recent end while none stands."""
         people = sorted(live.people, key=lambda p: (p.stream_epoch, p.track_id))
         return {
             "faces": [
@@ -1152,11 +1168,25 @@ class DemoRuntime:
                  "predicted": p.predicted, "last_measured_age_ms": p.last_measured_age_ms, "state": p.identity.value,
                  "basis": None if p.identity_basis is None else p.identity_basis.value,
                  "vote_age_ms": p.identity_vote_age_ms, "reason": p.identity_reason,
-                 **({"followed_ms": p.identity_followed_ms} if continuity else {})}  # D97
+                 **({"followed_ms": p.identity_followed_ms} if continuity else {}),  # D97
+                 **(_association_fields(p) if retention else {})}  # part 28
                 for p in people[:MAX_FACE_ROWS]
             ],
             "faces_not_shown": max(0, len(people) - MAX_FACE_ROWS),
         }
+
+
+def _association_fields(person: Any) -> dict[str, Any]:
+    """Part 28: a status row's retention block (live.faces[*].association) and most recent end: never the identity ID."""
+    view, ended = person.association, person.association_ended
+    return {
+        "association": None if view is None else {
+            "state": view.state.value, "last_match_age_ms": view.last_match_age_ms, "evidence": view.evidence.value,
+            "evidence_age_ms": view.evidence_age_ms, "contradictions": view.contradictions,
+            "contradiction_limit": view.contradiction_limit, "conflicts": view.conflicts,
+            "conflict_limit": view.conflict_limit, "max_since_match_ms": view.max_since_match_ms},
+        "association_ended": None if ended is None else {"reason": ended.reason.value, "age_ms": ended.age_ms},
+    }
 
 
 def degradation(snapshot: Mapping[str, Any]) -> list[str]:
@@ -1242,6 +1272,7 @@ class FaceOptions:
     capture_raw: bool = False  # --face-capture-raw (route B only): a sealed raw capture for the offline builder
     capture_consent_date: str | None = None  # --face-capture-consent-date, the enrolled person's, for that gallery
     continuity: bool = False  # --face-continuity (D97): the continuity rule; validation runs, production detection only
+    retention: bool = False  # --identity-retention (part 28, PROPOSED): track retention; validation runs, plain rules
     # --tracking-diagnostic (session 79): the detector backend's per-frame reading, recorded; validation runs with
     # production detection and the plain identity rules only; nothing it reads changes
     tracking_diagnostic: bool = False
@@ -1697,10 +1728,20 @@ def assemble(
             raise StartupRefused("landmark_diagnostic_plain_only: the landmark diagnostic runs with production "
                                  "detection and the plain identity rules: no candidate, comparison, experiment, "
                                  "continuity rule or tracking diagnostic")
+        if options.face.retention and not options.face.validation_run:  # part 28: PROPOSED; never in another run
+            raise StartupRefused("identity_retention_needs_validation: track retention is for --face-validation runs")
+        if options.face.retention and (candidate or options.face.comparison or options.face.continuity
+                                       or options.face.tracking_diagnostic or options.face.landmark_diagnostic
+                                       or options.face.shadow_dir is not None or options.face.capture_dir is not None):
+            raise StartupRefused("identity_retention_plain_only: track retention runs with the plain identity rules and "
+                                 "no candidate, comparison, experiment, continuity rule or diagnostic")
         _experiment_options(options.face, route_b)  # D91: before anything loads
         if route_b and (candidate or options.face.comparison or options.face.continuity
                         or options.face.tracking_diagnostic or options.face.landmark_diagnostic):
-            # D91's capture and shadow comparison run here on the head-window stage's own faces (validation runs)
+            # D91's capture and shadow comparison run here on the head-window stage's own faces (validation runs).
+            # Track retention (part 28) is not refused here: it is exactly the mode a validation run on the head-window
+            # path asks for, and it changes no detection, threshold or confirmation (its continuity breaks drop votes as
+            # D97's do); it is refused above with everything else that would change them.
             raise StartupRefused("stream_profile_plain_only: main_single runs its head-window face stage with the plain "
                                  "identity rules: no candidate, comparison, continuity rule or diagnostic")
         face_backend = devices.face_backend(options.face.weights_dir)
@@ -1855,6 +1896,11 @@ def assemble(
                                # session 90: the marker that keeps such a run out of F2's reading, with its pinned values
                                **({"landmark_diagnostic": landmark_marker()}
                                   if options.face.landmark_diagnostic else {})}
+            if options.face.retention:  # part 28: at the top level, so the guard's exact comparisons of the face entry
+                # (FACE_CHAT_FACE, WINDOWS_FACE) still hold; every reading that must refuse a non-plain run reads this
+                # marker in the runtime's own starting line (benchmarks/runner/face_check.read_records)
+                startup["identity_retention"] = reported_numbers(config.identity.retention_policy(),
+                                                                 config.identity.continuity_policy())
             if face_problem is None and gallery is not None:
                 face_problem, memory = memfree_problem(devices.meminfo, options.face.min_free_bytes)
                 startup["face_memory_before"] = memory
@@ -1907,7 +1953,8 @@ def assemble(
                                    comparator is not None, options.face.detection, shadow, experiment_capture,
                                    config.identity.continuity_policy() if options.face.continuity else None,
                                    options.face.landmark_diagnostic, windows,
-                                   lives=route_b and shadow is not None)
+                                   lives=route_b and shadow is not None,
+                                   retention=config.identity.retention_policy() if options.face.retention else None)
             startup["face_problem"] = face_problem
 
         slot = LatestFrame()

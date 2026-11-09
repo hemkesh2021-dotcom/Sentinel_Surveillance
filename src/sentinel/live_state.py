@@ -21,6 +21,7 @@ from .contracts import (
     TrackStatus,
     UtcDatetime,
 )
+from .identity.retention import AssociationEnded, TrackAssociation
 from .identity.state import Basis, IdentityState
 from .media.health import VideoState
 from .scene.report import SceneReport
@@ -57,6 +58,10 @@ class PersonState(Contract):
     identity_basis: Basis | None = None  # KNOWN/UNKNOWN: a fresh decision or one retained on the same track
     identity_vote_age_ms: NonNegativeInt | None = None  # the newest current vote's age
     identity_followed_ms: NonNegativeInt | None = None  # D97: time followed without a break (continuity runs only)
+    # Track retention (session 116, part 28; PROPOSED, --identity-retention runs only): the established association, apart
+    # from the raw fields above, which keep their meaning; its identity ID stays here and in the run's records (D61)
+    association: TrackAssociation | None = None
+    association_ended: AssociationEnded | None = None  # the most recent end on this track's life, while none stands
 
 
 class LiveState(Contract):

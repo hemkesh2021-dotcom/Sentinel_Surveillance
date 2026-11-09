@@ -435,6 +435,16 @@ def main(
         "detection), for at most identity.continuity_retention_s after its matches; a break drops it at once",
     )
     run.add_argument(
+        "--identity-retention", action="store_true",
+        help="with --face-validation (session 116, part 28, PROPOSED and experimental): keep an established known "
+        "identity on its track while the track is followed without a break, for at most "
+        "identity.retention_max_since_match_s after its last successful match (not the whole track), as an association "
+        "shown apart from the raw face evidence; a break, ambiguous ownership, a new track life, the video no longer "
+        "being live (a stall or a stream reconnect), sustained contradiction or a different enrolled identity ends it. "
+        "Thresholds and confirmations unchanged; no "
+        "continuity rule, candidate, comparison, experiment or diagnostic with it",
+    )
+    run.add_argument(
         "--tracking-diagnostic", action="store_true",
         help="with --face-validation (session 79, a diagnostic; production detection only): record, per processed "
         "frame, the person detections handed to the tracker, its published rows and unpublished detections, its lost "
@@ -854,6 +864,15 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
         print("run: --face-landmark-diagnostic runs with production detection and the plain identity rules: no "
               "candidate, comparison, experiment, continuity rule or tracking diagnostic", file=sys.stderr)
         return 1
+    if args.identity_retention and not args.face_validation:
+        print("run: --identity-retention needs --face-validation", file=sys.stderr)
+        return 1
+    if args.identity_retention and (args.face_full_scale_detection or args.face_comparison or experiment
+                                    or args.face_continuity or args.tracking_diagnostic
+                                    or args.face_landmark_diagnostic):
+        print("run: --identity-retention runs with the plain identity rules: no candidate, comparison, experiment, "
+              "continuity rule or diagnostic", file=sys.stderr)
+        return 1
     if args.live_preview and not args.status_port:
         print("run: --live-preview needs the status page (--status-port other than 0)", file=sys.stderr)
         return 1
@@ -881,7 +900,7 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
                            capture_raw=args.face_capture_raw is not None,
                            capture_consent_date=args.face_capture_consent_date, continuity=args.face_continuity,
                            tracking_diagnostic=args.tracking_diagnostic,
-                           landmark_diagnostic=args.face_landmark_diagnostic)
+                           landmark_diagnostic=args.face_landmark_diagnostic, retention=args.identity_retention)
     del secret
     scene = None
     if args.scene:

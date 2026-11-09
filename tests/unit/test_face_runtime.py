@@ -166,7 +166,7 @@ class Loop:
     def __init__(self, tmp_path: Path, *, analyze=analyze_with(vec(0.97, 0.1, 0.0, 0.05)), face_problem=None,
                  with_face: bool = True, validation: bool = True, comparator=None,
                  detection: str = "deepface", shadow=None, capture=None, continuity=None,
-                 feature_controls: bool = False, perf_counter=None, prepare=None, windows=None) -> None:
+                 feature_controls: bool = False, perf_counter=None, prepare=None, windows=None, retention=None) -> None:
         self.clock = FakeClock(utc=NOW)
         self.main = windows is not None  # route B: main-stream frames with their working copy
         self.config = parse_config({"config_version": 1, "camera": {"id": "cam-1"},
@@ -178,7 +178,7 @@ class Loop:
         timing = {} if perf_counter is None else {"perf_counter": perf_counter}  # the worker's own timer by default
         self.worker = FaceWorker(analyze, self.clock, comparator=comparator, prepare=prepare, **timing)
         face = (FaceRuntime(self.worker, 1, validation, comparator is not None, detection, shadow, capture, continuity,
-                            windows=windows)
+                            windows=windows, retention=retention)
                 if with_face else None)
         self.runtime = DemoRuntime(
             self.config, self.clock, capture=self.capture, slot=self.slot,
@@ -1672,4 +1672,129 @@ def test_route_b_offers_the_decoded_picture_and_applies_the_result_to_that_frame
     assert results[0]["windows"]["windows"] == 1
     stream = loop.runtime.snapshot()["components"]["capture"]["stream"]
     assert stream["decoded"] == [2304, 1296] and stream["working"] == [640, 480]
+    loop.close()
+
+
+# ---------------------------------------------------------------- track retention (session 116, part 28; PROPOSED)
+
+
+RETENTION_NUMBERS = {"max_since_match_s": 300.0, "contradiction_votes": 10, "contradiction_span_s": 10.0,
+                     "min_face_width_fraction": 0.03, "conflict_votes": 2, "conflict_window_s": 30.0,
+                     "max_gap_s": 0.5, "overlap_iou": 0.3, "min_step_iou": 0.4}  # the last three: the monitor's
+
+
+def test_retention_is_refused_outside_a_validation_run(face_setup) -> None:
+    with pytest.raises(StartupRefused, match="identity_retention_needs_validation"):
+        start(face_setup, validation=False, face_extra={"retention": True})
+
+
+@pytest.mark.parametrize("extra", [
+    {"comparison": True}, {"detection": "full_scale"}, {"face_extra": {"continuity": True}},
+    {"face_extra": {"tracking_diagnostic": True}}, {"face_extra": {"landmark_diagnostic": True}},
+    {"face_extra": {"shadow_dir": WORK}},
+    {"face_extra": {"capture_dir": WORK, "capture_consent_date": "2026-10-07"}},
+])
+def test_retention_runs_only_with_the_plain_identity_rules(face_setup, extra) -> None:
+    extra = dict(extra)
+    face = {**extra.pop("face_extra", {}), "retention": True}
+    with pytest.raises(StartupRefused, match="identity_retention_plain_only"):
+        start(face_setup, face_extra=face, **extra)
+
+
+def test_the_retention_flag_needs_validation_and_the_plain_rules(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
+    assert main(_cli(tmp_path, "--face", "--identity-retention"), devices=_refusing_devices()) == 1
+    assert "--identity-retention needs --face-validation" in capsys.readouterr().err
+    for flag in ("--face-continuity", "--face-full-scale-detection", "--face-comparison", "--tracking-diagnostic",
+                 "--face-landmark-diagnostic"):
+        monkeypatch.setenv(SECRET_ENV, "typed silently before the launch")
+        assert main(_cli(tmp_path, "--face", "--face-validation", "--identity-retention", flag),
+                    devices=_refusing_devices()) == 1, flag
+        assert "plain identity rules" in capsys.readouterr().err, flag
+
+
+def test_a_retention_run_is_marked_at_the_top_level_and_leaves_the_face_entry_exact(face_setup) -> None:
+    assembly, _ = start(face_setup, face_extra={"retention": True})
+    assert assembly.startup["identity_retention"] == RETENTION_NUMBERS
+    assert assembly.startup["face"] == {"validation_run": True, "identities_enrolled": 1}  # the guard compares it exactly
+    policy = assembly.runtime.snapshot()["components"]["face"]["policy"]
+    assert policy["retention"] == {**RETENTION_NUMBERS, "experimental": True, "values": "proposed"}
+    assert policy["vote_ttl_s"] == 30.0 and "continuity" not in policy  # the plain vote expiry; not --face-continuity
+    assembly.database.close()
+    plain, _ = start(face_setup)  # without the flag: the startup and the status exactly as before
+    assert "identity_retention" not in plain.startup
+    assert "retention" not in plain.runtime.snapshot()["components"]["face"]["policy"]
+    plain.database.close()
+
+
+def test_a_retention_run_reports_the_monitors_values_that_decide_its_breaks_and_only_those(face_setup) -> None:
+    assembly, _ = start(face_setup, identity={"continuity_max_gap_s": 2.0, "continuity_overlap_iou": 0.2,
+                                              "vote_ttl_s": 45.0}, face_extra={"retention": True})
+    numbers = assembly.startup["identity_retention"]
+    assert (numbers["max_gap_s"], numbers["overlap_iou"], numbers["min_step_iou"], numbers["conflict_window_s"]) == (
+        2.0, 0.2, 0.4, 45.0)
+    assert "retention_s" not in numbers  # this mode does not use it: the raw votes keep the plain expiry
+    policy = assembly.runtime.snapshot()["components"]["face"]["policy"]
+    assert policy["retention"] == {**numbers, "experimental": True, "values": "proposed"}
+    assert "continuity" not in policy and "continuity" not in assembly.startup["face"]
+    assembly.database.close()
+
+
+def test_route_b_accepts_retention_and_its_face_entry_stays_the_guards_exact_one(face_setup) -> None:
+    plain, _ = start(face_setup, capture=MAIN, backend_class=WindowBackend)
+    face = plain.startup["face"]
+    plain.database.close()
+    assembly, _ = start(face_setup, capture=MAIN, backend_class=WindowBackend, face_extra={"retention": True})
+    assert assembly.startup["face"] == face and assembly.startup["identity_retention"] == RETENTION_NUMBERS
+    assembly.database.close()
+
+
+def test_a_retention_runs_records_status_and_page_fit_the_evidence_profile_and_carry_no_identity_id(
+        tmp_path, monkeypatch) -> None:
+    from sentinel.cli import status_line
+    from sentinel.status_page import build_status, read_store, status_regions
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "benchmarks/runner"))
+    import face_evidence
+
+    seen_face = {"on": True}
+    matching = analyze_with(vec(0.97, 0.1, 0.0, 0.05))
+
+    def analyze(frame, image):
+        return matching(frame, image) if seen_face["on"] else FaceRun((), 0, 0)
+
+    loop = Loop(tmp_path, analyze=analyze, retention=parse_config(
+        {"config_version": 1, "camera": {"id": "cam-1"}}).identity.retention_policy())
+    for _ in range(40):  # three matching face ticks: an established association on track 1
+        loop.frame()
+    (row,) = loop.runtime.snapshot()["live"]["faces"]
+    assert row["association"]["state"] == "current" and row["association_ended"] is None and row["followed_ms"] >= 2000
+    seen_face["on"] = False  # the face turns away; the person stays
+    for _ in range(90):  # six seconds: beyond the fresh window, within the raw expiry and the bound
+        loop.frame()
+    snapshot = loop.runtime.snapshot()
+    (row,) = snapshot["live"]["faces"]
+    assert row["association"]["state"] == "retained" and row["association"]["evidence"] == "no_face"
+    assert (row["state"], row["basis"]) == ("known", "retained")  # the raw fields keep saying what the votes say
+    assert row["association"]["last_match_age_ms"] >= 3000 and row["association"]["contradictions"] == 0
+    assert snapshot["live"]["identity"]["associations_retained"] == 1
+    records = loop.runtime.drain_identity_records()
+    kinds = [r["identity"] for r in records]
+    assert "association" in kinds and "life" in kinds and "break" not in kinds
+    changes = [(r["from"], r["to"], r["reason"]) for r in records if r["identity"] == "association"]
+    assert changes == [("none", "current", "established"), ("current", "retained", "no_current_match")]
+    assert all(r["schema"] == 3 for r in records)  # the validation run's schema, unchanged
+    assert "idn-" not in json.dumps(snapshot["live"]) and "similarity" not in json.dumps(snapshot["live"])
+    document = build_status(snapshot, read_store(tmp_path / "sentinel.db"), NOW)
+    panel = status_regions(document)["faces"]
+    assert "Known — retained from an earlier match" in panel and "Experimental · track retention" in panel
+    assert "idn-" not in panel and 'data-association="retained"' in panel and 'data-evidence="no_face"' in panel
+    out = tmp_path / "evidence"
+    out.mkdir()
+    starting = {"run": "starting", "startup": {"face": {"validation_run": True, "identities_enrolled": 1},
+                                               "identity_retention": RETENTION_NUMBERS}}
+    (out / "run.jsonl").write_text("".join(json.dumps(r) + "\n" for r in [starting, *records, status_line(snapshot)]))
+    (out / "status-n1.json").write_text(json.dumps(document))
+    assert face_evidence.read(out / "run.jsonl", "f2").nonconforming == []
+    assert face_evidence.read(out / "status-n1.json", "f2").nonconforming == []
     loop.close()

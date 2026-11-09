@@ -29,6 +29,7 @@ from pydantic import (
 from .adapters import AdapterManifest, check_unique_ids
 from .contracts import Identifier
 from .identity.continuity import ContinuityPolicy
+from .identity.retention import RetentionPolicy
 from .media.clock import NS_PER_SECOND
 from .redaction import redact_line
 from .rules.geometry import Anchor, polygon_problem
@@ -200,6 +201,13 @@ class IdentityConfig(_Section):
     continuity_overlap_iou: Annotated[float, Field(gt=0, lt=1, allow_inf_nan=False)] = 0.3  # two boxes meeting break
     continuity_min_step_iou: Annotated[float, Field(gt=0, le=1, allow_inf_nan=False)] = 0.4  # a jump breaks
     continuity_retention_s: Annotated[float, Field(gt=0, le=600, allow_inf_nan=False)] = 120.0  # votes' bound
+    # Track retention (session 116, part 28; used only by ``sentinel run --identity-retention``, a validation run):
+    # PROPOSED starting values, unvalidated, chosen with reference to one saved run that diagnoses and does not validate
+    # them (identity.retention). The continuity_* values above still decide what a break is; the raw votes keep vote_ttl_s.
+    retention_max_since_match_s: Annotated[float, Field(gt=0, le=600, allow_inf_nan=False)] = 300.0  # the bound
+    retention_contradiction_votes: Annotated[int, Field(ge=1, le=120)] = 10
+    retention_contradiction_span_s: Annotated[float, Field(gt=0, le=600, allow_inf_nan=False)] = 10.0
+    retention_min_face_width_fraction: Annotated[float, Field(ge=0, lt=1, allow_inf_nan=False)] = 0.03
 
     @model_validator(mode="after")
     def _face_bounds(self) -> IdentityConfig:
@@ -209,6 +217,10 @@ class IdentityConfig(_Section):
             raise ValueError("continuity_overlap_iou must be below continuity_min_step_iou (they cover each other)")
         if not self.face_result_max_age_s < self.continuity_retention_s:
             raise ValueError("continuity_retention_s must exceed face_result_max_age_s")
+        if not self.face_result_max_age_s < self.retention_max_since_match_s:
+            raise ValueError("retention_max_since_match_s must exceed face_result_max_age_s")
+        if not self.retention_contradiction_span_s <= self.retention_max_since_match_s:
+            raise ValueError("retention_contradiction_span_s must not exceed retention_max_since_match_s")
         return self
 
     def continuity_policy(self) -> ContinuityPolicy:
@@ -217,6 +229,16 @@ class IdentityConfig(_Section):
                                 overlap_iou=self.continuity_overlap_iou,
                                 min_step_iou=self.continuity_min_step_iou,
                                 retention_ns=round(self.continuity_retention_s * NS_PER_SECOND))
+
+    def retention_policy(self) -> RetentionPolicy:
+        """Session 116, part 28: the track-retention rule from these values (PROPOSED). A conflict needs what the raw rule
+        needs to report a different identity: identity.confirmations votes for it, all within identity.vote_ttl_s."""
+        return RetentionPolicy(max_since_match_ns=round(self.retention_max_since_match_s * NS_PER_SECOND),
+                               contradiction_votes=self.retention_contradiction_votes,
+                               contradiction_span_ns=round(self.retention_contradiction_span_s * NS_PER_SECOND),
+                               min_face_width_fraction=self.retention_min_face_width_fraction,
+                               conflict_votes=self.confirmations,
+                               conflict_window_ns=self.vote_ttl_ns)
 
     @property
     def vote_ttl_ns(self) -> int:

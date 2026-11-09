@@ -18,7 +18,7 @@ import dataclasses
 import math
 import time
 from collections import Counter, OrderedDict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,9 +26,17 @@ from .config import SentinelConfig
 from .contracts import Evidence, FrameRef, StreamIdentity, TrackKey, TrackObservation, TrackStatus
 from .identity.association import AssociationGeometry, FaceObservation, Ownership, associate, withhold
 from .identity.comparison import ComparisonOutcome, Disposition
-from .identity.continuity import Break, ContinuityMonitor, ContinuityPolicy
+from .identity.continuity import Break, Cause, ContinuityMonitor, ContinuityPolicy
 from .identity.landmarks import landmark_records
 from .identity.matching import Enrollment
+from .identity.retention import (
+    AssociationChange,
+    AssociationEnded,
+    RetentionLedger,
+    RetentionPolicy,
+    TrackAssociation,
+    reported_numbers,
+)
 from .identity.state import UNKNOWN_VOTE, IdentityPolicy, IdentityResolver, IdentityState, TrackIdentity, VoteRecord
 from .identity.yunet import YUNET_THRESHOLD
 from .jobs import WorkerOutcome
@@ -260,9 +268,21 @@ class TrackLife:
 
 def break_record(item: Break, schema: int = IDENTITY_RECORD_SCHEMA) -> dict[str, object]:
     """D97: one break in a track's continuity (identity.continuity): the track, the cause and its frame's time; numbers
-    and fixed labels only. Written only by runs with a continuity monitor."""
+    and fixed labels only. Written only by runs with a continuity monitor: one per break in --face-continuity runs, and
+    in track-retention runs one for the first frame of each continuous same-cause stretch of a track (part 28, EdgeCore
+    .on_frame; the counters ``breaks_*`` still count every frame's)."""
     return {"identity": "break", "schema": _schema(schema), "stream_epoch": item.key.stream_epoch,
             "track_id": item.key.track_id, "cause": item.cause.value, "mono_ns": item.at_ns}
+
+
+def association_record(item: AssociationChange, schema: int = IDENTITY_RECORD_SCHEMA) -> dict[str, object]:
+    """Track retention (session 116, part 28; PROPOSED, --identity-retention runs only): one change of a track's
+    established association, as numbers, fixed labels and the opaque identity ID (identity.retention.AssociationChange).
+    Existing transition records keep their meaning."""
+    return {"identity": "association", "schema": _schema(schema), "stream_epoch": item.stream_epoch,
+            "track_id": item.track_id, "from": item.from_state, "to": item.to_state, "identity_id": item.identity_id,
+            "reason": item.reason, "last_match_age_ms": item.last_match_age_ms, "contradictions": item.contradictions,
+            "mono_ns": item.mono_ns}
 
 
 @dataclass(frozen=True)
@@ -273,8 +293,9 @@ class CoreOutput:
     zones: tuple[ZoneObservation, ...] = ()  # zone rule observations from this step
     identity_transitions: tuple[IdentityTransition, ...] = ()
     face_result: FaceResultRecord | None = None  # set by on_face_outcome
-    identity_breaks: tuple[Break, ...] = ()  # D97: breaks in track continuity found by this step
+    identity_breaks: tuple[Break, ...] = ()  # D97: breaks in track continuity found by this step (those to record)
     track_lives: tuple[TrackLife, ...] = ()  # validation runs with record_lives: lives begun or ended at this step
+    identity_associations: tuple[AssociationChange, ...] = ()  # track retention: changes of established associations
 
 
 class EdgeCore:
@@ -293,11 +314,15 @@ class EdgeCore:
         capture: Any = None,
         continuity: ContinuityPolicy | None = None,
         record_lives: bool = False,
+        retention: RetentionPolicy | None = None,
     ) -> None:
+        if continuity is not None and retention is not None:
+            raise ValueError("the continuity rule and track retention are separate rules; use one (D97, part 28)")
         self._config = config
-        # Validation runs (route B's shadow comparison): each track life's start and end as records, read from the
-        # track table this step already consults; it decides nothing and changes no state
-        self._record_lives = record_lives
+        # Validation runs (route B's shadow comparison; retention runs, so later readers have life boundaries): each
+        # track life's start and end as records, read from the track table this step already consults; it decides
+        # nothing and changes no state
+        self._record_lives = record_lives or retention is not None
         self._lives: dict[TrackKey, int] = {}
         # D91, the enrollment experiment (validation runs with the candidate only; assemble() decides): a working
         # gallery compared read only (identity.experiment.Shadow), or a capture collecting the one person's faces for
@@ -330,9 +355,20 @@ class EdgeCore:
             enrollment,
             identity_policy(identity, None if continuity is None else continuity.retention_ns),
         )
-        # D97 (opt-in): each track's continuity, watched on every processed frame; None: the rules as they were
-        self._continuity = None if continuity is None else ContinuityMonitor(continuity)
+        # D97 (opt-in): each track's continuity, watched on every processed frame; None: the rules as they were. Track
+        # retention (session 116, part 28; opt-in) runs the same monitor with the existing continuity values and applies
+        # its breaks the same way, but the raw votes keep the plain expiry (identity_policy above; not --face-continuity):
+        # what it adds is the established association above the votes (identity.retention).
+        monitored = continuity if continuity is not None else (None if retention is None else identity.continuity_policy())
+        self._continuity = None if monitored is None else ContinuityMonitor(monitored)
+        self._retention = None if retention is None else RetentionLedger(retention)
         self._new_breaks: list[Break] = []
+        # Part 28: which tracks broke on the previous processed frame, and why. A sustained overlap breaks on every
+        # processed frame; in a track-retention run only the first frame of a track's same-cause stretch becomes a record,
+        # so that one overlap cannot use up the run's record budget (MAX_IDENTITY_RECORDS), which would drop later result
+        # and association records. Votes and the ledger still take every break, and --face-continuity's records stay one
+        # per break (its readers count them).
+        self._broke_last_frame: dict[TrackKey, Cause] = {}
         self._scene_on = True  # D99: scene analysis turned off at runtime (the lane paused, nothing held)
         self._queued_evidence: list[Evidence] = []  # D99: skipped by turning scene analysis off; routed next step
         self._face_on_since_ns = 0  # D99: face recognition last turned on at runtime (0: on since the start, if at all)
@@ -358,16 +394,28 @@ class EdgeCore:
             "scene_jobs_in_flight": int(self._lane is not None and self._lane.in_flight is not None),
             "zone_episodes": self._zones.active_episodes,
             "identity_reported": len(self._reported),
+            **({} if self._retention is None else {"identity_associations": self._retention.tracked}),
         }
 
     @property
     def identity_counters(self) -> dict[str, int]:
-        return dict(sorted((self.face_counters + self._identities.counters).items()))
+        counters = self.face_counters + self._identities.counters
+        if self._retention is not None:  # track retention: associations established and ended, by fixed reason
+            counters += self._retention.counters
+        return dict(sorted(counters.items()))
 
     @property
     def continuity(self) -> ContinuityPolicy | None:
-        """D97: the continuity rule this core applies, or None (the plain rules)."""
+        """D97: the continuity rule this core applies (also the monitor track retention runs, part 28), or None."""
         return None if self._continuity is None else self._continuity.policy
+
+    @property
+    def retention_numbers(self) -> dict[str, float] | None:
+        """Part 28: the track-retention rule this core applies, with its monitor's values, as the status reports them
+        (identity.retention.reported_numbers); None without one."""
+        if self._retention is None or self._continuity is None:
+            return None
+        return reported_numbers(self._retention.policy, self._continuity.policy)
 
     def set_detector(self, capability: Capability) -> None:
         self._detector = capability
@@ -382,6 +430,8 @@ class EdgeCore:
             return
         self._face_recognition = capability
         self._identities.forget_all()
+        if self._retention is not None:  # track retention: nothing earlier stays established or explained
+            self._retention.forget_all(self._clock.mono().ns)
         if capability is Capability.AVAILABLE:
             self._face_on_since_ns = self._clock.mono().ns
 
@@ -423,13 +473,20 @@ class EdgeCore:
             if self._continuity is not None:  # D97: before this frame's faces, so they count after its breaks
                 if novelty is FrameNovelty.NEW_EPOCH:
                     self._continuity.retain_only(())
-                for item in self._continuity.observe(frame, persons):
+                found = self._continuity.observe(frame, persons)
+                for item in found:
                     self._identities.break_track(item.key, item.at_ns, item.cause)
-                    self._new_breaks.append(item)
+                    if self._retention is not None:  # part 28: a break ends the association at once
+                        self._retention.on_break(item.key, item.at_ns, item.cause, self._clock.mono().ns)
+                    if self._retention is None or self._broke_last_frame.get(item.key) is not item.cause:
+                        self._new_breaks.append(item)  # part 28: a retention run records a stretch's first frame only
+                self._broke_last_frame = {item.key: item.cause for item in found}
             if self._detector is Capability.AVAILABLE:
                 self._last_detected = frame
             if faces is not None and self._face_recognition is Capability.AVAILABLE:
-                self._identities.observe(persons, faces, associate(persons, faces, self._geometry))
+                association = associate(persons, faces, self._geometry)
+                votes = self._identities.observe(persons, faces, association)
+                self._note_retention_evidence(persons, faces, association.face_of, votes)
             if self._lane is not None:
                 new += self._lane.on_frame(frame, freshness.live)
         elif self._lane is not None:
@@ -484,11 +541,16 @@ class EdgeCore:
         else:
             outcome = "applied"
             association = associate(persons, faces, self._geometry)
+            ambiguous_withheld: frozenset[TrackKey] = frozenset()
             if windows is not None:  # route B: decided over everyone first, then the people not analysed withheld
+                # Part 28: withholding rewrites a person's ambiguous ownership, and track retention must still see it
+                ambiguous_withheld = frozenset(key for key in windows.not_analysed
+                                               if association.person_ownership.get(key) is Ownership.AMBIGUOUS)
                 association = withhold(association, windows.not_analysed)
             for ownership in association.face_ownership:
                 self.face_counters[f"faces_{ownership.value}"] += 1
             votes = self._identities.observe(persons, faces, association)
+            self._note_retention_evidence(persons, faces, association.face_of, votes, ambiguous_withheld)
             diagnostics = _diagnostics(frame, persons, faces, association.face_of, votes, geometry, self._shadow,
                                        self._identities.policy)
             if landmarks:  # session 90: diagnostic numbers only; nothing above changes
@@ -515,6 +577,21 @@ class EdgeCore:
             processing_ms, error, diagnostics, full_scale_numbers(full_scale, frame, persons, self._geometry),
             detection_numbers(detection, frame), landmark_ms, None if windows is None else windows.numbers())
         return dataclasses.replace(self._finish(freshness, []), face_result=record)
+
+    def _note_retention_evidence(self, persons: Sequence[TrackObservation], faces: Sequence[FaceObservation],
+                                 face_of: dict[TrackKey, int], votes: Sequence[VoteRecord],
+                                 ambiguous_withheld: frozenset[TrackKey] = frozenset()) -> None:
+        """Part 28: one face result's outcome for each person (its frame time and its assigned face's width as a fraction
+        of the frame's), for the track-retention ledger; nothing here changes a vote. ``votes`` is in ``persons``' order.
+        ``ambiguous_withheld``: people the association decided over everyone found ambiguous, then withheld (route B)."""
+        if self._retention is None:
+            return
+        now_ns = self._clock.mono().ns
+        for person, vote in zip(persons, votes, strict=True):
+            index = face_of.get(vote.key)
+            box = None if index is None else faces[index].box
+            self._retention.observe(vote, person.observed_mono_ns, None if box is None else box.x2 - box.x1, now_ns,
+                                    ambiguous=vote.key in ambiguous_withheld)
 
     def on_face_comparison(self, outcome: ComparisonOutcome) -> ComparisonRecord:
         """D87: one comparison outcome as a record. A completed comparison gets its best similarity to the enrollment
@@ -582,12 +659,16 @@ class EdgeCore:
         breaks, self._new_breaks = tuple(self._new_breaks), []
         identities = {t.key: self._identity(t, now) for t in tracks}
         transitions = self._transitions(tracks, identities, now)
+        # Part 28: the established associations for this publication, apart from the raw identities (identity.retention)
+        associations, ended, association_changes = (
+            ({}, {}, ()) if self._retention is None
+            else self._retention.step(lives, identities, self._identities, live, now))
         occupancy, reason = self._occupancy(freshness, tracks, now)
         people_count = None if occupancy is Occupancy.UNKNOWN else _confirmed(tracks)
         candidate = self._hazard.evaluate(view, people_count=people_count)
         # Zone rules read tracks only: no identity, no scene verdict (guide ch. 9).
         zones = self._zones.evaluate(tracks, live, now)
-        state = self._publish(freshness, tracks, identities, occupancy, reason, view, now)
+        state = self._publish(freshness, tracks, identities, occupancy, reason, view, now, associations, ended)
         return CoreOutput(
             state=state,
             evidence=routed,
@@ -596,6 +677,7 @@ class EdgeCore:
             identity_transitions=transitions,
             identity_breaks=breaks,
             track_lives=track_lives,
+            identity_associations=association_changes,
         )
 
     def _track_lives(self, lives: dict[TrackKey, int], now: MonoInstant) -> tuple[TrackLife, ...]:
@@ -672,6 +754,8 @@ class EdgeCore:
         occupancy_reason: str,
         view: SceneView,
         now: MonoInstant,
+        associations: Mapping[TrackKey, TrackAssociation] | None = None,
+        ended: Mapping[TrackKey, AssociationEnded] | None = None,
     ) -> LiveState:
         self._sequence += 1
         if self._lane is None:
@@ -719,6 +803,8 @@ class EdgeCore:
                     last_measured_age_ms=(now.ns - t.last_measured_mono_ns) // NS_PER_MS,
                     **self._identity_fields(identities[t.key]),
                     identity_followed_ms=self._followed_ms(t, now),
+                    association=(associations or {}).get(t.key),
+                    association_ended=(ended or {}).get(t.key),
                 )
                 for t in tracks
             ),

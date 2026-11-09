@@ -188,6 +188,13 @@ class IdentityResolver:
             return TrackIdentity(IdentityState.UNCERTAIN, None, "contradictory face evidence", None, age)
         return TrackIdentity(IdentityState.UNRESOLVED, None, note, None, age)
 
+    def confirming_votes(self, key: TrackKey, now: MonoInstant) -> tuple[int, ...]:
+        """The frame times of the last ``confirmations`` current votes behind a KNOWN or UNKNOWN decision, oldest first
+        (identity.retention reads them: read only, nothing changes); () when there are fewer."""
+        votes = self._current_votes(key, now)
+        needed = self._policy.confirmations
+        return tuple(vote.at_ns for vote in votes[-needed:]) if len(votes) >= needed else ()
+
     @property
     def tracked(self) -> int:
         """Tracks with identity bookkeeping; bounded by the current tracks."""

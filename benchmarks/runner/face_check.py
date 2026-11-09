@@ -148,6 +148,9 @@ CANDIDATE_SCHEMAS = (CANDIDATE_SCHEMA, GEOMETRY_SCHEMA)  # what runs of the cand
 DETECTION_SCHEMAS = (*CANDIDATE_SCHEMAS, WINDOWS_SCHEMA)  # results carrying detection numbers (D88; route B)
 GEOMETRY_SCHEMAS = (GEOMETRY_SCHEMA, WINDOWS_SCHEMA)  # persons carrying prototype, geometry and shadow (D90; route B)
 F2_FACE = {"validation_run": True, "identities_enrolled": 1}  # the startup's face entry of a production F2 run
+# Part 28: the top-level startup marker of an --identity-retention run (demo_runtime.assemble; the guard's summary does
+# not keep it), read from the run's own starting line by read_records: a retention run is never an F2 attempt
+RETENTION_MARKER = "identity_retention"
 # Route B (session 116, parts 16-17; test-tied): the startup's face and stream entries of a main_single validation run,
 # and what its schema-8 results carry (identity.window_stage.WindowSettings().numbers(), WindowNumbers.numbers())
 DETECTION_WINDOWS = "head_windows"  # legacy_deepface.DETECTION_WINDOWS
@@ -299,6 +302,9 @@ def read_records(path: Path, experiment: str | None = None) -> tuple[dict[str, l
             problems.append(f"line {number}: {problem}")
         else:
             records.setdefault(kind, []).append(item)
+    if isinstance(starting, dict) and RETENTION_MARKER in starting:  # part 28: every reading that reads these records
+        problems.append(f"the starting line carries {RETENTION_MARKER}: a track-retention run is never read as this kind "
+                        "of run (it needs a reading of its own)")
     return records, problems, starting, stopped
 
 

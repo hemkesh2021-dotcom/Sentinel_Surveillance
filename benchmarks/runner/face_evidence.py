@@ -187,6 +187,19 @@ CONTINUITY_CAUSES = ("gap", "jump", "overlap")  # identity.continuity.Cause (D97
 NOT_CARRIED = tuple(f"not carried over a break in tracking ({why})" for why in (  # identity.continuity.NOT_CARRIED
     "a detection gap", "the box jumped", "another detection overlapped"))
 CONTINUITY_POLICY = ("max_gap_s", "overlap_iou", "min_step_iou", "retention_s")  # ContinuityPolicy.numbers (D97)
+# Track retention (session 116, part 28; PROPOSED, --identity-retention runs only): identity.retention, test-tied
+RETENTION_POLICY = ("max_since_match_s", "contradiction_votes", "contradiction_span_s", "min_face_width_fraction",
+                    "conflict_votes", "conflict_window_s")  # RetentionPolicy.numbers
+RETENTION_MONITOR = ("max_gap_s", "overlap_iou", "min_step_iou")  # retention.MONITOR_NUMBERS: what decides a break
+RETENTION_REPORTED = (*RETENTION_POLICY, *RETENTION_MONITOR)  # retention.reported_numbers: the status and startup marker
+ASSOCIATION_STATES = ("none", "current", "retained")  # retention.RECORD_STATES
+ASSOCIATION_EVIDENCE = ("none", "match", "unknown", "different_identity", "too_small", "low_quality", "margin",
+                        "incompatible", "no_face", "not_analysed")  # retention.Evidence
+ASSOCIATION_ENDS = ("continuity_gap", "continuity_jump", "continuity_overlap", "ambiguous_ownership",
+                    "track_not_current", "new_track_life", "stream_epoch_change", "video_not_live",
+                    "recognition_disabled", "max_since_match", "sustained_contradiction",
+                    "conflicting_identity")  # retention.EndReason
+ASSOCIATION_REASONS = ("established", "current_match", "no_current_match", *ASSOCIATION_ENDS)  # retention.CHANGE_REASONS
 VOTE_NOTES = ("face matched", "face matched nobody", "face matches more than one identity", "face quality too low",
               "embedding from an incompatible model", "no identities enrolled")  # state._NOTE_LABELS' keys
 TICKS = vocab("offered", "skipped_no_person", "stopping",  # identity.worker TICK_*
@@ -257,7 +270,8 @@ DEGRADED = template(r"capture (\S+)(?: \((.+)\))?", r"video (\S+)", r"detector u
 TRANSITION_REASON = template(*(fixed(t) for t in (
     *VOTE_NOTES, "no face visible", "face ownership ambiguous", *OWNERSHIP, NOT_ANALYSED_NOTE, "no face observed yet",
     "consistent faces matched nobody", "contradictory face evidence", "track no longer current", *NOT_CARRIED,
-    "face recognition disabled")),  # D99: identities end when face recognition is turned off
+    "face recognition disabled",  # D99: identities end when face recognition is turned off
+    *ASSOCIATION_REASONS)),  # part 28: "association" records' reasons, in the same field
     r"(\d+) consistent matches")
 TRACK_STATUS = vocab("tentative", "confirmed")  # contracts.TrackStatus
 # A person's identity reason (D95): the core's own (identity.state, runtime.EdgeCore._identity), never free text.
@@ -552,6 +566,8 @@ STARTUP = {  # the runtime's ``starting`` line (demo_runtime.assemble and cli)
     **{f"face.continuity.{k}": NUM for k in CONTINUITY_POLICY},  # D97, only in --face-continuity runs
     **TRACKING_STARTUP,  # session 79, only in --tracking-diagnostic runs
     **LANDMARK_STARTUP,  # session 90, only in --face-landmark-diagnostic runs
+    # part 28, only in --identity-retention runs: the top-level marker (assemble); the guard's summary does not keep it
+    **{f"identity_retention.{k}": NUM for k in RETENTION_REPORTED},
     "status_page": maybe(LOOPBACK_URL),
     **OPTIONAL_STARTUP,
 }
@@ -562,14 +578,16 @@ STATUS_LINE = {  # cli.status_line
     "updated_utc": ISO, "state": RUNTIME, "video": maybe(VIDEO), "occupancy": maybe(OCCUPANCY),
     "scene": maybe(SCENE_STATUS), "identities": NULL,
     **{f"identities.{k}": INT for k in (*IDENTITY_STATES, "fresh", "retained")},
+    "identities.associations_retained": INT,  # part 28, only in --identity-retention runs
     **{f"rates.{k}": SECONDS for k in ("window_s", "captured_fps", "processed_fps", "failed_per_s")},
     "capture.state": CAPTURE, "capture.stream_epoch": COUNT, "capture.reconnects": INT, "pending_signals": INT,
     "degraded[]": DEGRADED,
 }
 IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransition, ComparisonRecord
-    "identity": vocab("tick", "result", "transition", "comparison", "capture", "capture_raw", "break", "life"),
+    "identity": vocab("tick", "result", "transition", "comparison", "capture", "capture_raw", "break", "life",
+                      "association"),  # part 28: runtime.association_record (--identity-retention runs only)
     "schema": INT, "event": vocab("began", "ended"), "since_mono_ns": INT,  # runtime.TrackLife (route B shadow runs)
-    "stream_epoch": INT, "cause": vocab(*CONTINUITY_CAUSES),  # D97: runtime.break_record (continuity runs only)
+    "stream_epoch": INT, "cause": vocab(*CONTINUITY_CAUSES),  # D97: runtime.break_record (continuity, retention runs)
     "frame_seq": INT,
     "frame_mono_ns": INT, "tick": TICKS, "tracks[]": INT, "applied_mono_ns": INT, "outcome": OUTCOMES,
     **nest("windows", WINDOWS_RESULT),  # schema 8 (route B): the result's windows
@@ -605,9 +623,12 @@ IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransitio
     "faces_dropped_over_cap": INT, "faces_dropped_other_boot": INT,  # ... and the raw capture's (route B)
     "faces_in_span": INT, "prototypes": INT, "min_best_to_others": maybe(NUM), "similarity_to_original[]": NUM,
     "verified": BOOL,
-    "track_id": INT, "from": vocab(*IDENTITY_STATES), "to": vocab(*IDENTITY_STATES, "cleared"),
+    # "from" and "to" also the association records' (part 28): none, current or retained
+    "track_id": INT, "from": vocab(*IDENTITY_STATES, *ASSOCIATION_STATES), "to": vocab(*IDENTITY_STATES, "cleared",
+                                                                                       *ASSOCIATION_STATES),
     "identity_id": maybe(IDN), "basis": maybe(BASIS), "last_vote_age_ms": COUNT, "reason": TRANSITION_REASON,
     "mono_ns": INT,
+    "last_match_age_ms": COUNT, "contradictions": INT,  # part 28: runtime.association_record
     # schema 4 (D87, runtime.ComparisonRecord): fixed labels and numbers only ("error" is shared with results)
     "kind": vocab(*COMPARISON_KINDS), "disposition": vocab(*COMPARISON_DISPOSITIONS), "score": NUM, "w_px": INT,
     "similarity": maybe(NUM), "ms": maybe(NUM),
@@ -737,7 +758,9 @@ FACE_COUNTERS = vocab(*(f"persons_{o}" for o in OWNERSHIP), *(f"faces_{o}" for o
                       *(f"results_{o}" for o in sorted(OUTCOMES.values)), "votes_match", "votes_unknown",
                       "no_vote_margin", "no_vote_low_quality", "no_vote_incompatible", "no_vote_no_enrollment",
                       "persons_before_break", *(f"breaks_{c}" for c in CONTINUITY_CAUSES),  # D97
-                      "persons_before_expiry")  # state.BEFORE_EXPIRY
+                      "persons_before_expiry",  # state.BEFORE_EXPIRY
+                      "associations_established", "association_evidence_late",  # part 28: identity.retention's
+                      *(f"association_ended_{r}" for r in ASSOCIATION_ENDS))
 STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.build_status
     "generated_utc": ISO,
     "runtime.camera_id": TEXT, "runtime.state": RUNTIME, "runtime.updated_utc": ISO, "runtime.status_age_s": SECONDS,
@@ -747,13 +770,24 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
     "live.detector": CAPABILITY, "live.face_recognition": CAPABILITY, "live.scene_analysis": CAPABILITY,
     "live.occupancy": OCCUPANCY, "live.occupancy_reason": OCCUPANCY_REASON, "live.people": INT,
     "live.confirmed_people": INT, **{f"live.identity.{k}": INT for k in (*IDENTITY_STATES, "fresh", "retained")},
+    "live.identity.associations_retained": INT,  # part 28, only in --identity-retention runs
     "live.published_utc": ISO,  # D95: when the core published this live state
     # D95: each listed person's recognition state, only while face recognition runs (demo_runtime._face_rows)
     "live.faces[].track_id": INT, "live.faces[].stream_epoch": INT, "live.faces[].track_status": TRACK_STATUS,
     "live.faces[].predicted": BOOL, "live.faces[].last_measured_age_ms": INT,
     "live.faces[].state": vocab(*IDENTITY_STATES), "live.faces[].basis": maybe(BASIS),
     "live.faces[].vote_age_ms": COUNT, "live.faces[].reason": IDENTITY_REASON,  # no identity ID (D61, D95)
-    "live.faces[].followed_ms": COUNT,  # D97: time followed without a break (continuity runs only)
+    "live.faces[].followed_ms": COUNT,  # D97: time followed without a break (continuity and retention runs only)
+    # part 28 (--identity-retention runs only): the established association apart from the raw fields above; no identity
+    # ID (D61); numbers and fixed labels only
+    "live.faces[].association": NULL, "live.faces[].association.state": vocab("current", "retained"),
+    "live.faces[].association.last_match_age_ms": INT,
+    "live.faces[].association.evidence": vocab(*ASSOCIATION_EVIDENCE),
+    "live.faces[].association.evidence_age_ms": COUNT,
+    **{f"live.faces[].association.{k}": INT for k in ("contradictions", "contradiction_limit", "conflicts",
+                                                      "conflict_limit", "max_since_match_ms")},
+    "live.faces[].association_ended": NULL, "live.faces[].association_ended.reason": vocab(*ASSOCIATION_ENDS),
+    "live.faces[].association_ended.age_ms": INT,
     "live.faces_not_shown": INT,
     "live.scene": SCENE_STATUS, "live.scene_reason": SCENE_REASON, "live.scene_report": NULL,
     "live.scene_report.persons_visible": INT, "live.scene_report.fire_or_smoke": BOOL,
@@ -780,6 +814,8 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
     "components.face.policy.confirmations": INT, "components.face.policy.vote_ttl_s": NUM,  # D95
     "components.face.policy.fresh_window_s": NUM,
     **{f"components.face.policy.continuity.{k}": NUM for k in CONTINUITY_POLICY},  # D97
+    **{f"components.face.policy.retention.{k}": NUM for k in RETENTION_REPORTED},  # part 28: --identity-retention runs
+    "components.face.policy.retention.experimental": BOOL, "components.face.policy.retention.values": vocab("proposed"),
     "components.face.detection": vocab("full_scale"),  # D88
     "components.face.experiment": vocab("shadow", "capture"),  # D91
     **{f"components.face.records.{k}": INT for k in ("kept", "dropped", "limit")},
