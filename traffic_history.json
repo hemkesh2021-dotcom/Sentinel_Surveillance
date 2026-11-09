@@ -1,5 +1,5 @@
 {
-  "collected_at": "2026-11-08T02:41:23.046674Z",
+  "collected_at": "2026-11-09T02:57:40.668210Z",
   "days": {
     "2026-10-05": {
       "clones": {
@@ -244,156 +244,168 @@
     "2026-10-25": {
       "clones": {
         "count": 16,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 10
       },
       "views": {
         "count": 16,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 1
       }
     },
     "2026-10-26": {
       "clones": {
         "count": 18,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 14
       },
       "views": {
         "count": 13,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 1
       }
     },
     "2026-10-27": {
       "clones": {
         "count": 21,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 13
       },
       "views": {
         "count": 0,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 0
       }
     },
     "2026-10-28": {
       "clones": {
         "count": 23,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 15
       },
       "views": {
         "count": 2,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 1
       }
     },
     "2026-10-29": {
       "clones": {
         "count": 8,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 7
       },
       "views": {
         "count": 10,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 1
       }
     },
     "2026-10-30": {
       "clones": {
         "count": 18,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 11
       },
       "views": {
         "count": 1,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 1
       }
     },
     "2026-10-31": {
       "clones": {
         "count": 4,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 3
       },
       "views": {
         "count": 0,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 0
       }
     },
     "2026-11-01": {
       "clones": {
         "count": 13,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 7
       },
       "views": {
         "count": 0,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 0
       }
     },
     "2026-11-02": {
       "clones": {
         "count": 9,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 5
       },
       "views": {
         "count": 11,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 1
       }
     },
     "2026-11-03": {
       "clones": {
         "count": 17,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 11
       },
       "views": {
         "count": 15,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 1
       }
     },
     "2026-11-04": {
       "clones": {
         "count": 1,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 1
       },
       "views": {
         "count": 4,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 1
       }
     },
     "2026-11-05": {
       "clones": {
         "count": 9,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 4
       },
       "views": {
         "count": 8,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 1
       }
     },
     "2026-11-06": {
       "clones": {
         "count": 1,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 1
       },
       "views": {
         "count": 0,
-        "observed_at": "2026-11-08T02:41:23.046674Z",
+        "observed_at": "2026-11-09T02:57:40.668210Z",
+        "uniques": 0
+      }
+    },
+    "2026-11-07": {
+      "clones": {
+        "count": 3,
+        "observed_at": "2026-11-09T02:57:40.668210Z",
+        "uniques": 2
+      },
+      "views": {
+        "count": 0,
+        "observed_at": "2026-11-09T02:57:40.668210Z",
         "uniques": 0
       }
     }
@@ -401,11 +413,6 @@
   "latest": {
     "clones": {
       "clones": [
-        {
-          "count": 6,
-          "timestamp": "2026-10-24T00:00:00Z",
-          "uniques": 6
-        },
         {
           "count": 16,
           "timestamp": "2026-10-25T00:00:00Z",
@@ -470,40 +477,45 @@
           "count": 1,
           "timestamp": "2026-11-06T00:00:00Z",
           "uniques": 1
+        },
+        {
+          "count": 3,
+          "timestamp": "2026-11-07T00:00:00Z",
+          "uniques": 2
         }
       ],
-      "count": 164,
-      "uniques": 96
+      "count": 161,
+      "uniques": 90
     },
     "paths": [
       {
-        "count": 36,
+        "count": 32,
         "path": "/hemkesh2021-dotcom/Sentinel_Surveillance",
         "title": "Overview",
-        "uniques": 4
+        "uniques": 3
       },
       {
-        "count": 11,
+        "count": 10,
         "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/graphs/traffic",
         "title": "/graphs/traffic",
         "uniques": 1
       },
       {
-        "count": 9,
+        "count": 8,
         "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/pulse",
         "title": "/pulse",
-        "uniques": 1
-      },
-      {
-        "count": 4,
-        "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/stargazers",
-        "title": "/stargazers",
         "uniques": 1
       },
       {
         "count": 3,
         "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.2",
         "title": "/releases/tag/v2.0.0-alpha.2",
+        "uniques": 1
+      },
+      {
+        "count": 3,
+        "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/stargazers",
+        "title": "/stargazers",
         "uniques": 1
       },
       {
@@ -539,20 +551,15 @@
     ],
     "referrers": [
       {
-        "count": 21,
+        "count": 17,
         "referrer": "github.com",
-        "uniques": 2
+        "uniques": 1
       }
     ],
     "views": {
-      "count": 87,
-      "uniques": 4,
+      "count": 80,
+      "uniques": 3,
       "views": [
-        {
-          "count": 7,
-          "timestamp": "2026-10-24T00:00:00Z",
-          "uniques": 2
-        },
         {
           "count": 16,
           "timestamp": "2026-10-25T00:00:00Z",
@@ -617,6 +624,11 @@
           "count": 0,
           "timestamp": "2026-11-06T00:00:00Z",
           "uniques": 0
+        },
+        {
+          "count": 0,
+          "timestamp": "2026-11-07T00:00:00Z",
+          "uniques": 0
         }
       ]
     }
@@ -633,7 +645,7 @@
       "peak_14d_views": 1
     },
     "github.com": {
-      "last_seen": "2026-11-08T02:41:23.046674Z",
+      "last_seen": "2026-11-09T02:57:40.668210Z",
       "peak_14d_uniques": 3,
       "peak_14d_views": 21
     }
