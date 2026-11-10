@@ -18,8 +18,12 @@ import re
 from dataclasses import dataclass
 
 VISUAL, HISTORY, WHO, ALERTS = "visual", "history", "who", "alerts"
-INTENTS = (VISUAL, HISTORY, WHO, ALERTS)
+# Asking to zoom or to scan names no place the system could ground: the reply points to the page's own controls, where
+# the viewer selects the region; no coordinates are ever guessed (scene.roi)
+ZOOM, SCAN = "zoom", "scan"
+INTENTS = (VISUAL, HISTORY, WHO, ALERTS, ZOOM, SCAN)
 RECORDED = (HISTORY, WHO, ALERTS)
+GUIDES = (ZOOM, SCAN)
 
 DEFAULT_HISTORY_S = 600.0  # "what happened?" with no period: the last 10 minutes
 DEFAULT_ALERTS_S = 86400.0  # "any alerts?" with no period: the last 24 hours
@@ -37,6 +41,10 @@ _SINCE_START = re.compile(r"\bsince (?:the )?(?:start(?:up)?|boot|launch|it star
 _TODAY = re.compile(r"\b(?:today|tonight|so far)\b")
 _PICTURE = re.compile(r"\b(?:picture|image|photo|frame|pic|snapshot|screenshot)\b")  # names the picture: about it
 
+_ZOOM = re.compile(r"\bzoom(?:ed|ing)?\b|\benlarge\b|\bmagnif(?:y|ied)\b|\b(?:a )?closer look\b|\bclose[- ]up\b")
+_SCAN = re.compile(r"\b(?:full|whole|entire|complete) (?:room |area )?scan\b|\broom scan\b|"
+                   r"\bscan (?:of )?(?:the |this |my |visible |whole |entire |full )*(?:room|area|scene|place|view)\b|"
+                   r"\bsweep (?:of )?the room\b")
 _ALERTS = re.compile(r"\b(?:alerts?|incidents?|notifications?|notified|telegram)\b|"
                      r"\b(?:was|were|has|have|did|is|are)\b.*\btriggered\b|\bany(?:thing)? triggered\b")
 _WHO = re.compile(
@@ -84,6 +92,10 @@ def route(question: str) -> Route:
     stated = seconds is not None or since_start
     if _ALERTS.search(text):
         return Route(ALERTS, None if since_start else seconds or DEFAULT_ALERTS_S, since_start, stated)
+    if _SCAN.search(text):
+        return Route(SCAN)
+    if _ZOOM.search(text):
+        return Route(ZOOM)
     if _PICTURE.search(text):
         return Route(VISUAL)
     if _WHO.search(text):

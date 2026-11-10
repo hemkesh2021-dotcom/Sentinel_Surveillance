@@ -448,6 +448,26 @@ html.js .peek { position: relative; display: inline-flex; align-items: center; g
 .exchange[data-state=answered] .status { color: var(--ink); }
 .exchange .answer { white-space: pre-line; }
 .exchange .frame { color: var(--muted); font-size: .82rem; padding: 0; background: none; box-shadow: none; border: 0; }
+.zoom-tools { margin-top: 10px; }
+.zoom-panel { display: grid; gap: 8px; margin-top: 10px; padding: 12px 14px; border-radius: var(--radius-m);
+  background: var(--sunken); border: 1px solid var(--deep-clear, var(--line)); }
+.zoom-panel[hidden] { display: none; }
+.zoom-surface { position: relative; justify-self: start; max-width: 100%; line-height: 0; border-radius: var(--radius-s);
+  overflow: hidden; cursor: crosshair; touch-action: none; border: 1px solid var(--line-strong); }
+.zoom-surface:focus-visible { outline: 2px solid var(--focus, var(--ink)); outline-offset: 2px; }
+.zoom-surface { width: min(100%, 640px); }
+.zoom-surface canvas { display: block; width: 100%; height: auto; }
+.zoom-box { position: absolute; box-sizing: border-box; border: 2px solid var(--accent); pointer-events: none;
+  box-shadow: 0 0 0 9999px color-mix(in srgb, var(--canvas) 55%, transparent); }
+.zoom-numbers { display: flex; flex-wrap: wrap; gap: 8px 12px; margin: 0; padding: 8px 10px; border: 1px solid var(--line);
+  border-radius: var(--radius-s); font-size: .86rem; }
+.zoom-numbers legend { padding: 0 6px; color: var(--muted); }
+.zoom-numbers label { display: flex; align-items: center; gap: 6px; }
+.zoom-numbers input { width: 5.2em; padding: 5px 8px; border: 1px solid var(--deep-clear, var(--border));
+  border-radius: 8px; background: var(--panel); color: var(--ink); font: inherit; }
+.exchange .region { color: var(--muted); font-size: .82rem; }
+.exchange ul.tiles li[data-state=waiting], .exchange ul.tiles li[data-state=skipped],
+.exchange ul.tiles li[data-state=failed] { color: var(--muted); }
 .exchange .again, .exchange .autorow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px;
   margin-top: 4px; font-size: .86rem; }
 .exchange .autorow select { font: inherit; }

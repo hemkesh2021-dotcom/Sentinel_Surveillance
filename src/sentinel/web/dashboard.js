@@ -988,6 +988,18 @@
         + `${seconds(document_.age_ms_when_answered)} old when answered. It describes that frame only, not the scene now.`;
     };
 
+    const numbers = (list, count) => Array.isArray(list) && list.length === count
+      && list.every((v) => Number.isFinite(v)) ? list : null;
+    const regionText = (region) => {
+      const px = numbers(region.pixels, 4);
+      const size = numbers(region.source_size, 2);
+      const sent = numbers(region.sent_size, 2);
+      const from = region.source === "main_stream" ? "the main stream's picture" : "the working picture (no larger one is recorded on this stream)";
+      return `Region: recorded pixels ${px ? `${px[0]},${px[1]} to ${px[2]},${px[3]}` : "?"} of ${from}`
+        + `${size ? ` (${size[0]} × ${size[1]})` : ""}, cut from that picture and sent as ${sent ? `${sent[0]} × ${sent[1]}` : "?"}. `
+        + "It shows no more than was recorded.";
+    };
+
     // Shows a server document on one exchange; true when the exchange is finished.
     const show = (exchange, document_, question) => {
       const state_ = typeof document_.state === "string" ? document_.state : "error";
@@ -1027,6 +1039,11 @@
           line(exchange, "readas", `Read as a follow-up to your earlier question: “${document_.read_as.slice(0, 400)}”`);
         }
         line(exchange, "frame", label(document_, exchange));
+        if (document_.region && typeof document_.region === "object") {
+          // Part 28: a region of a held picture. Never part of the context sent with a later question.
+          line(exchange, "region", regionText(document_.region));
+          return true;
+        }
         // the context sent with the next question: the operator's questions and the model's own earlier statements
         // (never a recorded fact); the same question asked again replaces its own earlier entry
         chat.history = chat.history.filter((turn) => turn.question !== question);
@@ -1139,7 +1156,20 @@
     const AUTO_DEFAULT = Number(chatForm.dataset.autoDefault) || 30;
     const auto = {exchange: null, every: 0, wait: 0, timer: null};
     const actions = (exchange, document_) => {
-      if (exchange.dataset.kind === "recorded" || !exchange.isConnected) return;
+      if (exchange.dataset.kind === "recorded" || exchange.dataset.kind === "scan" || !exchange.isConnected) return;
+      if (exchange.dataset.region) {  // a region of a held picture: only "Try again" on that same region
+        let row = exchange.querySelector("div.again");
+        if (exchange.dataset.state === "answered" || document_.state === "picture_expired") {
+          if (row) row.remove();
+          return;
+        }
+        if (!row) {
+          row = el("div", {class: "again"});
+          exchange.append(row);
+        }
+        row.replaceChildren(el("button", {type: "button", class: "ghost", "data-again": "region"}, ["Try again"]));
+        return;
+      }
       const answered = exchange.dataset.state === "answered";
       if (typeof document_.picture === "string" && JOB.test(document_.picture)) exchange.dataset.picture = document_.picture;
       else if (document_.state === "picture_expired") delete exchange.dataset.picture;
@@ -1196,6 +1226,10 @@
     };
 
     const again = (exchange, use, automatic) => {
+      if (use === "region") {
+        return run(exchange, exchange.dataset.question || "", {region: JSON.parse(exchange.dataset.region), history: []},
+          false);
+      }
       const extra = {again: use === "same" ? {use: "same", picture: exchange.dataset.picture} : {use: "latest"}};
       if (automatic) extra.auto = true;
       exchange.dataset.again = use;
@@ -1309,6 +1343,283 @@
       while (log.children.length > 12) log.firstElementChild.remove();
       run(exchange, question, {}, true);
     });
+    // ---------------------------------------------------------------- part 28: zoom into a region, scan the room
+    //
+    // "Zoom" holds the newest live frame on the device (POST /chat/hold) and shows that held picture here; the viewer
+    // drags a rectangle on it (or uses the arrow keys, the numbers, or a tracked person's own box) and asks about it.
+    // The server cuts the rectangle from the held frame's recorded pixels: nothing is magnified in the browser, and
+    // no coordinates are ever guessed. "Scan" asks about the held picture's four overlapping parts in turn, each as
+    // its own question through every usual limit, on one card that says what was and was not analysed.
+    const zoomOpen = document.getElementById("zoom-open");
+    const scanOpen = document.getElementById("scan-open");
+    const zoomPanel = document.getElementById("zoom-panel");
+    if (zoomOpen && scanOpen && zoomPanel) {
+      const surface = document.getElementById("zoom-surface");
+      const canvas = document.getElementById("zoom-canvas");
+      const marker = document.getElementById("zoom-box");
+      const zoomNote = document.getElementById("zoom-note");
+      const zoomAsk = document.getElementById("zoom-ask");
+      const sizeNote = document.getElementById("zoom-size");
+      const inputs = ["x1", "y1", "x2", "y2"].map((name) => document.getElementById(`zoom-${name}`));
+      const zoom = {pin: null, box: null, drag: null};
+      const headers = {"Content-Type": "application/json", "X-Sentinel-Token": token};
+      const sayZoom = (text) => {
+        if (zoomNote.textContent !== text) zoomNote.textContent = text;
+      };
+      const clamp = (v) => Math.min(1, Math.max(0, v));
+      const pixels = () => {  // the selection in the source's whole pixels, as the server maps it
+        const [w, h] = zoom.pin.source_size;
+        const [x1, y1, x2, y2] = zoom.box;
+        return [Math.min(w - 1, Math.floor(x1 * w)), Math.min(h - 1, Math.floor(y1 * h)),
+          Math.min(w, Math.ceil(x2 * w)), Math.min(h, Math.ceil(y2 * h))];
+      };
+      const drawBox = () => {
+        const usable = !!zoom.box && zoom.box[2] > zoom.box[0] && zoom.box[3] > zoom.box[1];
+        marker.hidden = !usable;
+        let enough = false;
+        if (usable) {
+          const [x1, y1, x2, y2] = zoom.box;
+          Object.assign(marker.style, {left: `${x1 * 100}%`, top: `${y1 * 100}%`, width: `${(x2 - x1) * 100}%`,
+            height: `${(y2 - y1) * 100}%`});
+          const [px1, py1, px2, py2] = pixels();
+          const w = px2 - px1;
+          const h = py2 - py1;
+          enough = w >= zoom.pin.min_px && h >= zoom.pin.min_px;
+          const from = zoom.pin.source === "main_stream" ? "main stream" : "working picture";
+          sizeNote.textContent = enough ? `${w} × ${h} recorded pixels (${from}).`
+            : `${w} × ${h} recorded pixels: too small to analyse (at least ${zoom.pin.min_px} on a side).`;
+          inputs.forEach((input, i) => {
+            if (document.activeElement !== input) input.value = String(Math.round(zoom.box[i] * 100));
+          });
+        } else {
+          sizeNote.textContent = "Drag on the picture to select a region.";
+        }
+        zoomAsk.disabled = !enough || chat.pending;
+      };
+      const setBox = (box) => {
+        zoom.box = [clamp(Math.min(box[0], box[2])), clamp(Math.min(box[1], box[3])),
+          clamp(Math.max(box[0], box[2])), clamp(Math.max(box[1], box[3]))];
+        drawBox();
+      };
+      const closeZoom = (text) => {
+        zoomPanel.hidden = true;
+        zoom.pin = null;
+        zoom.box = null;
+        canvas.width = canvas.height = 0;  // the held picture is not kept in this page either
+        sayZoom(text || "");
+      };
+      // Holds the newest live frame; the held document, or null with the reason said.
+      const hold = async () => {
+        sayZoom("Holding the newest picture…");
+        const held = await request("/chat/hold", {method: "POST", headers, body: "{}"}, 8000);
+        if (held.state !== "held" || typeof held.picture !== "string" || !JOB.test(held.picture)
+            || !numbers(held.source_size, 2) || !numbers(held.shown_size, 2)) {
+          sayZoom(`No picture was held: ${typeof held.reason === "string" ? held.reason.slice(0, 200) : "the request failed"}.`);
+          return null;
+        }
+        return held;
+      };
+      const facts = (held) => `the frame received at ${clock(held.frame && held.frame.ingest_utc)} `
+        + `(stream epoch ${number(held.frame && held.frame.stream_epoch)}, frame ${number(held.frame && held.frame.frame_seq)})`;
+
+      zoomOpen.addEventListener("click", async () => {
+        if (zoomOpen.disabled) return;
+        zoomOpen.disabled = true;
+        const held = await hold();
+        refreshAsk();
+        if (!held) return;
+        let bitmap = null;
+        try {
+          const response = await fetch(`/chat/picture/${held.picture}`, {cache: "no-store", credentials: "same-origin",
+            redirect: "error", headers: {"X-Sentinel-Token": token}});
+          if (response.ok) bitmap = await createImageBitmap(await response.blob());
+        } catch (error) {
+          bitmap = null;
+        }
+        if (!bitmap) {
+          sayZoom("The held picture could not be shown, so no region can be selected.");
+          return;
+        }
+        zoom.pin = held;
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        canvas.getContext("2d").drawImage(bitmap, 0, 0);
+        document.getElementById("zoom-facts").textContent = `Held picture: ${facts(held)}, kept for at most `
+          + `${number(held.keep_s)} s. A region is cut from ${held.source === "main_stream" ? "the main stream's picture"
+            : "the working picture"} (${held.source_size[0]} × ${held.source_size[1]} recorded pixels).`;
+        const people = document.getElementById("zoom-people");
+        people.replaceChildren(...(Array.isArray(held.people) ? held.people : []).filter((p) => p && numbers(p.box, 4))
+          .slice(0, 8).map((p) => el("button", {type: "button", class: "ghost", "data-track-box": JSON.stringify(p.box)},
+            [`Track ${number(p.track_id)} (the tracker's box)`])));
+        zoom.box = null;
+        inputs.forEach((input) => { input.value = ""; });
+        zoomPanel.hidden = false;
+        sayZoom("");
+        drawBox();
+        surface.focus();
+      });
+      const at = (event) => {
+        const rect = surface.getBoundingClientRect();
+        return [clamp((event.clientX - rect.left) / rect.width), clamp((event.clientY - rect.top) / rect.height)];
+      };
+      surface.addEventListener("pointerdown", (event) => {
+        if (!zoom.pin) return;
+        zoom.drag = at(event);
+        surface.setPointerCapture(event.pointerId);
+        setBox([...zoom.drag, ...zoom.drag]);
+        event.preventDefault();
+      });
+      surface.addEventListener("pointermove", (event) => {
+        if (zoom.drag) setBox([...zoom.drag, ...at(event)]);
+      });
+      for (const name of ["pointerup", "pointercancel"]) {
+        surface.addEventListener(name, () => { zoom.drag = null; });
+      }
+      surface.addEventListener("keydown", (event) => {  // the keyboard's way: arrows move, Shift+arrows resize
+        const step = {ArrowLeft: [-0.02, 0], ArrowRight: [0.02, 0], ArrowUp: [0, -0.02], ArrowDown: [0, 0.02]}[event.key];
+        if (!step || !zoom.pin) return;
+        event.preventDefault();
+        const [x1, y1, x2, y2] = zoom.box || [0.35, 0.35, 0.65, 0.65];
+        if (event.shiftKey) setBox([x1, y1, clamp(x2 + step[0]), clamp(y2 + step[1])]);
+        else {
+          const dx = Math.min(1 - x2, Math.max(-x1, step[0]));
+          const dy = Math.min(1 - y2, Math.max(-y1, step[1]));
+          setBox([x1 + dx, y1 + dy, x2 + dx, y2 + dy]);
+        }
+      });
+      inputs.forEach((input) => input.addEventListener("input", () => {
+        if (!zoom.pin) return;
+        const values = inputs.map((item) => Number(item.value) / 100);
+        if (values.every((v) => Number.isFinite(v))) setBox(values);
+      }));
+      zoomPanel.addEventListener("click", (event) => {
+        const person = event.target.closest("button[data-track-box]");
+        if (person && zoom.pin) setBox(JSON.parse(person.dataset.trackBox));
+      });
+      document.getElementById("zoom-cancel").addEventListener("click", () => closeZoom("Cancelled: nothing was asked."));
+      zoomAsk.addEventListener("click", () => {
+        if (zoomAsk.disabled || !zoom.pin || !zoom.box || chat.pending) return;
+        const typed = box.value.trim();
+        const question = typed && typed.length <= LIMIT ? typed : "Describe this area.";
+        const region = {picture: zoom.pin.picture, box: zoom.box.map((v) => Math.round(v * 1e6) / 1e6)};
+        const exchange = el("li", {class: "exchange", "data-question": question, "data-region": JSON.stringify(region)},
+          [el("p", {class: "question"}, [`${question} (a selected region of the held picture)`])]);
+        log.append(exchange);
+        while (log.children.length > 12) log.firstElementChild.remove();
+        closeZoom("");
+        run(exchange, question, {region, history: []}, !!typed && question === typed);
+      });
+
+      // One question to its end without a card of its own (the scan's tiles); the last document.
+      const askOnce = async (payload, limitMs) => {
+        let document_ = await request("/chat", {method: "POST", headers, body: JSON.stringify(payload)}, 8000);
+        const job = typeof document_.job === "string" && JOB.test(document_.job) ? document_.job : null;
+        const started = performance.now();
+        while (job && STATES[document_.state] || (document_.lost && job)) {
+          if (performance.now() - started > limitMs) return {state: "timeout", reason: "no answer in time"};
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          document_ = await request(`/chat/${job}`, {headers: {"X-Sentinel-Token": token}}, 5000);
+        }
+        return document_;
+      };
+      const SCAN_QUESTION = "Describe what is visible in this part of the picture.";
+      const SCAN_LIMIT_MS = (Number(chatForm.dataset.scanDeadline) || 120) * 1000;
+      scanOpen.addEventListener("click", async () => {
+        if (scanOpen.disabled || chat.pending) return;
+        chat.pending = true;  // the whole scan is one piece of work: no other question, manual or automatic, meanwhile
+        refreshAsk();
+        const held = await hold();
+        const tiles = held && Array.isArray(held.tiles) ? held.tiles.filter((t) => t && typeof t.name === "string"
+          && numbers(t.box, 4)).slice(0, 4) : [];
+        if (!held || !tiles.length) {
+          chat.pending = false;
+          refreshAsk();
+          return;
+        }
+        sayZoom("");
+        const list = el("ul", {class: "lines tiles"});
+        const stop = el("button", {type: "button", class: "ghost", "data-scan": "stop"}, ["Stop the scan"]);
+        const exchange = el("li", {class: "exchange", "data-kind": "scan"},
+          [el("p", {class: "question"}, ["Scan of the visible room (one held picture, four overlapping parts)"]), list,
+            el("div", {class: "again"}, [stop])]);
+        log.append(exchange);
+        while (log.children.length > 12) log.firstElementChild.remove();
+        const rows = tiles.map((tile) => {
+          const row = el("li", {"data-tile": tile.name, "data-state": "waiting"}, [`${tile.name}: waiting…`]);
+          list.append(row);
+          return row;
+        });
+        let stopped = "";
+        stop.addEventListener("click", () => { stopped = "stopped by you"; });
+        status(exchange, "answering", `Scanning ${facts(held)}: one part at a time; monitoring comes first…`);
+        const began = performance.now();
+        let analysed = 0;
+        for (let i = 0; i < tiles.length; i += 1) {
+          const row = rows[i];
+          let result = null;
+          while (!stopped && !result) {
+            if (!exchange.isConnected) stopped = "the card was closed";
+            else if (performance.now() - began > SCAN_LIMIT_MS) stopped = "the scan's time ran out";
+            else if (state.instance !== servedBy) stopped = "the runtime restarted";
+            else if (["off", "unavailable"].includes(chatState())) stopped = `chat is ${chatState()}`;
+            if (stopped) break;
+            if (chatState() !== "available") {  // paused by the runtime: wait, sending nothing
+              row.textContent = `${tiles[i].name}: waiting (chat is paused by the runtime)…`;
+              await new Promise((resolve) => setTimeout(resolve, 1000));
+              continue;
+            }
+            row.textContent = `${tiles[i].name}: asking…`;
+            const document_ = await askOnce({question: SCAN_QUESTION, region: {picture: held.picture,
+              box: tiles[i].box, tile: tiles[i].name}}, 40000);
+            if (document_.state === "busy" || document_.state === "paused") {
+              row.textContent = `${tiles[i].name}: waiting for its turn (${String(document_.reason || "busy").slice(0, 120)})…`;
+              await new Promise((resolve) => setTimeout(resolve, 1500));
+            } else {
+              result = document_;
+            }
+          }
+          if (!result) break;  // stopped before this part was asked; a part already answered is still shown
+          if (result.state === "answered" && typeof result.answer === "string") {
+            analysed += 1;
+            row.dataset.state = "answered";
+            const px = result.region && numbers(result.region.pixels, 4);
+            row.textContent = `${tiles[i].name}${px ? ` (recorded pixels ${px[0]},${px[1]} to ${px[2]},${px[3]})` : ""}: `
+              + result.answer.slice(0, 600);
+          } else {
+            row.dataset.state = "failed";
+            row.textContent = `${tiles[i].name}: not analysed (${String(result.reason || result.state || "no answer").slice(0, 200)}).`;
+            if (result.state === "picture_expired") stopped = "the held picture is gone";
+          }
+          if (stopped) break;
+        }
+        for (const row of rows) {
+          if (row.dataset.state === "waiting") {
+            row.dataset.state = "skipped";
+            row.textContent = `${row.dataset.tile}: not analysed (${stopped || "the scan ended"}).`;
+          }
+        }
+        stop.remove();
+        status(exchange, analysed ? "answered" : "cancelled", `Scan ended: ${analysed} of ${tiles.length} parts analysed`
+          + `${stopped ? ` (${stopped})` : ""}.`);
+        line(exchange, "frame", `Historical: about ${facts(held)}, one held picture. Each part was asked about by itself; `
+          + "nothing here combines them. It covers what the camera saw in that picture: not areas out of view, and not "
+          + "a camera movement.");
+        chat.pending = false;
+        refreshAsk();
+      });
+      const refreshZoom = () => {
+        const off = chat.pending || chatState() !== "available" || state.instance !== servedBy;
+        zoomOpen.disabled = off;
+        scanOpen.disabled = off;
+        if (zoom.pin) drawBox();
+      };
+      const refreshAskBefore = refreshAsk;
+      refreshAsk = () => {
+        refreshAskBefore();
+        refreshZoom();
+      };
+    }
+
     box.addEventListener("input", () => refreshAsk());
     refreshAsk();
   }

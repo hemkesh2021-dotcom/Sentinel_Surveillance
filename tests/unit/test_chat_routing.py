@@ -10,6 +10,8 @@ from sentinel.scene.chat_routing import (
     DEFAULT_HISTORY_S,
     HISTORY,
     MAX_PERIOD_S,
+    SCAN,
+    ZOOM,
     VISUAL,
     WHO,
     Route,
@@ -41,6 +43,10 @@ from sentinel.scene.chat_routing import (
     ("was I notified on telegram", Route(ALERTS, DEFAULT_ALERTS_S, False, False)),
     ("Has anything been triggered since the start?", Route(ALERTS, None, True, True)),
     ("What happened with the alerts in the last hour?", Route(ALERTS, 3600.0, False, True)),  # alerts first
+    # the maintainer's two requests that name no place: answered by pointing to the page's own controls
+    ("can you zoom in the pic?", Route(ZOOM)), ("full room scan", Route(SCAN)),
+    ("Zoom in on the shelf", Route(ZOOM)), ("take a closer look at the door", Route(ZOOM)),
+    ("scan the whole room", Route(SCAN)), ("do a full scan", Route(SCAN)),
 ])
 def test_a_question_about_records_is_routed_to_them_with_its_period(question: str, expected: Route) -> None:
     assert route(question) == expected
@@ -48,7 +54,7 @@ def test_a_question_about_records_is_routed_to_them_with_its_period(question: st
 
 @pytest.mark.parametrize("question", [
     "Is the door open?", "Is anyone at the door?", "What is on the desk?", "Is there a phone on the desk?",
-    "near the water bottle?", "Can you zoom in the pic?", "How many chairs are there?", "Is the light on?",
+    "near the water bottle?", "Is the scanner on the desk?", "How many chairs are there?", "Is the light on?",
     "What colour is the jacket?", "Is somebody sitting on the chair?", "Describe the room", "Is the person standing?",
     "Is there an alarm clock on the shelf?", "What is happening in this picture?", "who left this bag on the floor",
     "Is the window open since this morning", "What's happening?", "Who is in this picture?",

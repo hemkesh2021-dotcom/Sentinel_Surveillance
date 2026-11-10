@@ -202,6 +202,7 @@ from .runtime import (
 )
 from .scene.analyzer import IMAGES_KEPT, RecentImages, ThreadedSceneAnalyzer
 from .scene.chat import CHAT_ADMISSION, ChatAdmission, ChatService
+from .scene.roi import PinnedFrames
 from .scene.chat_gate import SAMPLE_INTERVAL_S as CHAT_GATE_SAMPLE_S, ChatGate, read_pressure
 from .scene.llama_server import PROFILED_FLAGS, PROMPT_CACHE_FLAGS
 from .scene.models import FALLBACK_SCENE_MODEL_SET, ROLLBACK_SCENE_MODEL_SET, SceneModelSet, scene_model_set
@@ -443,6 +444,7 @@ class DemoRuntime:
                                      pressure=self._monitoring_backlog)
                          if live_preview and self._recent is not None else None)
         self._chat: ChatService | None = None
+        self._pins: PinnedFrames | None = None
         self._chat_gate: ChatGate | None = None  # D77: chat's pressure response, sampled on this loop at most once a second
         self._pressure = pressure
         self._next_gate_ns = 0
@@ -450,12 +452,16 @@ class DemoRuntime:
             watching = clock.mono()
             recent = self._recent
             self._chat_gate = ChatGate() if chat_usable else None
+            # part 28: the newest frame's pictures in one slot, and the frames viewers pin for a zoom or a scan
+            # (scene.roi); only where chat can ask the model, and never while chat is turned off
+            self._pins = PinnedFrames() if chat_usable else None
             self._chat = ChatService(
                 enabled=True, admission=chat_admission, scene=scene.analyzer if scene is not None else None,
                 latest=recent.latest if chat_usable and recent is not None else lambda: None, clock=clock,
                 run=chat_run if chat_usable else None,
                 assess=lambda frame: assess_frame(frame, capture.connected, clock.mono(), watching, config.freshness),
-                stale_after_s=config.freshness.stale_after_s, gate=self._chat_gate, validation_run=chat_validation)
+                stale_after_s=config.freshness.stale_after_s, gate=self._chat_gate, validation_run=chat_validation,
+                pins=self._pins, encode=encode if chat_usable else None)
         # Part 28: what chat's recorded-fact answers read (chat_evidence): the runtime's own bounded history and its
         # current view of tracked people. Only with --chat; nothing else reads or changes them.
         self._history = RecentHistory(clock) if chat else None
@@ -786,6 +792,10 @@ class DemoRuntime:
             output = self._core.on_frame(frame, result.persons, connected)
             if self._tracking is not None:
                 self._keep_tracking(frame, result, output)
+            if self._pins is not None and self._chat is not None and not self._chat.operator_off:
+                # part 28: references to this frame's pictures (its working copy and, on route B, the decoded picture)
+                # and the tracker's people on it, replacing the previous frame's: what a zoom or a scan may pin
+                self._pins.latest(frame, captured.image, captured.full, result.persons)
             if self._face is not None and self._face_on:  # D99: not offered while turned off
                 # route B: the decoded picture the working copy was made from (the worker copies its windows only)
                 picture = captured.image if captured.full is None else captured.full

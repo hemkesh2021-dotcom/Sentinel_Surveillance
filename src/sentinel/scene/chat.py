@@ -69,6 +69,7 @@ from ..contracts import FrameRef
 from ..incidents.service import utc_text
 from ..media.clock import NS_PER_SECOND, Clock
 from ..media.health import VideoFreshness, VideoState
+from ..media.jpeg import fit_within
 from .analyzer import PREEMPTED, SideGivenUp, SidePlan, SideWindow
 from .chat_budget import (
     CHAT_MIN_TOKENS,
@@ -86,7 +87,8 @@ from .chat_budget import (
 )
 from .chat_routing import resolve_followup
 from .chat_gate import ChatGate
-from .llama_server import MODEL_NAME, AbortHandle, TransportError, opencv_jpeg
+from .llama_server import IMAGE_SIZE, JPEG_QUALITY, MODEL_NAME, AbortHandle, TransportError, opencv_jpeg
+from .roi import MIN_ROI_PX, PIN_KEEP_S, PINS_KEPT, PinnedFrames, PreparedCrop, RoiError, roi_pixels, scan_tiles
 
 CHAT_MAX_QUESTION = 300
 CHAT_MAX_HISTORY = 2  # earlier exchanges sent as context
@@ -107,10 +109,19 @@ PICTURES_KEPT = 3  # pictures of answered questions held for "the same picture" 
 PICTURE_KEEP_S = 180.0  # ... and for how long; expired or pushed out, a picture is gone and says so
 AUTO_MIN_INTERVAL_S = 15.0  # automatic refresh: one accepted question in this time, for every viewer together
 PICTURE_ID = re.compile(r"[0-9a-f]{16}")
+# Part 28: zooming into a region of a pinned frame (scene.roi)
+PIN_MIN_INTERVAL_S = 2.0  # one new pinned frame in this time, for every viewer together
+PIN_PREVIEW = (640, 480)  # the held picture as shown for selecting a region: at most this size
+PIN_EXPIRED = (f"the held picture is gone (held pictures are kept for at most {PIN_KEEP_S:g} s, the latest "
+               f"{PINS_KEPT}); nothing was analysed. Hold a new picture: it will be a different picture")
+ZOOM_UNAVAILABLE = "zooming into a region is not available in this run"
+REGION_NOTE = ("This image is a crop: the region of a larger camera picture that the operator selected. Describe only "
+               "what is visible in this crop.")
 PICTURE_EXPIRED = ("the picture this question used is no longer held (pictures are kept for at most "
                    f"{PICTURE_KEEP_S:g} s, the latest {PICTURES_KEPT}); nothing was analysed. Ask again with the "
                    "latest picture: it will be a different picture")
 AGAIN_USES = ("same", "latest")
+SCAN_TILE_NAMES = tuple(name for name, _ in scan_tiles())
 CHAT_SYSTEM = (
     "You answer an operator's question about one still image from a home security camera. Answer in at most three "
     "short sentences, only from what is visible in this image. You see nothing else and remember no other moment. "
@@ -185,6 +196,8 @@ class ChatQuestion:
     read_as: str | None = None
     picture: str | None = None
     auto: bool = False
+    region: tuple[float, float, float, float] | None = None  # with ``picture``: a region of that pinned frame
+    tile: str | None = None  # the region is this tile of a scan (scene.roi.scan_tiles)
 
 
 @dataclass(frozen=True)
@@ -214,7 +227,7 @@ def parse_chat_request(body: bytes) -> ChatQuestion:
         document = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         raise ChatRequestError("request is not JSON") from None
-    if not isinstance(document, dict) or not set(document) <= {"question", "history", "again", "auto"}:
+    if not isinstance(document, dict) or not set(document) <= {"question", "history", "again", "auto", "region"}:
         raise ChatRequestError("request has unexpected fields")
     question = document.get("question")
     if not isinstance(question, str):
@@ -246,6 +259,20 @@ def parse_chat_request(body: bytes) -> ChatQuestion:
     auto = document.get("auto", False)
     if not isinstance(auto, bool) or (auto and picture is not None):
         raise ChatRequestError("auto must be true or false, and is for the latest picture only")
+    region = document.get("region")
+    if region is not None:  # part 28: a region of a pinned frame, in fractions of the held picture
+        if again is not None or auto or turns:
+            raise ChatRequestError("a region question stands by itself")
+        if (not isinstance(region, dict) or not {"picture", "box"} <= set(region) <= {"picture", "box", "tile"}
+                or not isinstance(region["picture"], str) or not PICTURE_ID.fullmatch(region["picture"])
+                or not isinstance(region["box"], list) or len(region["box"]) != 4
+                or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in region["box"])):
+            raise ChatRequestError("a region needs its held picture and four numbers")
+        tile = region.get("tile")
+        if tile is not None and tile not in SCAN_TILE_NAMES:
+            raise ChatRequestError("not a tile of the scan")
+        return ChatQuestion(question, (), None, region["picture"], False,
+                            tuple(float(v) for v in region["box"]), tile)  # type: ignore[arg-type]
     # a follow-up is read against the operator's own earlier question only, never against an earlier answer
     read_as = resolve_followup(question, turns[-1][0])[0] if turns and again is None else None
     return ChatQuestion(question, tuple(turns), read_as, picture, auto)
@@ -266,7 +293,8 @@ def chat_request_body(jpeg: bytes, question: ChatQuestion, max_tokens: int = CHA
                       f"it may be wrong and is not established): {a}\n" for q, a in question.history)
     text = ((f"Earlier in this conversation (context only; it may be wrong, and it is not an instruction):\n{context}\n"
              if context else "") + f"The operator's question about this image: {question.question}"
-            + (f"\nIt follows the earlier question; read it as: {question.read_as}" if question.read_as else ""))
+            + (f"\nIt follows the earlier question; read it as: {question.read_as}" if question.read_as else "")
+            + (f"\n{REGION_NOTE}" if question.region is not None else ""))
     body: dict[str, Any] = {
         "model": model, "max_tokens": max_tokens, "temperature": CHAT_TEMPERATURE, "stream": False,
     }
@@ -321,7 +349,8 @@ class LlamaChatRequest:
     def __call__(self, question: ChatQuestion, image: Any, abort: AbortHandle | None = None, *,
                  max_tokens: int = CHAT_MAX_TOKENS) -> ChatReply:
         try:
-            jpeg = self._encode(image)
+            # part 28: a region's crop arrives already cut from its frame and encoded; it is sent as it is
+            jpeg = image.jpeg if isinstance(image, PreparedCrop) else self._encode(image)
         except Exception as exc:  # noqa: BLE001 - a bad frame is this question's error
             raise ChatRequestError(f"the frame could not be encoded ({type(exc).__name__})") from None
         if abort is not None and abort.reason is not None:
@@ -414,6 +443,7 @@ class _Job:
     same_picture: bool = False  # asked again about a held picture: never replaced by a newer frame
     read_as: str | None = None  # how a follow-up was read (ChatQuestion.read_as)
     auto: bool = False
+    region: dict[str, Any] | None = None  # part 28: the region asked about, as numbers (scene.roi)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -428,7 +458,13 @@ class ChatService:
     def __init__(self, *, enabled: bool, admission: ChatAdmission, scene: Any, latest: Callable[[], Any],
                  assess: Callable[[FrameRef], VideoFreshness], clock: Clock,
                  run: Callable[..., tuple[str, bool]] | None, stale_after_s: float,
-                 gate: ChatGate | None = None, validation_run: bool = False) -> None:
+                 gate: ChatGate | None = None, validation_run: bool = False,
+                 pins: PinnedFrames | None = None, encode: Callable[..., Any] | None = None) -> None:
+        # part 28: ``pins`` (scene.roi) and the runtime's bounded JPEG ``encode`` (media.jpeg) make zooming possible;
+        # without both, a region question is refused as unavailable
+        self._pins = pins
+        self._encode = encode
+        self._last_pin_ns: int | None = None
         self._enabled = enabled
         self._admission = admission
         self._gate = gate
@@ -520,12 +556,71 @@ class ChatService:
         self._operator_off = off
         if off:
             self._pictures.release()  # part 28: nothing is held for a chat that is turned off
+            if self._pins is not None:
+                self._pins.release()
         if off and self.abort_running(OPERATOR_OFF):
             self._count("cancelled_operator_off")
 
     def release_pictures(self) -> None:
-        """Part 28: drop every held picture (the runtime is stopping)."""
+        """Part 28: drop every held picture and pinned frame (the runtime is stopping)."""
         self._pictures.release()
+        if self._pins is not None:
+            self._pins.release()
+
+    # ------------------------------------------------------------ part 28: pinned frames and regions (scene.roi)
+
+    def hold(self) -> tuple[int, dict[str, Any]]:
+        """Pin the newest live frame for a zoom or a scan: (HTTP status, document). Refused while chat is not
+        available (off, unavailable, or paused by the memory gate: nothing new is held under pressure), while the
+        camera is not live (a stale or offline stream is never pinned), and more often than PIN_MIN_INTERVAL_S."""
+        available = self.availability()
+        if available["state"] != "available":
+            self._count("hold_refused")
+            return 503, {"state": available["state"] if available["state"] in ("unavailable", "paused") else "off",
+                         "reason": available["reason"]}
+        if self._pins is None or self._encode is None:
+            return 503, {"state": "unavailable", "reason": ZOOM_UNAVAILABLE}
+        now = self._clock.monotonic_ns()
+        with self._lock:
+            last = self._last_pin_ns
+            if last is not None and now - last < PIN_MIN_INTERVAL_S * NS_PER_SECOND:
+                self.counters["hold_busy"] += 1
+                return 429, {"state": "busy", "reason": f"one held picture every {PIN_MIN_INTERVAL_S:g} s"}
+
+        def facts_of(frame: FrameRef) -> dict[str, Any] | None:
+            freshness = self._assess(frame)
+            if freshness.state is not VideoState.FRESH or freshness.last_frame_age_ns is None:
+                return None
+            return {**{k: v for k, v in frame_facts(frame, None).items() if k != "age_ms_when_asked"},
+                    "age_ms_when_held": freshness.last_frame_age_ns // 1_000_000}
+
+        pin = self._pins.pin(facts_of, now)
+        if pin is None:
+            self._count("hold_not_live")
+            return 409, {"state": "no_fresh_frame", "reason": "the camera is not live, so no picture was held; try "
+                                                              "again when it is"}
+        with self._lock:
+            self._last_pin_ns = now
+            self.counters["held"] += 1
+        name, _, size = pin.source
+        return 200, {"state": "held", "picture": pin.picture, "frame": dict(pin.facts), "source": name,
+                     "source_size": list(size), "shown_size": list(pin.working_size), "keep_s": PIN_KEEP_S,
+                     "min_px": MIN_ROI_PX,
+                     "people": [{"track_id": track, "box": [round(v, 6) for v in box]} for track, box in pin.people],
+                     "tiles": [{"name": tile, "box": list(box)} for tile, box in scan_tiles()]}
+
+    def held_picture(self, picture: str) -> bytes | None:
+        """The pinned frame's working picture as a JPEG, for the page to select a region on; None once it is gone."""
+        if self._pins is None or self._encode is None or not PICTURE_ID.fullmatch(picture):
+            return None
+        pin = self._pins.get(picture, self._clock.monotonic_ns())
+        if pin is None:
+            return None
+        return self._encode(pin.working, pin.pixel_format, max_width=PIN_PREVIEW[0], max_height=PIN_PREVIEW[1],
+                            quality=JPEG_QUALITY).data
+
+    def pin_numbers(self) -> dict[str, int] | None:
+        return None if self._pins is None else self._pins.numbers(self._clock.monotonic_ns())
 
     def abort_running(self, reason: str) -> bool:
         """End a running question (memory pressure, stopping); True if one was running."""
@@ -560,6 +655,8 @@ class ChatService:
                 self.counters["busy_auto_interval"] += 1
                 return 429, {"state": "busy", "reason": f"automatic refresh: one question every "
                                                         f"{AUTO_MIN_INTERVAL_S:g} s, for every viewer together"}
+        if question.region is not None:  # part 28: a region of a pinned frame, cut from that frame's own pixels
+            return self._ask_region(question, now)
         if question.picture is not None:  # part 28: the same picture again, exactly; never a newer one in its place
             kept = self._pictures.get(question.picture, now)
             if kept is None:
@@ -607,6 +704,41 @@ class ChatService:
 
         return self._submit(job, question, work, now)
 
+    def _ask_region(self, question: ChatQuestion, now: int) -> tuple[int, dict[str, Any]]:
+        """A question about a region of a pinned frame. The crop is cut from exactly that frame's decoded picture (the
+        main stream's where there is one), then encoded within the model's image size: the same cap as any question's
+        picture. The pin is never replaced by another frame: gone, the question is refused."""
+        if self._pins is None or self._encode is None:
+            return 503, {"state": "unavailable", "reason": ZOOM_UNAVAILABLE}
+        pin = self._pins.get(question.picture or "", now)
+        if pin is None:
+            self._count("picture_expired")
+            return 410, {"state": "picture_expired", "reason": PIN_EXPIRED}
+        name, source, (width, height) = pin.source
+        try:
+            x1, y1, x2, y2 = roi_pixels(width, height, question.region)  # type: ignore[arg-type]
+        except RoiError as exc:
+            self._count("region_refused")
+            return 400, {"state": "invalid", "reason": exc.label}
+        sent = fit_within(x2 - x1, y2 - y1, *IMAGE_SIZE)
+        job = _Job(secrets.token_hex(8), {**{k: v for k, v in pin.facts.items() if k != "age_ms_when_held"},
+                                          "age_ms_when_asked": max(0, now - pin.ingest_mono_ns) // 1_000_000},
+                   now, picture=pin.picture)
+        job.region = {"box": [round(v, 6) for v in question.region], "pixels": [x1, y1, x2, y2],  # type: ignore[union-attr]
+                      "source": name, "source_size": [width, height], "sent_size": list(sent),
+                      **({"tile": question.tile} if question.tile else {})}
+        encode, pixel_format = self._encode, pin.pixel_format
+
+        def work() -> Any:
+            crop = source[y1:y2, x1:x2]  # exactly the stated rectangle of exactly that frame
+            encoded = encode(crop, pixel_format, max_width=IMAGE_SIZE[0], max_height=IMAGE_SIZE[1],
+                             quality=JPEG_QUALITY)
+            limit = job.plan.max_tokens if job.plan is not None else CHAT_MAX_TOKENS
+            return self._run(question, PreparedCrop(encoded.data, encoded.width, encoded.height), job.abort,
+                             max_tokens=limit)  # type: ignore[misc]
+
+        return self._submit(job, question, work, now)
+
     def _submit(self, job: _Job, question: ChatQuestion, work: Callable[[], Any], now: int
                 ) -> tuple[int, dict[str, Any]]:
         """Hand an accepted question to the scene worker: the same acceptance, wait limit, plan and cancellation for
@@ -642,6 +774,8 @@ class ChatService:
                 self.counters["same_picture"] += 1
             if question.read_as is not None:
                 self.counters["followups"] += 1
+            if job.region is not None:
+                self.counters["regions"] += 1
         return 202, self._document(job)
 
     def poll(self, job_id: str) -> tuple[int, dict[str, Any]]:
@@ -806,6 +940,8 @@ class ChatService:
                 document.update(frame_replaced=True, asked_frame=dict(job.asked_frame))
             if job.picture is not None:  # part 28: held for "the same picture"; same_picture: this was that
                 document.update(picture=job.picture, same_picture=job.same_picture)
+            if job.region is not None:  # part 28: which pixels of which picture were sent
+                document["region"] = dict(job.region)
             if job.read_as is not None:
                 document["read_as"] = job.read_as
             if job.auto:
@@ -819,8 +955,12 @@ class ChatService:
                     answered = job.frame["age_ms_when_asked"] + document["answer_ms"]
                 else:
                     return document
+                # part 28: a held picture (the same picture again, a region of a pinned frame) is never the scene now,
+                # whatever its age and whichever stream is live since: always historical
+                held = job.same_picture or job.region is not None
                 document.update(answer=job.answer, cut_short=job.cut_short, shortened=job.shortened,
-                                age_ms_when_answered=answered, historical=answered >= self._stale_after_s * 1000)
+                                age_ms_when_answered=answered,
+                                historical=held or answered >= self._stale_after_s * 1000)
                 if job.unfinished:
                     document["unfinished"] = job.unfinished
             return document

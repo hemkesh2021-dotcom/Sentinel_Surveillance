@@ -145,9 +145,10 @@ from .incidents.snapshots import SNAPSHOT_DIR, SnapshotPolicy, file_name as snap
 from .live_preview import STREAM_WAIT_S, LivePreview, PreviewPicture, frame_facts, parse_token, time_label
 from .rules.scene_hazard import FIRE_SMOKE_CANDIDATE, HazardCandidate
 from .rules.zones import ZONE_KINDS, ZoneObservation
-from .chat_evidence import recorded_answer
+from .chat_evidence import guide_answer, recorded_answer
 from .scene.chat import ADVISORY, CHAT_MAX_BODY, CHAT_MAX_QUESTION, ChatRequestError, parse_chat_request
-from .scene.chat_routing import HISTORY, VISUAL, Route, route
+from .scene.chat_routing import GUIDES, HISTORY, VISUAL, Route, route
+from .scene.roi import SCAN_DEADLINE_S
 from .scene.report import SceneReport
 from .scene.state import SCENE_STATE_KIND
 from .storage.database import connect_reader
@@ -227,6 +228,11 @@ SECURITY_HEADERS = {  # Content-Security-Policy is added per response: it names 
 }
 TAB_ICON_PATH = "/assets/icon.svg"
 CHAT_PATH = "/chat"
+ZOOM_NOTE = ("Experimental. A zoomed answer is about a crop cut from the held picture's own recorded pixels (the main "
+             "stream's where there is one), not an enlargement of the small picture. It can show no more than was "
+             "recorded: what is unreadable in the recording stays unreadable. A scan asks about four overlapping parts "
+             "of one held picture in turn: it covers what the camera saw in that picture, not areas out of view, and "
+             "not a camera movement. A held picture is kept for a short time only and is never saved.")
 RECORDED_HINT = ("Questions about what was recorded (“what happened in the last 10 minutes?”, “who is in the room?”, "
                  "“were any alerts triggered?”) are answered from the system's own records, not by the scene model, "
                  "and say what they cover.")
@@ -237,6 +243,8 @@ AUTO_REFRESH_DEFAULT_S = 30
 AUTO_REFRESH_MAX_S = 120
 RECORDED_PER_S = 2  # part 28: recorded-fact answers a second, for every viewer together (they use no model slot)
 CHAT_JOB_PATH = re.compile(r"/chat/(?P<id>[0-9a-f]{16})")
+CHAT_HOLD_PATH = "/chat/hold"  # part 28: POST, pins the newest live frame for a zoom or a scan (scene.roi)
+CHAT_PICTURE_PATH = re.compile(r"/chat/picture/(?P<id>[0-9a-f]{16})")  # GET, the pinned frame's picture, this page only
 CHAT_OFF = {"state": "off", "reason": "chat is off; start sentinel run with --chat to offer it"}
 CHAT_STARTING = {"state": "unavailable", "reason": "the runtime is starting"}
 # D99, feature controls (only with ``sentinel run --feature-controls``): two POST routes, refused unless they come from
@@ -1932,11 +1940,20 @@ def render_html(status: Mapping[str, Any], *, theme: Look | str | None = None,
 <p class=note>{_e(ADVISORY)}</p>
 <p class="note js-only">{_e(RECORDED_HINT)}</p>
 <ol id=chat-log class=chat-log aria-live=polite></ol>
-<form id=chat-form class=chat-form autocomplete=off data-token="{_e(chat_token)}" data-auto-min={AUTO_REFRESH_MIN_S} data-auto-default={AUTO_REFRESH_DEFAULT_S} data-auto-max={AUTO_REFRESH_MAX_S}>
+<form id=chat-form class=chat-form autocomplete=off data-token="{_e(chat_token)}" data-auto-min={AUTO_REFRESH_MIN_S} data-auto-default={AUTO_REFRESH_DEFAULT_S} data-auto-max={AUTO_REFRESH_MAX_S} data-scan-deadline={round(SCAN_DEADLINE_S)}>
 <label for=chat-q>Your question <span class=muted>(at most {CHAT_MAX_QUESTION} characters)</span></label>
 <div class=field><textarea id=chat-q name=question maxlength={CHAT_MAX_QUESTION} rows=2 placeholder="For example: is the door open?"></textarea></div>
 <div class=row><button type=submit class=button id=chat-ask disabled>{icon("send")}Ask</button><span id=chat-note class=muted role=status></span></div>
 </form>
+<div class="row zoom-tools js-only" id=zoom-tools><button type=button class=ghost id=zoom-open disabled>{icon("expand")}Zoom into a region</button><button type=button class=ghost id=scan-open disabled>{icon("scan")}Scan visible room</button><span id=zoom-note class=muted role=status></span></div>
+<div id=zoom-panel class=zoom-panel hidden>
+<p class=note id=zoom-facts></p>
+<div class=zoom-surface id=zoom-surface tabindex=0 role=group aria-label="The held picture. Drag to select a region, or use the arrow keys and the numbers below."><canvas id=zoom-canvas></canvas><div class=zoom-box id=zoom-box hidden></div></div>
+<div class=row id=zoom-people></div>
+<fieldset class=zoom-numbers><legend>Region, in percent of the picture</legend>{"".join(f'<label>{label}<span class=field><input type=number id=zoom-{name} min=0 max=100 step=1 inputmode=numeric></span></label>' for name, label in (("x1", "Left"), ("y1", "Top"), ("x2", "Right"), ("y2", "Bottom")))}</fieldset>
+<div class=row><button type=button class=button id=zoom-ask disabled>{icon("send")}Ask about this region</button><button type=button class=ghost id=zoom-cancel>Cancel</button><span id=zoom-size class=muted role=status></span></div>
+<p class=note>{_e(ZOOM_NOTE)}</p>
+</div>
 <noscript><p class=note>Chat needs JavaScript.</p></noscript>
 </div></section>
 <section id=features class="panel features" aria-labelledby=h-features>
@@ -2342,10 +2359,14 @@ class StatusServer:
         unavailable: refused there as before). It uses no model slot, no frame and no place in the question interval;
         it is allowed while the memory gate holds chat paused; and it has its own small rate limit, for every viewer
         together. Read only."""
+        if service.availability()["state"] not in ("available", "paused"):
+            return None
+        if routed.intent in GUIDES:  # a typed request to zoom or scan: the page's own controls, never a guess
+            numbers = getattr(service, "pin_numbers", None)
+            service.note_recorded(routed.intent)
+            return 200, guide_answer(routed.intent, numbers is not None and numbers() is not None)
         source = None if self._evidence is None else self._evidence()
         if source is None or getattr(source, "history", None) is None:
-            return None
-        if service.availability()["state"] not in ("available", "paused"):
             return None
         now = self._monotonic()
         with self._recorded_lock:
@@ -2488,6 +2509,10 @@ class _Handler(BaseHTTPRequestHandler):
         if job is not None:
             self._chat_poll(job["id"])
             return
+        held = CHAT_PICTURE_PATH.fullmatch(path)
+        if held is not None:
+            self._chat_picture(held["id"])
+            return
         preview = PREVIEW_PATH.fullmatch(path)
         if preview is not None:
             self._send_picture(preview["token"])
@@ -2628,11 +2653,14 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - the chat route (D74) and the feature controls (D99) only
         path = urlsplit(self.path).path
-        if path not in (CHAT_PATH, FEATURES_PATH, UNLOCK_PATH):
+        if path not in (CHAT_PATH, CHAT_HOLD_PATH, FEATURES_PATH, UNLOCK_PATH):
             self._refuse()
             return
         if not self._host_allowed():
             self._send(421, "text/plain; charset=utf-8", b"misdirected request\n")
+            return
+        if path == CHAT_HOLD_PATH:
+            self._chat_hold()
             return
         if path != CHAT_PATH:
             self._control(path)
@@ -2743,6 +2771,40 @@ class _Handler(BaseHTTPRequestHandler):
         """The token this server put in its page, compared in constant time (as bytes: any header text compares)."""
         given = self.headers.get("X-Sentinel-Token", "").encode("latin-1", "replace")
         return hmac.compare_digest(given, self.page.chat_token.encode("ascii"))
+
+    def _chat_hold(self) -> None:
+        """Part 28: POST /chat/hold pins the newest live frame for a zoom or a scan (scene.roi). From this page only,
+        as POST /chat: the same origin, token and bounded JSON body (which carries nothing); the chat service decides
+        (available, live, not too often)."""
+        problem = self._chat_request_problem(max_body=CHAT_MAX_BODY)
+        if problem is not None:
+            self._json(*problem)
+            return
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        service = self.page.chat_service()
+        if service is None:
+            self._json(503, dict(CHAT_OFF if self.page._chat is None else CHAT_STARTING))
+            return
+        try:
+            self._json(*service.hold())
+        except Exception:  # noqa: BLE001 - never show exception text
+            self._json(500, {"state": "error", "reason": "the picture could not be held"})
+
+    def _chat_picture(self, picture: str) -> None:
+        """Part 28: GET /chat/picture/<id>, the pinned frame's picture for selecting a region: this page only (its
+        token), never cached, and gone (404) once the pin is."""
+        if not self._token_ok() or self.headers.get("Sec-Fetch-Site", "same-origin") != "same-origin":
+            self._json(403, {"state": "refused", "reason": "only this page may ask"})
+            return
+        service = self.page.chat_service()
+        try:
+            jpeg = None if service is None else service.held_picture(picture)
+        except Exception:  # noqa: BLE001 - never show exception text
+            jpeg = None
+        if jpeg is None:
+            self._json(404, {"state": "picture_expired", "reason": "the held picture is gone"})
+            return
+        self._send(200, "image/jpeg", jpeg, extra={"Cache-Control": "no-store"})
 
     def _chat_poll(self, job_id: str) -> None:
         if not self._token_ok():

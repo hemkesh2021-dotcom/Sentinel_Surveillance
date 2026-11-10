@@ -29,7 +29,7 @@ from typing import Any
 
 from .history import EVENTS_MAX, KEEP_S, SCENES_MAX
 from .scene.chat import clean_text
-from .scene.chat_routing import ALERTS, HISTORY, WHO, Route
+from .scene.chat_routing import ALERTS, HISTORY, SCAN, WHO, ZOOM, Route
 from .storage.database import connect_reader
 
 EVENT_LINES = 12  # history: the newest events shown; earlier ones are counted
@@ -348,6 +348,28 @@ def history_answer(window: Mapping[str, Any] | None, read: Mapping[str, Any] | N
     return _document(HISTORY, lead, lines, limits, covered=covered, references={
         "incidents": incidents, "evidence": evidence,
         "tracks": [{"stream_epoch": epoch, "track_id": track} for epoch, track in tracks[:PEOPLE_LINES]]})
+
+
+# ---------------------------------------------------------------- zoom and scan: a selection, never a guess
+
+
+def guide_answer(intent: str, available: bool) -> dict[str, Any]:
+    """The reply to a typed request to zoom or to scan (chat_routing ZOOM, SCAN). Typed words name no place that can
+    be grounded, so nothing is guessed and the model is not asked: the reply points to the page's controls, where the
+    viewer selects the region of a held picture (scene.roi)."""
+    limits = ["A zoomed answer is about a crop cut from the held picture's own recorded pixels. It can show no more "
+              "than was recorded: enlarging cannot recover what is unreadable.",
+              "A scan covers what the camera saw in one held picture: not areas out of view, and not a camera "
+              "movement."]
+    if not available:
+        return _document(intent, "Zooming into a region is not available in this run, and typed words cannot say "
+                                 "where to look, so nothing was analysed.", [], limits)
+    if intent == SCAN:
+        return _document(SCAN, "To scan the visible room, press “Scan visible room” below the question box: one "
+                               "picture is held and its four overlapping parts are asked about in turn.", [], limits)
+    return _document(ZOOM, "To zoom, press “Zoom into a region” below the question box and select the region on the "
+                           "held picture (drag, or pick a tracked person's box). Chat does not guess where to look.",
+                     [], limits)
 
 
 # ---------------------------------------------------------------- one entry point for the page
