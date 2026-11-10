@@ -14,6 +14,8 @@ disk, no snapshot, no archive: expired or pushed out, a pin is gone and a questi
 from another frame. A pin keeps its own frame's facts (epoch, sequence, ingest time), so a reconnect does not confuse
 it: it stays that earlier frame, and is marked historical. The time limit is enforced by the runtime's own loop
 (``expire``, with every status refresh), not only when a viewer next asks: an idle page leaves nothing held past it.
+A question about a region takes its crop when it is accepted and holds no picture of the frame afterwards, so the
+pins and the one newest-frame slot are every decoded picture this store keeps alive.
 
 **Regions.** A selection is a rectangle in fractions of the held picture. The working picture is the whole decoded
 picture resized (no cropping, media.capture), so the same fractions address both. ``roi_pixels`` maps it to whole
@@ -141,13 +143,15 @@ class PinnedFrames:
         self._lock = threading.Lock()
         self._latest: tuple[Any, Any, Any, tuple[tuple[int, tuple[float, float, float, float]], ...]] | None = None
         self._pins: OrderedDict[str, Pin] = OrderedDict()
+        self._closed = False
 
     def latest(self, frame: Any, working: Any, native: Any, people: Any = ()) -> None:
         """The loop's newest frame, its working picture, its decoded picture (or None) and the tracker's people on
-        it: references only, replacing the previous frame's."""
+        it: references only, replacing the previous frame's. Nothing is kept while the store is closed."""
         boxes = tuple((int(p.track_id), (p.box.x1, p.box.y1, p.box.x2, p.box.y2)) for p in people)[:PEOPLE_KEPT]
         with self._lock:
-            self._latest = (frame, working, native, boxes)
+            if not self._closed:
+                self._latest = (frame, working, native, boxes)
 
     def pin(self, facts_of: Callable[[Any], dict[str, Any] | None], now_ns: int) -> Pin | None:
         """Pin the newest frame, with the facts ``facts_of`` gives for exactly that frame; None when there is no
@@ -176,10 +180,22 @@ class PinnedFrames:
             return self._pins.get(picture)
 
     def release(self) -> None:
-        """Drop every pin and the newest frame's reference (chat turned off, the runtime stopping)."""
+        """Drop every pin and the newest frame's reference."""
         with self._lock:
             self._pins.clear()
             self._latest = None
+
+    def close(self) -> None:
+        """Drop everything and keep nothing more until ``reopen`` (chat turned off, the runtime stopping): a frame
+        or a request that arrives afterwards cannot fill the store again."""
+        with self._lock:
+            self._closed = True
+            self._pins.clear()
+            self._latest = None
+
+    def reopen(self) -> None:
+        with self._lock:
+            self._closed = False
 
     def expire(self, now_ns: int) -> None:
         """Drop what has outlived its time, without waiting for a request to ask: the runtime's regular call."""

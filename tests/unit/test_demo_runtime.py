@@ -1307,6 +1307,40 @@ def test_the_loop_ends_what_chat_holds_on_time_while_no_page_asks_anything(tmp_p
         h.runtime.shutdown()
 
 
+def test_a_question_still_running_when_the_runtime_stops_leaves_no_picture_held(tmp_path) -> None:
+    """Part 28 (the finished-code review): the stop empties and closes chat's picture stores before the scene worker
+    is stopped, so a question that ends during the stop, even with an answer, cannot fill them again."""
+    images = RecentImages()
+    analyzer = ThreadedSceneAnalyzer(lambda job, image: WorkerOutcome.completed(job.job_id, REPORT), images,
+                                     revision="1+lfm2")
+    reasons: list[str] = []
+
+    def run(question: ChatQuestion, image: Any, abort: Any = None, max_tokens: Any = None) -> tuple[str, bool]:
+        deadline = time.monotonic() + 5
+        while abort.reason is None and time.monotonic() < deadline:
+            time.sleep(0.005)
+        reasons.append(abort.reason)
+        return "An answer that arrives during the stop.", False  # it answers although it was told to end
+
+    h = Harness(tmp_path, scene=SceneRuntime(analyzer, images), chat=True, chat_run=run, chat_validation=True)
+    h.runtime.start()
+    try:
+        h.frame()
+        wait_for(lambda: analyzer.counters["delivered"] >= 1 and not analyzer.busy())
+        chat = h.runtime.chat
+        assert chat.hold()[0] == 200
+        code, accepted = chat.ask(ChatQuestion("What is visible?"))
+        assert code == 202
+        wait_for(lambda: chat.poll(accepted["job"])[1]["state"] == "answering")
+    finally:
+        stopped = h.runtime.shutdown()
+    document = chat.poll(accepted["job"])[1]
+    assert reasons == ["the runtime is stopping"] and stopped["stopped"]["scene_worker"] is True
+    assert document["state"] == "answered" and "picture" not in document  # answered, and nothing is held for it
+    assert chat.picture_numbers()["held"] == 0 and chat.pin_numbers()["pinned"] == 0
+    h.clock.advance(2.5)  # past the interval between held pictures
+    assert chat.hold()[0] == 409  # nor is anything pinned once the stop began
+
 
 def test_chat_validation_needs_chat(tmp_path, capsys, monkeypatch) -> None:
     monkeypatch.setenv("SENTINEL_RTSP_URL", FAKE_URL)

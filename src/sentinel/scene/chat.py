@@ -377,18 +377,23 @@ class HeldPictures:
     """Part 28: the pictures the latest answered questions used, so that "Analyse again" can ask about exactly the
     same picture. References only (no copy, no disk): at most PICTURES_KEPT, each for at most PICTURE_KEEP_S; the
     oldest is pushed out first. A picture that expired or was pushed out is gone: ``get`` says so and the caller never
-    substitutes another. The time limit is enforced by the runtime's own loop (``expire``, with every status refresh),
+    substitutes another. Only an answered question's picture is held: one that was cancelled, failed or timed out
+    leaves nothing here. The time limit is enforced by the runtime's own loop (``expire``, with every status refresh),
     not only when a viewer next asks. Thread-safe: held on the scene worker's thread, read on the status page's."""
 
     def __init__(self, kept: int = PICTURES_KEPT, keep_s: float = PICTURE_KEEP_S) -> None:
         self._kept, self._keep_ns = kept, round(keep_s * NS_PER_SECOND)
         self._lock = threading.Lock()
         self._items: OrderedDict[str, tuple[dict[str, Any], Any, int, int]] = OrderedDict()
+        self._closed = False
 
-    def hold(self, facts: Mapping[str, Any], image: Any, ingest_mono_ns: int, now_ns: int) -> str:
-        """Hold the picture a question was asked about; its id. ``facts``: its frame's epoch, sequence and time."""
+    def hold(self, facts: Mapping[str, Any], image: Any, ingest_mono_ns: int, now_ns: int) -> str | None:
+        """Hold the picture a question was asked about; its id, or None while the store is closed (nothing is held
+        then). ``facts``: its frame's epoch, sequence and time; ``now_ns``: since when it counts as held."""
         picture = secrets.token_hex(8)
         with self._lock:
+            if self._closed:
+                return None
             self._expire(now_ns)
             self._items[picture] = (dict(facts), image, ingest_mono_ns, now_ns)
             while len(self._items) > self._kept:
@@ -405,6 +410,17 @@ class HeldPictures:
     def release(self) -> None:
         with self._lock:
             self._items.clear()
+
+    def close(self) -> None:
+        """Drop everything and hold nothing more until ``reopen`` (chat turned off, the runtime stopping): a question
+        that ends afterwards cannot fill the store again."""
+        with self._lock:
+            self._closed = True
+            self._items.clear()
+
+    def reopen(self) -> None:
+        with self._lock:
+            self._closed = False
 
     def expire(self, now_ns: int) -> None:
         """Drop what has outlived its time, without waiting for a request to ask: the runtime's regular call."""
@@ -446,6 +462,9 @@ class _Job:
     started_ns: int | None = None
     finished_ns: int | None = None
     picture: str | None = None  # part 28: the held picture's id, once the question's picture is held
+    # the picture sent for this question (image, its ingest time, when it was sent), from sending until the question
+    # ends: held for "the same picture" only if it is answered, and dropped on every other ending
+    sent: tuple[Any, int, int] | None = None
     same_picture: bool = False  # asked again about a held picture: never replaced by a newer frame
     read_as: str | None = None  # how a follow-up was read (ChatQuestion.read_as)
     auto: bool = False
@@ -486,6 +505,7 @@ class ChatService:
         self._last_accepted_ns: int | None = None
         self._last_auto_ns: int | None = None  # part 28: the last accepted automatic refresh, from any viewer
         self._pictures = HeldPictures()  # part 28: what "Analyse again, same picture" asks about
+        self._stopping = False  # the runtime is stopping: the picture stores are closed for good
         self._operator_off = False  # D99: turned off in Features; scene analysis is not touched
         self._pace = ChatPace()
         # (wait ms, run ms, answer limit, tokens) of the latest questions that started: numbers only
@@ -562,18 +582,24 @@ class ChatService:
         """D99: chat turned off (or on again) in Features. Off, new questions are refused and a running one is ended; the
         scene worker and scene analysis carry on."""
         self._operator_off = off
-        if off:
-            self._pictures.release()  # part 28: nothing is held for a chat that is turned off
+        if off:  # part 28: nothing is held for a chat that is turned off, nor by a question that ends just after
+            self._pictures.close()
             if self._pins is not None:
-                self._pins.release()
+                self._pins.close()
+        elif not self._stopping:
+            self._pictures.reopen()
+            if self._pins is not None:
+                self._pins.reopen()
         if off and self.abort_running(OPERATOR_OFF):
             self._count("cancelled_operator_off")
 
     def release_pictures(self) -> None:
-        """Part 28: drop every held picture and pinned frame (the runtime is stopping)."""
-        self._pictures.release()
+        """Part 28: drop every held picture and pinned frame, for good (the runtime is stopping). The stores stay
+        closed: a question still in flight, a frame or a request that comes afterwards holds nothing new."""
+        self._stopping = True
+        self._pictures.close()
         if self._pins is not None:
-            self._pins.release()
+            self._pins.close()
 
     def expire_pictures(self) -> None:
         """Part 28: end the held pictures and pinned frames whose time is over, releasing their images. The runtime
@@ -717,9 +743,8 @@ class ChatService:
 
         def work() -> Any:
             image, sent = self._image_to_send(job, frame, held.pop())  # the freshness rule, again, on what is sent
-            with job.lock:  # part 28: exactly what is sent is held, for "the same picture" later
-                facts = {key: job.frame[key] for key in ("stream_epoch", "frame_seq", "ingest_utc")}
-                job.picture = self._pictures.hold(facts, image, sent.ingest_mono_ns, self._clock.monotonic_ns())
+            with job.lock:  # part 28: exactly what is sent; held for "the same picture" once it is answered (_finish)
+                job.sent = (image, sent.ingest_mono_ns, self._clock.monotonic_ns())
             limit = job.plan.max_tokens if job.plan is not None else CHAT_MAX_TOKENS
             return self._run(question, image, job.abort, max_tokens=limit)  # type: ignore[misc]
 
@@ -728,7 +753,11 @@ class ChatService:
     def _ask_region(self, question: ChatQuestion, now: int) -> tuple[int, dict[str, Any]]:
         """A question about a region of a pinned frame. The crop is cut from exactly that frame's decoded picture (the
         main stream's where there is one), then encoded within the model's image size: the same cap as any question's
-        picture. The pin is never replaced by another frame: gone, the question is refused."""
+        picture. The pin is never replaced by another frame: gone, the question is refused.
+
+        The crop is taken here, when the question is accepted, on this request's thread: the question then carries
+        that small JPEG and no picture of the frame. So a pin that ends or is pushed out while its question waits or
+        runs is released at once, and the pinned frames (scene.roi) remain every decoded picture chat keeps alive."""
         if self._pins is None or self._encode is None:
             return 503, {"state": "unavailable", "reason": ZOOM_UNAVAILABLE}
         pin = self._pins.get(question.picture or "", now)
@@ -742,21 +771,24 @@ class ChatService:
             self._count("region_refused")
             return 400, {"state": "invalid", "reason": exc.label}
         sent = fit_within(x2 - x1, y2 - y1, *IMAGE_SIZE)
+        try:  # exactly the stated rectangle of exactly that frame
+            encoded = self._encode(source[y1:y2, x1:x2], pin.pixel_format, max_width=IMAGE_SIZE[0],
+                                   max_height=IMAGE_SIZE[1], quality=JPEG_QUALITY)
+        except Exception as exc:  # noqa: BLE001 - a frame that cannot be cut or encoded is this question's error
+            self._count("region_refused")
+            return 500, {"state": "error", "reason": f"the region could not be encoded ({type(exc).__name__})"}
+        crop = PreparedCrop(encoded.data, encoded.width, encoded.height)
         job = _Job(secrets.token_hex(8), {**{k: v for k, v in pin.facts.items() if k != "age_ms_when_held"},
                                           "age_ms_when_asked": max(0, now - pin.ingest_mono_ns) // 1_000_000},
                    now, picture=pin.picture)
         job.region = {"box": [round(v, 6) for v in question.region], "pixels": [x1, y1, x2, y2],  # type: ignore[union-attr]
                       "source": name, "source_size": [width, height], "sent_size": list(sent),
                       **({"tile": question.tile} if question.tile else {})}
-        encode, pixel_format = self._encode, pin.pixel_format
+        del pin, source, encoded  # from here on the question holds its crop only
 
         def work() -> Any:
-            crop = source[y1:y2, x1:x2]  # exactly the stated rectangle of exactly that frame
-            encoded = encode(crop, pixel_format, max_width=IMAGE_SIZE[0], max_height=IMAGE_SIZE[1],
-                             quality=JPEG_QUALITY)
             limit = job.plan.max_tokens if job.plan is not None else CHAT_MAX_TOKENS
-            return self._run(question, PreparedCrop(encoded.data, encoded.width, encoded.height), job.abort,
-                             max_tokens=limit)  # type: ignore[misc]
+            return self._run(question, crop, job.abort, max_tokens=limit)  # type: ignore[misc]
 
         return self._submit(job, question, work, now)
 
@@ -825,6 +857,7 @@ class ChatService:
                     gave_up = "gave_up_waiting"
             elif job.state in ("waiting", "answering") and now - job.accepted_ns > CHAT_DEADLINE_S * NS_PER_SECOND:
                 job.state, job.reason, job.finished_ns = "timeout", "no answer in time", now
+                job.sent = None  # part 28: a question that timed out keeps no picture
                 gave_up = "timeouts"
         if gave_up == "timeouts":
             job.abort.abort("no answer in time")  # D77: the request itself ends too, freeing the model
@@ -879,7 +912,14 @@ class ChatService:
         counted: list[str] = []
         sample: tuple[float, float] | None = None
         reset = False
+        if isinstance(result, BaseException):
+            # Part 28: the frames an exception carries hold the question's picture (and, with the worker's own frame,
+            # form a cycle only the collector would free): dropped here, so the picture goes when the question ends.
+            result.__traceback__ = None
         with job.lock:
+            # Part 28: the question's own picture, in this question's hands until here. It is held for "the same
+            # picture" only if this is its answer; cancelled, failed, timed out or given up, it is dropped.
+            sent, job.sent = job.sent, None
             if job.state not in ("waiting", "answering"):
                 return  # already given up or timed out: a late answer is dropped
             run_ms = None if job.started_ns is None else (now - job.started_ns) / 1e6
@@ -887,6 +927,9 @@ class ChatService:
                 result = ChatReply(result[0], bool(result[1]))  # a model stand-in's (answer, cut short)
             if isinstance(result, ChatReply):
                 counted += self._answered(job, result)
+                if job.state == "answered" and sent is not None:
+                    facts = {key: job.frame[key] for key in ("stream_epoch", "frame_seq", "ingest_utc")}
+                    job.picture = self._pictures.hold(facts, *sent)  # None while the stores are closed
                 if result.timing is None:
                     counted.append("timing_missing")
                 else:

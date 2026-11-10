@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import gc
 import json
+import threading
 import time
 import weakref
 from typing import Any
@@ -22,15 +23,17 @@ from sentinel.config import FreshnessConfig
 from sentinel.contracts import PixelFormat
 from sentinel.media.health import assess_frame
 from sentinel.scene import chat as chat_module
-from sentinel.scene.analyzer import RecentImages, ThreadedSceneAnalyzer
+from sentinel.scene.analyzer import PREEMPTED, RecentImages, ThreadedSceneAnalyzer
 from sentinel.scene.chat import (
     AUTO_MIN_INTERVAL_S,
+    CHAT_DEADLINE_S,
     CHAT_MAX_BODY,
     CHAT_MIN_INTERVAL_S,
     PICTURE_EXPIRED,
     PICTURE_KEEP_S,
     PICTURES_KEPT,
     ChatAdmission,
+    ChatCancelled,
     ChatQuestion,
     ChatRequestError,
     ChatService,
@@ -154,6 +157,10 @@ def test_held_pictures_are_few_short_lived_and_gone_means_gone() -> None:
     again = pictures.hold({}, "x", late, late)
     pictures.release()
     assert pictures.get(again, late) is None
+    pictures.close()  # chat turned off, or the runtime stopping: nothing more is held until it is reopened
+    assert pictures.hold({}, "y", late, late) is None and pictures.numbers(late)["held"] == 0
+    pictures.reopen()
+    assert pictures.get(pictures.hold({}, "z", late, late), late) == ({}, "z", late)
 
 
 # ---------------------------------------------------------------- the service: same picture, latest picture, auto
@@ -201,6 +208,14 @@ class Rig:
         image = Watched()
         camera.frames.put(frame, image)
         return weakref.ref(image)
+
+    def ended(self, job: str, state: str) -> dict[str, Any]:
+        """The question's document once it is in ``state`` and the scene worker has let go of it."""
+        deadline = time.monotonic() + 5
+        while self.service.poll(job)[1]["state"] != state or self.analyzer.busy():
+            assert time.monotonic() < deadline, self.service.poll(job)[1]
+            time.sleep(0.005)
+        return self.service.poll(job)[1]
 
     def close(self) -> None:
         assert self.analyzer.stop(3.0)
@@ -344,5 +359,120 @@ def test_a_held_picture_ends_at_its_time_while_no_viewer_asks_anything_and_its_i
     assert second["state"] == "answered" and gone(other)
 
 
+@pytest.mark.parametrize(("ending", "state", "reason"), [
+    (lambda: ChatCancelled(PREEMPTED), "cancelled", PREEMPTED),  # a scene job ended it: monitoring comes first
+    (lambda: ChatRequestError("the model could not be reached (refused)"), "error",
+     "the model could not be reached (refused)"),
+    (lambda: RuntimeError("anything else"), "error", "the question could not be answered"),
+])
+def test_a_question_that_is_cancelled_or_fails_keeps_no_picture(rig, ending: Any, state: str, reason: str) -> None:
+    def fails(question: Any, image: Any, abort: Any = None, max_tokens: Any = None) -> tuple[str, bool]:
+        raise ending()
+
+    rig.service._run = fails
+    image = rig.shoot()
+    code, accepted = rig.ask(ChatQuestion(PHONE), wait=False)
+    assert code == 202
+    document = rig.ended(accepted["job"], state)
+    assert document["reason"] == reason and "picture" not in document  # no id for a picture that is not held
+    assert rig.service.picture_numbers()["held"] == 0
+    rig.later(2.0)  # the recent frames move on
+    assert gone(image)
 
 
+def test_a_cancelled_questions_picture_goes_when_the_question_ends_not_at_some_later_collection(rig) -> None:
+    def cancelled(question: Any, image: Any, abort: Any = None, max_tokens: Any = None) -> tuple[str, bool]:
+        raise ChatCancelled(PREEMPTED)
+
+    rig.service._run = cancelled
+    gc.collect()
+    gc.disable()  # no collector: only the last reference going releases anything
+    try:
+        image = rig.shoot()
+        _, accepted = rig.ask(ChatQuestion(PHONE), wait=False)
+        rig.ended(accepted["job"], "cancelled")
+        rig.later(2.0)
+        assert image() is None  # the exception's frames, which held the picture, went with the question
+    finally:
+        gc.enable()
+
+
+def test_a_question_that_times_out_keeps_no_picture_and_its_late_answer_is_not_held_either(rig) -> None:
+    release = threading.Event()
+
+    def slow(question: Any, image: Any, abort: Any = None, max_tokens: Any = None) -> tuple[str, bool]:
+        release.wait(5.0)
+        return "Too late.", False
+
+    rig.service._run = slow
+    image = rig.shoot()
+    _, accepted = rig.ask(ChatQuestion(PHONE), wait=False)
+    deadline = time.monotonic() + 5
+    while rig.service.poll(accepted["job"])[1]["state"] != "answering":
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+    rig.later(CHAT_DEADLINE_S + 1)
+    document = rig.service.poll(accepted["job"])[1]
+    assert document["state"] == "timeout" and "picture" not in document
+    release.set()  # the model answers after all: the answer is dropped, and its picture with it
+    document = rig.ended(accepted["job"], "timeout")
+    assert "picture" not in document and "answer" not in document
+    assert rig.service.picture_numbers()["held"] == 0 and rig.service.counters["timeouts"] == 1
+    assert gone(image)
+
+
+def test_a_failed_retry_on_the_same_picture_leaves_that_earlier_picture_held(rig) -> None:
+    image = rig.shoot()
+    _, first = rig.ask(ChatQuestion(PHONE))
+    picture = first["picture"]
+    rig.sent.clear()
+    rig.later()
+    answers = rig.service._run
+
+    def cancelled(question: Any, image: Any, abort: Any = None, max_tokens: Any = None) -> tuple[str, bool]:
+        raise ChatCancelled(PREEMPTED)
+
+    rig.service._run = cancelled
+    _, accepted = rig.ask(ChatQuestion(PHONE, picture=picture), wait=False)
+    retry = rig.ended(accepted["job"], "cancelled")
+    assert retry["picture"] == picture and retry["same_picture"] is True  # still the earlier answer's picture
+    assert rig.service.picture_numbers()["held"] == 1 and not gone(image)  # the retry owned none: nothing was released
+    rig.later()
+    rig.service._run = answers
+    _, again = rig.ask(ChatQuestion(PHONE, picture=picture))
+    assert again["state"] == "answered" and again["same_picture"] is True and rig.sent[-1][1] is image()
+
+
+@pytest.mark.parametrize("stop", ["the runtime stops", "chat is turned off"])
+def test_a_question_that_ends_after_the_stores_were_emptied_does_not_fill_them_again(rig, stop: str) -> None:
+    release = threading.Event()
+
+    def slow(question: Any, image: Any, abort: Any = None, max_tokens: Any = None) -> tuple[str, bool]:
+        release.wait(5.0)
+        return "Done.", False  # a model that answers although it was told to stop
+
+    answers, rig.service._run = rig.service._run, slow
+    image = rig.shoot()
+    _, accepted = rig.ask(ChatQuestion(PHONE), wait=False)
+    deadline = time.monotonic() + 5
+    while rig.service.poll(accepted["job"])[1]["state"] != "answering":
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+    if stop == "the runtime stops":
+        rig.service.release_pictures()  # the stop begins here; the scene worker itself is stopped later
+    else:
+        rig.service.set_operator_off(True)
+    release.set()
+    document = rig.ended(accepted["job"], "answered")
+    assert "picture" not in document and rig.service.picture_numbers()["held"] == 0
+    rig.later(2.0)
+    assert gone(image)
+    if stop == "chat is turned off":  # turned on again, an answered question's picture is held as before
+        rig.service.set_operator_off(False)
+        rig.service._run = answers
+        rig.later()
+        _, after = rig.ask(ChatQuestion(PHONE))
+        assert after["state"] == "answered" and rig.service.picture_numbers()["held"] == 1
+        rig.later()
+        _, same = rig.ask(ChatQuestion(PHONE, picture=after["picture"]))
+        assert same["state"] == "answered" and same["same_picture"] is True

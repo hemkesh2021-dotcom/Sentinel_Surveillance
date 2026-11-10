@@ -12,6 +12,7 @@ from __future__ import annotations
 import gc
 import http.client
 import json
+import threading
 import time
 import weakref
 from pathlib import Path
@@ -345,7 +346,74 @@ def test_a_pin_whose_frame_is_still_the_newest_is_released_too_once_the_camera_w
     assert r.service.hold()[0] == 200
 
 
+def test_a_region_question_takes_its_crop_when_accepted_and_keeps_no_picture_of_the_frame(rig) -> None:
+    r = rig()
+    release, got = threading.Event(), []
 
+    def slow(question: Any, image: Any, abort: Any = None, max_tokens: Any = None) -> tuple[str, bool]:
+        got.append(image)
+        release.wait(5.0)
+        return "A cup stands on the shelf.", False
+
+    r.service._run = slow
+    first = r.hold()
+    work, main = r.newest
+    code, pending = r.service.ask(ChatQuestion("What is on the shelf?", picture=first["picture"],
+                                               region=(0.25, 0.25, 0.5, 0.5)))
+    assert code == 202
+    assert r.encoded == [("main1[576,324,1152,648]", 480, 360, 60, PixelFormat.BGR)]  # cut and encoded on acceptance
+    deadline = time.monotonic() + 5
+    while not got:  # the question is on the model now, and stays there
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+    for _ in range(PINS_KEPT):  # two more held pictures push the first out while its question runs
+        r.clock.advance(PIN_MIN_INTERVAL_S)
+        r.frame()
+        r.hold()
+    assert gone(main) and gone(work)  # the running question does not keep its frame alive: the pins are the bound
+    assert r.service.pin_numbers()["pinned"] == PINS_KEPT
+    release.set()
+    while r.service.poll(pending["job"])[1]["state"] != "answered":
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+    assert isinstance(got[0], PreparedCrop) and got[0].jpeg == b"jpeg of main1[576,324,1152,648] at 480x270"
+    document = r.service.poll(pending["job"])[1]
+    assert document["picture"] == first["picture"] and document["region"]["pixels"] == [576, 324, 1152, 648]
+
+
+def test_a_region_that_cannot_be_encoded_is_refused_and_no_question_is_made(rig) -> None:
+    r = rig()
+    held = r.hold()
+
+    def broken(*args: Any, **options: Any) -> EncodedJpeg:
+        raise OSError("no encoder")
+
+    r.service._encode = broken
+    code, document = r.service.ask(ChatQuestion("What is on the shelf?", picture=held["picture"],
+                                                region=(0.25, 0.25, 0.5, 0.5)))
+    assert (code, document) == (500, {"state": "error", "reason": "the region could not be encoded (OSError)"})
+    assert r.sent == [] and r.service.counters["region_refused"] == 1 and r.service.counters["accepted"] == 0
+
+
+def test_while_chat_is_off_or_the_runtime_is_stopping_no_frame_is_kept_and_nothing_is_pinned(rig) -> None:
+    r = rig()
+    r.hold()
+    r.service.set_operator_off(True)  # turned off in Features
+    r.frame()  # a frame that still reaches the store
+    assert gone(r.newest[1]) and gone(r.newest[0])  # is not kept
+    r.service.set_operator_off(False)
+    r.clock.advance(PIN_MIN_INTERVAL_S)
+    r.frame()
+    assert r.service.hold()[0] == 200  # turned on again, the store takes frames and pins again
+    r.service.release_pictures()  # the runtime is stopping
+    r.frame()
+    assert gone(r.newest[1]) and gone(r.newest[0])
+    r.clock.advance(PIN_MIN_INTERVAL_S)
+    assert r.service.hold()[0] == 409 and r.service.pin_numbers()["pinned"] == 0
+    r.service.set_operator_off(True)
+    r.service.set_operator_off(False)  # a late switch does not reopen what the stop closed
+    r.frame()
+    assert gone(r.newest[1]) and r.service.hold()[0] == 409
 
 
 def test_a_reconnect_leaves_a_pin_as_its_own_earlier_frame_marked_historical(rig) -> None:
