@@ -8,6 +8,7 @@ are wired as `sentinel run` wires them.
 from __future__ import annotations
 
 import dataclasses
+import gc
 import json
 import os
 import random
@@ -15,6 +16,7 @@ import signal
 import sqlite3
 import threading
 import time
+import weakref
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,7 +28,7 @@ import pytest
 from sentinel.alerts.outbox import DeliveryResult, DeliveryStatus, OutboxWorker
 from sentinel.cli import main
 from sentinel.config import CaptureConfig, parse_config
-from sentinel.contracts import PixelFormat
+from sentinel.contracts import PixelFormat, ResizeTransform
 from sentinel.demo_runtime import (
     MAX_PENDING_SIGNALS,
     DemoRuntime,
@@ -51,7 +53,8 @@ from sentinel.media.jpeg import EncodedJpeg
 from sentinel.rules.scene_hazard import Severity
 from sentinel.rules.zones import ZoneObservation
 from sentinel.scene.analyzer import RecentImages, ThreadedSceneAnalyzer
-from sentinel.scene.chat import CHAT_ADMISSION, ChatAdmission, ChatQuestion
+from sentinel.scene.chat import CHAT_ADMISSION, PICTURE_KEEP_S, ChatAdmission, ChatQuestion
+from sentinel.scene.roi import PIN_KEEP_S
 from sentinel.status_page import read_incident, render_incident_html
 from sentinel.storage.database import Database
 from sentinel.tracking.tracker import PersonTracker, RawTrack, TrackerError
@@ -1252,6 +1255,57 @@ def test_a_chat_validation_run_asks_the_model_and_memory_pressure_cancels_a_runn
         release.set()
         h.runtime.shutdown()
     assert frame.frame_seq == 0
+
+
+class Watched(SimpleNamespace):
+    """A picture a test can hold a weak reference to."""
+
+
+def test_the_loop_ends_what_chat_holds_on_time_while_no_page_asks_anything(tmp_path) -> None:
+    """Part 28 (the finished-code review): a pinned frame and an answered question's picture end at their time on the
+    runtime's own loop, and their images are released; no page request and no chat call is needed for it."""
+    images = RecentImages()
+    analyzer = ThreadedSceneAnalyzer(lambda job, image: WorkerOutcome.completed(job.job_id, REPORT), images,
+                                     revision="1+lfm2")
+    h = Harness(tmp_path, scene=SceneRuntime(analyzer, images), chat=True, chat_validation=True,
+                chat_run=lambda question, image, abort=None, max_tokens=None: ("A chair by the window.", False))
+    h.runtime.start()
+    try:
+        work = Watched(shape=(480, 640, 3), nbytes=921_600)
+        main = Watched(shape=(1296, 2304, 3), nbytes=8_957_952)  # route B: the decoded picture beside its working copy
+        working, decoded = weakref.ref(work), weakref.ref(main)
+        h.backend.script.append(PERSON)
+        h.clock.advance(FRAME_S)
+        stamped = h.capture.stamper.stamp(
+            native_width=2304, native_height=1296, pixel_format=PixelFormat.BGR,
+            resize=ResizeTransform(output_width=640, output_height=480, scale_x=640 / 2304, scale_y=480 / 1296))
+        h.slot.publish(CapturedFrame(stamped, work, main))
+        del work, main
+        h.runtime.step(timeout_s=0)
+        wait_for(lambda: analyzer.counters["delivered"] >= 1 and not analyzer.busy())
+        chat = h.runtime.chat
+        code, held = chat.hold()
+        assert code == 200 and held["source"] == "main_stream" and held["source_size"] == [2304, 1296]
+        code, accepted = chat.ask(ChatQuestion("What is visible?"))
+        assert code == 202
+        wait_for(lambda: chat.poll(accepted["job"])[1]["state"] == "answered" and not analyzer.busy())
+        assert chat.poll(accepted["job"])[1]["frame"]["frame_seq"] == stamped.frame_seq
+        for _ in range(8):  # video goes on: the loop's own recent pictures are later frames now
+            h.frame()
+        wait_for(lambda: not analyzer.busy())
+        gc.collect()
+        assert decoded() is not None and working() is not None  # held: the pin's frame, the answered question's picture
+        h.idle(PIN_KEEP_S + 1)  # only the loop steps: no frame, no page request, no chat call
+        gc.collect()
+        assert decoded() is None  # the pin ended at its time and the decoded picture is released
+        assert working() is not None  # the working picture is still the answered question's, for "the same picture"
+        h.idle(PICTURE_KEEP_S - PIN_KEEP_S)
+        gc.collect()
+        assert working() is None
+        assert chat.pin_numbers()["pinned"] == 0 and chat.picture_numbers()["held"] == 0
+    finally:
+        h.runtime.shutdown()
+
 
 
 def test_chat_validation_needs_chat(tmp_path, capsys, monkeypatch) -> None:

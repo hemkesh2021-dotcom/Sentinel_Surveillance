@@ -377,7 +377,8 @@ class HeldPictures:
     """Part 28: the pictures the latest answered questions used, so that "Analyse again" can ask about exactly the
     same picture. References only (no copy, no disk): at most PICTURES_KEPT, each for at most PICTURE_KEEP_S; the
     oldest is pushed out first. A picture that expired or was pushed out is gone: ``get`` says so and the caller never
-    substitutes another. Thread-safe: held on the scene worker's thread, read on the status page's."""
+    substitutes another. The time limit is enforced by the runtime's own loop (``expire``, with every status refresh),
+    not only when a viewer next asks. Thread-safe: held on the scene worker's thread, read on the status page's."""
 
     def __init__(self, kept: int = PICTURES_KEPT, keep_s: float = PICTURE_KEEP_S) -> None:
         self._kept, self._keep_ns = kept, round(keep_s * NS_PER_SECOND)
@@ -404,6 +405,11 @@ class HeldPictures:
     def release(self) -> None:
         with self._lock:
             self._items.clear()
+
+    def expire(self, now_ns: int) -> None:
+        """Drop what has outlived its time, without waiting for a request to ask: the runtime's regular call."""
+        with self._lock:
+            self._expire(now_ns)
 
     def numbers(self, now_ns: int) -> dict[str, int]:
         with self._lock:
@@ -508,7 +514,9 @@ class ChatService:
         return {"state": "available", "reason": "ask about the picture the camera is showing now"}
 
     def summary(self) -> dict[str, Any]:
-        """For the runtime status: the availability and counters, never a question or an answer."""
+        """For the runtime status: the availability and counters, never a question or an answer. The runtime reads it
+        with every status refresh, so held pictures whose time is over end here too (expire_pictures)."""
+        self.expire_pictures()
         with self._lock:
             out = {**self.availability(), "counters": dict(sorted(self.counters.items())), "advisory": ADVISORY,
                    "validation_run": self._validation}
@@ -567,6 +575,15 @@ class ChatService:
         if self._pins is not None:
             self._pins.release()
 
+    def expire_pictures(self) -> None:
+        """Part 28: end the held pictures and pinned frames whose time is over, releasing their images. The runtime
+        calls it from its loop (every step, and with every status refresh), so nothing is held past PICTURE_KEEP_S
+        or PIN_KEEP_S while no viewer asks anything."""
+        now = self._clock.monotonic_ns()
+        self._pictures.expire(now)
+        if self._pins is not None:
+            self._pins.expire(now)
+
     # ------------------------------------------------------------ part 28: pinned frames and regions (scene.roi)
 
     def hold(self) -> tuple[int, dict[str, Any]]:
@@ -621,6 +638,10 @@ class ChatService:
 
     def pin_numbers(self) -> dict[str, int] | None:
         return None if self._pins is None else self._pins.numbers(self._clock.monotonic_ns())
+
+    def picture_numbers(self) -> dict[str, int]:
+        """How many answered questions' pictures are held for "the same picture", and the limit."""
+        return self._pictures.numbers(self._clock.monotonic_ns())
 
     def abort_running(self, reason: str) -> bool:
         """End a running question (memory pressure, stopping); True if one was running."""

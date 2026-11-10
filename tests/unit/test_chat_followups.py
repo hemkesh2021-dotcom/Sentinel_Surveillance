@@ -9,14 +9,17 @@ existing ones: these tests go through the real ChatService and scene worker with
 
 from __future__ import annotations
 
+import gc
 import json
 import time
+import weakref
 from typing import Any
 
 import pytest
 from status_fixtures import Camera
 
 from sentinel.config import FreshnessConfig
+from sentinel.contracts import PixelFormat
 from sentinel.media.health import assess_frame
 from sentinel.scene import chat as chat_module
 from sentinel.scene.analyzer import RecentImages, ThreadedSceneAnalyzer
@@ -189,8 +192,29 @@ class Rig:
         for _ in range(round(seconds * 2)):
             self.camera.frame(0.5)
 
+    def shoot(self) -> Any:
+        """The newest frame, with a picture that can be watched: a weak reference to it. The recent frames hold the
+        only strong one, as the runtime's do, until a question takes it."""
+        camera = self.camera
+        camera.clock.advance(0.5)
+        frame = camera.stamper.stamp(native_width=640, native_height=480, pixel_format=PixelFormat.BGR)
+        image = Watched()
+        camera.frames.put(frame, image)
+        return weakref.ref(image)
+
     def close(self) -> None:
         assert self.analyzer.stop(3.0)
+
+
+class Watched:
+    """A frame's picture that a test can hold a weak reference to."""
+
+
+def gone(image: Any) -> bool:
+    """Whether nothing references a picture any more. After a collection: a reference cycle is no reference. This is
+    the release of the image itself, which a refused id alone would not show."""
+    gc.collect()
+    return image() is None
 
 
 @pytest.fixture
@@ -295,3 +319,30 @@ def test_a_follow_up_is_counted_and_its_reading_is_in_the_document(rig) -> None:
     assert document["state"] == "answered" and document["read_as"] == "Is there a phone near the water bottle?"
     assert rig.sent[0][0] == "near the water bottle?" and rig.service.counters["followups"] == 1
     assert chat_module.resolve_followup is resolve_followup
+
+
+# ---------------------------------------------------------------- what is released, and when (the finished-code review)
+
+
+def test_a_held_picture_ends_at_its_time_while_no_viewer_asks_anything_and_its_image_is_released(rig) -> None:
+    image = rig.shoot()
+    _, first = rig.ask(ChatQuestion(PHONE))
+    assert first["state"] == "answered" and rig.sent[0][1] is image()
+    rig.sent.clear()  # the stand-in model's own record of what it was sent
+    rig.later(PICTURE_KEEP_S - 10)  # live video; nobody asks anything
+    rig.service.summary()  # the runtime's status refresh
+    assert not gone(image)  # within its time the answered question's picture is held for "the same picture"
+    rig.later(12)
+    rig.service.expire_pictures()  # the runtime's loop: past its time the picture ends here, without a request for it
+    assert gone(image)
+    assert rig.service.picture_numbers() == {"held": 0, "limit": PICTURES_KEPT}
+    other = rig.shoot()
+    _, second = rig.ask(ChatQuestion(PHONE))
+    rig.sent.clear()
+    rig.later(PICTURE_KEEP_S + 2)
+    rig.service.summary()  # the status refresh alone ends it too
+    assert second["state"] == "answered" and gone(other)
+
+
+
+

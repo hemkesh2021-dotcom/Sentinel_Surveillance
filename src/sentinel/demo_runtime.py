@@ -645,6 +645,8 @@ class DemoRuntime:
         if self._pending:
             self._handle(None)
         self._observe_chat_gate()
+        if self._chat is not None:  # part 28: held pictures and pinned frames end on time, whoever is or is not asking
+            self._chat.expire_pictures()
         self._refresh_status()
         if self._page_reads is not None:  # part 28: what page requests read since the last step
             for item in self._page_reads.drain():

@@ -12,7 +12,8 @@ at most ``PIN_KEEP_S``, at most ``PINS_KEPT`` at once, the oldest pushed out fir
 on the main-stream profile, the decoded picture (2304x1296 BGR is 8,957,952 bytes; two pins are about 18 MB). No
 disk, no snapshot, no archive: expired or pushed out, a pin is gone and a question about it is refused, never answered
 from another frame. A pin keeps its own frame's facts (epoch, sequence, ingest time), so a reconnect does not confuse
-it: it stays that earlier frame, and is marked historical.
+it: it stays that earlier frame, and is marked historical. The time limit is enforced by the runtime's own loop
+(``expire``, with every status refresh), not only when a viewer next asks: an idle page leaves nothing held past it.
 
 **Regions.** A selection is a rectangle in fractions of the held picture. The working picture is the whole decoded
 picture resized (no cropping, media.capture), so the same fractions address both. ``roi_pixels`` maps it to whole
@@ -152,13 +153,13 @@ class PinnedFrames:
         """Pin the newest frame, with the facts ``facts_of`` gives for exactly that frame; None when there is no
         frame, its pictures have no usable size, or ``facts_of`` returns None (it is not live: nothing is pinned)."""
         with self._lock:
+            self._expire(now_ns)
             if self._latest is None:
                 return None
             frame, working, native, people = self._latest
             working_size = _size(working)
             if working_size is None:
                 return None
-            self._expire(now_ns)
             facts = facts_of(frame)
             if facts is None:
                 return None
@@ -180,6 +181,11 @@ class PinnedFrames:
             self._pins.clear()
             self._latest = None
 
+    def expire(self, now_ns: int) -> None:
+        """Drop what has outlived its time, without waiting for a request to ask: the runtime's regular call."""
+        with self._lock:
+            self._expire(now_ns)
+
     def numbers(self, now_ns: int) -> dict[str, int]:
         """Counts and the bytes the pins hold (their decoded and working pictures)."""
         with self._lock:
@@ -191,3 +197,8 @@ class PinnedFrames:
     def _expire(self, now_ns: int) -> None:
         for picture in [p for p, pin in self._pins.items() if now_ns - pin.pinned_ns > self._keep_ns]:
             del self._pins[picture]
+        # The newest-frame slot too, once no frame replaced it for that long (the camera went away): it may be the
+        # very frame of a pin that just ended, whose pictures would otherwise stay referenced here. A frame that old
+        # is long past live and could not be pinned anyway.
+        if self._latest is not None and now_ns - self._latest[0].ingest_mono_ns > self._keep_ns:
+            self._latest = None

@@ -9,9 +9,11 @@ replacement, reconnects and the refusals are checked through the real ChatServic
 
 from __future__ import annotations
 
+import gc
 import http.client
 import json
 import time
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -180,8 +182,10 @@ class Rig:
         self.n += 1
         frame = self.stamper.stamp(native_width=NATIVE[0] if self.main else WORK[0],
                                    native_height=NATIVE[1] if self.main else WORK[1], pixel_format=PixelFormat.BGR)
-        self.pins.latest(frame, Picture(f"work{self.n}", *WORK), Picture(f"main{self.n}", *NATIVE) if self.main else None,
-                         people)
+        work, main = Picture(f"work{self.n}", *WORK), Picture(f"main{self.n}", *NATIVE) if self.main else None
+        # weak references to this frame's pictures: the store's are the only strong ones, as on the device
+        self.newest = (weakref.ref(work), weakref.ref(main) if main is not None else None)
+        self.pins.latest(frame, work, main, people)
         return frame
 
     def hold(self) -> dict[str, Any]:
@@ -302,6 +306,46 @@ def test_the_pinned_stores_memory_is_bounded_and_reported(rig) -> None:
     assert r.service.hold()[0] == 200
     r.service.release_pictures()
     assert r.service.pin_numbers()["pinned"] == 0
+
+
+# ---------------------------------------------------------------- what is released, and when (the finished-code review)
+
+
+def gone(picture: Any) -> bool:
+    """Whether nothing references a picture any more. After a collection: a reference cycle is no reference. This is
+    the release of the image itself, which a refused id alone would not show."""
+    gc.collect()
+    return picture() is None
+
+
+def test_a_pin_ends_at_its_time_while_no_viewer_asks_anything_and_its_pictures_are_released(rig) -> None:
+    r = rig()
+    r.hold()
+    work, main = r.newest
+    r.clock.advance(PIN_KEEP_S - 1)
+    r.frame()  # video went on: the newest-frame slot has a later frame
+    r.service.summary()  # the runtime's status refresh; no page asks for anything
+    assert not gone(main) and not gone(work)  # within its time the pin holds its own frame's pictures
+    r.clock.advance(2.0)
+    r.frame()
+    r.service.summary()  # past its time: the pin ends here, without a request for it
+    assert gone(main) and gone(work)
+    assert r.service.pin_numbers() == {"pinned": 0, "limit": 2, "bytes": 0}
+
+
+def test_a_pin_whose_frame_is_still_the_newest_is_released_too_once_the_camera_went_away(rig) -> None:
+    r = rig()
+    r.hold()
+    work, main = r.newest
+    r.clock.advance(PIN_KEEP_S + 1)  # no frame since: the newest-frame slot still has the pinned frame's pictures
+    r.service.expire_pictures()  # the runtime's loop
+    assert gone(main) and gone(work)
+    assert r.service.hold()[0] == 409  # nothing to pin until a live frame arrives
+    r.frame()
+    assert r.service.hold()[0] == 200
+
+
+
 
 
 def test_a_reconnect_leaves_a_pin_as_its_own_earlier_frame_marked_historical(rig) -> None:
