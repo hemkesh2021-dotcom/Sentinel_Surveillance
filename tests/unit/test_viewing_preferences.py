@@ -134,7 +134,13 @@ def test_hiding_optional_panels_keeps_their_warnings_in_view_and_changes_no_feat
         assert shown(page, ".hw[data-panel=health]")  # the degraded reason stays in view
         assert "the runtime reports a problem: video stale" in page.evaluate(
             "document.querySelector('.hw[data-panel=health]').innerText")
-        assert shown(page, ".freshbar") and shown(page, "#live") and shown(page, "#faces") and shown(page, "#features")
+        assert shown(page, ".freshbar") and shown(page, "#live") and shown(page, "#faces")
+        # part 28: Features is a section of the Settings dialog; it stays reachable from the sidebar, with its features
+        assert shown(page, ".nav a[data-nav=features]")
+        page.evaluate("document.querySelector('#sidebar .nav a[data-nav=features]').click()")
+        assert wait_until(lambda: page.evaluate("document.getElementById('settings-dialog').open"), 3.0)
+        assert shown(page, "#features") and page.evaluate("document.querySelectorAll('#features li.feature').length") > 0
+        page.evaluate("document.getElementById('settings-dialog').close()")
         page.navigate(f"{site['url']}/dashboard")  # saved: still hidden after a reload, before the first paint
         assert wait_until(lambda: page.evaluate("document.readyState") == "complete", 10.0)
         assert page.evaluate("document.documentElement.dataset.hide") == "chat health"

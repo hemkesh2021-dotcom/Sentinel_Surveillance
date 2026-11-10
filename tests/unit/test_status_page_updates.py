@@ -84,11 +84,14 @@ def test_the_page_document_carries_the_same_regions_the_page_embeds_and_is_order
     assert int(marker[1] and marker[2]) < first["page"]["sequence"] < second["page"]["sequence"]
     assert set(first["page"]["regions"]) == {"pills", "fresh", "live-head", "live-facts", "caps", "incidents",
                                              "incidents-meta", "faces", "chat-state", "health", "delivery", "foot",
-                                             "features", "hidden"}  # D99, D100
+                                             "features", "hidden",  # D99, D100
+                                             # part 28: the page's state line, again inside the Settings dialog
+                                             "settings-status"}
     embedded = regions_in(page)
     assert set(embedded) == set(first["page"]["regions"])
     for name in ("live-head", "caps", "incidents", "delivery"):  # the parts that do not carry a time or a sequence
         assert embedded[name] == first["page"]["regions"][name], name
+    assert first["page"]["regions"]["settings-status"] == first["page"]["regions"]["pills"]  # one line, two places
     assert first["preview"]["picture"] is None  # D75: pictures come from /live/frame, never from a page update
     assert camera.preview.summary()["counters"]["encodes"] == 1  # the page's own first picture only
     assert first["page"]["token"] == second["page"]["token"] and re.fullmatch(r"[0-9a-f]{32}", first["page"]["token"])
