@@ -448,6 +448,14 @@ html.js .peek { position: relative; display: inline-flex; align-items: center; g
 .exchange[data-state=answered] .status { color: var(--ink); }
 .exchange .answer { white-space: pre-line; }
 .exchange .frame { color: var(--muted); font-size: .82rem; padding: 0; background: none; box-shadow: none; border: 0; }
+.exchange .again, .exchange .autorow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px;
+  margin-top: 4px; font-size: .86rem; }
+.exchange .autorow select { font: inherit; }
+.exchange .auto-state { color: var(--muted); }
+.exchange[data-auto=running] .auto-state, .exchange[data-auto=paused] .auto-state { color: var(--ink); font-weight: 650; }
+.exchange .readas { color: var(--muted); font-size: .86rem; }
+.exchange details.earlier { color: var(--muted); font-size: .82rem; }
+.exchange details.earlier ul { display: grid; gap: 3px; margin: 4px 0 0; padding-left: 1.15em; }
 .exchange ul.lines, .exchange ul.limits { display: grid; gap: 3px; margin: 2px 0 0; padding-left: 1.15em; }
 .exchange ul.lines { font-size: .92rem; }
 .exchange ul.limits { color: var(--muted); font-size: .82rem; }

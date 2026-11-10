@@ -230,6 +230,11 @@ CHAT_PATH = "/chat"
 RECORDED_HINT = ("Questions about what was recorded (“what happened in the last 10 minutes?”, “who is in the room?”, "
                  "“were any alerts triggered?”) are answered from the system's own records, not by the scene model, "
                  "and say what they cover.")
+# Part 28, the page's automatic refresh of one answered question (off until started): the seconds between cycles a
+# viewer may choose. Never below the server's own interval for automatic questions (chat.AUTO_MIN_INTERVAL_S).
+AUTO_REFRESH_MIN_S = 15
+AUTO_REFRESH_DEFAULT_S = 30
+AUTO_REFRESH_MAX_S = 120
 RECORDED_PER_S = 2  # part 28: recorded-fact answers a second, for every viewer together (they use no model slot)
 CHAT_JOB_PATH = re.compile(r"/chat/(?P<id>[0-9a-f]{16})")
 CHAT_OFF = {"state": "off", "reason": "chat is off; start sentinel run with --chat to offer it"}
@@ -1629,8 +1634,9 @@ def _monitoring(runtime: Mapping[str, Any], degraded: list[str]) -> _Markup:
     return _badge("off", STATE_LABELS.get(str(state), str(state).capitalize()), glyph="clock")
 
 
-def _chat_state(view: Mapping[str, Any] | None) -> str:
-    """Whether chat can be asked now (D74), with the reason; available is a current claim (D71)."""
+def _chat_state(view: Mapping[str, Any] | None, video: object = None) -> str:
+    """Whether chat can be asked now (D74), with the reason; available is a current claim (D71). ``video`` (part 28):
+    the runtime's video state, carried as data for the page's automatic refresh, which pauses unless it is fresh."""
     view = view or CHAT_OFF
     state = str(view.get("state"))
     if state == "available":
@@ -1639,7 +1645,9 @@ def _chat_state(view: Mapping[str, Any] | None) -> str:
         badge = _badge("warn", "Paused", glyph="clock")
     else:
         badge = _badge("off", {"off": "Off", "unavailable": "Unavailable"}.get(state, state.capitalize()), glyph="off")
-    return f'<div class=row data-chat-state="{_e(state)}">{badge}<span class=muted>{_e(view.get("reason"))}.</span></div>'
+    live = video if video in ("fresh", "stale", "offline", "starting") else "unknown"
+    return (f'<div class=row data-chat-state="{_e(state)}" data-video={live}>{badge}'
+            f'<span class=muted>{_e(view.get("reason"))}.</span></div>')
 
 
 def status_regions(status: Mapping[str, Any], *, theme: Look | str | None = None) -> dict[str, str]:
@@ -1789,7 +1797,7 @@ def status_regions(status: Mapping[str, Any], *, theme: Look | str | None = None
                      + _details("Alert rows", _table(["incident", "channel", "message", "state", "attempts", "ambiguous",
                                                       "next attempt (UTC)", "last error"], delivery_rows, "No alerts."),
                                 key="alerts")),
-        "chat-state": _chat_state(status.get("chat")),
+        "chat-state": _chat_state(status.get("chat"), live.get("video")),
         "features": _features(status),
         "hidden": _hidden_panels(status),
         "settings-status": pills,  # part 28: the same line inside the Settings dialog, so it stays in view there
@@ -1924,7 +1932,7 @@ def render_html(status: Mapping[str, Any], *, theme: Look | str | None = None,
 <p class=note>{_e(ADVISORY)}</p>
 <p class="note js-only">{_e(RECORDED_HINT)}</p>
 <ol id=chat-log class=chat-log aria-live=polite></ol>
-<form id=chat-form class=chat-form autocomplete=off data-token="{_e(chat_token)}">
+<form id=chat-form class=chat-form autocomplete=off data-token="{_e(chat_token)}" data-auto-min={AUTO_REFRESH_MIN_S} data-auto-default={AUTO_REFRESH_DEFAULT_S} data-auto-max={AUTO_REFRESH_MAX_S}>
 <label for=chat-q>Your question <span class=muted>(at most {CHAT_MAX_QUESTION} characters)</span></label>
 <div class=field><textarea id=chat-q name=question maxlength={CHAT_MAX_QUESTION} rows=2 placeholder="For example: is the door open?"></textarea></div>
 <div class=row><button type=submit class=button id=chat-ask disabled>{icon("send")}Ask</button><span id=chat-note class=muted role=status></span></div>

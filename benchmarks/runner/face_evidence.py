@@ -344,7 +344,9 @@ CHAT_COUNTERS = vocab(  # ChatService counters
     "no_fresh_frame_at_start", "frame_replaced", "shortened", "incomplete", "overran", "pace_reset", "timing_sampled",
     "timing_missing", "timing_too_short", "timing_inconsistent",
     # part 28: questions answered from records by the page (chat_evidence), by intent; no model slot
-    "recorded_history", "recorded_who", "recorded_alerts", "recorded_busy")
+    "recorded_history", "recorded_who", "recorded_alerts", "recorded_busy",
+    # part 28: follow-ups, "Analyse again" on a held picture, automatic refresh
+    "followups", "same_picture", "picture_expired", "auto_accepted", "busy_auto_interval")
 CHAT_TIMING_GROUPS = ("wait_ms", "run_ms", "max_tokens", "tokens")  # ChatService._timing (session 114)
 CHAT_TIMING_LIMITS = {"max_tokens": INT, "min_tokens": INT, "release_reserve_ms": NUM, "fallback_overhead_ms": NUM,
                       "fallback_ms_per_token": NUM}

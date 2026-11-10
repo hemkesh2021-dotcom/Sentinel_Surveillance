@@ -915,11 +915,12 @@
     };
     const TITLES = {busy: "Busy", unavailable: "Unavailable", off: "Chat is off", no_fresh_frame: "No fresh frame",
                     timeout: "No answer in time", invalid: "Not sent", refused: "Refused", unknown: "Lost",
-                    cancelled: "Cancelled", paused: "Paused", incomplete: "Incomplete"};
+                    cancelled: "Cancelled", paused: "Paused", incomplete: "Incomplete",
+                    picture_expired: "Picture no longer held"};
     const REASONS = {unknown: "the server no longer has this question; it may have restarted"};
     const GLYPHS = {sending: "clock", waiting: "clock", answering: "clock", answered: "check", busy: "warn",
                     no_fresh_frame: "warn", timeout: "warn", unavailable: "off", off: "off", unknown: "off",
-                    cancelled: "warn", paused: "clock", incomplete: "warn"};
+                    cancelled: "warn", paused: "clock", incomplete: "warn", picture_expired: "warn"};
 
     const chatState = () => {
       const element = document.querySelector("[data-chat-state]");
@@ -931,6 +932,9 @@
       const restarted = state.instance !== servedBy;
       const text = box.value.trim();
       ask.disabled = chat.pending || !available || restarted || !text || text.length > LIMIT;
+      for (const button of log.querySelectorAll("button[data-again], button[data-auto=start]")) {
+        button.disabled = chat.pending || !available || restarted;  // part 28: one question at a time, as Ask
+      }
       busy(ask, chat.pending);  // its edge circles while the question is on its way (session 114)
       const reason = restarted ? "The runtime restarted after this page was loaded: reload the page to ask."
         : !available ? "Chat is not available now: see the reason above."
@@ -966,7 +970,7 @@
     // Which frame an answer describes, and how old it was. Historical unless the server says it was still live when
     // the answer was ready: an answer is never about the scene now. When the frame asked about was no longer live by
     // the time the question could start, the server sent the newest live one instead, and the label says so.
-    const label = (document_) => {
+    const label = (document_, exchange_) => {
       const frame = document_.frame;
       if (!frame || typeof frame !== "object") return "";
       const replaced = document_.frame_replaced === true;
@@ -976,8 +980,11 @@
       const age = replaced ? `${seconds(frame.age_ms_when_sent)} old when sent`
         : `${seconds(frame.age_ms_when_asked)} old when asked`;
       if (document_.state !== "answered") return `About ${which} ${age}.`;
+      // Part 28: asked again, the card says which picture this result is about: the same (held) one, or a new one.
+      const again_ = document_.same_picture === true ? "The same picture again (the held one, not a new picture). "
+        : exchange_ && exchange_.dataset.again === "latest" ? "A new picture (the latest), not the one before. " : "";
       const lead = document_.historical === false ? "About" : "Historical: about";
-      return `${lead} ${which} ${age} and `
+      return `${again_}${lead} ${which} ${age} and `
         + `${seconds(document_.age_ms_when_answered)} old when answered. It describes that frame only, not the scene now.`;
     };
 
@@ -1016,7 +1023,13 @@
         if (typeof document_.unfinished === "string" && document_.unfinished) {
           line(exchange, "unfinished", `Left unfinished when it stopped: “${document_.unfinished.slice(0, 600)}…”`);
         }
-        line(exchange, "frame", label(document_));
+        if (typeof document_.read_as === "string" && document_.read_as) {
+          line(exchange, "readas", `Read as a follow-up to your earlier question: “${document_.read_as.slice(0, 400)}”`);
+        }
+        line(exchange, "frame", label(document_, exchange));
+        // the context sent with the next question: the operator's questions and the model's own earlier statements
+        // (never a recorded fact); the same question asked again replaces its own earlier entry
+        chat.history = chat.history.filter((turn) => turn.question !== question);
         chat.history.push({question, answer: document_.answer.slice(0, 400)});
         chat.history = chat.history.slice(-2);
         return true;
@@ -1024,7 +1037,7 @@
       const reason = typeof document_.reason === "string" ? document_.reason.slice(0, 300)
         : REASONS[state_] || "the question could not be answered";
       status(exchange, TITLES[state_] ? state_ : "error", `${TITLES[state_] || "Error"}: ${reason}.`);
-      if (document_.frame) line(exchange, "frame", label(document_));
+      if (document_.frame) line(exchange, "frame", label(document_, exchange));
       return true;
     };
 
@@ -1051,46 +1064,250 @@
       }
     };
 
-    chatForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      refreshAsk();
-      if (ask.disabled) return;
-      const question = box.value.trim();
+    // Part 28. One question to its end on one exchange: a new one, or the same card again ("Analyse again", "Try
+    // again", an automatic refresh). ``extra`` is {again: {use, picture}} and/or {auto: true}; ``typed``: the question
+    // came from the box, which is cleared once it is taken and gets it back if it ends without an answer. One at a
+    // time: chat.pending covers manual and automatic questions alike, so they never overlap. Returns the last
+    // document shown.
+    const run = async (exchange, question, extra, typed) => {
       chat.pending = true;
       refreshAsk();
-      const exchange = el("li", {class: "exchange"}, [el("p", {class: "question"}, [question])]);
-      log.append(exchange);
-      while (log.children.length > 12) log.firstElementChild.remove();
       status(exchange, "sending", STATES.sending);
+      let shown = {state: "error", reason: "the question could not be sent"};
       try {
         let document_ = await request("/chat", {method: "POST", headers: {"Content-Type": "application/json",
-          "X-Sentinel-Token": token}, body: JSON.stringify({question, history: chat.history})}, 8000);
+          "X-Sentinel-Token": token}, body: JSON.stringify({question, history: chat.history, ...extra})}, 8000);
         const job = typeof document_.job === "string" && JOB.test(document_.job) ? document_.job : null;
         // Handed over, the box is cleared for the next question; one that was not taken stays in it, and one that
         // ends without an answer (cancelled, busy, ...) comes back into an empty box, to send again without retyping.
-        if (job || document_.kind === "recorded") box.value = "";
+        if (typed && (job || document_.kind === "recorded")) box.value = "";
         const started = performance.now();
         for (;;) {
+          shown = document_;
           if (document_.lost && job) {  // a poll that got no answer: the question may still be answered
             status(exchange, "waiting", `No reply from the page server (${document_.reason}); still waiting…`);
           } else if (show(exchange, document_, question)) {
             break;
           } else if (!job) {
-            show(exchange, {state: "error", reason: "the answer was not readable"}, question);
+            shown = {state: "error", reason: "the answer was not readable"};
+            show(exchange, shown, question);
             break;
           }
           if (performance.now() - started > 40000) {
-            show(exchange, {state: "timeout", reason: "no answer in time"}, question);
+            shown = {state: "timeout", reason: "no answer in time"};
+            show(exchange, shown, question);
             break;
           }
           await new Promise((resolve) => setTimeout(resolve, 1000));
           document_ = await request(`/chat/${job}`, {headers: {"X-Sentinel-Token": token}}, 5000);
         }
       } finally {
-        if (exchange.dataset.state !== "answered" && !box.value.trim()) box.value = question;
+        if (typed && exchange.dataset.state !== "answered" && !box.value.trim()) box.value = question;
         chat.pending = false;
+        actions(exchange, shown);
         refreshAsk();
       }
+      return shown;
+    };
+
+    // A card run again keeps its earlier results, the newest first, at most EARLIER of them: a bounded card, never an
+    // endless list of repeated replies.
+    const EARLIER = 4;
+    const archive = (exchange) => {
+      const answer = exchange.querySelector("p.answer");
+      const frame = exchange.querySelector("p.frame");
+      if (exchange.dataset.state !== "answered" || !answer) return;
+      let earlier = exchange.querySelector("details.earlier");
+      if (!earlier) {
+        earlier = el("details", {class: "earlier"}, [el("summary", {}, ["Earlier results"]), el("ul", {})]);
+        exchange.append(earlier);
+      }
+      const list = earlier.querySelector("ul");
+      list.prepend(el("li", {}, [`${answer.textContent.slice(0, 300)} — ${frame ? frame.textContent.slice(0, 300) : ""}`]));
+      while (list.children.length > EARLIER) list.lastElementChild.remove();
+      earlier.querySelector("summary").textContent = `Earlier results (${list.children.length}, newest first)`;
+      for (const name of ["unfinished", "readas"]) {
+        const stale = exchange.querySelector(`p.${name}`);
+        if (stale) stale.remove();
+      }
+    };
+
+    // The card's own controls once a question about the picture has ended: answered, "Analyse again" on the same
+    // (held) picture or on the latest one, and automatic refresh; not answered, "Try again" without retyping.
+    const AUTO_MIN = Number(chatForm.dataset.autoMin) || 15;
+    const AUTO_MAX = Number(chatForm.dataset.autoMax) || 120;
+    const AUTO_DEFAULT = Number(chatForm.dataset.autoDefault) || 30;
+    const auto = {exchange: null, every: 0, wait: 0, timer: null};
+    const actions = (exchange, document_) => {
+      if (exchange.dataset.kind === "recorded" || !exchange.isConnected) return;
+      const answered = exchange.dataset.state === "answered";
+      if (typeof document_.picture === "string" && JOB.test(document_.picture)) exchange.dataset.picture = document_.picture;
+      else if (document_.state === "picture_expired") delete exchange.dataset.picture;
+      let row = exchange.querySelector("div.again");
+      if (!row) {
+        row = el("div", {class: "again"});
+        exchange.append(row);
+      }
+      const button = (use, text) => el("button", {type: "button", class: "ghost", "data-again": use}, [text]);
+      const items = [];
+      if (answered) {
+        items.push(el("span", {class: "muted"}, ["Analyse again:"]));
+        if (exchange.dataset.picture) items.push(button("same", "Same picture"));
+        items.push(button("latest", "Latest picture"));
+      } else {
+        items.push(button("latest", document_.state === "picture_expired" ? "Use the latest picture" : "Try again"));
+      }
+      row.replaceChildren(...items);
+      // the automatic refresh's line: running or paused with Stop; off with its interval and Start (answered cards
+      // only); and, off, why it last stopped, which stays on the card whatever state it is in
+      let line_ = exchange.querySelector("div.autorow");
+      const stopped = exchange.dataset.autoNote || "";
+      if (auto.exchange !== exchange && !answered && !stopped) {
+        if (line_) line_.remove();
+        return;
+      }
+      if (!line_) {
+        line_ = el("div", {class: "autorow"});
+        exchange.append(line_);
+      }
+      if (auto.exchange === exchange) {
+        if (!line_.querySelector("button[data-auto=stop]")) {
+          line_.replaceChildren(el("span", {class: "auto-state", role: "status"}, [""]),
+            el("button", {type: "button", class: "ghost", "data-auto": "stop"}, ["Stop"]));
+        }
+      } else if (!answered) {
+        line_.replaceChildren(el("span", {class: "auto-state", role: "status"}, [stopped]));
+      } else {
+        if (!line_.querySelector("select")) {
+          const select = el("select", {class: "auto-every", "aria-label": "Seconds between automatic refreshes"});
+          for (const seconds of [...new Set([AUTO_MIN, AUTO_DEFAULT, 60, AUTO_MAX])].filter(
+            (n) => n >= AUTO_MIN && n <= AUTO_MAX).sort((x, y) => x - y)) {
+            const option = el("option", {value: String(seconds)}, [`${seconds} s`]);
+            if (seconds === AUTO_DEFAULT) option.selected = true;
+            select.append(option);
+          }
+          line_.replaceChildren(el("span", {class: "muted"}, ["Auto-refresh (off): every"]),
+            el("span", {class: "pick"}, [select]),
+            el("button", {type: "button", class: "ghost", "data-auto": "start"}, ["Start"]),
+            el("span", {class: "auto-state", role: "status"}, [""]));
+        }
+        autoSay(exchange, stopped);
+      }
+    };
+
+    const again = (exchange, use, automatic) => {
+      const extra = {again: use === "same" ? {use: "same", picture: exchange.dataset.picture} : {use: "latest"}};
+      if (automatic) extra.auto = true;
+      exchange.dataset.again = use;
+      archive(exchange);
+      return run(exchange, exchange.dataset.question || "", extra, false);
+    };
+
+    // Automatic refresh (part 28): off until started on one answered card; one cycle at a time, the next scheduled
+    // only when the last has ended (no backlog); each cycle asks about the latest picture and updates that card in
+    // place. It sends nothing while this tab is hidden, the page is not current, the camera is not fresh, chat is
+    // paused or a question is being answered, and says why; busy answers back off up to AUTO_MAX; it stops, saying
+    // so, on Stop, a restarted runtime, a closed card, or chat off or refused.
+    const autoSay = (exchange, text) => {
+      const node = exchange.querySelector(".auto-state");
+      if (node && node.textContent !== text) node.textContent = text;
+    };
+    const stopAuto = (why) => {
+      const exchange = auto.exchange;
+      if (!exchange) return;
+      clearTimeout(auto.timer);
+      auto.exchange = null;
+      auto.timer = null;
+      exchange.dataset.auto = "off";
+      exchange.dataset.autoNote = why;
+      if (exchange.isConnected) {
+        const line_ = exchange.querySelector("div.autorow");
+        if (line_) line_.replaceChildren();
+        actions(exchange, {state: exchange.dataset.state});
+        refreshAsk();
+      }
+    };
+    const pauseReason = () => {
+      if (document.hidden) return "this tab is hidden";
+      if (!(Number.isFinite(state.currentUntil) && performance.now() < state.currentUntil)) return "this page is not current";
+      const row = document.querySelector("[data-chat-state]");
+      if (row && row.dataset.chatState === "paused") return "chat is paused by the runtime (monitoring comes first)";
+      if (row && row.dataset.video && row.dataset.video !== "fresh") {
+        return `the camera is ${row.dataset.video === "unknown" ? "not reporting" : row.dataset.video}`;
+      }
+      if (chat.pending) return "a question is being answered";
+      return "";
+    };
+    const tick = async () => {
+      const exchange = auto.exchange;
+      if (!exchange) return;
+      if (!exchange.isConnected) {
+        stopAuto("");
+        return;
+      }
+      if (state.instance !== servedBy) {
+        stopAuto("Auto-refresh stopped: the runtime restarted.");
+        return;
+      }
+      const now = chatState();
+      if (now === "off" || now === "unavailable") {
+        stopAuto(`Auto-refresh stopped: chat is ${now}.`);
+        return;
+      }
+      const reason = pauseReason();
+      if (reason) {
+        exchange.dataset.auto = "paused";
+        autoSay(exchange, `Auto-refresh paused: ${reason}. Nothing is sent meanwhile.`);
+        auto.timer = setTimeout(tick, 1000);
+        return;
+      }
+      exchange.dataset.auto = "running";
+      autoSay(exchange, "Auto-refresh running: refreshing now…");
+      const document_ = await again(exchange, "latest", true);
+      if (auto.exchange !== exchange) return;  // stopped meanwhile
+      const ended = typeof document_.state === "string" ? document_.state : "error";
+      if (["off", "unavailable", "refused", "invalid", "unknown"].includes(ended)) {
+        stopAuto(`Auto-refresh stopped: the last refresh was not accepted (${TITLES[ended] || ended}).`);
+        return;
+      }
+      const backoff = ended !== "answered";
+      auto.wait = backoff ? Math.min(AUTO_MAX, Math.max(auto.every, auto.wait * 2)) : auto.every;
+      exchange.dataset.auto = "running";
+      autoSay(exchange, `Auto-refresh running: every ${auto.every} s`
+        + (backoff ? `; the last one was not answered, so the next try is in ${auto.wait} s.` : "."));
+      auto.timer = setTimeout(tick, auto.wait * 1000);
+    };
+    const startAuto = (exchange) => {
+      stopAuto("Auto-refresh stopped here: it was started on another question.");
+      const select = exchange.querySelector("select.auto-every");
+      const every = Math.min(AUTO_MAX, Math.max(AUTO_MIN, Number(select && select.value) || AUTO_DEFAULT));
+      Object.assign(auto, {exchange, every, wait: every});
+      delete exchange.dataset.autoNote;
+      exchange.dataset.auto = "running";
+      actions(exchange, {state: exchange.dataset.state});
+      autoSay(exchange, `Auto-refresh running: every ${every} s.`);
+      auto.timer = setTimeout(tick, every * 1000);
+    };
+
+    log.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-again], button[data-auto]");
+      const exchange = button && button.closest("li.exchange");
+      if (!button || button.disabled || !exchange) return;
+      if (button.dataset.auto === "stop") stopAuto("Auto-refresh stopped.");
+      else if (button.dataset.auto === "start") startAuto(exchange);
+      else if (!chat.pending) again(exchange, button.dataset.again, false);  // one at a time: a second click is nothing
+    });
+
+    chatForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      refreshAsk();
+      if (ask.disabled) return;
+      const question = box.value.trim();
+      const exchange = el("li", {class: "exchange", "data-question": question},
+        [el("p", {class: "question"}, [question])]);
+      log.append(exchange);
+      while (log.children.length > 12) log.firstElementChild.remove();
+      run(exchange, question, {}, true);
     });
     box.addEventListener("input", () => refreshAsk());
     refreshAsk();

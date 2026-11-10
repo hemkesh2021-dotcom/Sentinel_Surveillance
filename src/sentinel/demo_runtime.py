@@ -558,6 +558,9 @@ class DemoRuntime:
                 failed.append(part)
                 return default
 
+        if self._chat is not None:  # part 28: no picture stays held for "Analyse again" once the runtime stops
+            self._chat.release_pictures()
+
         def record() -> dict[str, Any]:
             stopped.update(dict.fromkeys(failed, False))  # a part that raised, whatever a later call of it returned
             return {"stopped": stopped, "all_stopped": all(stopped.values()),

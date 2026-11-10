@@ -91,3 +91,68 @@ def route(question: str) -> Route:
     if _HISTORY.search(text):
         return Route(HISTORY, None if since_start else seconds or DEFAULT_HISTORY_S, since_start, stated)
     return Route(VISUAL)
+
+
+# ---------------------------------------------------------------- follow-ups to a question about the picture
+
+SUBJECT_MAX = 80
+_PLACES = ("near", "next to", "by", "beside", "on", "in", "inside", "under", "underneath", "behind", "above", "below",
+           "left of", "right of", "to the left of", "to the right of", "around", "at", "in front of", "on top of",
+           "close to")
+# a state asked of the subject ("is the door open?"): not part of the subject
+_STATES = ("open", "closed", "shut", "off", "empty", "full", "visible", "locked", "unlocked", "running", "lit", "dark",
+           "clean", "dirty", "present", "standing", "sitting", "moving", "wet", "dry", "broken", "there", "here")
+_PLACE = re.compile(r"^(?:and |or |what about |how about )?((?:" + "|".join(sorted(_PLACES, key=len, reverse=True))
+                    + r") .{1,120}?)\??$")
+_OTHER = re.compile(r"^(?:and|or|what about|how about)(?: is there| are there)? (?:an? |the |any |some )?(.{1,80}?)\??$")
+_PRONOUN = re.compile(r"\b(it|they|them|that one|this one)\b")
+# the earlier question's subject: "is there a phone on the desk?" -> "a phone"; the place after it is dropped
+_SUBJECT = re.compile(
+    r"^(?:is there|are there|do you see|can you see|is|are|where is|where are|where's)\s+"
+    r"((?:an? |the |any |some |my |his |her |their )?[\w' -]{1,60}?)"
+    r"(?:\s+(?:" + "|".join(sorted(_PLACES, key=len, reverse=True)) + r")\b.*|\s+(?:" + "|".join(_STATES) + r")\b.*)?\??$")
+_EXISTENCE = re.compile(r"^(is there|are there|do you see|can you see)\b")
+
+
+def subject_of(question: str) -> str | None:
+    """The thing an earlier question about the picture asked about, by fixed patterns; None when none can be read."""
+    text = " ".join(question.lower().replace("’", "'").split())
+    found = _SUBJECT.match(text)
+    if not found:
+        return None
+    subject = found.group(1).strip()
+    return subject[:SUBJECT_MAX] if subject and subject not in ("it", "there", "anyone", "anybody") else None
+
+
+def resolve_followup(question: str, earlier: str | None) -> tuple[str | None, str | None]:
+    """(how to read a follow-up, the active subject), from the question before it about the picture; (None, subject)
+    when the question stands by itself. Deterministic and conservative:
+
+    - a place alone ("near the water bottle?") continues the earlier question at that place:
+      "Is there a phone on the desk?" then "near the water bottle?" reads "Is there a phone near the water bottle?";
+    - "what about X?" / "and X?" asks the earlier question about X instead (said in those words, never rebuilt
+      into a sentence of its own);
+    - a pronoun ("is it on the table?") is read with the earlier subject named.
+
+    The earlier *answer* is never used here: only the operator's own earlier question decides how the next is read."""
+    if not earlier:
+        return None, None
+    subject = subject_of(earlier)
+    text = " ".join(question.lower().replace("’", "'").split())
+    if subject is None:
+        return None, None
+    lead = _EXISTENCE.match(" ".join(earlier.lower().split()))
+    opener = lead.group(1).capitalize() if lead else "Is"
+    place = _PLACE.match(text)
+    if place and len(text) <= 140:
+        return f"{opener} {subject} {place.group(1)}?", subject
+    other = _OTHER.match(text)
+    if other and lead and not _PLACE.match(text):
+        thing = other.group(1).strip()
+        return f"The earlier question (“{earlier.strip()[:200]}”), asked about {thing} instead.", thing[:SUBJECT_MAX]
+    if _PRONOUN.search(text) and len(text) <= 160:
+        named = _PRONOUN.sub(subject if subject.split()[0] in ("the", "my", "his", "her", "their")
+                             else "the " + subject.split(" ", 1)[-1] if subject.split()[0] in ("a", "an", "any", "some")
+                             else subject, text, count=1)
+        return named[:1].upper() + named[1:] + ("" if named.endswith("?") else "?"), subject
+    return None, subject
