@@ -2106,8 +2106,13 @@
       if (SETTINGS.includes(location.hash.slice(1))) {
         history.replaceState(null, "", location.pathname + location.search);
       }
-      const back = opener && opener.isConnected && opener.offsetParent !== null ? opener
-        : menu && menu.offsetParent !== null ? menu : null;
+      // Focus returns to what opened the dialog. When that is gone or hidden (a warning's button that an update
+      // removed meanwhile, the drawer's link, an address that opened it), it goes to a control that is in view and
+      // opens the same thing: the menu button where the sidebar is a drawer, otherwise the sidebar's own link for
+      // the section that was shown. Never left on the page body.
+      const shown = (node) => !!node && node.isConnected && node.offsetParent !== null;
+      const link = sectionLinks.find((item) => item.dataset.nav === settingsDialog.dataset.section);
+      const back = [opener, menu, link].find(shown);
       opener = null;
       if (back) back.focus();
     });

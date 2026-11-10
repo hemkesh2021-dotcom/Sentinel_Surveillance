@@ -335,6 +335,101 @@ def test_a_warning_the_features_section_holds_stays_on_the_page_with_a_button_th
         assert server.stop(3.0)
 
 
+def locked_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lockout_s: float) -> StatusServer:
+    """A page server with feature controls whose lockout after wrong keys lasts ``lockout_s``."""
+    monkeypatch.setattr(status_page, "REFRESH_S", 1)
+    monkeypatch.setattr(status_page, "KEY_LOCKOUT_S", lockout_s)
+    incident_store(tmp_path / "sentinel.db", count=1)
+    controls = FeatureControls(FakeClock(), {"face": True, "scene": True, "live_view": True})
+    server = StatusServer(0, Runtime(controls=controls).snapshot, tmp_path / "sentinel.db")
+    server.enable_controls(lambda: controls, new_control_key())
+    server.start()
+    return server
+
+
+def lock_and_open_from_the_warning(page: Page) -> None:
+    """Wrong keys until the controls lock, then Features opened with the warning's own button."""
+    for _ in range(6):
+        page.evaluate("document.getElementById('control-key').value = 'AAAA-BBBB-CCCC-DDDD-EEEE-FFFF'")
+        page.evaluate("document.getElementById('controls-unlock').requestSubmit()")
+        page.evaluate("new Promise(r => setTimeout(r, 250))")
+    assert wait_until(lambda: visible(page, ".hw[data-panel=features] button[data-open-settings]"), 8.0)
+    page.evaluate("(() => { const b = document.querySelector('.hw[data-panel=features] button[data-open-settings]'); "
+                  "b.focus(); b.click(); })()")
+    assert wait_until(lambda: page.evaluate(OPEN), 3.0) and page.evaluate(SECTION) == "features"
+
+
+WARNING_GONE = "document.querySelector('.hw[data-panel=features] button[data-open-settings]') === null"
+
+
+def test_focus_goes_to_the_sidebars_entry_when_the_warning_that_opened_the_dialog_is_gone(
+        browser: Browser, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The finished-code review: opened from the lockout warning, which an update removed once the lockout ended,
+    Escape left focus on the page body (the opener was detached, and the menu button is hidden at this width)."""
+    server = locked_out(tmp_path, monkeypatch, 5.0)
+    page = opened(browser, f"http://127.0.0.1:{server.address[1]}/dashboard", width=1440, height=900)
+    try:
+        lock_and_open_from_the_warning(page)
+        assert wait_until(lambda: page.evaluate(WARNING_GONE), 15.0)  # the lockout ended; an update removed the warning
+        assert page.evaluate(OPEN) and page.evaluate(INSIDE)
+        assert not visible(page, "#menu")  # a wide screen: no menu button to fall back on
+        page.key("Escape")
+        assert wait_until(lambda: page.evaluate(OPEN) is False, 3.0)
+        assert page.evaluate("document.activeElement !== document.body")
+        assert page.evaluate(ACTIVE) == "features"  # the sidebar's Features entry: in view, and it opens the same thing
+        assert page.evaluate("document.activeElement.closest('#sidebar') !== null")
+        assert visible(page, "#sidebar .nav a[data-nav=features]")
+        page.key("Enter")  # and from there the keyboard reopens it
+        assert wait_until(lambda: page.evaluate(OPEN), 3.0) and page.evaluate(SECTION) == "features"
+    finally:
+        page.close()
+        assert server.stop(3.0)
+
+
+def test_focus_returns_to_the_warnings_own_button_while_it_is_still_there(
+        browser: Browser, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    server = locked_out(tmp_path, monkeypatch, 60.0)
+    page = opened(browser, f"http://127.0.0.1:{server.address[1]}/dashboard", width=1440, height=900)
+    try:
+        lock_and_open_from_the_warning(page)
+        page.evaluate("new Promise(r => setTimeout(r, 2500))")  # updates go by; the warning's seconds count down
+        page.key("Escape")
+        assert wait_until(lambda: page.evaluate(OPEN) is False, 3.0)
+        assert page.evaluate("document.activeElement.matches('.hw[data-panel=features] button[data-open-settings]')")
+    finally:
+        page.close()
+        assert server.stop(3.0)
+
+
+def test_on_a_phone_focus_goes_to_the_menu_button_when_the_warning_that_opened_the_dialog_is_gone(
+        browser: Browser, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    server = locked_out(tmp_path, monkeypatch, 5.0)
+    page = opened(browser, f"http://127.0.0.1:{server.address[1]}/dashboard", width=390, height=700, mobile=True)
+    try:
+        lock_and_open_from_the_warning(page)
+        assert wait_until(lambda: page.evaluate(WARNING_GONE), 15.0)
+        page.key("Escape")
+        assert wait_until(lambda: page.evaluate(OPEN) is False, 3.0)
+        assert page.evaluate(ACTIVE) == "menu"  # as before on a narrow screen: the sidebar is a closed drawer
+    finally:
+        page.close()
+        assert server.stop(3.0)
+
+
+def test_opened_from_the_address_focus_goes_to_the_sidebars_entry_on_closing(browser: Browser,
+                                                                          site: dict[str, Any]) -> None:
+    page = opened(browser, f"{site['url']}/dashboard#settings", width=1440, height=900)
+    try:
+        assert wait_until(lambda: page.evaluate(OPEN) is True, 10.0)
+        page.evaluate("document.querySelector('#settings-dialog a[data-sd=features]').click()")  # switched inside
+        page.key("Escape")
+        assert wait_until(lambda: page.evaluate(OPEN) is False, 3.0)
+        assert page.evaluate(ACTIVE) == "features"  # nothing opened it: the entry of the section that was shown
+        assert page.evaluate("document.activeElement.closest('#sidebar') !== null")
+    finally:
+        page.close()
+
+
 # ---------------------------------------------------------------- narrow screens, light and dark
 
 
