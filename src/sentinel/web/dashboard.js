@@ -1059,9 +1059,14 @@
     };
 
     // One bounded request; always an object. ``lost`` marks a request that did not get a readable answer.
-    const request = async (url, options, ms) => {
+    // ``given`` (optional): an AbortSignal of the caller's; aborted, the request ends as one that ran out of time.
+    const request = async (url, options, ms, given) => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), ms);
+      if (given) {
+        if (given.aborted) controller.abort();
+        else given.addEventListener("abort", () => controller.abort(), {once: true});
+      }
       try {
         const response = await fetch(url, {cache: "no-store", credentials: "same-origin", redirect: "error",
           signal: controller.signal, ...options});
@@ -1361,8 +1366,14 @@
       const zoomAsk = document.getElementById("zoom-ask");
       const sizeNote = document.getElementById("zoom-size");
       const inputs = ["x1", "y1", "x2", "y2"].map((name) => document.getElementById(`zoom-${name}`));
-      // ``unset``: why the four numbers are not the region (while they are being typed), or "" when they are
-      const zoom = {pin: null, box: null, drag: null, unset: ""};
+      // ``unset``: why the four numbers are not the region (while they are being typed), or "" when they are.
+      // ``loading``: the one held picture on its way (being held on the device, fetched and decoded), or null. While
+      // it is set, Zoom and Scan stay off, through the page's own updates too (refreshZoom), so a second picture is
+      // never asked for beside it. Closing the panel gives it up there and then (dropLoad), which also frees the
+      // controls; whatever arrives for it afterwards is no longer the picture being waited for and changes nothing.
+      const zoom = {pin: null, box: null, drag: null, unset: "", loading: null};
+      const PICTURE_MS = 8000;  // the held picture is fetched and decoded within this, or it is given up
+      const RESTARTED = "The runtime restarted while the held picture was on its way, so it is not shown.";
       const headers = {"Content-Type": "application/json", "X-Sentinel-Token": token};
       const sayZoom = (text) => {
         if (zoomNote.textContent !== text) zoomNote.textContent = text;
@@ -1428,7 +1439,15 @@
         if (!bad[1] && !bad[3] && values[1] >= values[3]) bad[1] = bad[3] = true;
         return {values, bad};
       };
+      const dropLoad = () => {  // the picture on its way, if there is one, is no longer wanted
+        const load = zoom.loading;
+        if (!load) return;
+        zoom.loading = null;
+        load.controller.abort();  // its request (the hold, or the picture) ends here
+        refreshAsk();
+      };
       const closeZoom = (text) => {
+        dropLoad();
         zoomPanel.hidden = true;
         zoom.pin = null;
         zoom.box = null;
@@ -1436,54 +1455,91 @@
         canvas.width = canvas.height = 0;  // the held picture is not kept in this page either
         sayZoom(text || "");
       };
-      // Holds the newest live frame; the held document, or null with the reason said.
-      const hold = async () => {
-        sayZoom("Holding the newest picture…");
-        const held = await request("/chat/hold", {method: "POST", headers, body: "{}"}, 8000);
+      // Holds the newest live frame: the held document, or (as text) why no picture was held. It says nothing on
+      // the page itself: its caller does, if the answer is still the one it waits for. ``given``: a signal that
+      // ends the request when the picture is given up, so that the next hold is not sent beside it.
+      const hold = async (given) => {
+        const held = await request("/chat/hold", {method: "POST", headers, body: "{}"}, 8000, given);
         if (held.state !== "held" || typeof held.picture !== "string" || !JOB.test(held.picture)
             || !numbers(held.source_size, 2) || !numbers(held.shown_size, 2)) {
-          sayZoom(`No picture was held: ${typeof held.reason === "string" ? held.reason.slice(0, 200) : "the request failed"}.`);
-          return null;
+          return `No picture was held: ${typeof held.reason === "string" ? held.reason.slice(0, 200) : "the request failed"}.`;
         }
         return held;
+      };
+      const discard = (bitmap) => {
+        if (bitmap && typeof bitmap.close === "function") bitmap.close();
+      };
+      // The held picture, decoded, or null. It ends within PICTURE_MS, fetching and decoding together, and at once
+      // when ``controller`` is aborted (the picture was given up); one decoded after that is closed, not kept.
+      const heldBitmap = async (picture, controller) => {
+        let timer = null;
+        const over = new Promise((resolve) => {
+          controller.signal.addEventListener("abort", () => resolve(null), {once: true});
+          timer = setTimeout(() => controller.abort(), PICTURE_MS);
+        });
+        const made = (async () => {
+          try {
+            const response = await fetch(`/chat/picture/${picture}`, {cache: "no-store", credentials: "same-origin",
+              redirect: "error", signal: controller.signal, headers: {"X-Sentinel-Token": token}});
+            return response.ok ? await createImageBitmap(await response.blob()) : null;
+          } catch (error) {
+            return null;
+          }
+        })();
+        const bitmap = await Promise.race([made, over]);
+        clearTimeout(timer);
+        if (!bitmap) made.then(discard);
+        return bitmap;
       };
       const facts = (held) => `the frame received at ${clock(held.frame && held.frame.ingest_utc)} `
         + `(stream epoch ${number(held.frame && held.frame.stream_epoch)}, frame ${number(held.frame && held.frame.frame_seq)})`;
 
       zoomOpen.addEventListener("click", async () => {
-        if (zoomOpen.disabled) return;
-        zoomOpen.disabled = true;
-        const held = await hold();
-        refreshAsk();
-        if (!held) return;
-        let bitmap = null;
+        if (zoomOpen.disabled || zoom.loading || chat.pending) return;
+        const load = {controller: new AbortController()};
+        zoom.loading = load;
+        refreshAsk();  // Zoom and Scan are off from here until this picture is shown or given up
         try {
-          const response = await fetch(`/chat/picture/${held.picture}`, {cache: "no-store", credentials: "same-origin",
-            redirect: "error", headers: {"X-Sentinel-Token": token}});
-          if (response.ok) bitmap = await createImageBitmap(await response.blob());
-        } catch (error) {
-          bitmap = null;
+          sayZoom("Holding the newest picture…");
+          const held = await hold(load.controller.signal);
+          if (zoom.loading !== load) return;  // given up meanwhile (the panel was closed): nothing of it is shown
+          if (typeof held === "string" || state.instance !== servedBy) {
+            sayZoom(typeof held === "string" ? held : RESTARTED);
+            return;
+          }
+          const bitmap = await heldBitmap(held.picture, load.controller);
+          if (zoom.loading !== load || state.instance !== servedBy) {
+            discard(bitmap);  // given up, or the runtime restarted: what is shown stays as it is
+            if (zoom.loading === load) sayZoom(RESTARTED);
+            return;
+          }
+          if (!bitmap) {
+            sayZoom("The held picture could not be shown, so no region can be selected.");
+            return;
+          }
+          zoom.pin = held;
+          canvas.width = bitmap.width;
+          canvas.height = bitmap.height;
+          canvas.getContext("2d").drawImage(bitmap, 0, 0);
+          discard(bitmap);  // drawn: the canvas is the page's only copy
+          document.getElementById("zoom-facts").textContent = `Held picture: ${facts(held)}, kept for at most `
+            + `${number(held.keep_s)} s. A region is cut from ${held.source === "main_stream" ? "the main stream's picture"
+              : "the working picture"} (${held.source_size[0]} × ${held.source_size[1]} recorded pixels).`;
+          const people = document.getElementById("zoom-people");
+          people.replaceChildren(...(Array.isArray(held.people) ? held.people : []).filter((p) => p && numbers(p.box, 4))
+            .slice(0, 8).map((p) => el("button", {type: "button", class: "ghost", "data-track-box": JSON.stringify(p.box)},
+              [`Track ${number(p.track_id)} (the tracker's box)`])));
+          zoom.box = null;
+          zoomPanel.hidden = false;
+          sayZoom("");
+          drawBox(true);  // nothing selected yet: the four numbers are empty
+          surface.focus();
+        } finally {
+          if (zoom.loading === load) {  // still this picture's turn: it ends here (given up, dropLoad ended it)
+            zoom.loading = null;
+            refreshAsk();
+          }
         }
-        if (!bitmap) {
-          sayZoom("The held picture could not be shown, so no region can be selected.");
-          return;
-        }
-        zoom.pin = held;
-        canvas.width = bitmap.width;
-        canvas.height = bitmap.height;
-        canvas.getContext("2d").drawImage(bitmap, 0, 0);
-        document.getElementById("zoom-facts").textContent = `Held picture: ${facts(held)}, kept for at most `
-          + `${number(held.keep_s)} s. A region is cut from ${held.source === "main_stream" ? "the main stream's picture"
-            : "the working picture"} (${held.source_size[0]} × ${held.source_size[1]} recorded pixels).`;
-        const people = document.getElementById("zoom-people");
-        people.replaceChildren(...(Array.isArray(held.people) ? held.people : []).filter((p) => p && numbers(p.box, 4))
-          .slice(0, 8).map((p) => el("button", {type: "button", class: "ghost", "data-track-box": JSON.stringify(p.box)},
-            [`Track ${number(p.track_id)} (the tracker's box)`])));
-        zoom.box = null;
-        zoomPanel.hidden = false;
-        sayZoom("");
-        drawBox(true);  // nothing selected yet: the four numbers are empty
-        surface.focus();
       });
       const at = (event) => {
         const rect = surface.getBoundingClientRect();
@@ -1567,10 +1623,13 @@
       const SCAN_QUESTION = "Describe what is visible in this part of the picture.";
       const SCAN_LIMIT_MS = (Number(chatForm.dataset.scanDeadline) || 120) * 1000;
       scanOpen.addEventListener("click", async () => {
-        if (scanOpen.disabled || chat.pending) return;
+        if (scanOpen.disabled || chat.pending || zoom.loading) return;
         chat.pending = true;  // the whole scan is one piece of work: no other question, manual or automatic, meanwhile
         refreshAsk();
-        const held = await hold();
+        sayZoom("Holding the newest picture…");
+        const answer = await hold();
+        const held = typeof answer === "string" ? null : answer;
+        if (!held) sayZoom(answer);
         const tiles = held && Array.isArray(held.tiles) ? held.tiles.filter((t) => t && typeof t.name === "string"
           && numbers(t.box, 4)).slice(0, 4) : [];
         if (!held || !tiles.length) {
@@ -1650,7 +1709,7 @@
         refreshAsk();
       });
       const refreshZoom = () => {
-        const off = chat.pending || chatState() !== "available" || state.instance !== servedBy;
+        const off = chat.pending || !!zoom.loading || chatState() !== "available" || state.instance !== servedBy;
         zoomOpen.disabled = off;
         scanOpen.disabled = off;
         if (zoom.pin) drawBox(false);  // the Ask button only: a number being typed is left as it is

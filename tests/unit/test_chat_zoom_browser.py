@@ -9,6 +9,7 @@ one card for one held picture, its four parts asked about in turn, and it says w
 
 from __future__ import annotations
 
+import re
 import sys
 import threading
 import time
@@ -462,5 +463,277 @@ def test_zoom_and_scan_follow_chats_availability(browser: Browser, site: Site) -
         page.evaluate("document.getElementById('zoom-open').click()")
         assert wait_until(lambda: "No picture was held: the camera is not live" in page.evaluate(NOTE), 8.0)
         assert page.evaluate(PANEL_OPEN) is False and site.service.counters["held"] == 0
+    finally:
+        page.close()
+
+
+# ---------------------------------------------------------------- one held picture on its way at a time (part 32)
+
+ZOOM_OFF = "['zoom-open','scan-open'].map((id) => document.getElementById(id).disabled)"
+FACTS = "document.getElementById('zoom-facts').textContent"
+CANVAS = "document.getElementById('zoom-canvas').width"
+CARDS = "document.querySelectorAll('#chat-log > li').length"
+HOLDING = "Holding the newest picture…"
+NOT_SHOWN = "The held picture could not be shown, so no region can be selected."
+RESTARTED = "The runtime restarted while the held picture was on its way, so it is not shown."
+CANCELLED = "Cancelled: nothing was asked."
+# Stands between the page and the server. A held picture is asked for at once, and its response is handed to the page
+# only when the test says so (``zoomTest.pending[i]()``): also after the page gave that request up, as a response
+# that was already on its way would arrive. ``missing``: the picture is answered 404 instead. ``holdWaits``: the next
+# hold's answer waits in ``zoomTest.holds`` the same way. ``held``: every hold's answer, as the server gave it.
+# ``aborts``: each of these requests the page itself ended (given up, or out of time), by kind. ``patient``: the
+# page's 8 s limits are stretched, for a test that is not about them and must not race them on a slow device.
+BETWEEN = """(() => {
+  const original = window.fetch.bind(window);
+  const timeout = window.setTimeout.bind(window);
+  const test = window.zoomTest = {pending: [], holds: [], held: [], aborts: [], pictures: 0, missing: false,
+                                  holdWaits: false, patient: false};
+  window.setTimeout = (run, ms, ...rest) => timeout(run, test.patient && ms === 8000 ? 120000 : ms, ...rest);
+  const ended = (signal, kind) => {
+    if (signal) signal.addEventListener('abort', () => test.aborts.push(kind), {once: true});
+  };
+  window.fetch = (u, o) => {
+    const url = String(u);
+    const {signal, ...rest} = o || {};
+    if (url.includes('/chat/picture/')) {
+      test.pictures += 1;
+      ended(signal, 'picture');
+      if (test.missing) return Promise.resolve(new Response('', {status: 404}));
+      const real = original(u, rest);
+      return new Promise((resolve) => { test.pending.push(() => resolve(real)); });
+    }
+    if (url !== '/chat/hold') return original(u, o);
+    const waits = test.holdWaits;
+    test.holdWaits = false;
+    if (waits) ended(signal, 'hold');
+    const real = original(u, waits ? rest : o);
+    real.then((r) => r.clone().json()).then((d) => test.held.push(d));
+    return waits ? new Promise((resolve) => { test.holds.push(() => resolve(real)); }) : real;
+  };
+})()"""
+
+
+def shown(held: dict[str, Any]) -> str:
+    """How the panel's line names a held picture's frame."""
+    return f"frame {held['frame']['frame_seq']})"
+
+
+def click(page: Page, name: str) -> None:
+    page.evaluate(f"document.getElementById('{name}').click()")
+
+
+def apart(site: Site) -> None:
+    """Wait out the interval between two held pictures (0.3 s here), on the clock the service measures it by."""
+    since = site.clock.monotonic_ns()
+    assert wait_until(lambda: site.clock.monotonic_ns() - since >= 400_000_000, 10.0)
+
+
+def settle() -> None:
+    """Time for the page to act on what it was just handed, where the test expects it to do nothing."""
+    time.sleep(0.6)
+
+
+def test_zoom_and_scan_stay_off_while_a_held_picture_is_on_its_way_through_the_pages_own_updates(browser: Browser,
+                                                                                              site: Site) -> None:
+    page = opened(browser, f"{site.url}/", width=1280, height=900)
+    try:
+        assert wait_until(lambda: page.evaluate(ZOOM_OFF) == [False, False], 5.0)
+        page.evaluate(BETWEEN)
+        page.evaluate("zoomTest.patient = true")
+        click(page, "zoom-open")
+        assert wait_until(lambda: page.evaluate("zoomTest.pending.length === 1 && zoomTest.held.length === 1"), 5.0)
+        assert page.evaluate(ZOOM_OFF) == [True, True]  # held on the device; its picture is not here yet
+        sequence = read(page)["sequence"]
+        assert wait_until(lambda: read(page)["sequence"] >= sequence + 2, 20.0)
+        assert page.evaluate(ZOOM_OFF) == [True, True]  # two of the page's updates later: still off
+        click(page, "zoom-open")
+        click(page, "scan-open")
+        # and were a control on all the same, its own check refuses while the picture is on its way
+        page.evaluate("for (const id of ['zoom-open', 'scan-open']) { const b = document.getElementById(id); "
+                      "b.disabled = false; b.click(); }")
+        apart(site)  # longer than the interval between two held pictures: a second hold would have been taken
+        assert page.evaluate("[zoomTest.held.length, zoomTest.pictures]") == [1, 1]  # no second picture was asked for
+        assert site.service.counters["held"] == 1 and site.sent == [] and page.evaluate(CARDS) == 0
+        assert page.evaluate(PANEL_OPEN) is False and page.evaluate(NOTE) == HOLDING
+        assert wait_until(lambda: page.evaluate(ZOOM_OFF) == [True, True], 5.0)  # the next update turns them off again
+        page.evaluate("zoomTest.pending[0]()")
+        assert wait_until(lambda: page.evaluate(PANEL_OPEN), 5.0), page.evaluate(NOTE)
+        assert shown(page.evaluate("zoomTest.held[0]")) in page.evaluate(FACTS)
+        assert wait_until(lambda: page.evaluate(ZOOM_OFF) == [False, False], 3.0)  # shown: the controls are back
+        assert page.evaluate("zoomTest.aborts") == []
+    finally:
+        page.close()
+
+
+def test_closing_gives_up_the_held_picture_on_its_way_and_a_late_one_neither_shows_nor_replaces_a_newer_one(
+        browser: Browser, site: Site) -> None:
+    page = zoom_opened(browser, site)
+    try:
+        first = page.evaluate(FACTS)
+        page.evaluate(BETWEEN)
+        page.evaluate("zoomTest.patient = true")
+        apart(site)
+        click(page, "zoom-open")  # a newer picture, while the panel shows the first
+        assert wait_until(lambda: page.evaluate("zoomTest.pending.length === 1"), 5.0)
+        assert page.evaluate(ZOOM_OFF) == [True, True] and page.evaluate(FACTS) == first  # the open one is untouched
+        click(page, "zoom-cancel")
+        # closing gave that picture up, ended its request and freed the controls itself
+        assert page.evaluate(PANEL_OPEN) is False and page.evaluate(ZOOM_OFF) == [False, False]
+        assert page.evaluate(NOTE) == CANCELLED and page.evaluate(CANVAS) == 0
+        assert page.evaluate("zoomTest.aborts") == ["picture"]
+        apart(site)
+        click(page, "zoom-open")  # opened again: a third picture
+        assert wait_until(lambda: page.evaluate("zoomTest.pending.length === 2 && zoomTest.held.length === 2"), 5.0)
+        given_up, wanted = page.evaluate("zoomTest.held")
+        assert given_up["frame"]["frame_seq"] < wanted["frame"]["frame_seq"]
+        page.evaluate("zoomTest.pending[0]()")  # the one given up arrives while the wanted one is on its way
+        settle()
+        assert page.evaluate(PANEL_OPEN) is False and page.evaluate(NOTE) == HOLDING
+        assert page.evaluate(ZOOM_OFF) == [True, True]  # the wanted picture's turn is not ended by the other's end
+        page.evaluate("zoomTest.pending[1]()")
+        assert wait_until(lambda: page.evaluate(PANEL_OPEN) and shown(wanted) in page.evaluate(FACTS), 5.0)
+        assert wait_until(lambda: page.evaluate(ZOOM_OFF) == [False, False], 3.0)
+        apart(site)
+        click(page, "zoom-open")  # once more, the other way round: given up, then a newer one shown first
+        assert wait_until(lambda: page.evaluate("zoomTest.pending.length === 3"), 5.0)
+        click(page, "zoom-cancel")
+        apart(site)
+        click(page, "zoom-open")
+        assert wait_until(lambda: page.evaluate("zoomTest.pending.length === 4 && zoomTest.held.length === 4"), 5.0)
+        older, newest = page.evaluate("zoomTest.held.slice(2)")
+        assert older["frame"]["frame_seq"] < newest["frame"]["frame_seq"]
+        page.evaluate("zoomTest.pending[3]()")
+        assert wait_until(lambda: page.evaluate(PANEL_OPEN) and shown(newest) in page.evaluate(FACTS), 5.0)
+        page.evaluate("zoomTest.pending[2]()")  # the older one arrives after the newer one is shown
+        settle()
+        assert page.evaluate(PANEL_OPEN) and shown(newest) in page.evaluate(FACTS)  # it replaced nothing
+        assert page.evaluate(ZOOM_OFF) == [False, False] and page.evaluate(NOTE) == ""
+        drag(page, (0.25, 0.25), (0.5, 0.5))  # and what is asked about is the picture shown
+        assert wait_until(lambda: not page.evaluate(ASK_OFF), 3.0), page.evaluate(SIZE)
+        click(page, "zoom-ask")
+        assert wait_until(lambda: card(page)["state"] == "answered", 10.0), card(page)
+        (_, image), = site.sent
+        assert image.jpeg.decode().startswith(f"crop main{newest['frame']['frame_seq'] + 1}[")
+        assert f"frame {newest['frame']['frame_seq']}" in card(page)["text"]
+    finally:
+        page.close()
+
+
+def test_a_hold_given_up_by_closing_is_ended_and_its_late_answer_fetches_no_picture_and_shows_nothing(
+        browser: Browser, site: Site) -> None:
+    page = zoom_opened(browser, site)
+    try:
+        page.evaluate(BETWEEN)
+        page.evaluate("zoomTest.patient = true")
+        apart(site)
+        page.evaluate("zoomTest.holdWaits = true")
+        click(page, "zoom-open")
+        assert wait_until(lambda: page.evaluate("zoomTest.holds.length === 1 && zoomTest.held.length === 1"), 5.0)
+        assert page.evaluate(ZOOM_OFF) == [True, True] and page.evaluate(NOTE) == HOLDING
+        click(page, "zoom-cancel")
+        assert page.evaluate(ZOOM_OFF) == [False, False] and page.evaluate(NOTE) == CANCELLED
+        assert page.evaluate("zoomTest.aborts") == ["hold"]  # the hold itself was ended: the next is not sent beside it
+        page.evaluate("zoomTest.holds[0]()")  # the device's answer arrives all the same
+        settle()
+        assert page.evaluate("zoomTest.pictures") == 0  # its picture is not even asked for
+        assert page.evaluate(PANEL_OPEN) is False and page.evaluate(CANVAS) == 0
+        assert page.evaluate(NOTE) == CANCELLED and page.evaluate(ZOOM_OFF) == [False, False]
+    finally:
+        page.close()
+
+
+def test_asking_about_the_region_while_a_newer_picture_is_on_its_way_asks_about_the_one_shown(browser: Browser,
+                                                                                          site: Site) -> None:
+    page = zoom_opened(browser, site)
+    try:
+        drag(page, (0.25, 0.25), (0.5, 0.5))
+        assert wait_until(lambda: not page.evaluate(ASK_OFF), 3.0), page.evaluate(SIZE)
+        seen = re.search(r"frame (\d+)\)", page.evaluate(FACTS))
+        assert seen is not None
+        page.evaluate(BETWEEN)
+        page.evaluate("zoomTest.patient = true")
+        apart(site)
+        click(page, "zoom-open")  # a newer picture is on its way
+        assert wait_until(lambda: page.evaluate("zoomTest.pending.length === 1"), 5.0)
+        click(page, "zoom-ask")  # the region of the picture shown is asked about; the newer one is given up
+        assert wait_until(lambda: card(page)["state"] == "answered", 10.0), card(page)
+        (_, image), = site.sent
+        assert image.jpeg.decode().startswith(f"crop main{int(seen.group(1)) + 1}[")
+        assert f"frame {seen.group(1)}" in card(page)["text"]
+        assert page.evaluate("zoomTest.aborts") == ["picture"] and page.evaluate(PANEL_OPEN) is False
+        page.evaluate("zoomTest.pending[0]()")  # arriving late, the newer picture is not shown
+        settle()
+        assert page.evaluate(PANEL_OPEN) is False and page.evaluate(CANVAS) == 0 and page.evaluate(CARDS) == 1
+        assert wait_until(lambda: page.evaluate(ZOOM_OFF) == [False, False], 5.0) and page.evaluate(NOTE) == ""
+    finally:
+        page.close()
+
+
+def restarted(site: Site, tmp_path: Path, page: Page) -> None:
+    """The runtime restarts: a new server on the same port, with a new instance and token; the page has seen it."""
+    port = site.server.address[1]
+    assert site.server.stop(3.0)
+    site.server = StatusServer(port, site.runtime.snapshot, tmp_path / "sentinel.db", chat=lambda: site.service)
+    site.server.start()
+    wait_chat(page, lambda s: "The runtime restarted" in s["note"], 30.0)
+
+
+@pytest.mark.parametrize("waiting_for", ["the hold's answer", "the picture"])
+def test_a_held_picture_that_arrives_after_the_runtime_restarted_is_not_shown(browser: Browser, site: Site,
+                                                                            tmp_path: Path, waiting_for: str) -> None:
+    page = opened(browser, f"{site.url}/", width=1280, height=900)
+    try:
+        assert wait_until(lambda: page.evaluate(ZOOM_OFF) == [False, False], 5.0)
+        page.evaluate(BETWEEN)
+        page.evaluate("zoomTest.patient = true")
+        if waiting_for == "the picture":
+            click(page, "zoom-open")
+            assert wait_until(lambda: page.evaluate("zoomTest.pending.length === 1"), 5.0)
+            restarted(site, tmp_path, page)
+            page.evaluate("zoomTest.pending[0]()")  # the old runtime's picture, received before it stopped
+        else:
+            page.evaluate("zoomTest.holdWaits = true")
+            click(page, "zoom-open")
+            assert wait_until(lambda: page.evaluate("zoomTest.holds.length === 1 && zoomTest.held.length === 1"), 5.0)
+            restarted(site, tmp_path, page)
+            page.evaluate("zoomTest.holds[0]()")
+        assert wait_until(lambda: page.evaluate(NOTE) == RESTARTED, 5.0), page.evaluate(NOTE)
+        settle()
+        assert page.evaluate(PANEL_OPEN) is False and page.evaluate(FACTS) == ""  # no picture was ever shown here
+        assert page.evaluate("zoomTest.pictures") == (1 if waiting_for == "the picture" else 0)
+        assert page.evaluate(ZOOM_OFF) == [True, True]  # as every control of a page its runtime no longer serves
+    finally:
+        page.close()
+
+
+def test_a_held_picture_that_cannot_be_shown_or_never_arrives_ends_in_its_time_and_leaves_the_open_view_as_it_was(
+        browser: Browser, site: Site) -> None:
+    page = zoom_opened(browser, site)
+    view = f"[{FIELDS}, {MARKER}, {FACTS}, {SIZE}, document.getElementById('chat-q').value, {ASK_OFF}, {PANEL_OPEN}]"
+    try:
+        drag(page, (0.25, 0.25), (0.5, 0.5))
+        assert wait_until(lambda: "recorded pixels (main stream)" in page.evaluate(SIZE), 3.0), page.evaluate(SIZE)
+        type_question(page, "What is on the shelf?")  # a draft
+        before = page.evaluate(view)
+        assert before[4:] == ["What is on the shelf?", False, True]
+        page.evaluate(BETWEEN)  # not patient: this test is about the picture's 8 s
+        apart(site)
+        page.evaluate("zoomTest.missing = true")
+        click(page, "zoom-open")  # a newer picture that the device no longer has
+        assert wait_until(lambda: page.evaluate(NOTE) == NOT_SHOWN, 5.0), page.evaluate(NOTE)
+        assert page.evaluate(ZOOM_OFF) == [False, False] and page.evaluate(view) == before
+        apart(site)
+        page.evaluate("zoomTest.missing = false; zoomTest.aborts = []")
+        click(page, "zoom-open")  # and one whose picture never arrives
+        assert wait_until(lambda: page.evaluate("zoomTest.pending.length === 1"), 5.0)
+        began = time.monotonic()
+        assert page.evaluate(NOTE) == HOLDING and page.evaluate(ZOOM_OFF) == [True, True]
+        assert wait_until(lambda: page.evaluate(NOTE) == NOT_SHOWN, 14.0), page.evaluate(NOTE)
+        assert 6.0 < time.monotonic() - began < 13.0  # given up after its 8 s, not left waiting
+        assert page.evaluate("zoomTest.aborts") == ["picture"]  # and its request was ended
+        assert page.evaluate(ZOOM_OFF) == [False, False] and page.evaluate(view) == before
+        page.evaluate("zoomTest.pending[0]()")  # arriving after all, it changes nothing
+        settle()
+        assert page.evaluate(view) == before and page.evaluate(NOTE) == NOT_SHOWN
     finally:
         page.close()
