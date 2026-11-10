@@ -181,6 +181,46 @@ def test_a_different_identity_vote_and_the_absence_of_a_face_are_described_as_su
         panel(status([row(3, "unresolved", kept=none)], policy=RETENTION_POLICY)))
 
 
+def test_a_retained_identity_whose_newest_result_matched_says_truthfully_why_that_is_not_a_current_match() -> None:
+    matched = "the newest face result matched the same enrolled identity"
+
+    def words(state: str, basis: str | None, age_ms: int | None) -> str:
+        kept = association(evidence="match", evidence_age_ms=age_ms, last_match_age_ms=age_ms or 0, contradictions=0)
+        return text(panel(status([row(3, state, basis=basis, vote_age_ms=age_ms, kept=kept)], policy=RETENTION_POLICY)))
+
+    # its consistent matches are there and the newest has aged past the fresh window (no face result since): too old
+    aged = words("known", "retained", 4_000)
+    assert (f"Latest evidence (4.0 s ago): {matched}, but that match is older than 3 s, so it no longer counts as a "
+            "current match. Kept only while this track stays continuous") in aged
+    assert "more consistent results are needed" not in aged  # they are not what is missing
+    assert RETAINED in aged and "Experimental · track retention" in aged
+    assert "Last successful match 4.0 s before this report" in aged and "current match." in aged
+    # one match after contradicting results, or after the earlier ones expired: new, and not enough by the raw rule
+    for state in ("uncertain", "unresolved"):
+        single = words(state, None, 0)
+        assert (f"Latest evidence (0.0 s ago): {matched}, but more consistent results are needed to confirm it now. "
+                "Kept only while") in single
+        assert "older than" not in single  # its age is not the reason
+    # nor is its age the reason when it is old
+    assert "more consistent results are needed to confirm it now" in words("uncertain", None, 9_000)
+    # its earlier matches expired (30 s) and the one left is no consistent run: more are needed, whatever its age
+    expired = words("unresolved", None, 31_000)
+    assert (f"Latest evidence (31.0 s ago): {matched}, but more consistent results are needed to confirm it "
+            "now.") in expired
+    # a raw state that gives neither reason, or an age that does not bear the first one out: no reason is claimed
+    for state, basis, age_ms in (("known", "retained", 2_000), ("known", "retained", None), ("known", "fresh", 500),
+                                 ("unknown", "fresh", 500), ("unknown", "retained", 9_000)):
+        plain = words(state, basis, age_ms)
+        assert f"{matched}, but it is not shown as a current match. Kept only while" in plain, (state, basis, age_ms)
+        assert "older than" not in plain and "more consistent results" not in plain
+    # a fresh window in the status that is not a positive number bears nothing out either
+    for window in (0, -3.0, float("inf"), "3", None, True):
+        kept = association(evidence="match", evidence_age_ms=4_000, last_match_age_ms=4_000, contradictions=0)
+        odd = text(panel(status([row(3, "known", basis="retained", vote_age_ms=4_000, kept=kept)],
+                                policy={**RETENTION_POLICY, "fresh_window_s": window})))
+        assert f"{matched}, but it is not shown as a current match." in odd and "older than" not in odd, window
+
+
 def test_a_current_association_is_the_existing_current_match_and_says_nothing_retained() -> None:
     html = panel(status([row(3, "known", basis="fresh", vote_age_ms=700, kept=association(state="current"))],
                         policy=RETENTION_POLICY))

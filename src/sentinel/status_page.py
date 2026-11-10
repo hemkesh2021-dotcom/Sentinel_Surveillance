@@ -1045,7 +1045,7 @@ RETAINED_ASSOCIATION = "Known — retained from an earlier match"
 RETENTION_FLAG = "Experimental · track retention"
 ASSOCIATION_EVIDENCE = {  # identity.retention.Evidence, in plain words
     "none": "no face result since that match",
-    "match": "the newest face result matched the same enrolled identity, but more consistent results are needed to confirm it now",
+    "match": "the newest face result matched the same enrolled identity",  # and why it is not current: _matched_but
     "unknown": "the newest face result matched nobody enrolled",
     "different_identity": "the newest face result matched a different enrolled identity",
     "too_small": "the newest face was too small to weigh against this identity",
@@ -1071,12 +1071,41 @@ ASSOCIATION_ENDED = {  # identity.retention.EndReason, in plain words
 }
 
 
-def _association_text(association: Mapping[str, Any], retention: object) -> str:
+def _matched_but(association: Mapping[str, Any], state: object, basis: object, fresh_window_s: object) -> str:
+    """Why a retained association whose newest face result matched its identity is still not a current match, from
+    the raw state the row carries beside it (wording only: nothing here decides anything). The raw rule can lack a
+    current match for two different reasons, and the row must not give one for the other:
+
+    - raw KNOWN on a retained basis: the consistent matches are there, and the newest of them has aged beyond the
+      fresh window (no face result since, for instance while face analysis fails). The row says it is too old, and
+      only when the match's own age bears that out;
+    - raw UNCERTAIN or UNRESOLVED: the raw rule has no consistent run of matches now (one match after contradicting
+      results, or the one match left once the earlier ones expired), however new or old that match is. The row says
+      more are needed.
+
+    Any other raw state says only that it is not shown as a current match."""
+    age_ms = association.get("evidence_age_ms")
+    numeric = isinstance(fresh_window_s, (int, float)) and not isinstance(fresh_window_s, bool)
+    window = fresh_window_s if numeric else None
+    if (state == "known" and basis == "retained" and window is not None and 0 < window < float("inf")
+            and isinstance(age_ms, int) and not isinstance(age_ms, bool) and age_ms >= window * 1000):
+        return f", but that match is older than {_number(window)} s, so it no longer counts as a current match"
+    if state in ("uncertain", "unresolved"):
+        return ", but more consistent results are needed to confirm it now"
+    return ", but it is not shown as a current match"
+
+
+def _association_text(association: Mapping[str, Any], retention: object, state: object = None, basis: object = None,
+                      fresh_window_s: object = None) -> str:
     """A retained association's row: its last successful match, the newest evidence in plain words and its age, the
     counts toward the ends when there are any, and the bound. A retained identity says retained; a current one never
     comes here. The contradicting count states the whole rule, votes and span: a count at its number with the span not
-    yet reached has not ended it. Numbers and fixed labels only (no identity ID, D61)."""
+    yet reached has not ended it. ``state`` and ``basis`` are the row's raw state, and ``fresh_window_s`` the policy's
+    fresh window: a newest result that matched says why it is not a current match by them (_matched_but). Numbers
+    and fixed labels only (no identity ID, D61)."""
     evidence = ASSOCIATION_EVIDENCE.get(str(association.get("evidence")), "the newest face result is not known")
+    if association.get("evidence") == "match":
+        evidence += _matched_but(association, state, basis, fresh_window_s)
     evidence_age = _seconds_text(association.get("evidence_age_ms"))
     bound_ms = association.get("max_since_match_ms")
     minutes = _number(bound_ms / 60_000) if isinstance(bound_ms, int) and not isinstance(bound_ms, bool) else None
@@ -1133,7 +1162,7 @@ def _person(entry: Mapping[str, Any], published: object, policy: Mapping[str, An
     who = "an enrolled identity"  # the status carries no identity ID (D61, D95)
     if retained_association:
         verdict = _badge("done", RETAINED_ASSOCIATION, glyph="clock")
-        what = _association_text(association, policy.get("retention"))
+        what = _association_text(association, policy.get("retention"), state, basis, policy.get("fresh_window_s"))
     elif state == "known" and basis == "fresh":
         verdict = _claim(_badge("ok", "Known · current match", glyph="check"),
                          _badge("off", "Was a current match", glyph="clock"))

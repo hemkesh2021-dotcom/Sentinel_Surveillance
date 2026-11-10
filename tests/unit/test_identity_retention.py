@@ -241,6 +241,47 @@ def test_a_match_of_the_established_identity_resets_the_count() -> None:
     assert room.person(1).association_ended is None
 
 
+def test_the_row_of_a_retained_match_says_whether_it_is_too_old_or_short_of_consistent_results() -> None:
+    """Both ways a retained identity's newest result can have matched without being a current match, through the real
+    core, the status rows and the page's row text: the consistent matches aged past the fresh window while face
+    analysis failed (raw KNOWN, retained), and one new match after contradicting results (raw UNCERTAIN)."""
+    from sentinel.demo_runtime import DemoRuntime
+    from sentinel.status_page import RETAINED_ASSOCIATION, _person
+
+    policy = {"confirmations": CONFIG.identity.confirmations, "vote_ttl_s": CONFIG.identity.vote_ttl_s,
+              "fresh_window_s": CONFIG.identity.face_result_max_age_s}
+
+    def row_text(room: Room) -> str:
+        (row,) = DemoRuntime._face_rows(room.state, True, True)["faces"]
+        return _person(row, room.state.published_utc.isoformat(), policy)
+
+    room = known(Room())
+    room.frames(1.0, (1, SEAT), face=MATCH)  # a third match: the evidence since it was established is a match
+    for n in range(40):  # four seconds on the same track while every face analysis fails: no result is applied
+        frame, persons = room.frame((1, SEAT))
+        if n % 10 == 9:
+            room._keep(room.core.on_face_outcome(frame, persons, None, room.stream, error="analysis_failed:Synthetic"))
+    person = room.person(1)
+    assert (person.identity, person.identity_basis) == (IdentityState.KNOWN, Basis.RETAINED)
+    assert (person.association.state, person.association.evidence) == (AssociationState.RETAINED, Evidence.MATCH)
+    aged = row_text(room)
+    assert "but that match is older than 3 s, so it no longer counts as a current match" in aged
+    assert "more consistent results are needed" not in aged  # the reviewed row said this, of matches that were there
+    assert RETAINED_ASSOCIATION in aged and 'data-association="retained"' in aged  # still said to be retained
+    assert "Latest evidence (4.0 s ago)" in aged and "Last successful match 4.0 s before this report" in aged
+
+    room = known(Room())
+    room.frames(9.0, (1, SEAT), face=NOBODY)
+    room.frames(1.0, (1, SEAT), face=MATCH)  # one match after nine contradicting results
+    person = room.person(1)
+    assert person.identity is IdentityState.UNCERTAIN and person.association.last_match_age_ms == 0
+    assert (person.association.state, person.association.evidence) == (AssociationState.RETAINED, Evidence.MATCH)
+    single = row_text(room)
+    assert "but more consistent results are needed to confirm it now" in single and "older than" not in single
+    assert RETAINED_ASSOCIATION in single and 'data-association="retained"' in single
+    assert "Latest evidence (0.0 s ago)" in single and "Last successful match 0.0 s before this report" in single
+
+
 def test_a_different_enrolled_identity_is_flagged_after_one_vote_and_ends_it_after_the_confirmations() -> None:
     room = known(Room())
     room.frames(1.0, (1, SEAT), face=OTHER_FACE)
