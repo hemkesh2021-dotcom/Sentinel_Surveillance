@@ -1462,6 +1462,125 @@
     }
   }
 
+  // ------------------------------------------------------------------ Settings: Appearance and Features in a dialog
+  //
+  // Part 28. The page's own Appearance and Features sections (the same elements: one set of controls, the same region
+  // for updates, the same unlock form) are moved into the Settings dialog, one shown at a time. The sidebar's
+  // Appearance and Features open it instead of scrolling; so does an address ending in #settings or #features, and
+  // the "Open Features" button of a warning kept on the page. A native modal dialog: the page behind is inert, Escape
+  // and the close button close it, focus stays inside and returns to what opened it. Opening, switching and closing
+  // change nothing else: no request is made, the typed key and the unlocked state stay as they are, and the page's
+  // updates go on behind and inside it. Without script none of this runs and both sections stay on the page.
+  const settingsDialog = document.getElementById("settings-dialog");
+  const SETTINGS = ["settings", "features"];
+  let openSettings = () => false;
+  if (KIND === "status" && settingsDialog && typeof settingsDialog.showModal === "function") {
+    const panel = document.getElementById("sd-panel");
+    const tabs = [...settingsDialog.querySelectorAll("a[data-sd]")];
+    const parts = SETTINGS.map((id) => document.getElementById(id)).filter(Boolean);
+    let opener = null;
+    for (const part of parts) {
+      part.hidden = true;
+      panel.append(part);
+    }
+    root.classList.add("sd");
+    const select = (id) => {
+      for (const part of parts) part.hidden = part.id !== id;
+      for (const tab of tabs) {
+        if (tab.dataset.sd === id) tab.setAttribute("aria-current", "true");
+        else tab.removeAttribute("aria-current");
+      }
+      if (settingsDialog.dataset.section !== id) panel.scrollTop = 0;
+      settingsDialog.dataset.section = id;
+      panel.setAttribute("aria-labelledby", `h-${id}`);
+    };
+    const inside = () => [...settingsDialog.querySelectorAll(
+      "a[href], button:not([disabled]), input:not([disabled]), select, textarea, summary, [tabindex]:not([tabindex='-1'])",
+    )].filter((node) => node.offsetParent !== null);
+    openSettings = (id, from) => {
+      if (!parts.some((part) => part.id === id)) return false;
+      select(id);
+      if (!settingsDialog.open) {
+        opener = from || null;
+        settingsDialog.showModal();
+        markSection(id);
+        heldUntil = Infinity;  // the opened section stays marked in the sidebar while the dialog is open
+      } else {
+        markSection(id);
+      }
+      const tab = tabs.find((item) => item.dataset.sd === id);
+      if (tab) tab.focus();
+      return true;
+    };
+    settingsDialog.addEventListener("close", () => {
+      heldUntil = 0;
+      window.dispatchEvent(new Event("scroll"));  // the sidebar marks the section in view again
+      if (SETTINGS.includes(location.hash.slice(1))) {
+        history.replaceState(null, "", location.pathname + location.search);
+      }
+      const back = opener && opener.isConnected && opener.offsetParent !== null ? opener
+        : menu && menu.offsetParent !== null ? menu : null;
+      opener = null;
+      if (back) back.focus();
+    });
+    document.getElementById("sd-close").addEventListener("click", () => settingsDialog.close());
+    settingsDialog.addEventListener("click", (event) => {
+      const tab = event.target.closest("a[data-sd]");
+      if (tab) {
+        event.preventDefault();
+        select(tab.dataset.sd);
+        markSection(tab.dataset.sd);
+      } else if (event.target === settingsDialog) {
+        settingsDialog.close();  // a click on the dimmed page behind it
+      }
+    });
+    settingsDialog.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();  // Escape closes the dialog only (the browser does), not the focus view behind it
+        return;
+      }
+      const at = tabs.indexOf(document.activeElement);
+      if (at >= 0 && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+        event.preventDefault();
+        const next = tabs[(at + (event.key === "ArrowDown" ? 1 : tabs.length - 1)) % tabs.length];
+        select(next.dataset.sd);
+        markSection(next.dataset.sd);
+        next.focus();
+        return;
+      }
+      if (event.key === "Tab") {  // focus stays in the dialog, wrapping at both ends
+        const items = inside();
+        if (!items.length) return;
+        const first = items[0];
+        const last = items[items.length - 1];
+        if (event.shiftKey && (document.activeElement === first || !settingsDialog.contains(document.activeElement))) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    });
+    document.addEventListener("click", (event) => {  // before the sidebar's own handler: these never scroll the page
+      const link = event.target.closest('.nav a[data-nav="settings"], .nav a[data-nav="features"]');
+      const button = link ? null : event.target.closest("button[data-open-settings]");
+      const id = link ? link.dataset.nav : button ? button.dataset.openSettings : null;
+      if (!id || !SETTINGS.includes(id)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const drawer = root.classList.contains("drawer-open");
+      if (drawer) closeDrawer(false);
+      openSettings(id, drawer ? menu : link || button);
+    }, true);
+    const fromAddress = () => {
+      const id = location.hash.slice(1);
+      if (SETTINGS.includes(id)) openSettings(id, null);
+    };
+    window.addEventListener("hashchange", fromAddress);
+    fromAddress();
+  }
+
   // ------------------------------------------------------------------ the camera's focus view (D96)
 
   const focusToggle = document.getElementById("focus-toggle");

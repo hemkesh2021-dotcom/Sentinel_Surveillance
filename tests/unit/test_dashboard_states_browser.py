@@ -107,7 +107,29 @@ def opened(browser: Browser, url: str, *, width: int = 1280, height: int = 900, 
     return page
 
 
+# Part 28: Appearance and Features are in the Settings dialog. A control inside one of them is reached by opening the
+# dialog on its section (as a viewer does, from the sidebar); a control on the page behind is reached by closing it.
+REVEAL = """((selector, close) => {
+  const dialog = document.getElementById('settings-dialog');
+  if (!dialog || !document.documentElement.classList.contains('sd')) return;
+  const node = document.querySelector(selector);
+  const part = node && node.closest('#settings, #features');
+  if (part) {
+    if (!dialog.open || dialog.dataset.section !== part.id) {
+      document.querySelector(`#sidebar .nav a[data-nav=${part.id}]`).click();
+    }
+  } else if (close && dialog.open && node && !dialog.contains(node)) {
+    dialog.close();
+  }
+})"""
+
+
+def reveal(page: Page, selector: str, *, close: bool = True) -> None:
+    page.evaluate(f"({REVEAL})({selector!r}, {'true' if close else 'false'})")
+
+
 def style(page: Page, selector: str) -> dict[str, Any]:
+    reveal(page, selector, close=False)
     return page.evaluate(f"({STYLE})({selector!r})")
 
 
@@ -118,6 +140,7 @@ def drawn(page: Page, selector: str) -> dict[str, Any]:
 
 
 def centre(page: Page, selector: str) -> tuple[float, float]:
+    reveal(page, selector)
     page.evaluate(f"document.querySelector({selector!r}).scrollIntoView({{block: 'center', behavior: 'instant'}})")
     time.sleep(0.1)
     x, y = page.evaluate(f"(() => {{ const r = document.querySelector({selector!r}).getBoundingClientRect(); "
@@ -158,6 +181,7 @@ def attribute(page: Page, selector: str, name: str) -> str | None:
 
 def keyboard_focus(page: Page, selector: str) -> None:
     """What a keyboard user gets on ``selector``: keyboard modality first (a Tab), then the focus."""
+    reveal(page, selector)
     page.key("Tab")
     page.evaluate(f"document.querySelector({selector!r}).focus({{preventScroll: true}})")
     assert page.evaluate(f"document.querySelector({selector!r}).matches(':focus-visible')"), selector

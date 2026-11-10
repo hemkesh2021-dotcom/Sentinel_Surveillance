@@ -313,7 +313,10 @@ def test_the_chat_panel_works_on_a_phone(browser: Browser, served: dict[str, Any
     page = opened(browser, f"{served['url']}/", width=390, height=844, mobile=True)
     try:
         order = page.evaluate("[...document.querySelectorAll('main > section, main > aside')].map((e) => e.id)")
-        assert order == ["live", "faces", "incidents", "chat", "features", "health", "delivery", "settings"]  # D99
+        # part 28: with script, Features and Appearance are the Settings dialog's two sections, not page sections
+        assert order == ["live", "faces", "incidents", "chat", "health", "delivery"]
+        assert page.evaluate("[...document.querySelectorAll('#sd-panel > section')].map((e) => e.id)") == [
+            "settings", "features"]
         tops = page.evaluate("['incidents', 'chat'].map((id) => document.getElementById(id).getBoundingClientRect().top)")
         assert tops[0] < tops[1]  # below the incidents, in one column
         type_question(page, "x" * 300)  # the longest question, one unbroken word

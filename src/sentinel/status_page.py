@@ -854,9 +854,29 @@ def _hidden_panels(status: Mapping[str, Any]) -> str:
     if failed or ambiguous:
         lines.append(("delivery", f"Alerts is hidden here: {failed} failed (needs the operator) and {ambiguous} "
                                   "ambiguous alert deliveries."))
-    return "".join(f'<div class="hw k-warn" data-key="hw-{name}" data-panel={name}>{icon("warn")}<p>{_e(text)}</p>'
-                   f'<button type=button class=ghost data-show={name}>{icon("eye")}Show</button></div>'
-                   for name, text in lines)
+    shown = "".join(f'<div class="hw k-warn" data-key="hw-{name}" data-panel={name}>{icon("warn")}<p>{_e(text)}</p>'
+                    f'<button type=button class=ghost data-show={name}>{icon("eye")}Show</button></div>'
+                    for name, text in lines)
+    return shown + _settings_warnings(status)
+
+
+def _settings_warnings(status: Mapping[str, Any]) -> str:
+    """Part 28: with script, Features lives in the Settings dialog, so what it warns about is kept in view on the page
+    too (shown by the stylesheet only then: ``html.sd``), with a button that opens Features there."""
+    controls = status.get("controls") or {}
+    block = status.get("features")
+    lines = []
+    if controls.get("enabled") and controls.get("locked_s"):
+        lines.append(("locked", f"Feature controls are locked for about {controls['locked_s']} s: too many wrong "
+                                "control keys."))
+    items = block.get("items") or {} if isinstance(block, Mapping) and controls.get("enabled") else {}
+    running = {name for name, item in items.items() if isinstance(item, Mapping) and item.get("actual") == "running"}
+    if {"face", "chat"} <= running:
+        lines.append(("combined", "Face recognition and chat are both on. They have been checked separately only; "
+                                  "together they are not validated."))
+    return "".join(f'<div class="hw k-warn" data-key="hw-features-{key}" data-panel=features>{icon("warn")}'
+                   f'<p>{_e(text)}</p><button type=button class=ghost data-open-settings=features>{icon("toggle")}'
+                   "Open Features</button></div>" for key, text in lines)
 
 
 def _clock(stamp: object, *, date: bool = False) -> str:
@@ -1313,7 +1333,7 @@ FEATURE_VALIDATION = {
     "validation_run": "Validation run: chat is not admitted, and turning it on does not admit it.",
     "not_admitted": "Not admitted in this build.",
 }
-FEATURES_NOTE = ("These controls change what the runtime does, for every viewer. Appearance (below) changes only this "
+FEATURES_NOTE = ("These controls change what the runtime does, for every viewer. Appearance changes only this "
                  "browser. Core monitoring (the camera, detection, tracking, rules, incidents and alerts) has no switch "
                  "here, and nothing is loaded, admitted or restarted from this page.")
 
@@ -1766,6 +1786,7 @@ def status_regions(status: Mapping[str, Any], *, theme: Look | str | None = None
         "chat-state": _chat_state(status.get("chat")),
         "features": _features(status),
         "hidden": _hidden_panels(status),
+        "settings-status": pills,  # part 28: the same line inside the Settings dialog, so it stays in view there
         "foot": (f"Loopback only (D45); read only, except advisory chat (D74) and, with --feature-controls, the "
                  f"operator's feature controls (D99). Generated at {_clock(generated)}."),
     }
@@ -1814,6 +1835,26 @@ def _sidebar(camera: object, look: Look, *, base: str = "", current: str | None 
             f'<div class=side-foot><div class=cam-chip>{icon("video")}<span class=cam-text><span>Camera</span>'
             f"<strong class=mono>{_e(camera)}</strong></span></div></div></aside>"
             "<div class=scrim id=scrim hidden></div>")
+
+
+SETTINGS_SECTIONS = (("settings", "Appearance", "sliders"), ("features", "Features", "toggle"))
+
+
+def _settings_dialog(state: str) -> str:
+    """Part 28: the Settings window. With script, Appearance and Features (the page's own two sections, the same
+    elements: one set of controls) are shown inside this dialog, one at a time, chosen on its left; the sidebar's
+    Appearance and Features open it. Without script the dialog never opens and both sections stay on the page, reached
+    by the sidebar's links. It carries the page's own state line, so NOT CURRENT and a degraded runtime stay in view
+    while it is open. Opening or closing it changes nothing: appearance stays this browser's, and a feature changes
+    only through its switch, with the operator's key (D99)."""
+    tabs = "".join(f'<li><a href="#{target}" data-sd={target}>{icon(glyph)}<span class=label>{label}</span></a></li>'
+                   for target, label, glyph in SETTINGS_SECTIONS)
+    return (f'<dialog id=settings-dialog class="sdialog js-only" aria-labelledby=sd-title><div class=sd-frame>'
+            f'<div class=sd-head><h2 id=sd-title>{icon("sliders")}Settings</h2>'
+            f'<div class="pills sd-status" data-region=settings-status>{state}</div>'
+            f'<button type=button class=icon-btn id=sd-close><span class=vh>Close settings</span>{icon("close")}'
+            f'</button></div><div class=sd-body><nav class="nav sd-nav" aria-label="Settings sections"><ul>{tabs}</ul>'
+            f'</nav><div class=sd-panel id=sd-panel tabindex=-1></div></div></div></dialog>')
 
 
 def _menu_button() -> str:
@@ -1901,6 +1942,7 @@ def render_html(status: Mapping[str, Any], *, theme: Look | str | None = None,
 {_appearance(path, look)}
 </section>
 </main>
+{_settings_dialog(regions["settings-status"])}
 <footer class=foot data-region=foot>{regions["foot"]}</footer>
 </div>
 </div>""", theme=look, page="status", source=_source("/status.json", look), refresh_s=REFRESH_S, marker=marker)

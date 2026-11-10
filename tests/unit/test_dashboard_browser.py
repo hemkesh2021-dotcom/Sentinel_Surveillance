@@ -264,17 +264,24 @@ def test_every_palette_keeps_its_contrast_and_a_visible_focus_ring_in_the_browse
 
     page = opened(browser, f"{site['url']}/dashboard?theme={mode}", width=1280, height=900)
     try:
+        # part 28: Appearance is a section of the Settings dialog; its controls are focused there, on the dialog's
+        # surface (the canvas), and the panel colour is read from a panel of the page
+        page.evaluate("document.querySelector('#sidebar .nav a[data-nav=settings]').click()")
+        assert wait_until(lambda: page.evaluate("document.getElementById('settings-dialog').open"), 5.0)
         for preset in palettes.PRESETS:
             page.evaluate(f"document.documentElement.dataset.palette = {preset.key!r}")
             page.evaluate("document.querySelector('[data-set=density][data-value=compact]').focus()")
             seen = page.evaluate("""(() => { const style = e => getComputedStyle(e); const panel = document.querySelector(
-              '#settings'); const focused = document.activeElement; return {canvas: style(document.body).backgroundColor,
+              '.panel.live'); const focused = document.activeElement; return {canvas: style(document.body).backgroundColor,
               ink: style(document.body).color, panel: style(panel).backgroundColor, muted: style(document.querySelector(
               '#settings .note')).color, ring: style(focused).outlineColor, width: parseFloat(style(focused).outlineWidth),
-              outline: style(focused).outlineStyle}; })()""")
+              outline: style(focused).outlineStyle,
+              dialog: style(document.getElementById('settings-dialog')).backgroundColor}; })()""")
             ink, canvas, panel = rgb(seen["ink"]), rgb(seen["canvas"]), rgb(seen["panel"])
             assert contrast(ink, canvas) >= 7 and contrast(ink, panel) >= 7, (preset.key, seen)
             assert contrast(rgb(seen["muted"]), panel) >= 4.5, (preset.key, seen)
+            assert rgb(seen["dialog"]) == canvas, (preset.key, seen)  # the dialog's surface is the palette's canvas
+            assert contrast(rgb(seen["muted"]), canvas) >= 4.5, (preset.key, seen)
             assert seen["outline"] != "none" and seen["width"] >= 2 and contrast(rgb(seen["ring"]), panel) >= 3, seen
             page.save_screenshot(f"palette-{preset.key}-{mode}")
     finally:

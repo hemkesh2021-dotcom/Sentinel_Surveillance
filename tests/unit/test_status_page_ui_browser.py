@@ -172,7 +172,26 @@ def test_every_control_is_reachable_by_keyboard_with_a_visible_focus_ring(browse
         assert seen and seen[0]["cls"] == "skip" and len(seen) < 80
         assert sum(1 for f in seen if f["nav"]) == 8  # still reachable, every one
         texts = [f["text"] for f in seen]
-        assert {"Auto", "Light", "Dark"} <= set(texts) and "About this picture" in texts
+        assert "About this picture" in texts
+        # part 28: Appearance is in the Settings dialog, opened from the keyboard on its sidebar entry; inside it
+        # every stop but its two section entries (navigation items) shows a ring, and focus never leaves it
+        assert not {"Auto", "Light", "Dark"} & set(texts)
+        page.evaluate("document.querySelector('#sidebar .nav a[data-nav=settings]').focus()")
+        page.key("Enter")
+        assert page.evaluate("document.getElementById('settings-dialog').open") is True
+        inside = []
+        for _ in range(40):
+            page.key("Tab")
+            assert page.evaluate("document.getElementById('settings-dialog').contains(document.activeElement)")
+            focus = page.evaluate(FOCUSED)
+            inside.append(focus)
+            if focus["nav"]:
+                assert focus["outline"] == "none", focus
+            else:
+                assert focus["outline"] != "none" and focus["width"] >= 2, focus
+        assert {"Auto", "Light", "Dark", "Compact"} <= {f["text"] for f in inside}
+        page.key("Escape")
+        assert page.evaluate("document.getElementById('settings-dialog').open") is False
         assert sum(1 for f in seen if f["cls"] == "inc") >= 10 and any(f["inIncidents"] for f in seen)
         summary = next(i for i, f in enumerate(seen) if f["text"] == "About this picture")
         page.navigate(f"{site['url']}/")

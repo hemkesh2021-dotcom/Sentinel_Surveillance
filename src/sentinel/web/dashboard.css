@@ -206,6 +206,16 @@ html[data-rail=compact] .nav a:hover .tip, html[data-rail=compact] .nav a:focus-
                          "settings settings"; }
 }
 
+/* Part 28, with script: Appearance and Features live in the Settings dialog, so the board has no rows for them. */
+html.sd .board { grid-template-areas: "live" "faces" "incidents" "chat" "health" "delivery"; }
+@media (min-width: 760px) {
+  html.sd .board { grid-template-areas: "live live" "faces faces" "incidents chat" "health delivery"; }
+}
+@media (min-width: 1180px) {
+  html.sd .board { grid-template-rows: auto 1fr auto auto;
+    grid-template-areas: "live faces" "live chat" "incidents health" "incidents delivery"; }
+}
+
 /* The camera's focus view (D96): the live picture and recognition only; the page's freshness bar and recognition's
    validation label stay in view; nothing is reloaded, and leaving it restores the reader's place. */
 html[data-focus=live] .board > .panel:not(.live):not(.faces) { display: none; }
@@ -335,6 +345,47 @@ html[data-hide~=delivery] #delivery, html[data-hide~=delivery] .nav a[data-nav=d
   border: 1px solid var(--line-strong); }
 .hw p { flex: 1; font-size: .9rem; }
 html[data-hide~=health] .hw[data-panel=health], html[data-hide~=delivery] .hw[data-panel=delivery] { display: flex; }
+html.sd .hw[data-panel=features] { display: flex; }  /* part 28: Features is in the Settings dialog; its warnings stay */
+
+/* ---------------------------------------------------------------- Settings (part 28): a contained window over the
+   dimmed dashboard, its sections on the left, the chosen one on the right. The existing surfaces, radii, shadows and
+   nav states; no new colour. On a narrow screen it is a fitted sheet whose sections sit above the scrolling panel. */
+.sdialog { width: min(760px, calc(100vw - 32px)); max-width: none; height: min(640px, calc(100vh - 48px));
+  max-height: none; margin: auto; padding: 0; overflow: hidden; color: var(--ink); border-radius: var(--radius);
+  background: var(--deep-grain, none), var(--canvas); border: 1px solid var(--deep-clear, var(--line-strong));
+  box-shadow: var(--deep-well, var(--raise)), 0 24px 60px -24px var(--shadow-lo); }
+.sdialog::backdrop { background: color-mix(in srgb, var(--canvas) 55%, #000 45%); opacity: .72; }
+.sd-frame { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100%; }
+.sd-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 14px 12px 18px;
+  border-bottom: 1px solid var(--line); }
+.sd-head h2 { display: flex; align-items: center; gap: 9px; }
+.sd-head h2 .ic { color: var(--muted); }
+.sd-status { flex: 1 1 auto; justify-content: flex-end; margin-left: 0; }
+.sd-body { display: grid; grid-template-columns: 196px minmax(0, 1fr); min-height: 0; }
+.sd-nav { margin: 0; padding: 12px; border-right: 1px solid var(--line); overflow-y: auto; }
+/* the dialog's own navigation keeps its names and width whatever the sidebar's rail is */
+html[data-rail=compact] .sd-nav { overflow-y: auto; }
+html[data-rail=compact] .sd-nav a { justify-content: flex-start; width: auto; padding: 9px 12px; }
+html[data-rail=compact] .sd-nav .label { position: static; width: auto; height: auto; overflow: visible; clip: auto; }
+.sd-panel { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px 18px 20px; }
+.sd-panel:focus { outline: none; }
+.sd-panel > .panel { padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; }
+.sd-panel ul.features { grid-template-columns: minmax(0, 1fr); }
+.sd-panel .swatches { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+@media (max-width: 699px) {
+  .sdialog { width: calc(100vw - 16px); height: calc(100dvh - 16px); max-height: calc(100vh - 16px); }
+  .sd-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .sd-nav { border-right: 0; border-bottom: 1px solid var(--line); padding: 8px 12px; overflow: visible; }
+  .sd-nav ul { grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+  .sd-nav a { justify-content: center; }
+  .sd-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "title close" "state state";
+    padding: 10px 12px 10px 16px; }
+  .sd-head h2 { grid-area: title; }
+  .sd-head .icon-btn { grid-area: close; }
+  .sd-status { grid-area: state; justify-content: flex-start; }
+  .sd-status .updated { display: none; }
+  .sd-panel { padding: 14px 14px 18px; }
+}
 .faces .empty { margin-top: 12px; }
 
 /* ---------------------------------------------------------------- incidents */

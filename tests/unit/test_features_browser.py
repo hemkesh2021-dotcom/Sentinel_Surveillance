@@ -52,6 +52,10 @@ def opened(browser: Browser, url: str, **options: Any) -> Page:
     page = browser.page(**options)
     page.navigate(url)
     assert wait_until(lambda: page.evaluate("document.readyState") == "complete", 15.0), "the page did not load"
+    # part 28: Features is a section of the Settings dialog, opened from the sidebar as an operator opens it
+    assert wait_until(lambda: page.evaluate("document.documentElement.classList.contains('sd')"), 5.0)
+    page.evaluate("document.querySelector('#sidebar .nav a[data-nav=features]').click()")
+    assert wait_until(lambda: page.evaluate("document.getElementById('settings-dialog').open"), 5.0)
     return page
 
 
