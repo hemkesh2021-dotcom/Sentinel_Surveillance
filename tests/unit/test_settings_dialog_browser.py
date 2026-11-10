@@ -68,6 +68,20 @@ def click_nav(page: Page, target: str) -> None:
                   "a.click(); })()")
 
 
+def closes_on_escape(page: Page) -> bool:
+    """Escape, then waits until the dialog is closed and the page has finished closing it.
+
+    The page finishes in the dialog's ``close`` event: there it clears an address ending in the section, and sends
+    focus to a control in view when what opened the dialog is gone. The browser delivers that event after ``open`` has
+    turned false (with the next frame; 20 to 100 ms later, measured in this Chromium), so a read made as soon as
+    ``open`` is false can come before it. A test of what that event does waits for the event itself, seen by a listener
+    added after the page's own (it runs after it), and then asserts at once, with no further waiting."""
+    page.evaluate("(() => { window.settingsClosed = false; document.getElementById('settings-dialog')"
+                  ".addEventListener('close', () => { window.settingsClosed = true; }, {once: true}); })()")
+    page.key("Escape")
+    return wait_until(lambda: page.evaluate(f"{OPEN} === false && window.settingsClosed === true"), 3.0)
+
+
 def visible(page: Page, selector: str) -> bool:
     return page.evaluate(f"(() => {{ const n = document.querySelector({selector!r}); if (!n) return false; "
                          "const r = n.getBoundingClientRect(); return n.offsetParent !== null && r.width > 0 && "
@@ -141,8 +155,7 @@ def test_an_address_ending_in_the_section_opens_the_dialog_and_closing_clears_it
     try:
         assert wait_until(lambda: page.evaluate(OPEN) is True, 10.0)
         assert page.evaluate(SECTION) == "features"
-        page.key("Escape")
-        assert wait_until(lambda: page.evaluate(OPEN) is False, 3.0)
+        assert closes_on_escape(page)
         assert page.evaluate("location.hash") == ""
         page.evaluate("location.hash = '#settings'")
         assert wait_until(lambda: page.evaluate(OPEN) is True, 3.0) and page.evaluate(SECTION) == "settings"
@@ -373,8 +386,7 @@ def test_focus_goes_to_the_sidebars_entry_when_the_warning_that_opened_the_dialo
         assert wait_until(lambda: page.evaluate(WARNING_GONE), 15.0)  # the lockout ended; an update removed the warning
         assert page.evaluate(OPEN) and page.evaluate(INSIDE)
         assert not visible(page, "#menu")  # a wide screen: no menu button to fall back on
-        page.key("Escape")
-        assert wait_until(lambda: page.evaluate(OPEN) is False, 3.0)
+        assert closes_on_escape(page)
         assert page.evaluate("document.activeElement !== document.body")
         assert page.evaluate(ACTIVE) == "features"  # the sidebar's Features entry: in view, and it opens the same thing
         assert page.evaluate("document.activeElement.closest('#sidebar') !== null")
@@ -408,8 +420,7 @@ def test_on_a_phone_focus_goes_to_the_menu_button_when_the_warning_that_opened_t
     try:
         lock_and_open_from_the_warning(page)
         assert wait_until(lambda: page.evaluate(WARNING_GONE), 15.0)
-        page.key("Escape")
-        assert wait_until(lambda: page.evaluate(OPEN) is False, 3.0)
+        assert closes_on_escape(page)
         assert page.evaluate(ACTIVE) == "menu"  # as before on a narrow screen: the sidebar is a closed drawer
     finally:
         page.close()
@@ -422,8 +433,7 @@ def test_opened_from_the_address_focus_goes_to_the_sidebars_entry_on_closing(bro
     try:
         assert wait_until(lambda: page.evaluate(OPEN) is True, 10.0)
         page.evaluate("document.querySelector('#settings-dialog a[data-sd=features]').click()")  # switched inside
-        page.key("Escape")
-        assert wait_until(lambda: page.evaluate(OPEN) is False, 3.0)
+        assert closes_on_escape(page)
         assert page.evaluate(ACTIVE) == "features"  # nothing opened it: the entry of the section that was shown
         assert page.evaluate("document.activeElement.closest('#sidebar') !== null")
     finally:
@@ -460,8 +470,7 @@ def test_on_a_phone_the_dialog_is_a_fitted_sheet_with_internal_scrolling_and_rea
         for selector in ("#settings-dialog a[data-sd=settings]", "#settings-dialog a[data-sd=features]"):
             assert visible(page, selector)  # both sections' entries, side by side above the panel
         page.save_screenshot("settings-dialog-phone")
-        page.key("Escape")
-        assert wait_until(lambda: page.evaluate(OPEN) is False, 3.0)
+        assert closes_on_escape(page)
         assert page.evaluate(ACTIVE) == "menu"  # the drawer is closed: focus returns to the menu button
     finally:
         page.close()
