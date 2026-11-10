@@ -38,6 +38,7 @@ from sentinel.scene.chat import (
     INCOMPLETE,
     NO_TIME,
     NOT_LIVE,
+    OPERATOR_OFF,
     ChatAdmission,
     ChatQuestion,
     ChatRequestError,
@@ -970,3 +971,206 @@ def test_a_waiting_question_whose_camera_is_no_longer_live_never_reaches_the_mod
     assert (document["state"], document["reason"]) == ("no_fresh_frame", NOT_LIVE)
     assert r.transport.bodies == [] and r.encoded == [] and counters(r)["no_fresh_frame_at_start"] == 1
     assert document["frame"] == accepted["frame"] and "frame_replaced" not in document
+
+
+# ---------------------------------------------------------------- D99: chat turned off ends every accepted question
+
+
+def _held_scene_job(r: Rig, entered: threading.Event) -> None:
+    """A periodic scene job on the real worker, which stays on it until the rig's gate opens."""
+    r.frame()
+    frame, image = r.frames.latest()
+    r.analyzer._images.put(frame.key, image)
+    r.analyzer.submit(AnalysisJob(job_id="scene-held", purpose=JobPurpose.PERIODIC, frame=frame,
+                                  deadline_mono_ns=frame.ingest_mono_ns + 20 * NS_PER_SECOND))
+    assert entered.wait(5.0)
+
+
+@pytest.mark.parametrize("on_again", [False, True])
+def test_turning_chat_off_ends_a_question_waiting_behind_a_scene_job_and_on_again_does_not_revive_it(
+        rig, on_again: bool) -> None:
+    entered, release = threading.Event(), threading.Event()
+
+    def held_scene(job: AnalysisJob, image: Any) -> WorkerOutcome:
+        entered.set()
+        release.wait(10.0)
+        return WorkerOutcome.completed(job.job_id, "{}")
+
+    r = rig(completion("a new answer"), scene_job=held_scene)
+    try:
+        _held_scene_job(r, entered)
+        code, accepted = r.service.ask(ChatQuestion("Is there a chair?"))
+        assert (code, accepted["state"]) == (202, "waiting")
+        assert r.analyzer.counters["side_accepted_behind_scene"] == 1
+        r.service.set_operator_off(True)
+        code, document = r.service.poll(accepted["job"])  # over at once, not when the scene job ends
+        assert (code, document["state"], document["reason"]) == (200, "cancelled", OPERATOR_OFF)
+        assert "answer" not in document and "wait_ms" not in document  # it never started
+        if on_again:
+            r.service.set_operator_off(False)  # before the scene job ends: the old question stays over
+    finally:
+        release.set()
+    _until(lambda: not r.analyzer.busy())
+    assert r.transport.bodies == [] and r.encoded == []  # nothing was encoded and the model was not asked
+    assert r.service.poll(accepted["job"])[1]["state"] == "cancelled"
+    assert r.service.picture_numbers()["held"] == 0
+    counted = r.service.counters
+    assert (counted["cancelled"], counted["cancelled_operator_off"], counted["answered"]) == (1, 1, 0)
+    assert (r.analyzer.counters["side_cancelled"], r.analyzer.counters["side_completed"]) == (1, 0)
+    assert len(_drain(r.analyzer)) == 1  # the scene job was not touched
+    if on_again:  # chat works again, with a new question only
+        r.clock.advance(4.1)
+        r.frame()
+        code, second = r.service.ask(ChatQuestion("And now?"))
+        assert code == 202 and r.answer(second["job"])["answer"] == "a new answer"
+        assert len(r.transport.bodies) == 1 and "And now?" in json.dumps(r.transport.bodies[0])
+    else:
+        assert r.service.availability() == {"state": "off", "reason": OPERATOR_OFF}
+
+
+def test_a_question_the_worker_is_just_taking_when_chat_is_turned_off_never_reaches_the_model(rig) -> None:
+    r = rig(completion("unused"))
+    taken, go = threading.Event(), threading.Event()
+    run_side = r.analyzer._run_side
+
+    def held_at_the_start(*args: Any) -> None:  # the worker has taken it; its started() has not run yet
+        taken.set()
+        go.wait(10.0)
+        run_side(*args)
+
+    r.analyzer._run_side = held_at_the_start  # type: ignore[method-assign]
+    try:
+        r.frame()
+        code, accepted = r.service.ask(ChatQuestion("Anyone there?"))
+        assert code == 202 and taken.wait(5.0)
+        assert r.service.poll(accepted["job"])[1]["state"] == "waiting"
+        r.service.set_operator_off(True)
+        r.service.set_operator_off(False)  # on again before the worker goes on
+    finally:
+        go.set()
+    _until(lambda: not r.analyzer.busy())
+    document = r.service.poll(accepted["job"])[1]
+    assert (document["state"], document["reason"]) == ("cancelled", OPERATOR_OFF)
+    assert "wait_ms" not in document  # never counted as started
+    assert r.transport.bodies == [] and r.encoded == []  # not even its picture was prepared
+    assert r.service.picture_numbers()["held"] == 0
+    counted = r.service.counters
+    assert (counted["cancelled"], counted["cancelled_operator_off"]) == (1, 1)
+    assert (r.analyzer.counters["side_aborted"], r.analyzer.counters["side_cancelled"]) == (1, 0)
+
+
+def test_a_question_that_passed_the_availability_check_before_chat_was_turned_off_is_refused_at_the_hand_over(
+        rig) -> None:
+    r = rig(completion("after"))
+    r.frame()
+    latest = r.service._latest
+
+    def switched_off_meanwhile() -> Any:  # the runtime's loop applies the switch while the request is on its way
+        r.service.set_operator_off(True)
+        return latest()
+
+    r.service._latest = switched_off_meanwhile  # type: ignore[attr-defined]
+    code, document = r.service.ask(ChatQuestion("What is there?"))
+    assert (code, document) == (503, {"state": "off", "reason": OPERATOR_OFF})
+    assert r.analyzer.counters["side_accepted"] == 0 and not r.analyzer.busy()
+    assert r.service.counters["refused_unavailable"] == 1 and r.service.counters["accepted"] == 0
+    assert r.transport.bodies == [] and r.encoded == []
+    r.service._latest = latest  # type: ignore[attr-defined]
+    r.service.set_operator_off(False)
+    code, accepted = r.service.ask(ChatQuestion("What is there?"))  # nothing of the refused one is in the way
+    assert code == 202 and r.answer(accepted["job"])["answer"] == "after"
+
+
+def test_a_running_question_that_answers_although_chat_was_turned_off_holds_no_picture_once_chat_is_on_again(
+        rig) -> None:
+    r = rig()
+    asked, release = threading.Event(), threading.Event()
+    aborts: list[str | None] = []
+
+    def model(question: ChatQuestion, image: Any, abort: Any = None, max_tokens: Any = None) -> tuple[str, bool]:
+        asked.set()  # a stand-in that does not look at its abort handle: its answer comes regardless
+        release.wait(10.0)
+        aborts.append(abort.reason)
+        return "An answer that came anyway.", False
+
+    r.service._run = model  # type: ignore[attr-defined]
+    try:
+        r.frame()
+        code, accepted = r.service.ask(ChatQuestion("What is there?"))
+        assert code == 202 and asked.wait(5.0)
+        r.service.set_operator_off(True)
+        r.service.set_operator_off(False)  # the pictures' store is open again when the answer arrives
+    finally:
+        release.set()
+    document = r.answer(accepted["job"])
+    assert aborts == [OPERATOR_OFF]  # the running request was told to end, as before
+    assert document["state"] == "answered" and "picture" not in document  # shown as before; its picture is not held
+    assert r.service.picture_numbers()["held"] == 0
+    assert r.service.counters["cancelled_operator_off"] == 1
+    _until(lambda: not r.analyzer.busy())
+    r.clock.advance(4.1)
+    r.frame()
+    code, later = r.service.ask(ChatQuestion("And now?"))  # a question asked since the switch holds its picture
+    release.set()
+    assert code == 202 and "picture" in r.answer(later["job"]) and r.service.picture_numbers()["held"] == 1
+
+
+def test_a_question_whose_start_is_being_planned_when_chat_is_turned_off_is_withdrawn_and_never_starts(rig) -> None:
+    r = rig(completion("unused"))
+    planning, go = threading.Event(), threading.Event()
+    plan = r.service._plan
+
+    def held_plan(job: Any, window: Any) -> Any:  # the worker is deciding whether it can start now
+        planning.set()
+        go.wait(10.0)
+        return plan(job, window)
+
+    r.service._plan = held_plan  # type: ignore[method-assign]
+    try:
+        r.frame()
+        code, accepted = r.service.ask(ChatQuestion("Anyone there?"))
+        assert code == 202 and planning.wait(5.0)
+        r.service.set_operator_off(True)
+        document = r.service.poll(accepted["job"])[1]  # withdrawn and over at once
+        assert (document["state"], document["reason"]) == ("cancelled", OPERATOR_OFF)
+        r.service.set_operator_off(False)
+    finally:
+        go.set()
+    frame, image = r.frames.latest()  # a scene job behind it: once that has run, the worker is past the question
+    r.analyzer._images.put(frame.key, image)
+    r.analyzer.submit(AnalysisJob(job_id="scene-after", purpose=JobPurpose.PERIODIC, frame=frame,
+                                  deadline_mono_ns=frame.ingest_mono_ns + 20 * NS_PER_SECOND))
+    assert len(_drain(r.analyzer)) == 1
+    assert r.service.poll(accepted["job"])[1]["state"] == "cancelled"
+    assert r.transport.bodies == [] and r.encoded == [] and r.service.picture_numbers()["held"] == 0
+    counted = r.service.counters
+    assert (counted["cancelled"], counted["cancelled_operator_off"]) == (1, 1)
+    worker = r.analyzer.counters  # withdrawn: neither given up, nor started, nor ended by an abort
+    assert (worker["side_cancelled"], worker["side_given_up"], worker["side_completed"], worker["side_aborted"]) == (
+        1, 0, 0, 0)
+
+
+def test_chat_turned_off_and_on_while_an_answer_is_being_recorded_leaves_its_picture_unheld(rig) -> None:
+    r = rig(completion("An answer."))
+    answered = r.service._answered
+    switched = threading.Event()
+
+    def switch() -> None:  # the runtime's loop: off and on again, both in one step
+        r.service.set_operator_off(True)
+        r.service.set_operator_off(False)
+        switched.set()
+
+    def while_recording(job: Any, reply: Any) -> Any:  # on the worker's thread, the answer in hand
+        threading.Thread(target=switch, daemon=True).start()
+        switched.wait(1.0)  # as far as the switch gets before the answer is recorded
+        return answered(job, reply)
+
+    r.service._answered = while_recording  # type: ignore[method-assign]
+    r.frame()
+    code, accepted = r.service.ask(ChatQuestion("What is there?"))
+    assert code == 202
+    document = r.answer(accepted["job"])
+    assert switched.wait(5.0)
+    assert document["state"] == "answered" and "picture" not in document
+    assert r.service.picture_numbers()["held"] == 0  # the store is open again, and holds nothing from before
+    assert r.service.availability()["state"] == "available"

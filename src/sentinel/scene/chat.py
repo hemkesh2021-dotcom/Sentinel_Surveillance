@@ -16,6 +16,11 @@ the camera, run commands or establish an identity; nothing here holds a referenc
   it the same way. So do the question's own deadline (CHAT_DEADLINE_S) and memory pressure (ChatGate: no new
   question above 4.7 GB for three samples or after repeated scene deadline misses, a running one cancelled above
   5.0 GB). A cancelled question says why; it is never retried or queued.
+- **Turned off, every accepted question is over (D99).** Chat turned off in Features ends the running question as
+  above and withdraws one that was accepted but had not started (it waited behind a scene job): it never reaches
+  the model, also if chat is turned on again before the scene job ends, and it ends as cancelled, saying why. A
+  question whose request arrived before the switch but is handed over after it is refused like any other, and no
+  question from before the switch holds a picture afterwards.
 - **An answer sized to its window (session 114, chat_budget).** When the worker could start a question, the time
   until the next periodic job's grace would end it sets the answer's token limit, from chat's own measured pace
   (never above CHAT_MAX_TOKENS), so that it usually ends by itself first. A window too short for a useful answer
@@ -469,6 +474,9 @@ class _Job:
     read_as: str | None = None  # how a follow-up was read (ChatQuestion.read_as)
     auto: bool = False
     region: dict[str, Any] | None = None  # part 28: the region asked about, as numbers (scene.roi)
+    # how many times chat had been turned off when it was accepted: a later switch-off means it is over (a number
+    # only: the question's work and its picture are never kept here to tell)
+    offs: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -507,6 +515,7 @@ class ChatService:
         self._pictures = HeldPictures()  # part 28: what "Analyse again, same picture" asks about
         self._stopping = False  # the runtime is stopping: the picture stores are closed for good
         self._operator_off = False  # D99: turned off in Features; scene analysis is not touched
+        self._offs = 0  # how many times it was turned off: every question accepted before the latest one is over
         self._pace = ChatPace()
         # (wait ms, run ms, answer limit, tokens) of the latest questions that started: numbers only
         self._timings: deque[tuple[float, float, int | None, int | None]] = deque(maxlen=CHAT_TIMINGS_KEPT)
@@ -579,9 +588,15 @@ class ChatService:
             and self._run is not None
 
     def set_operator_off(self, off: bool) -> None:
-        """D99: chat turned off (or on again) in Features. Off, new questions are refused and a running one is ended; the
-        scene worker and scene analysis carry on."""
-        self._operator_off = off
+        """D99: chat turned off (or on again) in Features. Off, new questions are refused and every accepted one is
+        over: a running one is ended, one that had not started is withdrawn from the scene worker and never starts,
+        also if chat is turned on again at once. The scene worker and scene analysis carry on."""
+        with self._lock:  # with _submit: a question is handed over before this, and ended below, or refused after it
+            self._operator_off = off
+            pending: list[_Job] = []
+            if off:
+                self._offs += 1
+                pending = [job for job in self._jobs.values() if job.state in ("waiting", "answering")]
         if off:  # part 28: nothing is held for a chat that is turned off, nor by a question that ends just after
             self._pictures.close()
             if self._pins is not None:
@@ -590,8 +605,37 @@ class ChatService:
             self._pictures.reopen()
             if self._pins is not None:
                 self._pins.reopen()
-        if off and self.abort_running(OPERATOR_OFF):
-            self._count("cancelled_operator_off")
+        if off:
+            self._end_for_operator_off(pending)
+
+    def _end_for_operator_off(self, pending: list[_Job]) -> None:
+        """End the questions accepted before chat was turned off. First the one that has not started: withdrawn from
+        the scene worker it never will, and nothing calls back for it, so it ends here. Then the running one, as
+        before: its request is closed, and it ends as cancelled when that returns. In this order nothing slips
+        between the two: no question is handed over any more, so one that was not waiting at the first step is
+        running, or over, at the second. One the worker has taken but not yet started counts as running there, and
+        stops in ``_submit``'s ``run`` before its picture or the model is touched. No lock is held while the
+        request's connection is closed."""
+        withdrawn = self._scene is not None and self._scene.cancel_side()
+        ended = self.abort_running(OPERATOR_OFF)
+        counted = []
+        now = self._clock.monotonic_ns()
+        for job in pending:
+            with job.lock:
+                if withdrawn and job.state == "waiting":
+                    job.state, job.reason, job.finished_ns = CANCELLED, OPERATOR_OFF, now
+                    counted.append("cancelled")
+                # one the worker took and ended by the switch before the two steps above looked: it counts too
+                ended = ended or (job.state == CANCELLED and job.reason == OPERATOR_OFF)
+        if withdrawn or ended:
+            counted.append("cancelled_operator_off")
+        for name in counted:
+            self._count(name)
+
+    def _turned_off_since(self, job: _Job) -> bool:
+        """Whether chat was turned off after ``job`` was accepted: it is over then, whatever happens to it next and
+        also once chat is on again."""
+        return job.offs != self._offs
 
     def release_pictures(self) -> None:
         """Part 28: drop every held picture and pinned frame, for good (the runtime is stopping). The stores stay
@@ -803,14 +847,23 @@ class ChatService:
 
         def started() -> None:
             with job.lock:
-                if job.state == "waiting":
+                if job.state == "waiting" and not self._turned_off_since(job):
                     job.state, job.started_ns = "answering", self._clock.monotonic_ns()
+
+        def run() -> Any:
+            if self._turned_off_since(job):  # turned off just as the worker took it: the model is not asked
+                raise ChatCancelled(OPERATOR_OFF)
+            return work()
 
         def finished(result: Any) -> None:
             self._finish(job, result)
 
         with self._lock:
-            accepted = self._scene.submit_side(work, started=started, finished=finished, abort=job.abort.abort,
+            if self._operator_off:  # turned off since ask() looked (D99): refused as every question is, not handed over
+                self.counters["refused_unavailable"] += 1
+                return 503, {"state": "off", "reason": OPERATOR_OFF}
+            job.offs = self._offs
+            accepted = self._scene.submit_side(run, started=started, finished=finished, abort=job.abort.abort,
                                                plan=plan, wait_limit_s=CHAT_START_S)
             if not accepted:
                 self.counters["busy_scene"] += 1
@@ -929,7 +982,14 @@ class ChatService:
                 counted += self._answered(job, result)
                 if job.state == "answered" and sent is not None:
                     facts = {key: job.frame[key] for key in ("stream_epoch", "frame_seq", "ingest_utc")}
-                    job.picture = self._pictures.hold(facts, *sent)  # None while the stores are closed
+                    # D99: a question accepted before chat was turned off holds no picture, also when chat is on
+                    # again by now and the store is open. A request that was running then was told to end; if its
+                    # answer came all the same it is shown, as before, without "the same picture". Decided and
+                    # held under the lock the switch takes: turned off before this, nothing is held; turned off
+                    # after it, the store's closing drops what was held.
+                    with self._lock:
+                        if not self._turned_off_since(job):
+                            job.picture = self._pictures.hold(facts, *sent)  # None while the stores are closed
                 if result.timing is None:
                     counted.append("timing_missing")
                 else:

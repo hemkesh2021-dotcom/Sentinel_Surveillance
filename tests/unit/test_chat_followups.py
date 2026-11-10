@@ -21,6 +21,7 @@ from status_fixtures import Camera
 
 from sentinel.config import FreshnessConfig
 from sentinel.contracts import PixelFormat
+from sentinel.jobs import AnalysisJob, JobPurpose
 from sentinel.media.health import assess_frame
 from sentinel.scene import chat as chat_module
 from sentinel.scene.analyzer import PREEMPTED, RecentImages, ThreadedSceneAnalyzer
@@ -441,6 +442,38 @@ def test_a_failed_retry_on_the_same_picture_leaves_that_earlier_picture_held(rig
     rig.service._run = answers
     _, again = rig.ask(ChatQuestion(PHONE, picture=picture))
     assert again["state"] == "answered" and again["same_picture"] is True and rig.sent[-1][1] is image()
+
+
+def test_a_question_withdrawn_when_chat_is_turned_off_lets_go_of_its_picture_at_once(rig) -> None:
+    entered, release = threading.Event(), threading.Event()
+
+    def held(job: Any, image: Any) -> None:
+        entered.set()
+        release.wait(10.0)
+
+    rig.analyzer._run_job = held  # a scene check that stays on the worker
+    rig.camera.frame(0.5)
+    frame, picture = rig.camera.frames.latest()
+    rig.analyzer._images.put(frame.key, picture)
+    rig.analyzer.submit(AnalysisJob(job_id="scene-held", purpose=JobPurpose.PERIODIC, frame=frame,
+                                    deadline_mono_ns=frame.ingest_mono_ns + 20_000_000_000))
+    try:
+        assert entered.wait(5.0)
+        image = rig.shoot()
+        _, accepted = rig.ask(ChatQuestion(PHONE), wait=False)
+        assert accepted["state"] == "waiting"
+        rig.later(2.0)  # the frames move on: the waiting question holds the only reference to its picture
+        assert not gone(image)
+        rig.service.set_operator_off(True)
+        assert rig.service.poll(accepted["job"])[1]["state"] == "cancelled"
+        assert gone(image)  # let go by the withdrawal itself, while the scene check still runs
+    finally:
+        release.set()
+    deadline = time.monotonic() + 5
+    while rig.analyzer.busy():
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+    assert rig.sent == [] and rig.service.picture_numbers()["held"] == 0
 
 
 @pytest.mark.parametrize("stop", ["the runtime stops", "chat is turned off"])
