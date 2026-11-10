@@ -42,6 +42,14 @@ CARD = "document.querySelector('#chat-log > li:last-child')"
 PANEL_OPEN = "!document.getElementById('zoom-panel').hidden"
 NOTE = "document.getElementById('zoom-note').textContent"
 SIZE = "document.getElementById('zoom-size').textContent"
+FIELDS = "['x1','y1','x2','y2'].map((n) => document.getElementById('zoom-' + n).value)"
+# the marked region as drawn, in percent of the held picture: left, top, width, height; None while nothing is marked
+MARKER = ("(() => { const m = document.getElementById('zoom-box'); return m.hidden ? null : [m.style.left, "
+          "m.style.top, m.style.width, m.style.height].map((v) => Math.round(parseFloat(v) * 100) / 100); })()")
+ASK_OFF = "document.getElementById('zoom-ask').disabled"
+FLAGGED = ("['x1','y1','x2','y2'].filter((n) => document.getElementById('zoom-' + n).getAttribute('aria-invalid') "
+           "=== 'true')")
+NOT_YET = "These numbers are not a region yet"
 
 
 class Site:
@@ -156,6 +164,24 @@ def drag(page: Page, start: tuple[float, float], end: tuple[float, float]) -> No
     page.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "button": "left", "clickCount": 1, **point(end)})
 
 
+def press(page: Page, key: str) -> None:
+    """One real key press in the focused field: a digit types itself, Backspace deletes."""
+    base = {"key": key, "code": "Backspace" if key == "Backspace" else f"Digit{key}",
+            "windowsVirtualKeyCode": 8 if key == "Backspace" else ord(key)}
+    page.call("Input.dispatchKeyEvent", {**base, "type": "keyDown", **({} if key == "Backspace" else {"text": key})})
+    page.call("Input.dispatchKeyEvent", {**base, "type": "keyUp"})
+
+
+def retype(page: Page, name: str, digits: str) -> list[list[str]]:
+    """Select one number field's content and type over it, a key at a time; the four fields after each key."""
+    page.evaluate(f"(() => {{ const i = document.getElementById('zoom-{name}'); i.focus(); i.select(); }})()")
+    seen = []
+    for digit in digits:
+        press(page, digit)
+        seen.append(page.evaluate(FIELDS))
+    return seen
+
+
 def card(page: Page) -> dict[str, Any]:
     return page.evaluate(f"""(() => {{ const c = {CARD}; return {{state: c.dataset.state, kind: c.dataset.kind || null,
       text: c.innerText, region: (c.querySelector('p.region') || {{}}).textContent || '',
@@ -243,6 +269,93 @@ def test_the_region_can_be_set_from_the_keyboard_the_numbers_and_a_tracked_perso
         assert wait_until(lambda: card(page)["state"] == "answered", 10.0)
         question, image = site.sent[0]
         assert question == "Describe this area." and "[921,259,1383,1167]" in image.jpeg.decode()  # the tracker's box
+    finally:
+        page.close()
+
+
+def test_typing_one_edge_a_key_at_a_time_changes_that_edge_only_and_the_crop_sent_is_the_numbers_shown(
+        browser: Browser, site: Site) -> None:
+    """The finished-code review: with 25, 25, 50, 50, typing "6" then "0" over the right edge gave 6, 25, 60, 50 (the
+    first digit was sorted below the left edge, whose field was then rewritten), and that crop was sent."""
+    page = zoom_opened(browser, site)
+    try:
+        page.key("ArrowRight")  # a region, then its four numbers set to 25, 25, 50, 50
+        page.evaluate("(() => { for (const [n, v] of [['x1', 25], ['y1', 25], ['x2', 50], ['y2', 50]]) { const i = "
+                      "document.getElementById('zoom-' + n); i.value = v; i.dispatchEvent(new Event('input')); } })()")
+        assert page.evaluate(FIELDS) == ["25", "25", "50", "50"] and page.evaluate(MARKER) == [25, 25, 25, 25]
+        assert page.evaluate(SIZE) == "576 × 324 recorded pixels (main stream)." and page.evaluate(ASK_OFF) is False
+        # the right edge from 50 to 60: its number selected, then "6", then "0"
+        assert retype(page, "x2", "6") == [["25", "25", "6", "50"]]  # the left edge's number: not rewritten or swapped
+        assert page.evaluate(MARKER) == [25, 25, 25, 25]  # 6 is left of the left edge: the marked region stays
+        assert page.evaluate(ASK_OFF) is True and NOT_YET in page.evaluate(SIZE)  # and cannot be asked about meanwhile
+        assert page.evaluate(FLAGGED) == ["x1", "x2"]
+        press(page, "0")
+        assert page.evaluate(FIELDS) == ["25", "25", "60", "50"]  # exactly the edge that was typed changed
+        assert page.evaluate(MARKER) == [25, 25, 35, 25] and page.evaluate(ASK_OFF) is False
+        assert page.evaluate(SIZE) == "807 × 324 recorded pixels (main stream)." and page.evaluate(FLAGGED) == []
+        page.evaluate("document.getElementById('zoom-ask').click()")
+        assert wait_until(lambda: card(page)["state"] == "answered", 10.0), card(page)
+        (question, image), = site.sent
+        assert image.jpeg.decode().split("[")[1].split("]")[0] == "576,324,1383,648"  # left 25 % is pixel 576, not 138
+        assert card(page)["region"].startswith("Region: recorded pixels 576,324 to 1383,648 of the main stream's "
+                                               "picture (2304 × 1296)")
+    finally:
+        page.close()
+
+
+def test_four_numbers_typed_into_empty_fields_are_a_region_only_once_all_four_are_one(browser: Browser,
+                                                                                    site: Site) -> None:
+    page = zoom_opened(browser, site)
+    try:
+        for name, digits in (("x1", "25"), ("y1", "25"), ("x2", "50")):  # nothing selected yet: typed one by one
+            assert retype(page, name, digits)[-1][["x1", "y1", "x2", "y2"].index(name)] == digits
+            assert page.evaluate(MARKER) is None and page.evaluate(ASK_OFF) is True
+            assert NOT_YET in page.evaluate(SIZE)  # three numbers are not a region, and an empty field is not zero
+        assert page.evaluate(FIELDS) == ["25", "25", "50", ""] and page.evaluate(FLAGGED) == ["y2"]
+        assert retype(page, "y2", "50") == [["25", "25", "50", "5"], ["25", "25", "50", "50"]]
+        assert page.evaluate(MARKER) == [25, 25, 25, 25] and page.evaluate(ASK_OFF) is False
+        assert page.evaluate(SIZE) == "576 × 324 recorded pixels (main stream)." and page.evaluate(FLAGGED) == []
+    finally:
+        page.close()
+
+
+def test_a_cleared_or_unfinished_number_stays_as_typed_through_updates_and_moves_no_other_edge(browser: Browser,
+                                                                                            site: Site) -> None:
+    page = zoom_opened(browser, site)
+    try:
+        page.key("ArrowRight")  # a region from the keyboard
+        assert page.evaluate(FIELDS) == ["37", "35", "67", "65"] and page.evaluate(MARKER) == [37, 35, 30, 30]
+        page.evaluate("(() => { const i = document.getElementById('zoom-x1'); i.focus(); i.select(); })()")
+        press(page, "Backspace")  # the left edge's number cleared
+        assert page.evaluate(FIELDS) == ["", "35", "67", "65"]  # an empty field is not zero, and no other field changed
+        assert page.evaluate(MARKER) == [37, 35, 30, 30] and page.evaluate(ASK_OFF) is True
+        assert NOT_YET in page.evaluate(SIZE) and page.evaluate(FLAGGED) == ["x1"]
+        page.evaluate("document.getElementById('chat-q').focus()")  # the viewer looks elsewhere for a moment
+        sequence = read(page)["sequence"]
+        assert wait_until(lambda: read(page)["sequence"] >= sequence + 2, 10.0)  # two of the page's updates
+        assert page.evaluate(FIELDS) == ["", "35", "67", "65"]  # the field was not filled in again behind them
+        assert page.evaluate(ASK_OFF) is True
+        assert retype(page, "x1", "10") == [["1", "35", "67", "65"], ["10", "35", "67", "65"]]
+        assert page.evaluate(MARKER) == [10, 35, 57, 30] and page.evaluate(ASK_OFF) is False
+        assert page.evaluate(SIZE) == "1314 × 390 recorded pixels (main stream)."
+        assert retype(page, "x1", "70")[-1] == ["70", "35", "67", "65"]  # typed past the right edge: never swapped
+        assert page.evaluate(MARKER) == [7, 35, 60, 30]  # the last numbers that were a region ("7"), not 67 to 70
+        assert page.evaluate(ASK_OFF) is True and page.evaluate(FLAGGED) == ["x1", "x2"]
+        assert retype(page, "y2", "150")[-1] == ["70", "35", "67", "150"]  # and beyond the picture: not clamped to 100
+        assert page.evaluate(MARKER) == [7, 35, 60, 30] and page.evaluate(FLAGGED) == ["x1", "x2", "y2"]
+        assert page.evaluate("document.activeElement.id") == "zoom-y2"
+        drag(page, (0.25, 0.25), (0.5, 0.5))  # a drag on the picture takes over: every number follows the region
+        assert wait_until(lambda: page.evaluate(ASK_OFF) is False, 3.0), page.evaluate(SIZE)
+        chosen = [int(value) for value in page.evaluate(FIELDS)]
+        assert all(abs(got - want) <= 1 for got, want in zip(chosen, (25, 25, 50, 50))), chosen
+        assert page.evaluate(FLAGGED) == [] and "recorded pixels (main stream)." in page.evaluate(SIZE)
+        before = page.evaluate(MARKER)
+        assert retype(page, "x2", "6")[-1][2] == "6"  # and typing goes on from the dragged region as from any other
+        assert page.evaluate(MARKER) == before and page.evaluate(ASK_OFF) is True and NOT_YET in page.evaluate(SIZE)
+        page.evaluate("document.getElementById('zoom-panel').scrollIntoView({block: 'center', behavior: 'instant'})")
+        page.save_screenshot("zoom-numbers-unfinished", full=True)
+        time.sleep(0.5)
+        assert site.sent == []  # nothing was asked by any of this
     finally:
         page.close()
 

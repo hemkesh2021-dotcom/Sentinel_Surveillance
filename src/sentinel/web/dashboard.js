@@ -1361,7 +1361,8 @@
       const zoomAsk = document.getElementById("zoom-ask");
       const sizeNote = document.getElementById("zoom-size");
       const inputs = ["x1", "y1", "x2", "y2"].map((name) => document.getElementById(`zoom-${name}`));
-      const zoom = {pin: null, box: null, drag: null};
+      // ``unset``: why the four numbers are not the region (while they are being typed), or "" when they are
+      const zoom = {pin: null, box: null, drag: null, unset: ""};
       const headers = {"Content-Type": "application/json", "X-Sentinel-Token": token};
       const sayZoom = (text) => {
         if (zoomNote.textContent !== text) zoomNote.textContent = text;
@@ -1373,9 +1374,22 @@
         return [Math.min(w - 1, Math.floor(x1 * w)), Math.min(h - 1, Math.floor(y1 * h)),
           Math.min(w, Math.ceil(x2 * w)), Math.min(h, Math.ceil(y2 * h))];
       };
-      const drawBox = () => {
+      const saySize = (text) => {
+        if (sizeNote.textContent !== text) sizeNote.textContent = text;
+      };
+      // Draws the region. ``write``: the region was set on the picture (a drag, the arrow keys, a tracked person's
+      // box), so the four numbers follow it, all of them. Otherwise the numbers are left alone: they are the viewer's
+      // own text while typed, and a field is never rewritten under them, by this or by the page's updates.
+      const drawBox = (write) => {
         const usable = !!zoom.box && zoom.box[2] > zoom.box[0] && zoom.box[3] > zoom.box[1];
         marker.hidden = !usable;
+        if (write) {
+          zoom.unset = "";
+          inputs.forEach((input, i) => {
+            input.value = usable ? String(Math.round(zoom.box[i] * 100)) : "";
+            input.removeAttribute("aria-invalid");
+          });
+        }
         let enough = false;
         if (usable) {
           const [x1, y1, x2, y2] = zoom.box;
@@ -1386,25 +1400,39 @@
           const h = py2 - py1;
           enough = w >= zoom.pin.min_px && h >= zoom.pin.min_px;
           const from = zoom.pin.source === "main_stream" ? "main stream" : "working picture";
-          sizeNote.textContent = enough ? `${w} × ${h} recorded pixels (${from}).`
-            : `${w} × ${h} recorded pixels: too small to analyse (at least ${zoom.pin.min_px} on a side).`;
-          inputs.forEach((input, i) => {
-            if (document.activeElement !== input) input.value = String(Math.round(zoom.box[i] * 100));
-          });
-        } else {
-          sizeNote.textContent = "Drag on the picture to select a region.";
+          if (!zoom.unset) {
+            saySize(enough ? `${w} × ${h} recorded pixels (${from}).`
+              : `${w} × ${h} recorded pixels: too small to analyse (at least ${zoom.pin.min_px} on a side).`);
+          }
+        } else if (!zoom.unset) {
+          saySize("Drag on the picture to select a region.");
         }
-        zoomAsk.disabled = !enough || chat.pending;
+        if (zoom.unset) saySize(zoom.unset);
+        zoomAsk.disabled = !enough || !!zoom.unset || chat.pending;  // never asked while the numbers are not the region
       };
       const setBox = (box) => {
         zoom.box = [clamp(Math.min(box[0], box[2])), clamp(Math.min(box[1], box[3])),
           clamp(Math.max(box[0], box[2])), clamp(Math.max(box[1], box[3]))];
-        drawBox();
+        drawBox(true);
+      };
+      // The four numbers as typed: each edge's fraction (NaN for a field that is empty or not from 0 to 100), and
+      // which fields keep them from being a region (not a number, or left not below right, top not below bottom).
+      const typedBox = () => {
+        const values = inputs.map((input) => {
+          const text = input.value.trim();
+          const value = text === "" ? NaN : Number(text);
+          return Number.isFinite(value) && value >= 0 && value <= 100 ? value / 100 : NaN;
+        });
+        const bad = values.map((value) => Number.isNaN(value));
+        if (!bad[0] && !bad[2] && values[0] >= values[2]) bad[0] = bad[2] = true;
+        if (!bad[1] && !bad[3] && values[1] >= values[3]) bad[1] = bad[3] = true;
+        return {values, bad};
       };
       const closeZoom = (text) => {
         zoomPanel.hidden = true;
         zoom.pin = null;
         zoom.box = null;
+        zoom.unset = "";
         canvas.width = canvas.height = 0;  // the held picture is not kept in this page either
         sayZoom(text || "");
       };
@@ -1452,10 +1480,9 @@
           .slice(0, 8).map((p) => el("button", {type: "button", class: "ghost", "data-track-box": JSON.stringify(p.box)},
             [`Track ${number(p.track_id)} (the tracker's box)`])));
         zoom.box = null;
-        inputs.forEach((input) => { input.value = ""; });
         zoomPanel.hidden = false;
         sayZoom("");
-        drawBox();
+        drawBox(true);  // nothing selected yet: the four numbers are empty
         surface.focus();
       });
       const at = (event) => {
@@ -1487,10 +1514,25 @@
           setBox([x1 + dx, y1 + dy, x2 + dx, y2 + dy]);
         }
       });
+      // Typing a number. The four fields become the region only when they are one together, exactly as shown: no
+      // edge is swapped with its opposite, no field is rewritten, and the edges that were not edited keep the numbers
+      // they show. Until then (a first digit, a cleared field) the marked region stays as it was and cannot be asked
+      // about, so what is asked is always what the numbers say.
       inputs.forEach((input) => input.addEventListener("input", () => {
         if (!zoom.pin) return;
-        const values = inputs.map((item) => Number(item.value) / 100);
-        if (values.every((v) => Number.isFinite(v))) setBox(values);
+        const {values, bad} = typedBox();
+        inputs.forEach((item, i) => {
+          if (bad[i]) item.setAttribute("aria-invalid", "true");
+          else item.removeAttribute("aria-invalid");
+        });
+        if (bad.some(Boolean)) {
+          zoom.unset = "These numbers are not a region yet (each from 0 to 100, left below right, top below bottom): "
+            + "nothing changes and nothing can be asked until they are.";
+        } else {
+          zoom.unset = "";
+          zoom.box = values;
+        }
+        drawBox(false);
       }));
       zoomPanel.addEventListener("click", (event) => {
         const person = event.target.closest("button[data-track-box]");
@@ -1498,7 +1540,7 @@
       });
       document.getElementById("zoom-cancel").addEventListener("click", () => closeZoom("Cancelled: nothing was asked."));
       zoomAsk.addEventListener("click", () => {
-        if (zoomAsk.disabled || !zoom.pin || !zoom.box || chat.pending) return;
+        if (zoomAsk.disabled || !zoom.pin || !zoom.box || zoom.unset || chat.pending) return;
         const typed = box.value.trim();
         const question = typed && typed.length <= LIMIT ? typed : "Describe this area.";
         const region = {picture: zoom.pin.picture, box: zoom.box.map((v) => Math.round(v * 1e6) / 1e6)};
@@ -1611,7 +1653,7 @@
         const off = chat.pending || chatState() !== "available" || state.instance !== servedBy;
         zoomOpen.disabled = off;
         scanOpen.disabled = off;
-        if (zoom.pin) drawBox();
+        if (zoom.pin) drawBox(false);  // the Ask button only: a number being typed is left as it is
       };
       const refreshAskBefore = refreshAsk;
       refreshAsk = () => {
