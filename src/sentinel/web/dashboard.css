@@ -430,7 +430,16 @@ html.js .peek { position: relative; display: inline-flex; align-items: center; g
 .filters .count { flex-basis: 100%; color: var(--muted); font-size: .84rem; }
 
 /* ---------------------------------------------------------------- the scene assistant (chat, D74) */
-.chat-log { display: grid; gap: 10px; margin: 12px 0; padding: 0; list-style: none; }
+/* Only the conversation scrolls: the status, question box and Zoom/Scan controls stay outside it. The
+   viewport-relative height also leaves room for the composer on a phone; more replies never lengthen the page.
+   Scrolling is left to chain to the page as usual: on a phone this list is as wide as the page, and a list that
+   kept every swipe to itself would hold the page still whenever a finger landed on it. The scrollbar's thumb is
+   the marker colour, which every palette keeps visible on every surface (the accent is a fill, and is not). */
+.chat-log { display: grid; align-content: start; gap: 10px; margin: 12px 0; padding: 8px 10px 8px 4px;
+  height: clamp(10rem, 32vh, 22rem); height: clamp(10rem, 32svh, 22rem); min-width: 0;
+  overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable;
+  scrollbar-width: thin; scrollbar-color: var(--marker) var(--sunken); list-style: none;
+  border-block: 1px solid var(--line); }
 .chat-log:empty { display: none; }
 .exchange { display: grid; gap: 4px; padding: 11px 13px; border-radius: var(--radius-m); background: var(--sunken);
   border: 1px solid var(--deep-clear, var(--line)); border-inline-start: 4px solid var(--marker); overflow-wrap: anywhere;

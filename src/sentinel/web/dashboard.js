@@ -908,6 +908,79 @@
     const LIMIT = Number(box.getAttribute("maxlength")) || 300;
     const JOB = /^[0-9a-f]{16}$/;
     const chat = {pending: false, history: []};
+    // The conversation scrolls inside its own bounded list; only this list is ever scrolled from here: never
+    // scrollIntoView(), which would move the dashboard or the focused question box.
+    // The view follows one exchange: the newest, or a card the reader asked again. Following shows that exchange
+    // from its start: the view goes down until the exchange's end is in view, but never so far that its question
+    // and the beginning of its answer are hidden (an answered exchange is usually taller than the list). A reader
+    // who read on inside it is left where they are; one who went on to the very end of the list stays at its end
+    // as it grows. A reader who scrolled up to an earlier exchange is left there through every answer and status
+    // update. A new question returns to the newest exchange; asking a card again shows that card from its start.
+    const reading = {following: true, asked: null, past: false, atEnd: false};
+    const extent = () => Math.max(0, log.scrollHeight - log.clientHeight);
+    const pad = () => parseFloat(getComputedStyle(log).paddingTop) || 0;  // the list's own padding, top as bottom
+    const startOf = (exchange) => Math.max(0, exchange.getBoundingClientRect().top - log.getBoundingClientRect().top
+      - log.clientTop + log.scrollTop - pad());
+    // the position that brings an exchange's end to the foot of the list (for the newest: the list's very end)
+    const low = (exchange) => (exchange === log.lastElementChild ? extent()
+      : startOf(exchange) + 2 * pad() + exchange.offsetHeight - log.clientHeight);
+    const followed = () => (reading.asked && reading.asked.isConnected ? reading.asked : log.lastElementChild);
+    // What the next change is judged against: whether the reader had read on past the followed exchange's start,
+    // and whether they were at the list's very end. Noted before a change, never read off after it: by then the
+    // browser may have moved the view itself, to keep in place what is being read.
+    const remember = () => {
+      if (!log.clientHeight) return;  // no box (empty, or its panel is hidden): nothing to learn from it
+      const exchange = followed();
+      reading.past = !!exchange && log.scrollTop > startOf(exchange) + 1;
+      reading.atEnd = extent() - log.scrollTop <= 8;
+    };
+    const follow = () => {
+      if (!log.clientHeight) return;
+      const exchange = followed();
+      if (reading.following && exchange) {
+        const end = extent();
+        let target = log.scrollTop;
+        if (!reading.past) target = Math.min(startOf(exchange), Math.max(target, low(exchange)));
+        else if (reading.atEnd) target = end;
+        target = Math.max(0, Math.min(end, target));
+        if (Math.abs(log.scrollTop - target) > 1) log.scrollTop = target;
+      }
+      remember();
+    };
+    // The reader's own scrolling: where they are now decides what is followed. Still at a card they asked again
+    // (and not above where following puts it), that card; at the newest exchange or further down in it, the
+    // newest; above it, nothing.
+    const settle = () => {
+      if (!log.clientHeight) return;
+      const top = log.scrollTop;
+      const newest = log.lastElementChild;
+      const at = (exchange) => top >= Math.min(startOf(exchange), low(exchange)) - 8;
+      const asked = reading.asked && reading.asked.isConnected && reading.asked !== newest ? reading.asked : null;
+      if (asked && at(asked) && top < startOf(asked) + pad() + asked.offsetHeight) {
+        reading.following = true;
+      } else {
+        reading.asked = null;
+        reading.following = !newest || at(newest);
+      }
+      remember();
+    };
+    log.addEventListener("scroll", settle, {passive: true});
+    // "Earlier results" opened or closed moves what is below it with no scroll and no observed change: the
+    // reader's place is judged anew, as after a scroll (opened above the newest exchange, they are reading there)
+    log.addEventListener("toggle", settle, true);
+    new MutationObserver(follow).observe(log, {childList: true, subtree: true, characterData: true});
+    if (typeof ResizeObserver !== "undefined") new ResizeObserver(follow).observe(log);
+    const appendExchange = (exchange) => {
+      Object.assign(reading, {following: true, asked: null, past: false});
+      log.append(exchange);
+      while (log.children.length > 12) log.firstElementChild.remove();
+    };
+    const showFromStart = (exchange) => {  // a card asked again: its new state and answer appear at its start
+      Object.assign(reading, {following: true, asked: exchange === log.lastElementChild ? null : exchange});
+      const start = startOf(exchange);
+      if (log.scrollTop > start) log.scrollTop = start;
+      remember();  // now, not at the scroll event: the card changes before that event is delivered
+    };
     const STATES = {
       sending: "Sending your question…",
       waiting: "Waiting for the scene model; monitoring comes first…",
@@ -1334,7 +1407,10 @@
       if (!button || button.disabled || !exchange) return;
       if (button.dataset.auto === "stop") stopAuto("Auto-refresh stopped.");
       else if (button.dataset.auto === "start") startAuto(exchange);
-      else if (!chat.pending) again(exchange, button.dataset.again, false);  // one at a time: a second click is nothing
+      else if (!chat.pending) {  // one at a time: a second click is nothing
+        showFromStart(exchange);
+        again(exchange, button.dataset.again, false);
+      }
     });
 
     chatForm.addEventListener("submit", (event) => {
@@ -1344,8 +1420,7 @@
       const question = box.value.trim();
       const exchange = el("li", {class: "exchange", "data-question": question},
         [el("p", {class: "question"}, [question])]);
-      log.append(exchange);
-      while (log.children.length > 12) log.firstElementChild.remove();
+      appendExchange(exchange);
       run(exchange, question, {}, true);
     });
     // ---------------------------------------------------------------- part 28: zoom into a region, scan the room
@@ -1602,8 +1677,7 @@
         const region = {picture: zoom.pin.picture, box: zoom.box.map((v) => Math.round(v * 1e6) / 1e6)};
         const exchange = el("li", {class: "exchange", "data-question": question, "data-region": JSON.stringify(region)},
           [el("p", {class: "question"}, [`${question} (a selected region of the held picture)`])]);
-        log.append(exchange);
-        while (log.children.length > 12) log.firstElementChild.remove();
+        appendExchange(exchange);
         closeZoom("");
         run(exchange, question, {region, history: []}, !!typed && question === typed);
       });
@@ -1643,8 +1717,7 @@
         const exchange = el("li", {class: "exchange", "data-kind": "scan"},
           [el("p", {class: "question"}, ["Scan of the visible room (one held picture, four overlapping parts)"]), list,
             el("div", {class: "again"}, [stop])]);
-        log.append(exchange);
-        while (log.children.length > 12) log.firstElementChild.remove();
+        appendExchange(exchange);
         const rows = tiles.map((tile) => {
           const row = el("li", {"data-tile": tile.name, "data-state": "waiting"}, [`${tile.name}: waiting…`]);
           list.append(row);

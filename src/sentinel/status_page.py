@@ -1968,7 +1968,7 @@ def render_html(status: Mapping[str, Any], *, theme: Look | str | None = None,
 <div data-region=chat-state>{regions["chat-state"]}</div>
 <p class=note>{_e(ADVISORY)}</p>
 <p class="note js-only">{_e(RECORDED_HINT)}</p>
-<ol id=chat-log class=chat-log aria-live=polite></ol>
+<ol id=chat-log class=chat-log tabindex=0 aria-label="Conversation history" aria-live=polite></ol>
 <form id=chat-form class=chat-form autocomplete=off data-token="{_e(chat_token)}" data-auto-min={AUTO_REFRESH_MIN_S} data-auto-default={AUTO_REFRESH_DEFAULT_S} data-auto-max={AUTO_REFRESH_MAX_S} data-scan-deadline={round(SCAN_DEADLINE_S)}>
 <label for=chat-q>Your question <span class=muted>(at most {CHAT_MAX_QUESTION} characters)</span></label>
 <div class=field><textarea id=chat-q name=question maxlength={CHAT_MAX_QUESTION} rows=2 placeholder="For example: is the door open?"></textarea></div>

@@ -148,11 +148,13 @@ class Page:
         self.call("Input.dispatchKeyEvent", {**base, "type": "keyDown", **({"text": text} if text else {})})
         self.call("Input.dispatchKeyEvent", {**base, "type": "keyUp"})
 
-    def screenshot(self, *, scale: float = 1.0, full: bool = False) -> bytes:
+    def screenshot(self, *, scale: float = 1.0, full: bool = False, view: bool = False) -> bytes:
+        """The page's top-left window-sized part; ``full``: the whole page; ``view``: what the window shows now,
+        wherever the page is scrolled (the default part is blank below a scrolled window's top)."""
         params: dict[str, Any] = {"format": "png"}
         if full:
             params["captureBeyondViewport"] = True
-        else:
+        elif not view:
             params["clip"] = {"x": 0, "y": 0, "width": self.width, "height": self.height, "scale": scale}
         return base64.b64decode(self.call("Page.captureScreenshot", params, timeout_s=30.0)["data"])
 

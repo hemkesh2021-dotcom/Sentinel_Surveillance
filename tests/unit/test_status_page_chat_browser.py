@@ -11,6 +11,11 @@ never making a stale page current; a restarted runtime (a new token) asking for 
 ask; and the panel on a phone. Session 114, from scripted server documents: a question that ends unanswered
 (cancelled, incomplete) comes back into an empty box; a shortened answer says so and shows its unfinished rest apart;
 an answer about a newer frame sent in place of the one asked about says so, with that frame's own facts.
+Session 116, part 34: the conversation scrolls inside its own bounded list (desktop and phone, light and dark), which
+never lengthens the page or moves the question box; the newest exchange is shown from its start; a reader who
+scrolled up, or read on to the end, is left there through a reply and page updates, with the draft and focus kept; a
+card asked again is shown from its start; the list scrolls from the keyboard, and on a phone a swipe at its end
+moves the page.
 """
 
 from __future__ import annotations
@@ -33,8 +38,10 @@ from sentinel.jobs import AnalysisJob, JobPurpose, WorkerOutcome
 from sentinel.media.clock import NS_PER_SECOND
 from sentinel.media.health import assess_frame
 from sentinel.scene.analyzer import RecentImages, ThreadedSceneAnalyzer
+from sentinel import status_page
 from sentinel.scene.chat import ADVISORY, CHAT_ADMISSION, CHAT_MIN_INTERVAL_S, ChatAdmission, ChatService
 from sentinel.status_page import PAGE_CURRENT_S, REFRESH_S, StatusServer
+from sentinel.web import palettes
 
 ADMITTED = ChatAdmission(True, "admitted for this test", "a synthetic fixture")
 PAGE_CURRENT = "This page is current"
@@ -44,6 +51,8 @@ CHAT = """(() => {
   return {draft: q.value, focused: document.activeElement === q, ask_disabled: document.getElementById('chat-ask').disabled,
           note: document.getElementById('chat-note').textContent, text: document.body.innerText,
           sequence: Number(document.documentElement.dataset.sequence || '-1'), document: performance.timeOrigin,
+          // the page's own script has run: it runs in one go, and marks the Settings window it set up on the way
+          ready: document.documentElement.classList.contains('sd'),
           state: (document.querySelector('[data-chat-state]') || {dataset: {}}).dataset.chatState || null,
           log: [...document.querySelectorAll('#chat-log > li')].map((li) => ({state: li.dataset.state,
                 text: li.innerText, kept: li.__testMark || null}))};
@@ -141,7 +150,8 @@ def wait_chat(page: Page, predicate: Any, timeout_s: float) -> dict[str, Any]:
 def opened(browser: Browser, url: str, **options: Any) -> Page:
     page = browser.page(**options)
     page.navigate(url)
-    wait_chat(page, lambda s: PAGE_CURRENT in s["text"] and s["state"] == "available" and s["sequence"] >= 0, 30.0)
+    wait_chat(page, lambda s: s["ready"] and PAGE_CURRENT in s["text"] and s["state"] == "available"
+              and s["sequence"] >= 0, 30.0)
     return page
 
 
@@ -339,6 +349,9 @@ def test_the_chat_panel_works_on_a_phone(browser: Browser, served: dict[str, Any
         seen = wait_chat(page, lambda s: s["log"] and last(s)["state"] == "answered", 8.0)
         width = page.evaluate("({sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth})")
         assert width["sw"] <= width["cw"], width  # nothing scrolls sideways
+        # nor is the card cut off inside the list, which hides what does not fit (part 34)
+        assert page.evaluate("(() => { const log = document.getElementById('chat-log');"
+                             " return log.scrollWidth <= log.clientWidth; })()")
         page.evaluate("document.body.focus(); window.scrollTo(0, 0)")
         reached = False
         for _ in range(60):  # the question box is reachable from the keyboard
@@ -447,5 +460,434 @@ def test_a_question_about_records_is_answered_as_recorded_facts_shown_as_text_an
         seen = wait_chat(page, lambda s: len(s["log"]) == 3 and last(s)["state"] == "answered", 20.0)
         assert served["model"].questions == ["Is the door open?"]
         assert asked[0].history == ()  # neither recorded exchange was sent as context
+    finally:
+        page.close()
+
+
+# Session 116, part 34: the conversation scrolls inside its own bounded list. Longer answers, more questions and
+# status polling never lengthen the dashboard or move the question box. The newest exchange is shown from its start
+# (an answered exchange is taller than the list); a reader who scrolled up to an earlier answer, or read on to the
+# end of the newest one, is left there; a card asked again is shown from its start.
+SCROLL = """(() => {
+  const log = document.getElementById('chat-log');
+  const box = log.getBoundingClientRect();
+  const rect = (id) => { const r = document.getElementById(id).getBoundingClientRect();
+                        return {top: r.top, bottom: r.bottom, height: r.height}; };
+  // in view: the node's first line lies inside the list's own box
+  const shown = (node) => { if (!node) return null; const r = node.getBoundingClientRect();
+                           return r.top >= box.top - 1 && r.top + Math.min(r.height, 18) <= box.bottom + 1; };
+  const exchange = (li) => li && {offset: li.getBoundingClientRect().top - box.top, height: li.offsetHeight,
+                                  question: shown(li.querySelector('.question')),
+                                  status: shown(li.querySelector('.status')),
+                                  answer: shown(li.querySelector('.answer')), end: shown(li.lastElementChild)};
+  return {top: log.scrollTop, height: log.clientHeight, content: log.scrollHeight,
+          bottom: log.scrollHeight - log.clientHeight - log.scrollTop,
+          newest: exchange(log.lastElementChild), first: exchange(log.firstElementChild),
+          panel: rect('chat'), header: rect('h-chat'), composer: rect('chat-form'), tools: rect('zoom-tools'),
+          page: document.documentElement.scrollHeight, y: window.scrollY,
+          horizontal: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+          sideways: log.scrollWidth > log.clientWidth};  // cut off inside the list, which hides it
+})()"""
+NEWEST = "document.querySelector('#chat-log > li:last-child')"
+TO_END = "(() => { const log = document.getElementById('chat-log'); log.scrollTop = log.scrollHeight; })()"
+
+
+def long_reply(sentences: int = 14) -> dict[str, Any]:
+    """An answered document as the server sends it, with its held picture: the card has every one of its rows."""
+    return {"state": "answered", "answer": "A synthetic chair stands beside the table. " * sentences,
+            "cut_short": False, "frame": ASKED, "age_ms_when_answered": 400, "historical": False,
+            "picture": "00000000000000ab"}
+
+
+def ask_scripted(page: Page, number: int) -> None:
+    type_question(page, f"Describe synthetic picture {number}.")
+    press_ask(page)
+    wait_chat(page, lambda s: len(s["log"]) == number and last(s)["state"] == "answered", 8.0)
+
+
+def scroll(page: Page) -> dict[str, Any]:
+    return page.evaluate(SCROLL)
+
+
+def frames(page: Page, count: int = 4) -> None:
+    """Lets the page render ``count`` frames. A scroll event, a toggle event and a resize observation are each
+    delivered with a frame after their cause, never at once: the page has seen them when this returns."""
+    assert page.evaluate("new Promise((done) => { let left = %d; const step = () => (--left > 0"
+                         " ? requestAnimationFrame(step) : done(true)); requestAnimationFrame(step); })" % count)
+
+
+def from_its_start(seen: dict[str, Any], which: str = "newest") -> bool:
+    """That exchange begins at the top of the list: its question, state and the answer's first line in view."""
+    exchange = seen[which]
+    return bool(exchange and 0 <= exchange["offset"] <= 12 and exchange["question"] and exchange["status"]
+                and exchange["answer"])
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+@pytest.mark.parametrize("width,height", [(1280, 900), (390, 844)])
+def test_chat_history_scrolls_without_growing_the_page_or_moving_the_composer(
+        browser: Browser, served: dict[str, Any], theme: str, width: int, height: int) -> None:
+    served["chat"]["service"] = Scripted(*(long_reply() for _ in range(4)))
+    page = opened(browser, f"{served['url']}/?theme={theme}", width=width, height=height, mobile=width < 500)
+    try:
+        ask_scripted(page, 1)
+        first = scroll(page)
+        for n in range(2, 5):
+            ask_scripted(page, n)
+        # Each reply was followed from the list's end, and the newest exchange is shown from its start: what was
+        # asked and the beginning of the answer, not the rows at its end.
+        assert wait_until(lambda: from_its_start(scroll(page)), 3.0), scroll(page)
+        filled = scroll(page)
+        assert filled["newest"]["height"] > filled["height"] and not filled["newest"]["end"]  # its end: scrolled to
+        assert filled["content"] > filled["height"] * 2  # actual overflow, not just an empty fixed box
+        assert abs(filled["panel"]["height"] - first["panel"]["height"]) <= 1
+        assert abs(filled["page"] - first["page"]) <= 1
+        assert not filled["horizontal"] and not filled["sideways"]
+        page.evaluate("document.getElementById('chat').scrollIntoView({block: 'start', behavior: 'instant'})")
+        page.save_screenshot(f"ask-scroll-{theme}-{width}", view=True)
+        # The named history is a keyboard stop of its own, just before the controls inside it, and scrolls from
+        # the keyboard without scrolling the page itself.
+        page.evaluate("document.querySelector('#chat-log button').focus()")
+        page.key("Tab", shift=True)
+        assert page.evaluate("document.activeElement && document.activeElement.id") == "chat-log"
+        page.evaluate("document.getElementById('chat-log').scrollTop = 0")
+        assert wait_until(lambda: scroll(page)["top"] == 0, 3.0)
+        frames(page)  # the browser delivers its scroll event before the next input
+        before = scroll(page)
+        page.key("ArrowDown")
+        assert wait_until(lambda: scroll(page)["top"] > before["top"] + 10, 3.0)
+        after = scroll(page)
+        assert abs(after["y"] - before["y"]) <= 1
+        for name in ("header", "composer", "tools"):
+            assert abs(after[name]["top"] - before[name]["top"]) <= 1
+        assert page.evaluate("document.getElementById('chat-log').getAttribute('aria-label')") == "Conversation history"
+    finally:
+        page.close()
+
+
+def test_reading_earlier_chat_keeps_scroll_and_draft_through_a_reply_and_page_updates(
+        browser: Browser, served: dict[str, Any]) -> None:
+    pending = {"state": "answering", "frame": ASKED}
+    scripted = Scripted(long_reply(), long_reply(), pending, long_reply())
+    served["chat"]["service"] = scripted
+    page = opened(browser, f"{served['url']}/", width=1280, height=900)
+    try:
+        for n in (1, 2):
+            ask_scripted(page, n)
+        type_question(page, "A question whose answer takes longer.")
+        press_ask(page)
+        wait_chat(page, lambda s: len(s["log"]) == 3 and last(s)["state"] == "answering", 5.0)
+        # A short newest exchange (still being answered) fits: the list is at its end, with that exchange whole.
+        assert wait_until(lambda: scroll(page)["bottom"] <= 2, 3.0), scroll(page)
+        waiting = scroll(page)["newest"]
+        assert waiting["question"] and waiting["status"] and waiting["end"] and waiting["offset"] > 12
+        type_question(page, "Keep this unfinished draft")
+        page.evaluate("document.getElementById('chat-log').scrollTop = 60")
+        assert wait_until(lambda: scroll(page)["top"] == 60, 3.0)
+        frames(page)
+        before, sequence = scroll(page), read(page)["sequence"]
+        job = next(reversed(scripted.jobs))
+        scripted.jobs[job].update(long_reply())
+        wait_chat(page, lambda s: last(s)["state"] == "answered" and s["sequence"] >= sequence + 2, 20.0)
+        after, seen = scroll(page), read(page)
+        assert abs(after["top"] - before["top"]) <= 1  # the answer did not drag us to the newest exchange
+        assert abs(after["y"] - before["y"]) <= 1
+        assert after["bottom"] > 100 and not after["newest"]["question"]
+        assert seen["draft"] == "Keep this unfinished draft" and seen["focused"]
+        # Asking deliberately returns to the new exchange; it still preserves the same DOM and tab-only history.
+        press_ask(page)
+        wait_chat(page, lambda s: len(s["log"]) == 4 and last(s)["state"] == "answered", 8.0)
+        assert wait_until(lambda: from_its_start(scroll(page)), 3.0), scroll(page)
+        assert len(scripted.asked) == 4 and served["model"].questions == []
+    finally:
+        page.close()
+
+
+def test_reading_on_to_the_end_of_the_newest_answer_stays_there_and_a_card_asked_again_is_shown_from_its_start(
+        browser: Browser, served: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    for name, value in (("AUTO_REFRESH_MIN_S", 1), ("AUTO_REFRESH_DEFAULT_S", 1), ("AUTO_REFRESH_MAX_S", 4)):
+        monkeypatch.setattr(status_page, name, value)  # an automatic refresh a second after it is started
+    scripted = Scripted(*(long_reply() for _ in range(14)))
+    served["chat"]["service"] = scripted
+    page = opened(browser, f"{served['url']}/", width=1280, height=900)
+    try:
+        for n in (1, 2):
+            ask_scripted(page, n)
+        assert wait_until(lambda: from_its_start(scroll(page)), 3.0), scroll(page)
+        # The reader reads on, to the end of the newest exchange: its controls are there, its question is above.
+        page.evaluate(TO_END)
+        assert wait_until(lambda: scroll(page)["bottom"] <= 1, 3.0)
+        frames(page)
+        at_end = scroll(page)
+        assert at_end["newest"]["end"] and not at_end["newest"]["question"]
+        # The card changes under the reader: its automatic refresh, started from there, asks again and files the
+        # earlier result in a new line at the card's end. The view stays at the end and shows that line; it is
+        # never taken back to the card's start.
+        page.evaluate(f"{NEWEST}.querySelector('button[data-auto=start]').click()")
+        wait_chat(page, lambda s: "Earlier results (" in last(s)["text"] and last(s)["state"] == "answered", 15.0)
+        page.evaluate(f"{NEWEST}.querySelector('button[data-auto=stop]').click()")
+        wait_chat(page, lambda s: "Auto-refresh stopped." in last(s)["text"] and last(s)["state"] == "answered"
+                  and s["note"] == "", 10.0)  # a refresh that was on its way has ended too
+        frames(page)
+        grown = scroll(page)
+        assert grown["content"] >= at_end["content"] + 10  # the card grew at its end, under a reader who was there
+        assert grown["bottom"] <= 2 and grown["newest"]["end"] and not grown["newest"]["question"], grown
+        # Asked again by the reader from those controls, the card is shown from its start, where its new state
+        # and its new answer appear; the list did not lengthen the page.
+        sent = len(scripted.asked)
+        page.evaluate(f"{NEWEST}.querySelector('button[data-again=latest]').click()")
+        seen = wait_chat(page, lambda s: len(scripted.asked) == sent + 1 and last(s)["state"] == "answered"
+                         and s["note"] == "", 8.0)
+        assert len(seen["log"]) == 2  # the same card, in place
+        again = scroll(page)
+        assert from_its_start(again), again
+        assert abs(again["page"] - at_end["page"]) <= 1 and abs(again["y"] - at_end["y"]) <= 1
+        # Back at the end, the reader opens "Earlier results": the card grows below them with no scroll and no
+        # change to the conversation. A change that follows (the automatic refresh's line) leaves them there.
+        page.evaluate(TO_END)
+        assert wait_until(lambda: scroll(page)["bottom"] <= 1, 3.0)
+        frames(page)
+        page.evaluate(f"{NEWEST}.querySelector('details.earlier summary').click()")
+        assert wait_until(lambda: scroll(page)["bottom"] > 20, 3.0), scroll(page)  # its list opened, below the view
+        frames(page)  # the browser delivers the toggle event
+        opened_at = scroll(page)
+        page.evaluate(f"{NEWEST}.querySelector('button[data-auto=start]').click()")
+        assert wait_until(lambda: page.evaluate(f"!!{NEWEST}.querySelector('button[data-auto=stop]')"), 3.0)
+        assert abs(scroll(page)["top"] - opened_at["top"]) <= 1, (opened_at, scroll(page))
+        page.evaluate(f"{NEWEST}.querySelector('button[data-auto=stop]').click()")
+    finally:
+        page.close()
+
+
+def test_a_card_asked_again_while_the_newest_is_also_in_view_is_followed_itself_not_the_newest(
+        browser: Browser, served: dict[str, Any]) -> None:
+    """Two questions that ended unanswered, both in view (a large window): "Try again" on the first one shows its
+    answer from the card's start; the list is not taken to the newest card, which did not change."""
+    ended = {"state": "cancelled", "reason": "monitoring comes first", "frame": ASKED}
+    scripted = Scripted(ended, dict(ended), long_reply())
+    served["chat"]["service"] = scripted
+    page = opened(browser, f"{served['url']}/", width=1920, height=1080)
+    try:
+        type_question(page, "Is the door open?")
+        press_ask(page)
+        wait_chat(page, lambda s: len(s["log"]) == 1 and last(s)["state"] == "cancelled", 8.0)
+        press_ask(page)  # the question came back into the box: sent again as it is, a second card
+        wait_chat(page, lambda s: len(s["log"]) == 2 and last(s)["state"] == "cancelled" and s["note"] == "", 8.0)
+        both = scroll(page)
+        assert both["content"] <= both["height"] and both["first"]["question"] and both["newest"]["end"], both
+        page.evaluate("document.querySelector('#chat-log > li:first-child button[data-again=latest]').click()")
+        assert wait_until(lambda: page.evaluate(
+            "document.querySelector('#chat-log > li:first-child').dataset.state") == "answered", 8.0)
+        frames(page)
+        seen = scroll(page)
+        assert seen["first"]["height"] > seen["height"]  # its answer made it taller than the list
+        assert from_its_start(seen, "first"), seen  # shown from its start: the question and the new answer
+        assert len(scripted.asked) == 3 and len(read(page)["log"]) == 2
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("anchoring", [True, False])
+def test_a_reader_who_opened_an_earlier_cards_results_is_not_taken_to_the_newest_reply(
+        browser: Browser, served: dict[str, Any], anchoring: bool) -> None:
+    """At the list's end, with a short newest exchange still being answered below an earlier card: the reader opens
+    that card's "Earlier results". The reply to the newest question then arrives; they stay at what they opened.
+    Also where the browser does not move the view itself when the results open (its scroll anchoring off): then
+    no scroll tells the page that the reader's place changed, only the opening itself."""
+    pending = {"state": "answering", "frame": ASKED}
+    scripted = Scripted(long_reply(3), long_reply(3), pending)
+    served["chat"]["service"] = scripted
+    page = opened(browser, f"{served['url']}/", width=1280, height=900)
+    earlier = "document.querySelector('#chat-log > li:first-child details.earlier')"
+    try:
+        if not anchoring:
+            page.evaluate("document.getElementById('chat-log').style.overflowAnchor = 'none'")
+        ask_scripted(page, 1)
+        page.evaluate("document.querySelector('#chat-log > li:first-child button[data-again=latest]').click()")
+        wait_chat(page, lambda s: len(scripted.asked) == 2 and last(s)["state"] == "answered" and s["note"] == "", 8.0)
+        type_question(page, "A question whose answer takes longer.")
+        press_ask(page)
+        wait_chat(page, lambda s: len(s["log"]) == 2 and last(s)["state"] == "answering", 5.0)
+        assert wait_until(lambda: scroll(page)["bottom"] <= 2, 3.0), scroll(page)  # at the end, the new card whole
+        frames(page)
+        closed = scroll(page)
+        page.evaluate(f"{earlier}.querySelector('summary').click()")
+        assert wait_until(lambda: scroll(page)["content"] > closed["content"] + 8, 3.0), scroll(page)
+        frames(page)  # the browser delivers the toggle event
+        before = scroll(page)
+        job = next(reversed(scripted.jobs))
+        scripted.jobs[job].update(long_reply())
+        wait_chat(page, lambda s: last(s)["state"] == "answered", 8.0)
+        frames(page)
+        after = scroll(page)
+        assert abs(after["top"] - before["top"]) <= 1 and not after["newest"]["question"], (before, after)
+        assert page.evaluate(f"(() => {{ const r = {earlier}.querySelector('li').getBoundingClientRect(),"
+                             " b = document.getElementById('chat-log').getBoundingClientRect();"
+                             " return r.top >= b.top - 1 && r.top < b.bottom; })()")  # what they opened, still in view
+    finally:
+        page.close()
+
+
+def test_hiding_and_showing_the_panel_keeps_the_readers_place_inside_the_newest_answer(
+        browser: Browser, served: dict[str, Any]) -> None:
+    """The focus view hides the Ask panel and gives it back: a reader part-way through the newest answer is where
+    they were, not at the card's end."""
+    served["chat"]["service"] = Scripted(long_reply(), long_reply())
+    page = opened(browser, f"{served['url']}/", width=1280, height=900)
+    try:
+        for n in (1, 2):
+            ask_scripted(page, n)
+        assert wait_until(lambda: from_its_start(scroll(page)), 3.0), scroll(page)
+        page.evaluate("document.getElementById('chat-log').scrollTop += 80")  # reads on, not to the end
+        frames(page)
+        before = scroll(page)
+        assert before["newest"]["offset"] < -60 and before["bottom"] > 60, before
+        page.evaluate("document.getElementById('focus-toggle').click()")
+        assert wait_until(lambda: scroll(page)["height"] == 0, 3.0)  # the panel, and the list in it, are hidden
+        frames(page)
+        page.evaluate("document.getElementById('focus-toggle').click()")
+        assert wait_until(lambda: scroll(page)["height"] > 0, 3.0)
+        frames(page)
+        after = scroll(page)
+        assert abs(after["top"] - before["top"]) <= 1 and after["bottom"] > 60, (before, after)
+    finally:
+        page.close()
+
+
+def test_a_reader_near_the_end_of_the_newest_answer_is_not_thrown_to_its_end_when_the_window_narrows(
+        browser: Browser, served: dict[str, Any]) -> None:
+    """Narrowing the window makes every card above the reader taller, and the browser moves the view itself to keep
+    in place what is being read; that is not the reader having gone to the end."""
+    served["chat"]["service"] = Scripted(long_reply(), long_reply())
+    page = opened(browser, f"{served['url']}/", width=1440, height=900)
+    try:
+        for n in (1, 2):
+            ask_scripted(page, n)
+        assert wait_until(lambda: from_its_start(scroll(page)), 3.0), scroll(page)
+        page.evaluate("(() => { const log = document.getElementById('chat-log');"
+                      " log.scrollTop = log.scrollHeight - log.clientHeight - 60; })()")  # near the end, not at it
+        frames(page)
+        before = scroll(page)
+        assert 50 <= before["bottom"] <= 70 and before["newest"]["offset"] < 0, before
+        page.viewport(1280, 900)
+        assert wait_until(lambda: scroll(page)["content"] > before["content"] + 100, 5.0), scroll(page)  # reflowed
+        frames(page)
+        after = scroll(page)
+        assert after["bottom"] > 40 and after["newest"]["offset"] < 0, (before, after)  # still inside it, not at its end
+    finally:
+        page.close()
+
+
+def test_without_the_browsers_own_scroll_anchoring_the_newest_exchange_is_still_shown_from_its_start(
+        browser: Browser, served: dict[str, Any]) -> None:
+    """Some browsers do not keep the view in place when what is above it changes size (here: switched off for the
+    list). When the cards above the newest get shorter, its question must not end up hidden above the view."""
+    served["chat"]["service"] = Scripted(long_reply(), long_reply())
+    page = opened(browser, f"{served['url']}/", width=1280, height=900)
+    try:
+        page.evaluate("document.getElementById('chat-log').style.overflowAnchor = 'none'")
+        for n in (1, 2):
+            ask_scripted(page, n)
+        assert wait_until(lambda: from_its_start(scroll(page)), 3.0), scroll(page)
+        before = scroll(page)
+        page.viewport(1440, 900)  # wider: every card is shorter, and the newest one's start moves up
+        assert wait_until(lambda: scroll(page)["content"] < before["content"] - 100, 5.0), scroll(page)
+        assert wait_until(lambda: from_its_start(scroll(page)), 3.0), (before, scroll(page))
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_the_conversations_scrollbar_is_visible_on_its_track_in_every_palette(
+        browser: Browser, served: dict[str, Any], theme: str) -> None:
+    """Its thumb is the palette's marker, which every palette keeps at 3:1 or more on every surface; an accent is a
+    fill and is not (in three palette modes it is close to the track's own colour)."""
+    page = opened(browser, f"{served['url']}/?theme={theme}", width=1280, height=900)
+
+    def colour(value: str) -> str:
+        r, g, b = (int(float(part)) for part in value[value.index("(") + 1:value.index(")")].split(",")[:3])
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    try:
+        for preset in palettes.PRESETS:
+            page.evaluate(f"document.documentElement.dataset.palette = {preset.key!r}")
+            thumb, track = page.evaluate(
+                "getComputedStyle(document.getElementById('chat-log')).scrollbarColor.match(/rgba?\\([^)]*\\)/g)")
+            ratio = palettes.contrast(colour(thumb), colour(track))
+            assert ratio >= palettes.UI_FLOOR, (preset.key, theme, thumb, track, round(ratio, 2))
+    finally:
+        page.close()
+
+
+class Recorded(Scripted):
+    """Answers every question at once, as a recorded-fact answer is: no waiting, no poll."""
+
+    def ask(self, question: Any) -> tuple[int, dict[str, Any]]:
+        self.asked.append(question.question)
+        return 200, {"state": "answered", "kind": "recorded", "answer": f"Recorded answer {len(self.asked)}.",
+                     "lines": [], "limits": [], "advisory": ADVISORY}
+
+
+def test_the_list_keeps_twelve_exchanges_and_shows_the_newest_when_the_oldest_is_removed(
+        browser: Browser, served: dict[str, Any]) -> None:
+    scripted = Recorded()
+    served["chat"]["service"] = scripted
+    page = opened(browser, f"{served['url']}/", width=1280, height=900)
+    try:
+        for n in range(1, 14):
+            type_question(page, f"Recorded question {n}?")
+            press_ask(page)
+            wait_chat(page, lambda s, n=n: len(scripted.asked) == n and last(s)["state"] == "answered"
+                      and f"Recorded question {n}?" in last(s)["text"] and s["note"] == "", 8.0)
+            if n == 12:
+                frames(page)
+                twelve = scroll(page)
+        frames(page)
+        seen, after = read(page), scroll(page)
+        assert len(seen["log"]) == 12  # the thirteenth took the first one's place
+        assert "Recorded question 2?" in seen["log"][0]["text"] and "Recorded question 13?" in last(seen)["text"]
+        # the newest, whole: a short card, so the list is at its end with the card's question and answer in view
+        assert after["bottom"] <= 2 and after["newest"]["height"] < after["height"], after
+        assert after["newest"]["question"] and after["newest"]["answer"], after
+        assert abs(after["content"] - twelve["content"]) <= 1 and abs(after["page"] - twelve["page"]) <= 1
+    finally:
+        page.close()
+
+
+def swipe(page: Page, x: int, y: int, dy: int) -> None:
+    """One finger on (x, y), moved by dy and lifted: a swipe as a phone delivers it."""
+    page.call("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": x, "y": y}]})
+    for step in range(1, 13):
+        page.call("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": x, "y": y + dy * step // 12}]})
+        time.sleep(0.02)
+    page.call("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+
+
+def test_on_a_phone_a_swipe_inside_the_conversation_scrolls_it_and_at_its_end_moves_the_page(
+        browser: Browser, served: dict[str, Any]) -> None:
+    """On a phone the list is as wide as the page: a list that kept every swipe to itself would hold the page still
+    whenever a finger landed on it."""
+    served["chat"]["service"] = Scripted(long_reply(), long_reply())
+    page = opened(browser, f"{served['url']}/", width=390, height=844, mobile=True)
+    page.call("Emulation.setTouchEmulationEnabled", {"enabled": True, "maxTouchPoints": 1})
+    middle = ("(() => { const r = document.getElementById('chat-log').getBoundingClientRect();"
+              " return [Math.round((r.left + r.right) / 2), Math.round((r.top + r.bottom) / 2)]; })()")
+    try:
+        for n in (1, 2):
+            ask_scripted(page, n)
+        page.evaluate("document.getElementById('chat-log').scrollIntoView({block: 'center', behavior: 'instant'})")
+        page.evaluate("document.getElementById('chat-log').scrollTop = 0")
+        frames(page)
+        before = scroll(page)
+        swipe(page, *page.evaluate(middle), -120)  # inside its content: the list scrolls, the page does not
+        assert wait_until(lambda: scroll(page)["top"] > before["top"] + 40, 3.0), scroll(page)
+        assert abs(scroll(page)["y"] - before["y"]) <= 1
+        page.evaluate(TO_END)
+        assert wait_until(lambda: scroll(page)["bottom"] <= 1, 3.0)
+        frames(page)
+        before = scroll(page)
+        swipe(page, *page.evaluate(middle), -200)  # already at its end: the same swipe moves the page on
+        assert wait_until(lambda: scroll(page)["y"] > before["y"] + 50, 3.0), (before["y"], scroll(page)["y"])
+        assert scroll(page)["bottom"] <= 1
     finally:
         page.close()
