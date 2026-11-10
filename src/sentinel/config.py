@@ -20,6 +20,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StringConstraints,
     ValidationError,
     ValidationInfo,
     field_validator,
@@ -208,6 +209,12 @@ class IdentityConfig(_Section):
     retention_contradiction_votes: Annotated[int, Field(ge=1, le=120)] = 10
     retention_contradiction_span_s: Annotated[float, Field(gt=0, le=600, allow_inf_nan=False)] = 10.0
     retention_min_face_width_fraction: Annotated[float, Field(ge=0, lt=1, allow_inf_nan=False)] = 0.03
+    # Part 28, for chat's "who is in the room" answer only: the display label the operator gives an enrolment (its
+    # opaque identity ID -> label). Empty by default, and then an enrolled person is "an enrolled person". A label is
+    # shown in that answer and nowhere else: never in the status, the records or a log.
+    display_labels: Annotated[
+        dict[Identifier, Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=40)]],
+        Field(max_length=16)] = {}
 
     @model_validator(mode="after")
     def _face_bounds(self) -> IdentityConfig:

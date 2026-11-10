@@ -694,6 +694,11 @@ class ChatService:
                        if job.finished_ns is not None and now - job.finished_ns > CHAT_KEEP_S * NS_PER_SECOND]:
             del self._jobs[job_id]
 
+    def note_recorded(self, name: str) -> None:
+        """Part 28: a question answered from records by the page (sentinel.chat_evidence), by its fixed intent (or
+        ``busy``): a count only. It took no model slot, no frame and no place in the question interval."""
+        self._count(f"recorded_{name}")
+
     def _count(self, name: str) -> None:
         with self._lock:
             self.counters[name] += 1

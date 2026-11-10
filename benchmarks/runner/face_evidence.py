@@ -342,7 +342,9 @@ CHAT_COUNTERS = vocab(  # ChatService counters
     # session 114: answers sized to their window (chat_budget), and the frame checked again when it is sent
     "waits_for_gap", "limit_measured", "limit_fallback", "limit_unbounded", "gave_up_no_time",
     "no_fresh_frame_at_start", "frame_replaced", "shortened", "incomplete", "overran", "pace_reset", "timing_sampled",
-    "timing_missing", "timing_too_short", "timing_inconsistent")
+    "timing_missing", "timing_too_short", "timing_inconsistent",
+    # part 28: questions answered from records by the page (chat_evidence), by intent; no model slot
+    "recorded_history", "recorded_who", "recorded_alerts", "recorded_busy")
 CHAT_TIMING_GROUPS = ("wait_ms", "run_ms", "max_tokens", "tokens")  # ChatService._timing (session 114)
 CHAT_TIMING_LIMITS = {"max_tokens": INT, "min_tokens": INT, "release_reserve_ms": NUM, "fallback_overhead_ms": NUM,
                       "fallback_ms_per_token": NUM}

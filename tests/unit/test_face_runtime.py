@@ -166,10 +166,12 @@ class Loop:
     def __init__(self, tmp_path: Path, *, analyze=analyze_with(vec(0.97, 0.1, 0.0, 0.05)), face_problem=None,
                  with_face: bool = True, validation: bool = True, comparator=None,
                  detection: str = "deepface", shadow=None, capture=None, continuity=None,
-                 feature_controls: bool = False, perf_counter=None, prepare=None, windows=None, retention=None) -> None:
+                 feature_controls: bool = False, perf_counter=None, prepare=None, windows=None, retention=None,
+                 chat: bool = False, identity: dict | None = None) -> None:
         self.clock = FakeClock(utc=NOW)
         self.main = windows is not None  # route B: main-stream frames with their working copy
         self.config = parse_config({"config_version": 1, "camera": {"id": "cam-1"},
+                                    **({"identity": identity} if identity else {}),
                                     **({"capture": {"stream_profile": "main_single"}} if self.main else {})})
         self.slot = LatestFrame()
         self.capture = Capture(self.clock, self.slot)
@@ -185,7 +187,7 @@ class Loop:
             incidents=IncidentService(self.db, self.clock, incidents=self.config.incidents,
                                       notifications=self.config.notifications),
             tracker=PersonTracker(self.tracker), face=face, face_problem=face_problem,
-            enrollment=GALLERY.enrollment(), status_refresh_s=0.0, feature_controls=feature_controls)
+            enrollment=GALLERY.enrollment(), status_refresh_s=0.0, feature_controls=feature_controls, chat=chat)
         self.runtime.start()
 
     def frame(self, persons=PERSON, *, settle: bool = True) -> None:

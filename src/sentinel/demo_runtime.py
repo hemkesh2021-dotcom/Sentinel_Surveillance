@@ -185,6 +185,7 @@ from .memory_policy import (
 from .rules.zones import ZonePhase
 from .identity.continuity import ContinuityPolicy
 from .identity.retention import ESTABLISHED, NONE as NO_ASSOCIATION, RetentionPolicy, reported_numbers
+from .history import RecentHistory
 from .page_reads import ASSOCIATION, IDENTITY, PageReadLatency, page_read_record
 from .runtime import (
     IDENTITY_COMPARISON_SCHEMA,
@@ -455,6 +456,10 @@ class DemoRuntime:
                 run=chat_run if chat_usable else None,
                 assess=lambda frame: assess_frame(frame, capture.connected, clock.mono(), watching, config.freshness),
                 stale_after_s=config.freshness.stale_after_s, gate=self._chat_gate, validation_run=chat_validation)
+        # Part 28: what chat's recorded-fact answers read (chat_evidence): the runtime's own bounded history and its
+        # current view of tracked people. Only with --chat; nothing else reads or changes them.
+        self._history = RecentHistory(clock) if chat else None
+        self._occupants: dict[str, Any] | None = None
         # D99: what the operator turned off at runtime (Features); everything this run started starts on
         self._face_on = True
         self._snapshots_on = True
@@ -810,6 +815,14 @@ class DemoRuntime:
                     self._keep_record(transition.record(self._identity_schema))
                 for change in current.identity_associations:  # part 28: track retention (only in those runs)
                     self._keep_record(association_record(change, self._identity_schema))
+                if self._history is not None:  # part 28: the bounded history chat's recorded answers read
+                    self._history.observe(current.state)
+                    for transition in current.identity_transitions:
+                        self._history.note_identity(transition.stream_epoch, transition.track_id,
+                                                    transition.from_state, transition.to_state)
+                    for change in current.identity_associations:
+                        self._history.note_association(change.stream_epoch, change.track_id, change.from_state,
+                                                       change.to_state, change.reason)
                 if self._page_reads is not None:  # part 28: timed from here, where the live state holds them
                     known = IdentityState.KNOWN.value
                     for transition in current.identity_transitions:
@@ -962,6 +975,44 @@ class DemoRuntime:
         with self._status_lock:
             return self._snapshot
 
+    @property
+    def history(self) -> RecentHistory | None:
+        """Part 28: the bounded history chat's recorded answers read (None without --chat). Thread-safe to read."""
+        return self._history
+
+    def occupants(self) -> dict[str, Any] | None:
+        """Part 28: who is tracked now, for chat's "who is in the room" answer only (chat_evidence.who_answer): the
+        tracks and their recognition state as last published, and an enrolment's display label where the operator
+        configured one (identity.display_labels). Never part of the status. None until a state is published, and
+        without --chat. Thread-safe."""
+        with self._status_lock:
+            return self._occupants
+
+    def _occupants_view(self) -> dict[str, Any] | None:
+        live = self._live
+        if live is None or self._history is None:
+            return None
+        labels = self._config.identity.display_labels
+        face = ("off" if self._face is None or not self._face_on
+                else {"available": "available", "disabled": "off"}.get(live.face_recognition.value, "unavailable"))
+        people = sorted(live.people, key=lambda p: (p.stream_epoch, p.track_id))
+        rows = []
+        for person in people[:MAX_FACE_ROWS]:
+            association = person.association
+            identity_id = association.identity_id if association is not None else person.identity_id
+            rows.append({
+                "track_id": person.track_id, "stream_epoch": person.stream_epoch, "status": person.status.value,
+                "identity": person.identity.value,
+                "basis": None if person.identity_basis is None else person.identity_basis.value,
+                "vote_age_ms": person.identity_vote_age_ms,
+                "association": None if association is None else {
+                    "state": association.state.value, "last_match_age_ms": association.last_match_age_ms},
+                "label": labels.get(identity_id) if identity_id is not None else None})
+        return {"published_utc": live.published_utc.isoformat(), "video": live.video.value,
+                "last_frame_age_ms": live.last_frame_age_ms, "occupancy": live.occupancy.value,
+                "occupancy_reason": live.occupancy_reason, "face_recognition": face, "people": rows,
+                "omitted": len(people) - len(rows)}
+
     def page_snapshot(self) -> dict[str, Any]:
         """The latest status for a status page's own request (the page, or its update): the same status, and in an
         --identity-retention run the read is timed (page_reads; measurement only). Thread-safe."""
@@ -1025,8 +1076,10 @@ class DemoRuntime:
         if self._controls is not None:  # D99: only with --feature-controls, as every new output key
             snapshot["features"] = self._features_view()
         snapshot["degraded"] = degradation(snapshot)
+        occupants = self._occupants_view()
         with self._status_lock:
             self._snapshot = snapshot
+            self._occupants = occupants
             if self._page_reads is not None:  # under the swap's lock: a page read sees both or neither
                 self._page_reads.published(self._clock.mono().ns)
 

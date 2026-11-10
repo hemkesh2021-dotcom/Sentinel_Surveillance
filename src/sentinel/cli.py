@@ -946,10 +946,13 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
             runtime = holder.get("runtime")
             return None if runtime is None else runtime.chat
 
+        def evidence() -> Any:  # part 28: what chat's recorded-fact answers read (the runtime's history and tracks)
+            return holder.get("runtime")
+
         try:
             page = StatusServer(args.status_port, snapshot, options.data_dir / DATABASE_NAME,
                                 preview=preview if args.live_preview else None, chat=chat if args.chat else None,
-                                page_snapshot=page_snapshot)
+                                page_snapshot=page_snapshot, evidence=evidence if args.chat else None)
         except OSError as exc:
             print(f"run: status_port_unavailable:{type(exc).__name__}", file=sys.stderr)
             return 1

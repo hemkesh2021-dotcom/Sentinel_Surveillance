@@ -988,6 +988,24 @@
         status(exchange, state_, STATES[state_]);
         return false;
       }
+      if (state_ === "answered" && document_.kind === "recorded" && typeof document_.answer === "string") {
+        // Part 28: answered from the system's own records, not by the scene model and not from the picture. Shown as
+        // text only; it never joins the context sent with a later question about the picture.
+        status(exchange, "answered", "Answered from recorded facts, not from the picture.");
+        exchange.dataset.kind = "recorded";
+        line(exchange, "answer", document_.answer.slice(0, 600));
+        for (const [name, limit] of [["lines", 16], ["limits", 6]]) {
+          const items = Array.isArray(document_[name]) ? document_[name].filter((t) => typeof t === "string") : [];
+          let list = exchange.querySelector(`ul.${name}`);
+          if (!list) {
+            list = el("ul", {class: name});
+            exchange.append(list);
+          }
+          list.replaceChildren(...items.slice(0, limit).map((text) => el("li", {}, [text.slice(0, 500)])));
+          list.hidden = !items.length;
+        }
+        return true;
+      }
       if (state_ === "answered" && typeof document_.answer === "string") {
         // Shortened: its time before the next scene check ran out, so it shows its complete sentences and may have
         // said more; what was left unfinished is shown apart, never dropped.
@@ -1050,7 +1068,7 @@
         const job = typeof document_.job === "string" && JOB.test(document_.job) ? document_.job : null;
         // Handed over, the box is cleared for the next question; one that was not taken stays in it, and one that
         // ends without an answer (cancelled, busy, ...) comes back into an empty box, to send again without retyping.
-        if (job) box.value = "";
+        if (job || document_.kind === "recorded") box.value = "";
         const started = performance.now();
         for (;;) {
           if (document_.lost && job) {  // a poll that got no answer: the question may still be answered

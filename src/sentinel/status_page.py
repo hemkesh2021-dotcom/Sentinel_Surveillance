@@ -145,7 +145,9 @@ from .incidents.snapshots import SNAPSHOT_DIR, SnapshotPolicy, file_name as snap
 from .live_preview import STREAM_WAIT_S, LivePreview, PreviewPicture, frame_facts, parse_token, time_label
 from .rules.scene_hazard import FIRE_SMOKE_CANDIDATE, HazardCandidate
 from .rules.zones import ZONE_KINDS, ZoneObservation
+from .chat_evidence import recorded_answer
 from .scene.chat import ADVISORY, CHAT_MAX_BODY, CHAT_MAX_QUESTION, ChatRequestError, parse_chat_request
+from .scene.chat_routing import HISTORY, VISUAL, Route, route
 from .scene.report import SceneReport
 from .scene.state import SCENE_STATE_KIND
 from .storage.database import connect_reader
@@ -225,6 +227,10 @@ SECURITY_HEADERS = {  # Content-Security-Policy is added per response: it names 
 }
 TAB_ICON_PATH = "/assets/icon.svg"
 CHAT_PATH = "/chat"
+RECORDED_HINT = ("Questions about what was recorded (“what happened in the last 10 minutes?”, “who is in the room?”, "
+                 "“were any alerts triggered?”) are answered from the system's own records, not by the scene model, "
+                 "and say what they cover.")
+RECORDED_PER_S = 2  # part 28: recorded-fact answers a second, for every viewer together (they use no model slot)
 CHAT_JOB_PATH = re.compile(r"/chat/(?P<id>[0-9a-f]{16})")
 CHAT_OFF = {"state": "off", "reason": "chat is off; start sentinel run with --chat to offer it"}
 CHAT_STARTING = {"state": "unavailable", "reason": "the runtime is starting"}
@@ -1916,6 +1922,7 @@ def render_html(status: Mapping[str, Any], *, theme: Look | str | None = None,
 <div class=phead><h2 id=h-chat>{icon("chat")}Ask about the live picture</h2></div>
 <div data-region=chat-state>{regions["chat-state"]}</div>
 <p class=note>{_e(ADVISORY)}</p>
+<p class="note js-only">{_e(RECORDED_HINT)}</p>
 <ol id=chat-log class=chat-log aria-live=polite></ol>
 <form id=chat-form class=chat-form autocomplete=off data-token="{_e(chat_token)}">
 <label for=chat-q>Your question <span class=muted>(at most {CHAT_MAX_QUESTION} characters)</span></label>
@@ -2265,6 +2272,7 @@ class StatusServer:
         max_connections: int = MAX_CONNECTIONS,
         handler_timeout_s: float = HANDLER_TIMEOUT_S,
         page_snapshot: Callable[[], Mapping[str, Any]] | None = None,
+        evidence: Callable[[], Any] | None = None,
     ) -> None:
         if host != LOOPBACK_HOST:
             raise ValueError(f"the status page binds {LOOPBACK_HOST} only")
@@ -2278,6 +2286,11 @@ class StatusServer:
         # part 28: the same status for a page's own request, read through the runtime's timed path when one is given
         # (DemoRuntime.page_snapshot; measurement only). The plain /status.json never uses it.
         self._page_snapshot = page_snapshot
+        # part 28: what chat's recorded-fact answers read (chat_evidence): returns the runtime (its ``history`` and
+        # ``occupants()``), or None while it is starting. None: every question takes the picture's path, as before.
+        self._evidence = evidence
+        self._recorded_times: deque[float] = deque(maxlen=RECORDED_PER_S)
+        self._recorded_lock = threading.Lock()
         self._db_path = Path(db_path)
         self._now = now
         self._preview = preview
@@ -2314,6 +2327,32 @@ class StatusServer:
 
     def chat_service(self) -> Any | None:
         return None if self._chat is None else self._chat()
+
+    def recorded(self, service: Any, routed: Route) -> tuple[int, dict[str, Any]] | None:
+        """Part 28: the answer to a question about records (chat_routing: history, who, alerts), from the system's
+        own records (chat_evidence), or None when it must take the usual path (no evidence source, or chat is off or
+        unavailable: refused there as before). It uses no model slot, no frame and no place in the question interval;
+        it is allowed while the memory gate holds chat paused; and it has its own small rate limit, for every viewer
+        together. Read only."""
+        source = None if self._evidence is None else self._evidence()
+        if source is None or getattr(source, "history", None) is None:
+            return None
+        if service.availability()["state"] not in ("available", "paused"):
+            return None
+        now = self._monotonic()
+        with self._recorded_lock:
+            if len(self._recorded_times) == RECORDED_PER_S and now - self._recorded_times[0] < 1.0:
+                service.note_recorded("busy")
+                return 429, {"state": "busy", "reason": f"at most {RECORDED_PER_S} recorded-fact questions a second"}
+            self._recorded_times.append(now)
+        history = source.history
+        channels = ((self._snapshot().get("components") or {}).get("notifications") or {}).get("channels")
+        answer = recorded_answer(
+            routed, now_utc=self._now(), db_path=self._db_path, who=source.occupants(),
+            window=history.window(None if routed.since_start else routed.period_s) if routed.intent == HISTORY else None,
+            started_utc=history.started_utc, channels=list(channels) if isinstance(channels, Mapping) else None)
+        service.note_recorded(routed.intent)
+        return 200, answer
 
     # ------------------------------------------------------------ D99: feature controls
 
@@ -2615,7 +2654,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(400, {"state": "invalid", "reason": exc.label})
             return
         try:
-            self._json(*service.ask(question))
+            routed = route(question.question)  # part 28: a question about records is answered from records
+            answer = self.page.recorded(service, routed) if routed.intent != VISUAL else None
+            self._json(*(answer if answer is not None else service.ask(question)))
         except Exception:  # noqa: BLE001 - never show exception text
             self._json(500, {"state": "error", "reason": "the question could not be taken"})
 

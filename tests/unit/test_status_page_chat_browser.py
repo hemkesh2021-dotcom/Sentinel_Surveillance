@@ -28,6 +28,7 @@ from browser_harness import Browser, DevToolsError, Page, headless_browser, wait
 from status_fixtures import Camera, Runtime, incident_store
 
 from sentinel.config import FreshnessConfig
+from sentinel.history import RecentHistory
 from sentinel.jobs import AnalysisJob, JobPurpose, WorkerOutcome
 from sentinel.media.clock import NS_PER_SECOND
 from sentinel.media.health import assess_frame
@@ -93,8 +94,21 @@ def served(tmp_path: Path) -> Iterator[dict[str, Any]]:
                            clock=camera.clock, run=model, stale_after_s=2.0)
 
     chat = {"service": service(ADMITTED)}
+
+    class Source:  # part 28: what recorded-fact answers read; a label with markup in it, to show it stays text
+        history = RecentHistory(camera.clock)
+
+        @staticmethod
+        def occupants() -> dict[str, Any]:
+            return {"published_utc": "2026-11-10T12:00:00+00:00", "video": "fresh", "last_frame_age_ms": 40,
+                    "occupancy": "occupied", "occupancy_reason": "1 confirmed person(s) on fresh video",
+                    "face_recognition": "available", "omitted": 0, "people": [
+                        {"track_id": 61, "stream_epoch": 1, "status": "confirmed", "identity": "known",
+                         "basis": "fresh", "vote_age_ms": 500, "association": None,
+                         "label": "<b id=inj>Res</b>ident"}]}
+
     server = StatusServer(0, runtime.snapshot, tmp_path / "sentinel.db", preview=lambda: camera.preview,
-                          chat=lambda: chat["service"])
+                          chat=lambda: chat["service"], evidence=lambda: Source)
     server.start()
     try:
         yield {"url": f"http://127.0.0.1:{server.address[1]}", "runtime": runtime, "camera": camera, "model": model,
@@ -158,12 +172,13 @@ def test_a_question_is_sent_answered_and_bound_to_the_frame_it_describes(browser
     try:
         seen = read(page)
         assert seen["ask_disabled"] and seen["log"] == []  # nothing to send yet
-        type_question(page, "Is anyone in the room?")
+        # a question about the picture ("is anyone in the room?" is answered from the tracker's records since part 28)
+        type_question(page, "Is there a chair by the window?")
         assert not read(page)["ask_disabled"]
         model.release.clear()  # the model takes its time
         press_ask(page)
         seen = wait_chat(page, lambda s: s["log"] and last(s)["state"] == "answering", 5.0)
-        assert "The scene model is answering…" in last(seen)["text"] and "Is anyone in the room?" in last(seen)["text"]
+        assert "The scene model is answering…" in last(seen)["text"] and "Is there a chair by the window?" in last(seen)["text"]
         assert seen["draft"] == "" and seen["ask_disabled"] and seen["note"] == "One question at a time."
         time.sleep(2.5)  # the frame stops being live while the model answers
         model.release.set()
@@ -172,7 +187,7 @@ def test_a_question_is_sent_answered_and_bound_to_the_frame_it_describes(browser
         assert "One chair stands by the window; nobody is in the picture." in text and "Answered." in text
         assert "Historical: about the frame received at " in text and " UTC (stream epoch 1, frame " in text
         assert " old when asked and " in text and "It describes that frame only, not the scene now." in text
-        assert model.questions == ["Is anyone in the room?"]
+        assert model.questions == ["Is there a chair by the window?"]
         # A second question, answered at once, describes a frame that was still live: it is not marked historical.
         wait_for_interval(served)
         type_question(page, "And the door?")
@@ -397,5 +412,40 @@ def test_unanswered_questions_come_back_and_shortened_or_replaced_frame_answers_
         seen = wait_chat(page, lambda s: len(s["log"]) == 3 and last(s)["state"] == "incomplete", 8.0)
         assert "Incomplete: the answer had to stop before the next scene check" in last(seen)["text"]
         assert "A person stands" not in last(seen)["text"] and seen["draft"] == "Something else?"
+    finally:
+        page.close()
+
+
+def test_a_question_about_records_is_answered_as_recorded_facts_shown_as_text_and_kept_from_the_model(
+        browser: Browser, served: dict[str, Any]) -> None:
+    """Part 28: "who is in the room?" is answered from the runtime's records at once, labelled as recorded facts, with
+    its lines and limits as text (markup in a configured label stays text); the box is cleared; the model is not
+    asked; and the exchange never joins the context sent with a later question about the picture."""
+    page = opened(browser, f"{served['url']}/", width=1280, height=900)
+    try:
+        type_question(page, "Who is in the room?")
+        press_ask(page)
+        seen = wait_chat(page, lambda s: s["log"] and last(s)["state"] == "answered", 10.0)
+        entry = last(seen)["text"]
+        assert "Answered from recorded facts, not from the picture." in entry
+        assert "1 confirmed person tracked on fresh video" in entry
+        assert "“<b id=inj>Res</b>ident” (the operator's label for an enrolment) (track 61, stream epoch 1)" in entry
+        assert "Recorded facts: from the system's own records" in entry  # what it is, with its limits
+        assert page.evaluate("document.getElementById('inj')") is None  # the label's markup never became an element
+        assert page.evaluate("document.querySelector('#chat-log > li:last-child').dataset.kind") == "recorded"
+        assert page.evaluate("document.querySelectorAll('#chat-log > li:last-child ul.lines > li').length") == 1
+        assert seen["draft"] == "" and served["model"].questions == []  # taken, and never sent to the model
+        type_question(page, "Were any alerts triggered?")
+        press_ask(page)
+        seen = wait_chat(page, lambda s: len(s["log"]) == 2 and last(s)["state"] == "answered", 10.0)
+        assert "recorded between" in last(seen)["text"] and "[incident " in last(seen)["text"]
+        asked: list[Any] = []
+        original = served["chat"]["service"]._run
+        served["chat"]["service"]._run = lambda question, *a, **k: asked.append(question) or original(question, *a, **k)
+        type_question(page, "Is the door open?")
+        press_ask(page)
+        seen = wait_chat(page, lambda s: len(s["log"]) == 3 and last(s)["state"] == "answered", 20.0)
+        assert served["model"].questions == ["Is the door open?"]
+        assert asked[0].history == ()  # neither recorded exchange was sent as context
     finally:
         page.close()
