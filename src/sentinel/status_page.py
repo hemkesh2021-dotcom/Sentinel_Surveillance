@@ -2222,6 +2222,7 @@ class StatusServer:
         chat: Callable[[], Any] | None = None,
         max_connections: int = MAX_CONNECTIONS,
         handler_timeout_s: float = HANDLER_TIMEOUT_S,
+        page_snapshot: Callable[[], Mapping[str, Any]] | None = None,
     ) -> None:
         if host != LOOPBACK_HOST:
             raise ValueError(f"the status page binds {LOOPBACK_HOST} only")
@@ -2232,6 +2233,9 @@ class StatusServer:
         if not 0 < handler_timeout_s <= HANDLER_TIMEOUT_S:
             raise ValueError(f"handler_timeout_s must be above 0 and at most {HANDLER_TIMEOUT_S:g}")
         self._snapshot = snapshot
+        # part 28: the same status for a page's own request, read through the runtime's timed path when one is given
+        # (DemoRuntime.page_snapshot; measurement only). The plain /status.json never uses it.
+        self._page_snapshot = page_snapshot
         self._db_path = Path(db_path)
         self._now = now
         self._preview = preview
@@ -2261,7 +2265,8 @@ class StatusServer:
     def status(self, *, with_picture: bool = False, for_page: bool = False) -> dict[str, Any]:
         """``with_picture`` (pages only): let the live view encode a picture if one is due. ``for_page`` adds the chat's
         availability, which the plain /status.json does not carry."""
-        status = build_status(self._snapshot(), read_store(self._db_path), self._now(),
+        snapshot = self._page_snapshot if for_page and self._page_snapshot is not None else self._snapshot
+        status = build_status(snapshot(), read_store(self._db_path), self._now(),
                               self.preview_view(with_picture=with_picture))
         return {**status, "chat": self.chat_view(), "controls": self.controls_view()} if for_page else status
 

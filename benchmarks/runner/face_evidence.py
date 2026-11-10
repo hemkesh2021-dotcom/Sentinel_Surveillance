@@ -585,7 +585,10 @@ STATUS_LINE = {  # cli.status_line
 }
 IDENTITY_RECORDS = {  # runtime.tick_record, FaceResultRecord, IdentityTransition, ComparisonRecord
     "identity": vocab("tick", "result", "transition", "comparison", "capture", "capture_raw", "break", "life",
-                      "association"),  # part 28: runtime.association_record (--identity-retention runs only)
+                      "association",  # part 28: runtime.association_record (--identity-retention runs only)
+                      "page_read"),  # part 28: page_reads.page_read_record (the same runs; measurement only)
+    "watched": vocab("identity", "association"), "changed_mono_ns": INT, "published_mono_ns": INT,
+    "read_mono_ns": INT,  # ... its fields; "to" below is then a raw state or an association state
     "schema": INT, "event": vocab("began", "ended"), "since_mono_ns": INT,  # runtime.TrackLife (route B shadow runs)
     "stream_epoch": INT, "cause": vocab(*CONTINUITY_CAUSES),  # D97: runtime.break_record (continuity, retention runs)
     "frame_seq": INT,
@@ -819,6 +822,8 @@ STATUS = JsonProfile({  # demo_runtime.DemoRuntime.snapshot through status_page.
     "components.face.detection": vocab("full_scale"),  # D88
     "components.face.experiment": vocab("shadow", "capture"),  # D91
     **{f"components.face.records.{k}": INT for k in ("kept", "dropped", "limit")},
+    **{f"components.face.page_reads.{k}": INT for k in (  # part 28: page_reads.PageReadLatency.numbers (retention runs)
+        "pending", "watched", "completed", "superseded", "unread", "dropped_pending", "dropped_done")},
     "components.face.results.*": INT, "components.face.worker.state": WORKER, "components.face.worker.busy": BOOL,
     "components.face.worker.waiting": BOOL, "components.face.worker.counters.*": INT,
     **{f"components.face.worker.processing_ms.{k}": SECONDS for k in ("n", "p50", "p95", "p99", "max")},

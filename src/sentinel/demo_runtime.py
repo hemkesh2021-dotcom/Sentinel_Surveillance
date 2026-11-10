@@ -184,7 +184,8 @@ from .memory_policy import (
 )
 from .rules.zones import ZonePhase
 from .identity.continuity import ContinuityPolicy
-from .identity.retention import RetentionPolicy, reported_numbers
+from .identity.retention import ESTABLISHED, NONE as NO_ASSOCIATION, RetentionPolicy, reported_numbers
+from .page_reads import ASSOCIATION, IDENTITY, PageReadLatency, page_read_record
 from .runtime import (
     IDENTITY_COMPARISON_SCHEMA,
     IDENTITY_FULL_SCALE_SCHEMA,
@@ -476,6 +477,8 @@ class DemoRuntime:
         self._stop = threading.Event()
         self._status_lock = threading.Lock()
         self._snapshot: dict[str, Any] = {}
+        # part 28 (measurement only, --identity-retention runs): when a page first read an identity change
+        self._page_reads = PageReadLatency() if face is not None and face.retention is not None else None
         self._shutdown: dict[str, Any] | None = None
         self._refresh_status(force=True)
 
@@ -629,6 +632,9 @@ class DemoRuntime:
             self._handle(None)
         self._observe_chat_gate()
         self._refresh_status()
+        if self._page_reads is not None:  # part 28: what page requests read since the last step
+            for item in self._page_reads.drain():
+                self._keep_record(page_read_record(item, self._identity_schema))
 
     # ------------------------------------------------------------ D99: features turned on and off at runtime
 
@@ -804,6 +810,17 @@ class DemoRuntime:
                     self._keep_record(transition.record(self._identity_schema))
                 for change in current.identity_associations:  # part 28: track retention (only in those runs)
                     self._keep_record(association_record(change, self._identity_schema))
+                if self._page_reads is not None:  # part 28: timed from here, where the live state holds them
+                    known = IdentityState.KNOWN.value
+                    for transition in current.identity_transitions:
+                        self._page_reads.changed(
+                            transition.stream_epoch, transition.track_id, IDENTITY, transition.to_state,
+                            transition.mono_ns, holds=transition.to_state == known,
+                            watch=transition.to_state == known and transition.from_state != known)
+                    for change in current.identity_associations:
+                        self._page_reads.changed(
+                            change.stream_epoch, change.track_id, ASSOCIATION, change.to_state, change.mono_ns,
+                            holds=change.to_state != NO_ASSOCIATION, watch=change.reason == ESTABLISHED)
                 self._annotate(current)
                 for zone in current.zones:
                     enrich = zone.last_source if zone.phase is ZonePhase.ENTERED else None
@@ -945,6 +962,14 @@ class DemoRuntime:
         with self._status_lock:
             return self._snapshot
 
+    def page_snapshot(self) -> dict[str, Any]:
+        """The latest status for a status page's own request (the page, or its update): the same status, and in an
+        --identity-retention run the read is timed (page_reads; measurement only). Thread-safe."""
+        with self._status_lock:
+            if self._page_reads is not None:
+                self._page_reads.read(self._clock.mono().ns)
+            return self._snapshot
+
     def _refresh_status(self, *, force: bool = False) -> None:
         now = self._clock.mono()
         if not force and now.ns < self._next_status_ns:
@@ -1002,6 +1027,8 @@ class DemoRuntime:
         snapshot["degraded"] = degradation(snapshot)
         with self._status_lock:
             self._snapshot = snapshot
+            if self._page_reads is not None:  # under the swap's lock: a page read sees both or neither
+                self._page_reads.published(self._clock.mono().ns)
 
     def _capture_status(self, status: CaptureStatus) -> dict[str, Any]:
         route_b = self._config.capture.stream_profile == STREAM_MAIN_SINGLE
@@ -1089,6 +1116,8 @@ class DemoRuntime:
                if self._face.comparison else {}),
             "records": {"kept": self.counters["identity_records_kept"],
                         "dropped": self.counters["identity_records_dropped"], "limit": MAX_IDENTITY_RECORDS},
+            # part 28, --identity-retention runs only: the page-read timing's counts (measurement only)
+            **({"page_reads": self._page_reads.numbers()} if self._page_reads is not None else {}),
         }
 
     def _notification_status(self) -> dict[str, Any]:

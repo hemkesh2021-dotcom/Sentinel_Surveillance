@@ -934,6 +934,10 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
             return runtime.snapshot() if runtime is not None else {
                 "runtime": {"state": "starting", "camera_id": config.camera.id}}
 
+        def page_snapshot() -> dict[str, Any]:  # a page's own read: the same status (timed in retention runs)
+            runtime = holder.get("runtime")
+            return runtime.page_snapshot() if runtime is not None else snapshot()
+
         def preview() -> Any:
             runtime = holder.get("runtime")
             return None if runtime is None else runtime.preview
@@ -944,7 +948,8 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
 
         try:
             page = StatusServer(args.status_port, snapshot, options.data_dir / DATABASE_NAME,
-                                preview=preview if args.live_preview else None, chat=chat if args.chat else None)
+                                preview=preview if args.live_preview else None, chat=chat if args.chat else None,
+                                page_snapshot=page_snapshot)
         except OSError as exc:
             print(f"run: status_port_unavailable:{type(exc).__name__}", file=sys.stderr)
             return 1
