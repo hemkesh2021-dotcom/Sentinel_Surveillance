@@ -1798,6 +1798,81 @@
     refreshAsk();
   }
 
+  // ------------------------------------------------------------------ the Ask panel's information (part 35)
+
+  // The ⓘ key beside the Ask heading opens the panel's explanations: while a mouse or a pen is over the key or the
+  // card (a short delay lets it cross the gap between them), while the key has keyboard focus, and after a click or a
+  // tap, which keeps the card open until a second click or tap, Escape, a press elsewhere or focus moving away. Escape
+  // and a second press keep it closed until the pointer comes back or the key is focused again. Only the wrapper's
+  // own attributes change: the runtime's reason inside is a region that updates refresh in place, so the card stays.
+  const about = document.getElementById("chat-about");
+  const aboutKey = document.getElementById("chat-info");
+  if (about && aboutKey) {
+    const by = {hover: false, focus: false, press: false, closed: false};
+    let leaving = 0;
+    const isOpen = () => about.hasAttribute("data-open");
+    const settle = () => {
+      clearTimeout(leaving);
+      const open = !by.closed && (by.press || by.hover || by.focus);
+      if (open === isOpen()) return;
+      about.toggleAttribute("data-open", open);
+      aboutKey.setAttribute("aria-expanded", open ? "true" : "false");
+    };
+    about.addEventListener("pointerenter", (event) => {
+      if (event.pointerType === "touch") return;  // a tap is a press: hovering is for a mouse or a pen
+      by.hover = true;
+      by.closed = false;
+      settle();
+    });
+    about.addEventListener("pointerleave", (event) => {
+      if (event.pointerType === "touch") return;
+      by.hover = false;
+      clearTimeout(leaving);
+      leaving = setTimeout(settle, 300);
+    });
+    const keyboardFocus = () => {  // a click or a tap that focuses the key is a press, not keyboard focus
+      try {
+        return aboutKey.matches(":focus-visible");
+      } catch (error) {
+        return true;
+      }
+    };
+    aboutKey.addEventListener("focus", () => {
+      by.focus = keyboardFocus();
+      by.closed = false;
+      settle();
+    });
+    about.addEventListener("focusout", (event) => {
+      const to = event.relatedTarget instanceof Node ? event.relatedTarget : null;
+      if (to && about.contains(to)) return;
+      by.focus = false;
+      // Focus moving on to another control ends a press too; focus going nowhere (a press on the card's own text,
+      // or on the page around it, which the press below handles) does not.
+      if (to) by.press = false;
+      settle();
+    });
+    aboutKey.addEventListener("click", () => {
+      const close = isOpen() && by.press;  // opened by hover or focus, a press keeps it open; pressed open, it closes
+      by.press = !close;
+      by.closed = close;
+      settle();
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (!isOpen() || about.contains(event.target)) return;
+      by.press = false;
+      by.hover = false;
+      by.closed = true;
+      settle();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || !isOpen()) return;
+      event.stopImmediatePropagation();  // Escape closes the card only, not the focus view or the drawer behind it
+      by.press = false;
+      by.closed = true;
+      settle();
+    });
+  }
+
   // ------------------------------------------------------------------ feature controls (D99)
 
   // The operator's key is kept in this closure only: never in storage, a region, the address or a log; reloading the

@@ -236,6 +236,9 @@ ZOOM_NOTE = ("Experimental. A zoomed answer is about a crop cut from the held pi
 RECORDED_HINT = ("Questions about what was recorded (“what happened in the last 10 minutes?”, “who is in the room?”, "
                  "“were any alerts triggered?”) are answered from the system's own records, not by the scene model, "
                  "and say what they cover.")
+# Part 35: the Ask panel's information key (its accessible name) and the compact flag of a validation run's chat
+CHAT_ABOUT_NAME = "About asking and answers"
+CHAT_EXPERIMENTAL = "Experimental"
 # Part 28, the page's automatic refresh of one answered question (off until started): the seconds between cycles a
 # viewer may choose. Never below the server's own interval for automatic questions (chat.AUTO_MIN_INTERVAL_S).
 AUTO_REFRESH_MIN_S = 15
@@ -1671,9 +1674,17 @@ def _monitoring(runtime: Mapping[str, Any], degraded: list[str]) -> _Markup:
     return _badge("off", STATE_LABELS.get(str(state), str(state).capitalize()), glyph="clock")
 
 
-def _chat_state(view: Mapping[str, Any] | None, video: object = None) -> str:
-    """Whether chat can be asked now (D74), with the reason; available is a current claim (D71). ``video`` (part 28):
-    the runtime's video state, carried as data for the page's automatic refresh, which pauses unless it is fresh."""
+def _chat_experimental(components: Mapping[str, Any]) -> bool:
+    """Part 35: chat runs as a guarded validation run (D77: --chat-validation), as the runtime's own chat status says;
+    the panel then shows a compact experimental flag beside its availability."""
+    return (components.get("chat") or {}).get("validation_run") is True
+
+
+def _chat_state(view: Mapping[str, Any] | None, video: object = None, experimental: bool = False) -> str:
+    """Whether chat can be asked now (D74); available is a current claim (D71). ``video`` (part 28): the runtime's
+    video state, carried as data for the page's automatic refresh, which pauses unless it is fresh. Part 35: the
+    reason stays here, in view, for every state but available, whose reason (what may be asked, with a validation
+    run's note) is in the panel's information card (_chat_about); ``experimental`` adds the compact flag."""
     view = view or CHAT_OFF
     state = str(view.get("state"))
     if state == "available":
@@ -1682,9 +1693,20 @@ def _chat_state(view: Mapping[str, Any] | None, video: object = None) -> str:
         badge = _badge("warn", "Paused", glyph="clock")
     else:
         badge = _badge("off", {"off": "Off", "unavailable": "Unavailable"}.get(state, state.capitalize()), glyph="off")
+    flag = f"<span class=flag>{icon('flask')}{_e(CHAT_EXPERIMENTAL)}</span>" if experimental else ""
+    why = "" if state == "available" else f'<span class=muted>{_e(view.get("reason"))}.</span>'
     live = video if video in ("fresh", "stale", "offline", "starting") else "unknown"
-    return (f'<div class=row data-chat-state="{_e(state)}" data-video={live}>{badge}'
-            f'<span class=muted>{_e(view.get("reason"))}.</span></div>')
+    return f'<div class=row data-chat-state="{_e(state)}" data-video={live}>{badge}{flag}{why}</div>'
+
+
+def _chat_about(view: Mapping[str, Any] | None) -> str:
+    """Part 35: the runtime's own reason while chat is available (what may be asked, and in a validation run, that
+    chat is not admitted), for the panel's information card; empty in every other state, whose reason _chat_state
+    keeps in view."""
+    view = view or CHAT_OFF
+    if str(view.get("state")) != "available":
+        return ""
+    return f'<p class=note>{_e(view.get("reason"))}.</p>'
 
 
 def status_regions(status: Mapping[str, Any], *, theme: Look | str | None = None) -> dict[str, str]:
@@ -1834,7 +1856,8 @@ def status_regions(status: Mapping[str, Any], *, theme: Look | str | None = None
                      + _details("Alert rows", _table(["incident", "channel", "message", "state", "attempts", "ambiguous",
                                                       "next attempt (UTC)", "last error"], delivery_rows, "No alerts."),
                                 key="alerts")),
-        "chat-state": _chat_state(status.get("chat"), live.get("video")),
+        "chat-state": _chat_state(status.get("chat"), live.get("video"), _chat_experimental(components)),
+        "chat-about": _chat_about(status.get("chat")),
         "features": _features(status),
         "hidden": _hidden_panels(status),
         "settings-status": pills,  # part 28: the same line inside the Settings dialog, so it stays in view there
@@ -1964,10 +1987,12 @@ def render_html(status: Mapping[str, Any], *, theme: Look | str | None = None,
 <div class=report data-region=incidents>{regions["incidents"]}</div>
 </section>
 <section id=chat class="panel chat" aria-labelledby=h-chat><div class=report>
-<div class=phead><h2 id=h-chat>{icon("chat")}Ask about the live picture</h2></div>
-<div data-region=chat-state>{regions["chat-state"]}</div>
+<div class=phead><h2 id=h-chat>{icon("chat")}Ask about the live picture</h2><div class="about js-only" id=chat-about><button type=button class="icon-btn info-btn" id=chat-info aria-expanded=false aria-controls=chat-about-card aria-label="{_e(CHAT_ABOUT_NAME)}">{icon("info")}</button><div class=about-card id=chat-about-card>
+<div class=about-text data-region=chat-about>{regions["chat-about"]}</div>
 <p class=note>{_e(ADVISORY)}</p>
-<p class="note js-only">{_e(RECORDED_HINT)}</p>
+<p class=note>{_e(RECORDED_HINT)}</p>
+</div></div></div>
+<div data-region=chat-state>{regions["chat-state"]}</div>
 <ol id=chat-log class=chat-log tabindex=0 aria-label="Conversation history" aria-live=polite></ol>
 <form id=chat-form class=chat-form autocomplete=off data-token="{_e(chat_token)}" data-auto-min={AUTO_REFRESH_MIN_S} data-auto-default={AUTO_REFRESH_DEFAULT_S} data-auto-max={AUTO_REFRESH_MAX_S} data-scan-deadline={round(SCAN_DEADLINE_S)}>
 <label for=chat-q>Your question <span class=muted>(at most {CHAT_MAX_QUESTION} characters)</span></label>

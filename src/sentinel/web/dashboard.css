@@ -430,6 +430,21 @@ html.js .peek { position: relative; display: inline-flex; align-items: center; g
 .filters .count { flex-basis: 100%; color: var(--muted); font-size: .84rem; }
 
 /* ---------------------------------------------------------------- the scene assistant (chat, D74) */
+/* Part 35: the panel's information. A small, quiet icon key beside the heading (the icon keys' look and states) opens
+   the explanations in a raised card under the heading: the dialog's surface, line and shadow, the medium radius; no
+   new colour. The card is never wider than the panel, so it fits a phone, and it covers the panel's top without
+   moving anything. The runtime's own reason is shown as written; only its first letter is capitalised here. */
+.chat .phead { position: relative; }
+.about { display: flex; margin-inline-end: auto; }
+.info-btn { width: 30px; height: 30px; border-radius: 999px; color: var(--muted); touch-action: manipulation; }
+.info-btn .ic { width: 18px; height: 18px; }
+.info-btn[aria-expanded=true] { color: var(--ink); }
+.about-card { display: none; position: absolute; z-index: 15; top: calc(100% + 6px); left: 0; width: min(30rem, 100%);
+  padding: 1px 15px 14px; border-radius: var(--radius-m); color: var(--ink);
+  background: var(--deep-grain, none), var(--canvas); border: 1px solid var(--deep-clear, var(--line-strong));
+  box-shadow: var(--deep-well, var(--raise)), 0 18px 40px -20px var(--shadow-lo); }
+.about[data-open] > .about-card { display: block; }
+.about-text .note::first-letter { text-transform: uppercase; }
 /* Only the conversation scrolls: the status, question box and Zoom/Scan controls stay outside it. The
    viewport-relative height also leaves room for the composer on a phone; more replies never lengthen the page.
    Scrolling is left to chain to the page as usual: on a phone this list is as wide as the page, and a list that

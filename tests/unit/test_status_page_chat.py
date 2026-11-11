@@ -174,3 +174,43 @@ def test_chat_state_reaches_the_page_documents_only_and_no_question_is_kept(rig)
     assert "A private question" not in json.dumps(page) and "A private question" not in r.request("GET", "/")[2].decode()
     assert "A private question" not in json.dumps(r.service.summary())
     assert re.search(r'data-token="[0-9a-f]{32}"', r.request("GET", "/")[2].decode())
+
+
+def test_the_ask_panels_reasons_stay_in_view_except_available_whose_reason_and_the_explanations_are_in_its_card(
+        rig, tmp_path: Path) -> None:
+    """Part 35: the runtime's reason is in the card only while chat is available; every other state's reason stays in
+    view beside its badge. The experimental flag follows the runtime's own chat status (a validation run, D77), and
+    the explanations are each in the page once, inside the card that the information key controls."""
+    import html
+    from datetime import datetime, timezone
+
+    from sentinel.scene.chat import ADVISORY, VALIDATION_NOTE
+    from sentinel.status_page import (CHAT_ABOUT_NAME, CHAT_OFF, CHAT_STARTING, RECORDED_HINT, build_status, read_store,
+                                      status_regions)
+
+    incident_store(tmp_path / "sentinel.db", count=1)
+    store = read_store(tmp_path / "sentinel.db")
+    now = datetime(2026, 10, 9, 12, 0, 1, tzinfo=timezone.utc)
+
+    def regions(view: dict[str, str], validation_run: bool | None = None) -> dict[str, str]:
+        components = {} if validation_run is None else {"chat": {"validation_run": validation_run}}
+        return status_regions({**build_status({**SNAPSHOT, "components": components}, store, now), "chat": view})
+
+    validating = f"ask about the picture the camera is showing now ({VALIDATION_NOTE})"
+    seen = regions({"state": "available", "reason": validating}, True)
+    assert seen["chat-about"] == f"<p class=note>{html.escape(validating)}.</p>"
+    assert "showing now" not in seen["chat-state"] and VALIDATION_NOTE not in seen["chat-state"]
+    assert "Available" in seen["chat-state"] and "<span class=flag>" in seen["chat-state"]
+    assert "Experimental</span>" in seen["chat-state"]
+    for validation_run in (None, False):
+        assert "class=flag" not in regions({"state": "available", "reason": "ask"}, validation_run)["chat-state"]
+    paused = {"state": "paused", "reason": "memory pressure: chat waits until there is room"}
+    for view in (CHAT_OFF, CHAT_STARTING, paused, {"state": "unavailable", "reason": CHAT_ADMISSION.reason}):
+        seen = regions(view, True)
+        assert html.escape(view["reason"]) + "." in seen["chat-state"] and seen["chat-about"] == "", view
+    page = rig().request("GET", "/")[2].decode()
+    card = page[page.index("<div class=about-card id=chat-about-card>"):page.index("<div data-region=chat-state>")]
+    for text in (ADVISORY, RECORDED_HINT):
+        assert page.count(html.escape(text)) == 1 and html.escape(text) in card
+    assert f'aria-label="{CHAT_ABOUT_NAME}"' in page and "aria-expanded=false aria-controls=chat-about-card" in page
+    assert '<div class=about-text data-region=chat-about><p class=note>ask about the picture' in card

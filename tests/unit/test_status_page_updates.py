@@ -86,7 +86,8 @@ def test_the_page_document_carries_the_same_regions_the_page_embeds_and_is_order
                                              "incidents-meta", "faces", "chat-state", "health", "delivery", "foot",
                                              "features", "hidden",  # D99, D100
                                              # part 28: the page's state line, again inside the Settings dialog
-                                             "settings-status"}
+                                             "settings-status",
+                                             "chat-about"}  # part 35: chat's own reason, in the Ask panel's card
     embedded = regions_in(page)
     assert set(embedded) == set(first["page"]["regions"])
     for name in ("live-head", "caps", "incidents", "delivery"):  # the parts that do not carry a time or a sequence

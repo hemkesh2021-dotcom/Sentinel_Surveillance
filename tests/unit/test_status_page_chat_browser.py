@@ -15,7 +15,10 @@ Session 116, part 34: the conversation scrolls inside its own bounded list (desk
 never lengthens the page or moves the question box; the newest exchange is shown from its start; a reader who
 scrolled up, or read on to the end, is left there through a reply and page updates, with the draft and focus kept; a
 card asked again is shown from its start; the list scrolls from the keyboard, and on a phone a swipe at its end
-moves the page.
+moves the page. Part 35: the panel's explanations are in a card that an information key beside the heading opens on
+hover, keyboard focus, a click or a tap (desktop and phone, light and dark), worded as before and fitting the panel;
+it stays open under the pointer and through page updates, and Escape, a second press or a press elsewhere closes
+it; a validation run's flag and every reason but "available" stay in view.
 """
 
 from __future__ import annotations
@@ -96,11 +99,11 @@ def served(tmp_path: Path) -> Iterator[dict[str, Any]]:
     analyzer.start()
     started = camera.clock.mono()
 
-    def service(admission: ChatAdmission) -> ChatService:
+    def service(admission: ChatAdmission, **options: Any) -> ChatService:
         return ChatService(enabled=True, admission=admission, scene=analyzer, latest=camera.frames.latest,
                            assess=lambda f: assess_frame(f, camera.stamper.current_stream, camera.clock.mono(), started,
                                                          FreshnessConfig()),
-                           clock=camera.clock, run=model, stale_after_s=2.0)
+                           clock=camera.clock, run=model, stale_after_s=2.0, **options)
 
     chat = {"service": service(ADMITTED)}
 
@@ -147,8 +150,10 @@ def wait_chat(page: Page, predicate: Any, timeout_s: float) -> dict[str, Any]:
     raise AssertionError(f"the chat never reached the expected state; last seen: {seen!r}")
 
 
-def opened(browser: Browser, url: str, **options: Any) -> Page:
+def opened(browser: Browser, url: str, *, touch: bool = False, **options: Any) -> Page:
     page = browser.page(**options)
+    if touch:  # part 35: a touch screen from the start, as on a phone (not switched on under a loaded page)
+        page.call("Emulation.setTouchEmulationEnabled", {"enabled": True, "maxTouchPoints": 1})
     page.navigate(url)
     wait_chat(page, lambda s: s["ready"] and PAGE_CURRENT in s["text"] and s["state"] == "available"
               and s["sequence"] >= 0, 30.0)
@@ -889,5 +894,287 @@ def test_on_a_phone_a_swipe_inside_the_conversation_scrolls_it_and_at_its_end_mo
         swipe(page, *page.evaluate(middle), -200)  # already at its end: the same swipe moves the page on
         assert wait_until(lambda: scroll(page)["y"] > before["y"] + 50, 3.0), (before["y"], scroll(page)["y"])
         assert scroll(page)["bottom"] <= 1
+    finally:
+        page.close()
+
+
+# ---------------------------------------------------------------- part 35: the panel's information key
+
+AVAILABLE = "ask about the picture the camera is showing now"  # the runtime's own reason (ChatService.availability)
+ABOUT = """(() => {
+  const at = (e) => { const r = e.getBoundingClientRect();
+                      return {left: r.left, right: r.right, top: r.top, bottom: r.bottom, x: r.left + r.width / 2,
+                              y: r.top + r.height / 2}; };
+  const key = document.getElementById('chat-info'), card = document.getElementById('chat-about-card');
+  const rgb = (c) => (c.match(/[\\d.]+/g) || []).slice(0, 3).map(Number);
+  const lum = (c) => { const v = rgb(c).map((x) => (x /= 255) <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4);
+                       return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+  const ratio = (a, b) => { const [hi, lo] = [lum(a), lum(b)].sort((p, q) => q - p); return (hi + 0.05) / (lo + 0.05); };
+  const box = at(card), notes = [...card.querySelectorAll('.note')];
+  const hit = document.elementFromPoint(box.x, Math.min(box.top + 14, innerHeight - 1));
+  return {open: getComputedStyle(card).display !== 'none', expanded: key.getAttribute('aria-expanded'),
+          name: key.getAttribute('aria-label'), controls: key.getAttribute('aria-controls'),
+          key: at(key), heading: at(document.getElementById('h-chat')), card: box, panel: at(document.getElementById('chat')),
+          composer: at(document.getElementById('chat-form')), tools: at(document.getElementById('zoom-tools')),
+          paragraphs: notes.map((p) => p.textContent), shown: card.innerText,
+          row: document.querySelector('[data-chat-state]').innerText, body: document.body.innerText,
+          contrast: notes.length ? Math.min(...notes.map((p) => ratio(getComputedStyle(p).color,
+                                                                   getComputedStyle(card).backgroundColor))) : 0,
+          on_top: !!(hit && hit.closest('#chat-about-card')), width: innerWidth,
+          scroll_width: document.documentElement.scrollWidth, focused: document.activeElement && document.activeElement.id,
+          visible_focus: document.activeElement === key && key.matches(':focus-visible'),
+          sequence: Number(document.documentElement.dataset.sequence || '-1'),
+          draft: document.getElementById('chat-q').value};
+})()"""
+
+
+def about(page: Page) -> dict[str, Any]:
+    return page.evaluate(ABOUT)
+
+
+def to_panel(page: Page) -> None:
+    page.evaluate("document.getElementById('chat').scrollIntoView({block: 'start', behavior: 'instant'})")
+    frames(page)
+
+
+def centre_of(page: Page, selector: str) -> tuple[float, float]:
+    box = page.evaluate(f"(() => {{ const r = document.querySelector({selector!r}).getBoundingClientRect();"
+                        " return [r.left + r.width / 2, r.top + r.height / 2]; })()")
+    return box[0], box[1]
+
+
+def pointer(page: Page, kind: str, x: float, y: float) -> None:
+    extra = {"button": "left", "clickCount": 1} if kind in ("mousePressed", "mouseReleased") else {}
+    page.call("Input.dispatchMouseEvent", {"type": kind, "x": x, "y": y, **extra})
+
+
+def click(page: Page, x: float, y: float) -> None:
+    for kind in ("mouseMoved", "mousePressed", "mouseReleased"):
+        pointer(page, kind, x, y)
+
+
+def tap(page: Page, x: float, y: float) -> None:
+    """One finger down and up on (x, y): a tap, followed by its click (the headless browser's own tap gesture
+    is delivered without one)."""
+    page.call("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": x, "y": y}]})
+    page.call("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+
+
+def is_open(page: Page) -> bool:
+    return about(page)["open"]
+
+
+def key_point(page: Page) -> tuple[float, float]:
+    """The key's centre now, checked to be what a press there reaches: updates above the panel can move the page
+    between two presses, and a press that misses the key is a press elsewhere."""
+    for _ in range(40):
+        x, y = centre_of(page, "#chat-info")
+        if page.evaluate(f"(() => {{ const e = document.elementFromPoint({x}, {y});"
+                         " return !!(e && e.closest('#chat-info')); })()"):
+            return x, y
+        time.sleep(0.05)
+    raise AssertionError("the information key is not under its own centre")
+
+
+KEY_CLICKS = ("(() => { const key = document.getElementById('chat-info');"
+              " if (!key.__clicks) { key.__clicks = {n: 0}; key.addEventListener('click', () => { key.__clicks.n += 1; }); }"
+              " return key.__clicks.n; })()")
+
+
+def tap_key(page: Page) -> int:
+    """A tap on the key, tapped again only when the browser made no click of it at all (a headless tap can be taken
+    for the end of a scroll); a click that reached the key is never repeated, so a page that ignores it still fails.
+    Returns how many taps it took."""
+    for attempt in range(1, 4):
+        before = page.evaluate(KEY_CLICKS)
+        tap(page, *key_point(page))
+        if wait_until(lambda: page.evaluate(KEY_CLICKS) > before, 1.0):
+            return attempt
+    raise AssertionError("three taps on the information key made no click")
+
+
+def wording(reason: str | None) -> list[str]:
+    """The card's paragraphs as the server writes them: the runtime's reason (only while chat is available), then
+    the scene model's advisory and the recorded-questions hint, each worded as before."""
+    return ([f"{reason}."] if reason else []) + [ADVISORY, status_page.RECORDED_HINT]
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+@pytest.mark.parametrize("width,height", [(1280, 900), (390, 844)])
+def test_the_information_key_beside_the_heading_shows_the_explanations_over_the_panel_and_they_fit(
+        browser: Browser, served: dict[str, Any], theme: str, width: int, height: int) -> None:
+    page = opened(browser, f"{served['url']}/?theme={theme}", width=width, height=height, mobile=width < 500)
+    try:
+        type_question(page, "Is the door open?")
+        to_panel(page)
+        closed = about(page)
+        # A named key beside the heading, on its line; closed, the explanations are not shown and the availability is
+        assert closed["name"] == status_page.CHAT_ABOUT_NAME and closed["controls"] == "chat-about-card"
+        assert 0 <= closed["key"]["left"] - closed["heading"]["right"] <= 24
+        assert abs(closed["key"]["y"] - closed["heading"]["y"]) <= 4
+        assert not closed["open"] and closed["expanded"] == "false"
+        assert closed["row"].startswith("Available") and AVAILABLE not in closed["row"]
+        for text in wording(AVAILABLE):
+            assert text not in closed["body"]
+        assert "Experimental" not in closed["row"]  # an admitted chat (this fixture), not a validation run's
+        click(page, *key_point(page))
+        assert wait_until(lambda: is_open(page), 3.0)
+        shown = about(page)
+        assert shown["expanded"] == "true" and shown["paragraphs"] == wording(AVAILABLE)
+        assert shown["shown"].startswith("Ask about the picture the camera is showing now.")  # only shown capitalised
+        # Over the panel, under the heading, inside the panel and the window, readable in this palette; nothing moved
+        assert shown["on_top"] and shown["card"]["top"] >= shown["key"]["bottom"]
+        assert shown["panel"]["left"] - 0.5 <= shown["card"]["left"] and shown["card"]["right"] <= shown["panel"]["right"] + 0.5
+        assert shown["card"]["right"] <= width and shown["scroll_width"] <= width
+        assert shown["contrast"] >= 4.5, shown["contrast"]
+        for name in ("composer", "tools"):  # where they are in the panel (the page itself may scroll meanwhile)
+            assert abs((shown[name]["top"] - shown["panel"]["top"]) - (closed[name]["top"] - closed["panel"]["top"])) <= 0.5
+        page.save_screenshot(f"ask-about-{theme}-{width}", view=True)
+        # Page updates leave it open, with the draft kept
+        assert wait_until(lambda: about(page)["sequence"] >= shown["sequence"] + 2, 3 * REFRESH_S + 3.0)
+        kept = about(page)
+        assert kept["open"] and kept["paragraphs"] == wording(AVAILABLE) and kept["draft"] == "Is the door open?"
+        page.key("Escape")
+        assert wait_until(lambda: not is_open(page), 2.0) and about(page)["expanded"] == "false"
+    finally:
+        page.close()
+
+
+def test_the_information_opens_on_hover_focus_and_press_stays_under_the_pointer_and_closes_when_asked(
+        browser: Browser, served: dict[str, Any]) -> None:
+    page = opened(browser, f"{served['url']}/", width=1280, height=900)
+    try:
+        to_panel(page)
+        away_x, away_y = 1100, 860  # below the Ask panel, outside the key and the card (checked below)
+        # Hover: open while the pointer is over the key, and while it crosses to the card and stays on it
+        x, y = key_point(page)
+        pointer(page, "mouseMoved", x, y)
+        assert wait_until(lambda: is_open(page), 2.0)
+        card = about(page)["card"]
+        assert away_y > card["bottom"] + 40
+        while y < card["top"] + 30:
+            y += 6
+            pointer(page, "mouseMoved", x, y)
+            time.sleep(0.01)
+        time.sleep(0.6)  # past the close delay
+        assert is_open(page)
+        pointer(page, "mouseMoved", away_x, away_y)
+        assert wait_until(lambda: not is_open(page), 2.0)
+        # A press keeps it open once the pointer has gone; a second press closes it, the pointer still over the key
+        click(page, *key_point(page))
+        assert wait_until(lambda: is_open(page), 2.0)
+        pointer(page, "mouseMoved", away_x, away_y)
+        time.sleep(0.6)
+        assert is_open(page)
+        click(page, *key_point(page))
+        assert wait_until(lambda: not is_open(page), 2.0)
+        time.sleep(0.6)
+        assert not is_open(page)  # still under the pointer: closed as asked
+        pointer(page, "mouseMoved", away_x, away_y)
+        pointer(page, "mouseMoved", *key_point(page))  # back again: hovering opens it again
+        assert wait_until(lambda: is_open(page), 2.0)
+        # A press elsewhere closes a card that a press opened
+        click(page, *key_point(page))
+        elsewhere = centre_of(page, "#h-incidents")
+        click(page, *elsewhere)
+        assert wait_until(lambda: not is_open(page), 2.0)
+        pointer(page, "mouseMoved", 5, 450)
+        page.evaluate("document.activeElement && document.activeElement.blur()")
+        time.sleep(0.4)
+        # Keyboard: focus opens it; Escape closes it and focus stays; Enter keeps it open, Enter again closes it;
+        # focus moving on closes it, coming back opens it
+        page.key("Tab")
+        page.evaluate("document.getElementById('chat-info').focus({preventScroll: true})")
+        seen = about(page)
+        assert seen["visible_focus"] and wait_until(lambda: is_open(page), 2.0)
+        page.key("Escape")
+        assert wait_until(lambda: not is_open(page), 2.0) and about(page)["focused"] == "chat-info"
+        assert about(page)["expanded"] == "false"
+        page.key("Enter")
+        assert wait_until(lambda: is_open(page), 2.0)
+        page.key("Enter")
+        assert wait_until(lambda: not is_open(page), 2.0)
+        page.key("Enter")
+        assert wait_until(lambda: is_open(page), 2.0)
+        page.key("Tab")
+        assert wait_until(lambda: not is_open(page), 2.0) and about(page)["focused"] != "chat-info"
+        page.key("Tab", shift=True)
+        assert about(page)["visible_focus"] and wait_until(lambda: is_open(page), 2.0)
+    finally:
+        page.close()
+
+
+def test_on_a_phone_a_tap_opens_the_information_a_tap_closes_it_and_it_fits_the_screen(
+        browser: Browser, served: dict[str, Any]) -> None:
+    page = opened(browser, f"{served['url']}/", width=390, height=844, mobile=True, touch=True)
+    try:
+        to_panel(page)
+        tap_key(page)
+        assert wait_until(lambda: is_open(page), 2.0)
+        time.sleep(0.6)  # no pointer to wait for: a tap keeps it open
+        seen = about(page)
+        assert seen["open"] and seen["on_top"] and seen["paragraphs"] == wording(AVAILABLE)
+        assert 0 <= seen["card"]["left"] and seen["card"]["right"] <= 390 and seen["scroll_width"] <= 390
+        assert seen["panel"]["left"] - 0.5 <= seen["card"]["left"] and seen["card"]["right"] <= seen["panel"]["right"] + 0.5
+        card = about(page)["card"]
+        tap(page, card["x"], card["top"] + 20)  # reading it: a tap on its text keeps it
+        time.sleep(0.4)
+        assert is_open(page)
+        tap_key(page)
+        assert wait_until(lambda: not is_open(page), 2.0)
+        time.sleep(0.4)  # a moment later, not a double tap
+        tap_key(page)
+        assert wait_until(lambda: is_open(page), 2.0)
+        below = about(page)["card"]["bottom"] + 24
+        assert below < 844
+        tap(page, 30, below)  # a tap elsewhere closes it
+        assert wait_until(lambda: not is_open(page), 2.0)
+    finally:
+        page.close()
+
+
+def test_a_validation_runs_flag_and_reason_and_every_unavailable_or_stale_state_stay_where_they_belong(
+        browser: Browser, served: dict[str, Any]) -> None:
+    """The flag and the reasons come from the runtime: a validation run's chat (D77) says so beside its badge and in
+    the card; an unavailable chat's reason, and a page that is no longer current, are said outside the card."""
+    from sentinel.scene.chat import VALIDATION_NOTE
+
+    server, plain = served["server"], served["server"]._snapshot
+
+    def snapshot() -> dict[str, Any]:  # the runtime's own chat status, as the real runtime adds it
+        seen = plain()
+        return {**seen, "components": {**seen["components"], "chat": served["chat"]["service"].summary()}}
+
+    server._snapshot = snapshot
+    served["chat"]["service"] = served["service"](CHAT_ADMISSION, validation_run=True)
+    page = opened(browser, f"{served['url']}/", width=1280, height=900)
+    try:
+        to_panel(page)
+        seen = about(page)
+        assert seen["row"].startswith("Available") and "Experimental" in seen["row"]
+        assert VALIDATION_NOTE not in seen["body"]
+        page.save_screenshot("ask-about-closed-validation-run", view=True)
+        page.key("Tab")
+        page.evaluate("document.getElementById('chat-info').focus({preventScroll: true})")
+        assert wait_until(lambda: is_open(page), 2.0)
+        assert about(page)["paragraphs"] == wording(f"{AVAILABLE} ({VALIDATION_NOTE})")
+        page.save_screenshot("ask-about-validation-run", view=True)
+        page.key("Escape")
+        # Unavailable: the reason is said in view, the card has only what does not change, and the flag is gone
+        served["chat"]["service"] = served["service"](CHAT_ADMISSION)
+        wait_chat(page, lambda s: s["state"] == "unavailable", REFRESH_S + 6.0)
+        seen = about(page)
+        assert not seen["open"] and seen["row"].startswith("Unavailable") and "Experimental" not in seen["row"]
+        assert CHAT_ADMISSION.reason in seen["row"] and CHAT_ADMISSION.reason in seen["body"]
+        assert seen["paragraphs"] == wording(None)
+        page.save_screenshot("ask-about-unavailable", view=True)
+        # Not current: the badge says what was last reported, in view
+        served["chat"]["service"] = served["service"](CHAT_ADMISSION, validation_run=True)
+        wait_chat(page, lambda s: s["state"] == "available", REFRESH_S + 6.0)
+        served["runtime"].answering.clear()
+        wait_chat(page, lambda s: PAGE_NOT_CURRENT in s["text"], PAGE_CURRENT_S + REFRESH_S + 1.0)
+        seen = about(page)
+        assert not seen["open"] and seen["row"].startswith("Was available") and "Experimental" in seen["row"]
+        served["runtime"].answering.set()
     finally:
         page.close()
