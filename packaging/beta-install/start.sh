@@ -33,15 +33,20 @@ FLAGS=(--engine "$ENGINE" --workload-thp-disable --post-load-release --scene --s
 CAMERA_STARTED=0; DM_STOPPED=0; KEEP_DESKTOP_DOWN=0; OBS=""; TMPCHECK=""
 stop_now() { printf '\a'; echo "STOP: $*"; [ "$CAMERA_STARTED" = 1 ] || echo "The camera was not opened."; exit 1; }
 meminfo() { awk -v k="$1:" '$1==k {print $2*1024}' "$MEMINFO"; }
+# What happens to the desktop is written to the observation's desktop.txt as it happens, so that stop.sh can still
+# say what to do after this window is lost.
+desktop_note() { [ -z "$OBS" ] || echo "$1 utc=$(date -u +%FT%TZ)" >> "$OBS/desktop.txt"; }
 restore_desktop() {
   [ "$DM_STOPPED" = 1 ] || return 0
   DM_STOPPED=0
   if [ "$KEEP_DESKTOP_DOWN" = 1 ]; then
-    echo "The desktop was left stopped because a runtime is still running. When it has stopped: sudo systemctl start display-manager"
+    desktop_note "restart=left_stopped_something_still_running"
+    echo "The desktop was left stopped because something of this run is still running. When it has stopped: sudo systemctl start display-manager"
     return 0
   fi
   echo "Restarting the desktop (sudo may ask your password)."
-  sudo systemctl start display-manager || echo "The desktop did not restart. Run: sudo systemctl start display-manager"
+  if sudo systemctl start display-manager; then desktop_note "restart=ok"
+  else desktop_note "restart=FAILED"; printf '\a'; echo "The desktop did NOT restart. Run: sudo systemctl start display-manager (bash $PKG/stop.sh repeats this advice)"; fi
 }
 on_exit() {
   local code=$?
@@ -140,7 +145,10 @@ if [ "$DM_STATE" = active ] || [ "$(meminfo MemFree)" -lt "$FLOOR" ]; then
   read -rp 'type PREPARE to do that now (sudo may ask your password), or press Enter to stop: ' A
   [ "$A" = PREPARE ] || stop_now "not prepared; the desktop and the page cache were left as they were"
   sudo -v || stop_now "sudo was not authenticated; the desktop and the page cache were left as they were"
-  if [ "$DM_STATE" = active ]; then DM_STOPPED=1; sudo systemctl stop display-manager || stop_now "the desktop did not stop"; fi
+  if [ "$DM_STATE" = active ]; then
+    desktop_note "stopped_by_launcher"; DM_STOPPED=1
+    sudo systemctl stop display-manager || stop_now "the desktop did not stop"
+  fi
   sync && sudo sysctl -w vm.drop_caches=1 >/dev/null || stop_now "the page cache was not dropped"
 fi
 "${HOSTPREP[@]}" check --record "$OBS/optional-processes-check.txt" \
@@ -178,6 +186,10 @@ CAMERA_STARTED=1
 trap '' HUP QUIT TSTP  # inherited: a lost terminal or a stray key must never separate the guard from the camera
 trap ':' INT TERM      # this script keeps waiting for the guard; the guard and the runtime keep their own handling
 env -u SENTINEL_RTSP_URL -u SENTINEL_IDENTITY_PASSPHRASE /usr/bin/env python3 -I -B "$PKG/lib/features.py" "$OBS" & FEATURES=$!
+# which processes this run starts (they descend from its guard), recorded while it is alive: the only proof of
+# ownership afterwards, since the runtime and the model server each start a session of their own
+env -u SENTINEL_RTSP_URL -u SENTINEL_IDENTITY_PASSPHRASE /usr/bin/env python3 -I -B "$PKG/lib/beta.py" watch-run \
+  --guard-pidfile "$OBS/guard.pid" --out "$OBS/guard" --record "$OBS/processes.txt" & WATCH=$!
 echo "Starting: the models load first (1-2 minutes), then the camera opens. The dashboard shows 'starting' until then."
 echo "To stop early: Ctrl-C ONCE here. Nothing more appears until OBS_exit (up to about 2 minutes); press no other key."
 echo "Start nothing else on this device until OBS_exit: extra memory use can trigger the guard's stop."
@@ -188,7 +200,7 @@ bash -c 'printf %s "$$" > "$1"; shift; exec "$@"' observe-guard "$OBS/guard.pid"
 GX=$?
 trap '' INT TERM       # nothing cuts the report short
 unset SENTINEL_RTSP_URL SENTINEL_IDENTITY_PASSPHRASE
-kill "$FEATURES" 2>/dev/null; wait "$FEATURES" 2>/dev/null
+kill "$FEATURES" "$WATCH" 2>/dev/null; wait "$FEATURES" "$WATCH" 2>/dev/null
 rm -f -- "$OBS/guard.pid"
 
 RESULT="$(python3 -I -B - "$OBS/guard/result.json" <<'PY'
@@ -213,33 +225,18 @@ print(f"status={status} returncode={child.get('returncode')} ready={ready.get('m
 PY
 )"
 
-# the guard is gone: nothing of this run may be left running without it (a refused guard started nothing)
-left_runtime() { pgrep -u "$(id -u)" -f -- "--data-dir $OBS/db" | tr '\n' ' '; }
-left_llama() { pgrep -u "$(id -u)" -x llama-server | tr '\n' ' '; }
+# The guard is gone: nothing this run started may be left running without it (a refused guard started nothing).
+# Only what this run's own record names, or a runtime whose arguments name this run's data directory, is signalled;
+# any other process, whatever its name, is reported and left alone. The accepted guard itself has already stopped
+# every llama-server of this user before it ended (QUICKSTART.md, 'Operating limits').
 RESIDUE=none
 case "$RESULT" in
   status=refused:*) ;;
   *)
-    if [ -n "$(left_runtime)$(left_llama)" ]; then
-      printf '\a'
-      if [ -n "$(left_runtime)" ]; then
-        echo "WARNING: the guard has ended but this run's runtime is still running; the camera may still be open. Asking it to stop cleanly, once."
-        kill -INT $(left_runtime) 2>/dev/null
-        for _ in $(seq 1 100); do [ -n "$(left_runtime)" ] || break; sleep 1; done
-      fi
-      if [ -z "$(left_runtime)" ] && [ -n "$(left_llama)" ]; then
-        echo "A llama-server is still running after the runtime ended; stopping it."
-        kill -TERM $(left_llama) 2>/dev/null
-        for _ in $(seq 1 15); do [ -n "$(left_llama)" ] || break; sleep 1; done
-      fi
-      if [ -n "$(left_runtime)" ]; then
-        RESIDUE=still_running; KEEP_DESKTOP_DOWN=1
-        echo "STILL RUNNING: runtime [$(left_runtime)]. The camera may still be open. Stop it with: bash $PKG/stop.sh"
-      elif [ -n "$(left_llama)" ]; then
-        RESIDUE=still_running; KEEP_DESKTOP_DOWN=1
-        echo "STILL RUNNING: llama-server [$(left_llama)]; the runtime has gone, so the camera is closed. Stop it with: kill -TERM $(left_llama)"
-      else RESIDUE=stopped_after_the_guard; echo "It has stopped."; fi
-    fi ;;
+    python3 -I -B "$PKG/lib/beta.py" after-guard --record "$OBS/processes.txt" --data-dir "$OBS/db" \
+      --verdict "$OBS/after-guard.txt" --stop-script "$PKG/stop.sh" || echo "The check for leftover processes failed (above)."
+    RESIDUE="$(sed -n 's/^RESIDUE=//p' "$OBS/after-guard.txt" 2>/dev/null | head -n 1)"; RESIDUE="${RESIDUE:-unknown}"
+    [ "$RESIDUE" != still_running ] && [ "$RESIDUE" != unknown ] || KEEP_DESKTOP_DOWN=1 ;;
 esac
 
 fingerprint > "$OBS/identity-after.txt" 2>/dev/null

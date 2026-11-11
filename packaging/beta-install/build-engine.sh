@@ -24,9 +24,28 @@ OUT="$ASSETS/engine/yolov8n.engine"
 [ -f "$WEIGHTS" ] || beta_stop "the detector weights are not at $WEIGHTS. Run: bash $PKG/fetch-assets.sh"
 [ ! -e "$OUT" ] || beta_stop "$OUT already exists; it is not replaced. Move it away yourself to build again"
 if pgrep -u "$(id -u)" -f -- "-m sentinel\.cli run" >/dev/null 2>&1; then beta_stop "a Sentinel runtime is running: stop it first (bash $PKG/stop.sh)"; fi
+# What the export needs must be in the environment before any GPU work starts: Ultralytics 8.4.25 exports to ONNX
+# and simplifies it first (onnx, onnxslim, onnxruntime-gpu), then TensorRT builds the engine. Offline, it installs
+# nothing by itself. Read from the installed metadata; nothing is imported or loaded here.
+env PYTHONDONTWRITEBYTECODE=1 "$RT_PY" -B - <<'PY' || beta_stop "the environment lacks what the export needs (above). Run: bash $PKG/setup-env.sh"
+import importlib.metadata as metadata, sys
+wanted = {"ultralytics": "8.4.25", "onnx": "1.20.1", "onnxslim": "0.1.90", "onnxruntime-gpu": "1.23.0",
+          "onnxruntime": "1.23.2", "tensorrt": "10.3.0"}
+wrong = []
+for name, version in wanted.items():
+    try:
+        installed = metadata.version(name)
+    except metadata.PackageNotFoundError:
+        installed = "missing"
+    if installed != version:
+        wrong.append(f"{name}: needs {version}, installed {installed}")
+print("\n".join(wrong))
+sys.exit(1 if wrong else 0)
+PY
 echo "This loads the detector on this device's GPU to build the engine (a few minutes). The camera is not opened."
 read -rp 'type BUILD to build the engine now, or press Enter to stop: ' ANSWER
 [ "$ANSWER" = BUILD ] || beta_stop "nothing was built"
+python3 -I -B "$PKG/lib/beta.py" own --prefix "$PREFIX" assets || exit 1
 cd "$ASSETS/engine" || exit 1
 env PYTHONDONTWRITEBYTECODE=1 "LD_PRELOAD=$L4T_LIBCUDA" YOLO_OFFLINE=true "$RT_PY" - "$WEIGHTS" <<'PY' || beta_stop "the export failed (above)"
 import sys

@@ -1,38 +1,30 @@
 #!/bin/bash
 # Sentinel personal beta: remove what the installer made.
 #
-#   bash uninstall.sh [--keep-assets] [--yes]
+#   bash uninstall.sh [--keep-assets] [--yes]            from an installed package: removes that installation
+#   bash uninstall.sh --prefix DIR [--keep-assets] [--yes]   from anywhere, the extracted archive included
 #
-# Removes <prefix>/package, <prefix>/venv and <prefix>/assets (unless --keep-assets) and the installer's two record
-# files: only what the installer's own manifest lists. Your data directory (configuration, enrollment, run records) is
-# never removed or changed, and nothing else in the prefix is. No sudo. It refuses while an observation is running.
+# Removes only what the installer's own record (<prefix>/install-manifest.txt) names: the package, its Python
+# environment, its model files and builds (unless --keep-assets) and its two record files. Your data directory
+# (configuration, enrollment, run records) is never removed or changed, and nothing else in the prefix is. No sudo.
+# It refuses while anything from the installation is running. It can always be finished: it first leaves
+# <prefix>/uninstall.sh, which removes whatever is still the installer's (kept assets, or the rest of an interrupted
+# uninstall) and then itself.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 . "$HERE/lib/common.sh"
-
-KEEP=(); YES=0
+[ "$(id -u)" != 0 ] || beta_stop "run as your own user, without sudo"
+PREFIX=""; REST=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --keep-assets) KEEP=(--keep-assets); shift ;;
-    --yes) YES=1; shift ;;
-    *) echo "usage: bash uninstall.sh [--keep-assets] [--yes]"; exit 2 ;;
+    --prefix) [ $# -ge 2 ] || beta_stop "--prefix needs a directory"; PREFIX="$2"; shift 2 ;;
+    --keep-assets|--yes) REST+=("$1"); shift ;;
+    *) echo "usage: bash uninstall.sh [--prefix DIR] [--keep-assets] [--yes]"; exit 2 ;;
   esac
 done
-[ "$(id -u)" != 0 ] || beta_stop "run as your own user, without sudo"
-beta_load_paths "$HERE"
-
-if pgrep -u "$(id -u)" -f -- "$RT_PY -m sentinel\.cli run" >/dev/null 2>&1; then
-  beta_stop "a Sentinel run from this installation is still running. Stop it first: bash $PKG/stop.sh"
+if [ -z "$PREFIX" ]; then
+  [ "$(basename "$HERE")" = package ] && [ -f "$(dirname "$HERE")/install-manifest.txt" ] \
+    || beta_stop "this copy is not installed. Name the installation: bash uninstall.sh --prefix DIR"
+  PREFIX="$(dirname "$HERE")"
 fi
-echo "This removes the installation at $PREFIX (the package, its Python environment${KEEP[0]:+, NOT its assets}${KEEP[0]:-, its model files and builds})."
-echo "It does NOT remove your data at $DATA_DIR."
-if [ "$YES" != 1 ]; then
-  read -rp 'type UNINSTALL to remove it, or press Enter to keep everything: ' ANSWER
-  [ "$ANSWER" = UNINSTALL ] || beta_stop "nothing was removed"
-fi
-# The helper is copied out first: it removes the package it would otherwise be running from.
-TOOL="$(mktemp)" || beta_stop "no temporary file"
-cp "$HERE/lib/beta.py" "$TOOL"
-cd / && python3 -I -B "$TOOL" uninstall --prefix "$PREFIX" "${KEEP[@]}"; CODE=$?
-rm -f -- "$TOOL"
-exit "$CODE"
+cd / && exec python3 -I -B "$HERE/lib/beta.py" uninstall --prefix "$PREFIX" "${REST[@]}"

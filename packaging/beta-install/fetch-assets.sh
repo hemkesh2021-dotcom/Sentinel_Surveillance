@@ -18,7 +18,8 @@ case "${1:-}" in
   --only) [ $# -ge 2 ] || beta_stop "--only needs an asset id"; ONLY=(--only "$2") ;;
   *) echo "usage: bash fetch-assets.sh [--only ID]"; exit 2 ;;
 esac
-mkdir -p "$ASSETS" && python3 -I -B "$PKG/lib/beta.py" own --prefix "$PREFIX" assets || exit 1
+python3 -I -B "$PKG/lib/beta.py" own --prefix "$PREFIX" assets || exit 1  # recorded before it is made
+mkdir -p "$ASSETS" || exit 1
 python3 -I -B "$PKG/lib/beta.py" fetch-assets --package "$PKG" "${ONLY[@]}"; CODE=$?
 [ "$CODE" = 0 ] && echo "Every listed file is in place and equals its checksum. Next: bash $PKG/build-llama.sh"
 exit "$CODE"

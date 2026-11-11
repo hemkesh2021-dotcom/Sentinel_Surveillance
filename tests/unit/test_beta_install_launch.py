@@ -361,6 +361,7 @@ def test_whatever_is_missing_or_refused_stops_the_check_and_the_launch_with_what
     if case == "not_admitted":
         assert "detector_engine=refused" in result.stdout and "nothing is bypassed here" in said(result)
         assert "What still blocks another device" in said(result)
+    launch.env.update(env)
     terminal = Terminal(launch)  # the launch stops at the same place, before any prompt
     assert terminal.finish() == 1
     assert expected in terminal.text() and "type START" not in terminal.text()
@@ -369,8 +370,11 @@ def test_whatever_is_missing_or_refused_stops_the_check_and_the_launch_with_what
 
 # ---------------------------------------------------------------- the launch
 
-def to_the_start_prompt(terminal: Terminal) -> None:
+def to_the_start_prompt(terminal: Terminal, prepare: bool = False) -> None:
     assert terminal.wait_for(r"What opens the camera : only typing START"), terminal.text()
+    if prepare:
+        assert terminal.wait_for(r"type PREPARE to do that now"), terminal.text()
+        terminal.type("PREPARE")
     assert terminal.wait_for(r"camera MAIN-stream URL \(hidden, never saved\): "), terminal.text()
     terminal.type(URL)
     assert terminal.wait_for(r"gallery passphrase \(hidden, never saved\): "), terminal.text()
@@ -379,7 +383,7 @@ def to_the_start_prompt(terminal: Terminal) -> None:
     assert terminal.wait_for(r"type START to open the camera now, or press Enter to stop without opening it: ")
 
 
-@pytest.mark.parametrize("answer", ["", "start", "yes", "START "])
+@pytest.mark.parametrize("answer", ["", "start", "yes", "START now", "STARTED"])
 def test_the_camera_is_not_opened_unless_start_is_typed(launch: Launch, answer: str) -> None:
     terminal = Terminal(launch)
     to_the_start_prompt(terminal)
@@ -395,9 +399,7 @@ def test_start_launches_once_and_the_secrets_reach_only_the_runtimes_environment
     launch.fixture("desktop", "active\n")  # a device with a desktop: PREPARE is offered and typed
     before = hashlib.sha256((launch.data / "identity/gallery.sealed").read_bytes()).hexdigest()
     terminal = Terminal(launch)
-    assert terminal.wait_for(r"type PREPARE to do that now"), terminal.text()
-    terminal.type("PREPARE")
-    to_the_start_prompt(terminal)
+    to_the_start_prompt(terminal, prepare=True)
     assert not (launch.tmp / "runtime.json").exists()  # still nothing started: START has not been typed
     terminal.type("START")
     assert terminal.wait_for(r"Start nothing else on this device until OBS_exit"), terminal.text()
@@ -428,6 +430,11 @@ def test_start_launches_once_and_the_secrets_reach_only_the_runtimes_environment
     assert calls.index("sudo systemctl stop display-manager") < calls.index("sudo sysctl -w vm.drop_caches=1")
     assert calls[-1] == "sudo systemctl start display-manager"  # the desktop comes back when the run has ended
     assert not (observation / "guard.pid").exists()
+    desktop = (observation / "desktop.txt").read_text()
+    assert desktop.index("stopped_by_launcher") < desktop.index("restart=ok")  # recorded as it happened
+    assert (observation / "after-guard.txt").read_text() == "RESIDUE=none\n" and "runtime_after_guard=none" in text
+    recorded = (observation / "processes.txt").read_text().split()  # what descended from this run's guard, by number
+    assert recorded and recorded[0].isdigit() and recorded[1].isdigit()
 
 
 @pytest.mark.parametrize("url,passphrase,expected", [
@@ -481,7 +488,6 @@ def test_stop_sh_signals_nothing_when_nothing_runs_and_stops_a_running_observati
     to_the_start_prompt(terminal)
     terminal.type("START")
     assert terminal.wait_for(r"Features this run started with:", 30), terminal.text()
-    launch.command("pgrep", 'case "$*" in *"--data-dir"*) exit 1 ;; esac; exit 1')
     stopped = launch.run("stop.sh", package=launch.installed)
     assert stopped.returncode == 0, said(stopped)
     assert "waiting for the clean stop" in stopped.stdout and "The guard has stopped." in stopped.stdout
@@ -489,3 +495,26 @@ def test_stop_sh_signals_nothing_when_nothing_runs_and_stops_a_running_observati
     assert "clean=yes" in terminal.text() and "OBS_exit=0" in terminal.text()
     again = launch.run("stop.sh", package=launch.installed)
     assert again.returncode == 0 and "No observation is running; nothing was signalled." in again.stdout
+
+
+def test_a_desktop_that_does_not_restart_is_recorded_and_stop_sh_still_says_what_to_do(launch: Launch) -> None:
+    """Review finding IR9: the failed restart was only printed; after a lost window nothing said the desktop was down."""
+    launch.fixture("desktop", "active\n")
+    launch.command("sudo", 'echo "sudo $*" >> "$FIXTURE/calls.log"; [ "$*" = "systemctl start display-manager" ] && exit 1; exit 0')
+    terminal = Terminal(launch)
+    to_the_start_prompt(terminal, prepare=True)
+    terminal.type("START")
+    assert terminal.wait_for(r"Features this run started with:", 30), terminal.text()
+    launch.fixture("desktop", "inactive\n")  # PREPARE stopped it
+    terminal.interrupt()
+    assert terminal.finish() == 0, terminal.text()
+    assert "The desktop did NOT restart. Run: sudo systemctl start display-manager" in terminal.text()
+    (observation,) = launch.observations()
+    assert "restart=FAILED" in (observation / "desktop.txt").read_text()
+    later = launch.run("stop.sh", package=launch.installed)  # from another shell, with nothing left running
+    assert later.returncode == 0, said(later)
+    assert "No observation is running; nothing was signalled." in later.stdout
+    assert "its restart is not recorded as done (it failed)" in later.stdout
+    assert "sudo systemctl start display-manager" in later.stdout
+    launch.fixture("desktop", "active\n")  # once it is back, the advice is not repeated
+    assert "sudo systemctl start display-manager" not in launch.run("stop.sh", package=launch.installed).stdout

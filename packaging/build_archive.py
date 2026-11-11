@@ -73,7 +73,9 @@ def package_members(revision: int, *, worktree: bool = False) -> tuple[str, dict
                f"accepted_code_commit={ACCEPTED}\n"
                f"package_commit={head}{' (working tree, not a release)' if worktree else ''}\n"
                f"package_revision={revision}\n"
-               "status=private personal beta; validates and admits nothing; not for redistribution\n")
+               "status=private personal beta; validates and admits nothing; not for redistribution\n"
+               "launch=CANNOT LAUNCH ON ANOTHER JETSON YET: the accepted build admits only the reference device's own "
+               "detector engine, llama.cpp build and model-file copies (QUICKSTART.md, section 1)\n")
     members["VERSION"] = version.encode()
     sums = "".join(f"{hashlib.sha256(members[path]).hexdigest()}  {path}\n" for path in sorted(members))
     members["SHA256SUMS"] = sums.encode()

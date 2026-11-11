@@ -22,7 +22,8 @@ REPO_URL="$(asset repo)" && COMMIT="$(asset commit)" && TARGET="$(asset target)"
 read -r -a CMAKE_OPTIONS <<<"$(asset cmake)"
 SRC="$ASSETS/llama.cpp"
 [ -x /usr/local/cuda-12.6/bin/nvcc ] || beta_stop "the CUDA 12.6 compiler is not at /usr/local/cuda-12.6/bin/nvcc (bash $PKG/preflight.sh explains)"
-mkdir -p "$ASSETS" && python3 -I -B "$PKG/lib/beta.py" own --prefix "$PREFIX" assets || exit 1
+python3 -I -B "$PKG/lib/beta.py" own --prefix "$PREFIX" assets || exit 1  # recorded before it is made
+mkdir -p "$ASSETS" || exit 1
 if [ ! -d "$SRC/.git" ]; then
   [ ! -e "$SRC" ] || beta_stop "$SRC exists and is not a clone made by this script; move it away yourself"
   git clone --filter=blob:none --no-checkout "$REPO_URL" "$SRC" || beta_stop "the clone failed (network?)"

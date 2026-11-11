@@ -44,6 +44,8 @@ python3 -I -B "$HERE/lib/beta.py" install --source "$HERE" --prefix "$PREFIX" --
 cat <<NEXT
 
 Installed. Nothing was started, and nothing starts by itself.
+NOTE: this package CANNOT LAUNCH ON ANOTHER JETSON YET. The accepted build admits only the reference device's own
+detector engine, llama.cpp build and model-file copies; check.sh will say so. QUICKSTART.md, section 1, explains.
 Next, in this order (QUICKSTART.md explains each; all run from $PREFIX/package):
   bash setup-env.sh       the Python environment (downloads the pinned packages)
   bash fetch-assets.sh    the model files (downloads, each checked against its checksum)

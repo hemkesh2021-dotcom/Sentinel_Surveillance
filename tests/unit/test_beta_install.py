@@ -401,10 +401,10 @@ def test_the_packaged_manifest_names_a_source_a_revision_and_a_checksum_for_ever
 
 def installed_with_everything(world: World) -> None:
     assert world.install().returncode == 0
-    for name in ("venv", "assets"):
+    for name in ("venv", "assets"):  # as setup-env.sh and fetch-assets.sh do: recorded first, then made
+        assert beta(world, "own", "--prefix", str(world.prefix), name).returncode == 0
         (world.prefix / name / "sub").mkdir(parents=True)
         (world.prefix / name / "sub" / "file").write_text(name)
-        assert beta(world, "own", "--prefix", str(world.prefix), name).returncode == 0
     (world.data / "identity/gallery.sealed").write_text("my sealed enrollment")
     (world.data / "observe/obs-20260101T000000Z").mkdir()
     (world.data / "observe/obs-20260101T000000Z/launch.txt").write_text("a run's record")
@@ -426,21 +426,35 @@ def test_uninstall_removes_what_the_installer_owns_and_never_the_testers_data(wo
     assert "sudo" not in said(result)
 
 
-def test_uninstall_leaves_what_it_did_not_make_and_can_keep_the_assets(world: World) -> None:
+def test_uninstall_leaves_what_it_did_not_make_and_kept_assets_can_be_removed_later_as_it_says(world: World) -> None:
     installed_with_everything(world)
     (world.prefix / "my notes.txt").write_text("mine")
+    data = tree(world.data)
     result = world.run("uninstall.sh", "--keep-assets", "--yes", package=world.installed)
     assert result.returncode == 0, said(result)
-    assert sorted(path.name for path in world.prefix.iterdir()) == ["assets", "install-manifest.txt", "my notes.txt"]
+    assert sorted(path.name for path in world.prefix.iterdir()) == [
+        "assets", "install-manifest.txt", "my notes.txt", "uninstall-helper.py", "uninstall.sh"]
     assert (world.prefix / "assets/sub/file").read_text() == "assets"
     assert f"left in place, not made by this installer: {world.prefix / 'my notes.txt'}" in result.stdout
     assert "kept at your request" in result.stdout
-    # What is left can be installed over again (the assets are still the installer's), and removed later.
-    assert world.install().returncode == 0
+    later = f"To remove it later: bash {world.prefix / 'uninstall.sh'}"
+    assert later in result.stdout  # the command it names exists and is what removes the rest
+    final = world.run("uninstall.sh", "--yes", package=world.prefix)
+    assert final.returncode == 0, said(final)
+    assert sorted(path.name for path in world.prefix.iterdir()) == ["my notes.txt"]
+    assert tree(world.data) == data
+
+
+def test_kept_assets_can_be_installed_over_again_and_stay_the_installers(world: World) -> None:
+    installed_with_everything(world)
+    assert world.run("uninstall.sh", "--keep-assets", "--yes", package=world.installed).returncode == 0
+    again = world.install()
+    assert again.returncode == 0, said(again)
     assert (world.prefix / "install-manifest.txt").read_text().splitlines()[1:] == [
-        "package", "install.conf", "install-manifest.txt", "assets"]
-    final = world.run("uninstall.sh", "--yes", package=world.installed)
-    assert final.returncode == 0 and sorted(path.name for path in world.prefix.iterdir()) == ["my notes.txt"]
+        "assets", "package", "install.conf", "install-manifest.txt"]
+    assert not (world.prefix / "uninstall.sh").exists() and (world.prefix / "assets/sub/file").read_text() == "assets"
+    assert world.run("uninstall.sh", "--yes", package=world.installed).returncode == 0
+    assert not world.prefix.exists()
 
 
 def test_uninstall_removes_a_link_as_a_link_and_refuses_a_manifest_it_did_not_write(world: World) -> None:

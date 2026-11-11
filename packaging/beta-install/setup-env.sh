@@ -20,11 +20,12 @@ case "${1:-}" in "") ;; --no-import-check) IMPORT_CHECK=0 ;; *) echo "usage: bas
 [ -x "$PYTHON310" ] || beta_stop "the Python 3.10 interpreter recorded at installation is not there: '$PYTHON310' (bash $PKG/preflight.sh explains; then install again)"
 [ -f "$TENSORRT_PYTHON/tensorrt/__init__.py" ] || beta_stop "the TensorRT Python binding recorded at installation is not at $TENSORRT_PYTHON/tensorrt (bash $PKG/preflight.sh explains; then install again)"
 
-if [ ! -x "$RT_PY" ]; then
-  [ ! -e "$VENV" ] || beta_stop "$VENV exists but holds no Python environment; move it away yourself"
-  "$PYTHON310" -m venv "$VENV" || beta_stop "the environment could not be made"
-fi
+# recorded as the installer's before it is made, so that an interruption never leaves an unrecorded environment;
+# a directory of that name that the installer did not make is refused here and left alone
 python3 -I -B "$PKG/lib/beta.py" own --prefix "$PREFIX" venv || exit 1
+if [ ! -x "$RT_PY" ]; then
+  "$PYTHON310" -m venv --clear "$VENV" || beta_stop "the environment could not be made"
+fi
 PIP=(env PYTHONDONTWRITEBYTECODE=1 "$RT_PY" -m pip --disable-pip-version-check --no-input)
 "${PIP[@]}" install --no-deps --require-hashes -r "$PKG/manifest/requirements-jetson.txt" \
   || beta_stop "torch and torchvision could not be installed from the Jetson index (above). Nothing was installed anywhere else"
@@ -70,6 +71,9 @@ print(f"ultralytics {ultralytics.__version__}")
 import tensorflow, tf_keras, deepface
 print(f"tensorflow {tensorflow.__version__}; tf_keras {tf_keras.__version__}; deepface {deepface.__version__}")
 assert deepface.__version__ == "0.0.99", "DeepFace is not 0.0.99"
+import onnx, onnxslim, onnxruntime
+print(f"onnx {onnx.__version__}; onnxslim {onnxslim.__version__}; onnxruntime {onnxruntime.__version__} (for build-engine.sh)")
+assert onnxruntime.__version__ == "1.23.2", "the onnxruntime that imports is not PyPI's 1.23.2 (the install order went wrong)"
 PY
 fi
 echo "The Python environment is ready: $VENV"
