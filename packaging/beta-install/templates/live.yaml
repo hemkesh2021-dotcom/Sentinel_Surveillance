@@ -1,0 +1,11 @@
+# Sentinel personal beta: your configuration (written once by install.sh, never overwritten).
+# It holds no address, password or passphrase: start.sh asks for those, hidden, at each launch.
+# You may change the camera's id. check.sh refuses a file whose thresholds, stream profile, notification channels,
+# display labels or adapters differ from the accepted build's: the two adapters below name the resource profiles the
+# accepted build admits, and are not yours to edit.
+config_version: 1
+camera: {id: cam-1}
+capture: {stream_profile: main_single}
+adapters:
+  - {adapter_id: llama-lfm2-vl-scene, contract_version: 1, implementation_revision: "1", enabled: true, input_kinds: [frame], output_kinds: [scene.report], model_revision: lfm3-vl-2b-qad-q4_0, resource_profile_id: step4cand-lfm3cap-20261028T174508Z, timeout_ms: 8000}
+  - {adapter_id: legacy-deepface-facenet512-yunet, contract_version: 1, implementation_revision: "1", enabled: true, input_kinds: [frame], output_kinds: [face.observation], model_revision: facenet512-yunet-deepface-0.0.99, resource_profile_id: step4cand-demo-20261007T090339Z, timeout_ms: 3000}
