@@ -408,6 +408,16 @@ OPTIONAL_STARTUP = {  # assemble's startup fields for the live view, snapshots a
     **{f"snapshots.policy.{k}": v for k, v in SNAPSHOT_POLICY.items()},
     "chat.state": CHAT_STATE, "chat.reason": CHAT_REASON,
     "feature_controls.*": BOOL,  # D99
+    # Session 116, part 41 (--device-artifacts runs only; device_artifacts.DeviceArtifacts.startup_entry): fixed
+    # labels and checksums. The run is a validation run on the device's own files; nothing of it is a measurement.
+    "device_artifacts.schema": vocab("sentinel-device-artifacts/1"), "device_artifacts.record_sha256": HEX64,
+    "device_artifacts.created_utc": ISO, "device_artifacts.run": vocab("experimental_validation_run_only"),
+    "device_artifacts.compared_with_the_record[]": vocab("detector_engine", "face_weights", "llama_build",
+                                                         "scene_model_files"),
+    "device_artifacts.resource_validation": vocab("pending"),
+    "device_artifacts.resource_profile_measures_this_device": BOOL,
+    "device_artifacts.recorded_platform_preflight": vocab("verified_combination", "not_verified_acknowledged"),
+    "device_artifacts.detector_engine_sha256": HEX64, "device_artifacts.llama_server_sha256": HEX64,
 }
 OPTIONAL_STATUS = {  # build_status's preview, and DemoRuntime's preview, snapshots and chat components
     **FEATURES_STATUS,

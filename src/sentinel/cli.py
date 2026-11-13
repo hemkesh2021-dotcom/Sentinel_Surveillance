@@ -29,6 +29,8 @@ from .config import (
     load_config,
 )
 from .demo_runtime import DATABASE_NAME, Devices, FaceOptions, RunOptions, SceneOptions, StartupRefused, assemble
+from .device_artifacts import DeviceArtifactsError
+from .device_artifacts import load as load_device_artifacts
 from .identity.gallery import DEFAULT_IDENTITY_DIR
 from .identity.legacy_deepface import DETECTION_DEEPFACE, DETECTION_FULL_SCALE
 from .incidents.snapshots import SnapshotPolicy
@@ -81,10 +83,13 @@ def _live_source(config: CaptureConfig) -> VideoSource:
     return OpenCvSource.from_environment(config)
 
 
-def _legacy_tracker(engine: Path) -> Any:
+def _legacy_tracker(engine: Path, expected_sha256: str | None = None) -> Any:
+    """The detector on ``engine``: the pinned engine, or (--device-artifacts) the one the device's record names."""
     from .inference.legacy_ultralytics import LegacyUltralyticsTracker
 
-    return LegacyUltralyticsTracker(engine)
+    if expected_sha256 is None:
+        return LegacyUltralyticsTracker(engine)
+    return LegacyUltralyticsTracker(engine, expected_sha256=expected_sha256)
 
 
 def _scene_server(options: SceneOptions, port: int) -> Any:
@@ -492,6 +497,15 @@ def main(
         "its resource and interference checks can be made; the page and the status say so. Needs --chat",
     )
     run.add_argument(
+        "--device-artifacts", type=Path, default=None, metavar="FILE",
+        help="session 116, part 41 (off by default; experimental validation runs only: needs --face "
+        "--face-validation): identify the detector engine, the llama.cpp build and the model files by FILE, a record "
+        "of this device's own files written by the personal-beta package's download and build steps, instead of by "
+        "the reference device's records. It admits nothing and measures nothing: every other rule applies unchanged, "
+        "a changed, missing or incompatible file is refused, no accepted measurement is of this device, and the "
+        "starting line says that resource validation is pending",
+    )
+    run.add_argument(
         "--feature-controls", action="store_true",
         help="D99 (off by default): let the status page pause and resume what this run started (face recognition, "
         "scene analysis, chat, the live view, incident snapshots); never starts, loads or admits anything. Each change "
@@ -885,6 +899,16 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
     if args.feature_controls and not args.status_port:
         print("run: --feature-controls needs the status page (--status-port other than 0)", file=sys.stderr)
         return 1
+    artifacts = None
+    if args.device_artifacts is not None:  # part 41: for experimental validation runs alone; read before anything opens
+        if not (args.face and args.face_validation):
+            print("run: --device-artifacts needs --face --face-validation", file=sys.stderr)
+            return 1
+        try:
+            artifacts = load_device_artifacts(args.device_artifacts.expanduser())
+        except DeviceArtifactsError as exc:
+            print(f"run: {exc.label}", file=sys.stderr)
+            return 1
     face = None
     if args.face:
         if secret is None:
@@ -921,6 +945,7 @@ def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out
         chat=args.chat,
         chat_validation=args.chat_validation,
         feature_controls=args.feature_controls,
+        device_artifacts=artifacts,
     )
     clock = SystemClock()
     holder: dict[str, Any] = {}

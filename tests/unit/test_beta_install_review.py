@@ -10,6 +10,7 @@ say that an installation on a clean Jetson works.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
 import signal
@@ -478,7 +479,14 @@ def test_what_the_engine_export_needs_is_pinned_and_checked_before_any_gpu_work_
     script = (world.package / "build-engine.sh").read_text()
     check, prompt = script.index('"onnxslim": "0.1.90"'), script.index("type BUILD to build the engine now")
     assert check < prompt < script.index("YOLO(sys.argv[1]).export(")  # checked, then asked, then the GPU is used
-    assert "simplify=True" in script and "YOLO_OFFLINE=true" in script and "pip install" not in script
+    assert "YOLO_OFFLINE=true" in script and "pip install" not in script
+    # the export's settings are the asset manifest's, given to the export call as they are (and noted as given)
+    export = next(asset for asset in json.loads((world.package / "manifest/assets.json").read_text())["assets"]
+                  if asset["id"] == "detector_engine")["export"]
+    assert export == {"format": "engine", "imgsz": 640, "batch": 1, "half": False, "int8": False, "dynamic": False,
+                      "simplify": True, "nms": False, "device": 0}
+    assert 'asset --package "$PKG" detector_engine export' in script
+    assert "YOLO(sys.argv[1]).export(**json.loads(sys.argv[2]))" in script and '"$RT_PY" - "$WEIGHTS" "$EXPORT"' in script
 
 
 def test_the_engine_build_stops_before_asking_when_the_environment_lacks_the_exports_packages_ir6(world: World) -> None:
@@ -570,15 +578,23 @@ def test_a_release_with_no_usable_file_is_refused_by_the_lock_tool_ir8() -> None
         assert bool(tool.usable([{**fitting, "requires_python": requires}])) is admitted, requires
 
 
-# ---------------------------------------------------------------- the changed guard is packaged, and labelled as changed
+# ---------------------------------------------------------------- what is packaged is named for what it is
 
 GUARD = "benchmarks/runner/step5_guard.py"
+ROUTE = ("src/sentinel/cli.py", "src/sentinel/demo_runtime.py", "src/sentinel/device_artifacts.py")
+NEW_PACKAGE_FILES = ("lib/artifacts.py", "record-artifacts.sh")
 
 
 def builder():
     import beta_install_fixture
 
     return beta_install_fixture.build_archive
+
+
+def sha256(content: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(content).hexdigest()
 
 
 def test_the_package_ships_the_corrected_guard_and_names_it_as_changed() -> None:
@@ -589,59 +605,135 @@ def test_the_package_ships_the_corrected_guard_and_names_it_as_changed() -> None
     assert packaged == (REPO / GUARD).read_bytes() and packaged != accepted
     assert b"PR_SET_CHILD_SUBREAPER" in packaged and b"llama_server_unresolved" in packaged
     assert b"backend.kill(pid, signum)" in accepted and b"backend.kill(" not in packaged  # the cleanup by name is gone
-    sha = {"accepted": build.hashlib.sha256(accepted).hexdigest(), "packaged": build.hashlib.sha256(packaged).hexdigest()}
     version = members["VERSION"].decode().splitlines()
-    mark = build.modification_mark({GUARD: sha["packaged"]})
+    changed = sorted([GUARD, *ROUTE])
+    assert sorted(build.CHANGED_SINCE_ACCEPTED) == changed
+    mark = build.modification_mark({path: sha256(members[f"app/{path}"]) for path in changed})
     assert name == f"sentinel-personal-beta-949da67-mod{mark[:7]}-r0-worktree" and version[0] == name
     assert f"accepted_code_commit={build.ACCEPTED}" in version and f"modification_mark={mark}" in version
-    assert ("application=the accepted code with 1 file(s) changed after acceptance (below); this is NOT the unchanged "
-            "accepted build") in version
-    assert f"changed_file=app/{GUARD} accepted_sha256={sha['accepted']} packaged_sha256={sha['packaged']}" in version
+    assert ("application=the accepted code with 4 file(s) changed or added after acceptance (below); this is NOT the "
+            "unchanged accepted build") in version
+    assert f"changed_file=app/{GUARD} accepted_sha256={sha256(accepted)} packaged_sha256={sha256(packaged)}" in version
     assert any(line.startswith(f"changed_file_reason=app/{GUARD}: process ownership") for line in version)
     assert any(line.startswith(f"changed_file_run_with=app/{GUARD}: synthetic and stand-in-process tests") and
                "no guarded run with a camera or a model" in line for line in version)
-    unchanged = next(line for line in version if line.startswith("unchanged_from_accepted="))
-    assert f"app/{GUARD}" not in unchanged and all(f"app/{path}" in unchanged for path in build.GUARD_FILES if path != GUARD)
-    assert f"{sha['packaged']}  app/{GUARD}\n" in members["SHA256SUMS"].decode()
-    # every other application file is the accepted commit's
-    differs = build.git("diff", "--name-only", build.ACCEPTED, "--", build.APP_TREE, *build.GUARD_FILES).decode().split()
-    assert differs == [GUARD]
-    # the guide a tester reads names this package, and says what is not the accepted build's
-    released, _ = build.package_members(build.DEFAULT_REVISION, worktree=True)
-    released = released[:-len("-worktree")]
-    guide = members["QUICKSTART.md"].decode()
-    assert f"tar -xzf {released}.tar.gz && cd {released}\n" in guide
-    assert "**One file is not the accepted build's.**" in guide and "stops every `llama-server`" not in guide
+    assert f"{sha256(packaged)}  app/{GUARD}\n" in members["SHA256SUMS"].decode()
+    # every other application file is the accepted commit's, by content
+    application = {path[len("app/"):]: content for path, content in members.items() if path.startswith("app/")}
+    assert build.differing(build.blobs(build.ACCEPTED, build.APP_TREE, *build.GUARD_FILES), application) == changed
+    assert (f"unchanged_from_accepted={len(application) - 4} application files: every other file under app/src/sentinel "
+            "and app/benchmarks/runner") in version
     assert "The accepted guard itself has already stopped" not in members["start.sh"].decode()
 
 
-@pytest.mark.parametrize(("differs", "declared", "told"), [
-    (f"{GUARD}\nsrc/sentinel/cli.py\n", None, "changed but not declared: src/sentinel/cli.py"),
-    ("", None, f"declared but identical to the accepted file: {GUARD}"),
-    (f"{GUARD}\n", {}, f"changed but not declared: {GUARD}"),
+def test_the_version_names_every_file_of_the_route_and_every_package_file_that_changed() -> None:
+    """Nothing changed is passed off as the accepted build or as the previous package: each file is named with both
+    checksums and what it has (not) been run with, and the launch line claims no more than was done."""
+    build = builder()
+    name, members = build.package_members(0, worktree=True)
+    version = members["VERSION"].decode().splitlines()
+    for path in ROUTE:
+        packaged = sha256(members[f"app/{path}"])
+        was = ("absent (a new file)" if path.endswith("device_artifacts.py")
+               else sha256(build.git("show", f"{build.ACCEPTED}:{path}")))
+        assert f"changed_file=app/{path} accepted_sha256={was} packaged_sha256={packaged}" in version, path
+        assert any(line.startswith(f"changed_file_reason=app/{path}: ") and "device-artifacts route" in line
+                   for line in version), path
+        assert (f"changed_file_run_with=app/{path}: synthetic tests on the reference device only (temporary "
+                "directories, synthetic files, stand-ins); never on another device, and no run with a camera or a "
+                "model has used it") in version, path
+    # the package's own files against revision 2's
+    assert build.PREVIOUS_PACKAGE_NAME == "sentinel-personal-beta-949da67-mod1d12a8b-r2"
+    assert build.git("rev-parse", "--verify", f"{build.PREVIOUS_PACKAGE_COMMIT}^{{commit}}").decode().strip() == build.PREVIOUS_PACKAGE_COMMIT
+    own = {path: content for path, content in members.items()
+           if not path.startswith("app/") and path not in ("VERSION", "SHA256SUMS")}
+    previous = {path[len(build.PACKAGE_SOURCE) + 1:]: blob
+                for path, blob in build.blobs(build.PREVIOUS_PACKAGE_COMMIT, build.PACKAGE_SOURCE).items()}
+    differs = build.differing(previous, own)
+    assert differs == sorted(build.PACKAGE_FILES_CHANGED) and set(NEW_PACKAGE_FILES) <= set(differs)
+    assert (f"package_files_changed_since={build.PREVIOUS_PACKAGE_NAME} (package_commit {build.PREVIOUS_PACKAGE_COMMIT}): "
+            f"{len(differs)} of the package's own files (below); VERSION and SHA256SUMS are written anew for every "
+            "package") in version
+    for path in differs:
+        was = ("absent (a new file)" if path in NEW_PACKAGE_FILES else
+               sha256(build.git("show", f"{build.PREVIOUS_PACKAGE_COMMIT}:{build.PACKAGE_SOURCE}/{path}")))
+        assert f"package_file_changed={path} previous_sha256={was} packaged_sha256={sha256(own[path])}" in version, path
+        assert any(line.startswith(f"package_file_changed_reason={path}: ") and len(line) > len(path) + 40 for line in version)
+    for path in ("stop.sh", "preflight.sh", "setup-env.sh", "fetch-assets.sh", "lib/hostprep.py", "templates/live.yaml"):
+        assert path in own and not any(line.startswith(f"package_file_changed={path} ") for line in version), path
+    launch = next(line for line in version if line.startswith("launch="))
+    assert "REFUSES on another Jetson" in launch and "validates nothing about that device's resources" in launch
+    assert "resource validation pending" in launch
+    verified = next(line for line in version if line.startswith("route_verified="))
+    assert "in synthetic tests on the reference device only; NEVER RUN ON ANOTHER DEVICE" in verified
+    assert "never with a camera or a model" in verified and "build-engine.sh have never run" in verified
+    for claim in ("validated on", "verified on another", "admitted", "passes on any", "CANNOT LAUNCH ON ANOTHER JETSON YET"):
+        assert claim not in "\n".join(version).replace("validates and admits nothing", ""), claim
+    # the guide a tester reads names this package, and says what is not the accepted build's and what is not validated
+    released, _ = build.package_members(build.DEFAULT_REVISION, worktree=True)
+    released = released[:-len("-worktree")]
+    assert released.endswith("-r3")
+    guide = members["QUICKSTART.md"].decode()
+    assert f"tar -xzf {released}.tar.gz && cd {released}\n" in guide
+    assert "**Four application files are not the accepted build's.**" in guide and "stops every `llama-server`" not in guide
+    for said_in_the_guide in ("**never been run on another device**", "**It does not validate your device.**",
+                              "**The launch gates and the guard's limits are limits, not evidence**",
+                              "**Only typing START opens the camera.**", "bash record-artifacts.sh",
+                              "bash check.sh --device-artifacts ~/sentinel-beta-data/config/device-artifacts.json",
+                              "bash ~/sentinel-beta/package/start.sh --device-artifacts ~/sentinel-beta-data/config/device-artifacts.json",
+                              "bash ~/sentinel-beta/package/stop.sh", "NOT VERIFIED", "--accept-unverified-platform"):
+        assert said_in_the_guide in guide, said_in_the_guide
+    assert "CANNOT LAUNCH ON ANOTHER JETSON YET" not in guide and "for when section 1 no longer applies" not in guide
+
+
+@pytest.mark.parametrize(("table", "change", "told"), [
+    ("CHANGED_SINCE_ACCEPTED", "drop:src/sentinel/cli.py",
+     "the application files that differ from the accepted commit 949da67 are not exactly the ones this package declares "
+     "as changed; changed but not declared: src/sentinel/cli.py"),
+    ("CHANGED_SINCE_ACCEPTED", "drop:src/sentinel/device_artifacts.py", "changed but not declared: src/sentinel/device_artifacts.py"),
+    ("CHANGED_SINCE_ACCEPTED", "add:src/sentinel/config.py", "declared but identical: src/sentinel/config.py"),
+    ("PACKAGE_FILES_CHANGED", "drop:start.sh",
+     "the package's own files that differ from sentinel-personal-beta-949da67-mod1d12a8b-r2 are not exactly the ones "
+     "this package declares as changed; changed but not declared: start.sh"),
+    ("PACKAGE_FILES_CHANGED", "drop:lib/artifacts.py", "changed but not declared: lib/artifacts.py"),
+    ("PACKAGE_FILES_CHANGED", "add:stop.sh", "declared but identical: stop.sh"),
 ])
 def test_the_builder_refuses_a_change_it_does_not_declare_and_a_declaration_without_a_change(
-        monkeypatch: pytest.MonkeyPatch, differs: str, declared: dict | None, told: str) -> None:
+        monkeypatch: pytest.MonkeyPatch, table: str, change: str, told: str) -> None:
     build = builder()
-    real = build.git
-    monkeypatch.setattr(build, "git", lambda *args: differs.encode() if args[0] == "diff" else real(*args))
-    if declared is not None:
-        monkeypatch.setattr(build, "CHANGED_SINCE_ACCEPTED", declared)
-    for worktree in (True, False):
-        with pytest.raises(SystemExit) as stop:
-            build.package_members(1, worktree=worktree)
-        assert "are not exactly the ones this package declares as changed" in str(stop.value) and told in str(stop.value)
+    declared = dict(getattr(build, table))
+    action, _, path = change.partition(":")
+    if action == "drop":
+        del declared[path]
+    else:
+        declared[path] = ("a declaration without a change", "nothing") if table == "CHANGED_SINCE_ACCEPTED" else "nothing"
+    monkeypatch.setattr(build, table, declared)
+    with pytest.raises(SystemExit) as stop:
+        build.package_members(1, worktree=True)
+    assert told in str(stop.value)
+    with pytest.raises(SystemExit) as stop:  # the rule itself, as the archive form applies it too
+        build.declared_exactly(["a", "b"], {"b": "", "c": ""}, "the files")
+    assert str(stop.value) == ("STOP: the files are not exactly the ones this package declares as changed; changed but "
+                               "not declared: a; declared but identical: c")
+    assert build.declared_exactly(["a", "b"], {"a": "", "b": ""}, "the files") is None
 
 
 def test_only_a_package_without_changed_files_carries_the_accepted_name(monkeypatch: pytest.MonkeyPatch) -> None:
     build = builder()
-    real = build.git
-    monkeypatch.setattr(build, "git", lambda *args: b"" if args[0] == "diff" else real(*args))
+    real = build.blobs
+
+    def as_packaged(commit: str, *paths: str) -> dict:
+        if commit != build.ACCEPTED:
+            return real(commit, *paths)
+        return {path: build.blob_id((REPO / path).read_bytes())
+                for path in build.working_files(build.APP_TREE) + list(build.GUARD_FILES)}
+
+    monkeypatch.setattr(build, "blobs", as_packaged)  # as if the accepted commit held exactly what is packaged
     monkeypatch.setattr(build, "CHANGED_SINCE_ACCEPTED", {})
     name, members = build.package_members(3, worktree=True)
     version = members["VERSION"].decode()
     assert name == "sentinel-personal-beta-949da67-r3-worktree" and "-mod" not in name
-    assert "application=the accepted code, unchanged (" in version and "changed_file" not in version
+    assert "application=the accepted code, unchanged (" in version and "changed_file=" not in version
     monkeypatch.undo()
     name, members = build.package_members(3, worktree=True)  # as this branch is: the mark is part of the name
     assert "-mod" in name and "application=the accepted code, unchanged" not in members["VERSION"].decode()

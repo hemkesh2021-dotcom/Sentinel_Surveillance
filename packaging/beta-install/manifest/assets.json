@@ -1,6 +1,6 @@
 {
   "schema": "sentinel-beta-assets/1",
-  "note": "What the accepted build (949da67) needs besides this package. 'download' files are fetched by fetch-assets.sh and must equal the size and SHA-256 given here; a file that differs is never used. 'build' items are made on the device. 'pinned_by_accepted_build' is what the accepted code itself compares at startup: read it before building anything (QUICKSTART.md, 'What still blocks another device').",
+  "note": "What the accepted build (949da67) needs besides this package. 'download' files are fetched by fetch-assets.sh and must equal the size and SHA-256 given here; a file that differs is never used. 'build' items are made on the device. 'pinned_by_accepted_build' is what the default admission compares at startup with the reference device's records: read it before building anything. The opt-in device-artifacts route (experimental validation runs only) compares the same files with a record of this device's own instead, and needs the build items made by this package's own scripts with the settings given here (QUICKSTART.md, section 1).",
   "assets": [
     {
       "id": "scene_model",
@@ -69,7 +69,7 @@
       "size": 6549796,
       "sha256": "f59b3d833e2ff32e194b5bb8e08d211dc7c5bdf144b90d2c8412c47ccfc83b36",
       "checksum_source": "GitHub's digest of the release asset",
-      "pinned_by_accepted_build": "nothing: only the engine built from it is used. Which yolov8n.pt the reference engine was exported from is not recorded",
+      "pinned_by_accepted_build": "nothing: only the engine built from it is used. Which yolov8n.pt the reference engine was exported from is not recorded. The device-artifacts route requires the engine to be exported from exactly this file",
       "how": "Run: bash fetch-assets.sh"
     },
     {
@@ -82,10 +82,12 @@
       "license": "MIT",
       "cmake": ["-DCMAKE_BUILD_TYPE=Release", "-DGGML_CUDA=ON", "-DCMAKE_CUDA_ARCHITECTURES=87",
                 "-DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.6/bin/nvcc"],
-      "target": "llama-server",
+      "cmake_target": "llama-server",
       "reports": "version: 0.7.0-dev (build 11938, commit 19cce6919)",
-      "pinned_by_accepted_build": "SHA-256 of the reference device's own build: llama-server 282105a90e18ee6fdfad9b39ef8e63f4392d094b26ab8ca9c83f7c72e3f50157 and seven libraries beside it; libggml-cuda.so.0.27.0 by size 217029768 and modification time 2026-10-27T20:27:39+00:00. A build made on another device, or in another directory, has other bytes: the accepted build refuses it (scene_not_admitted)",
-      "how": "Run: bash build-llama.sh (about 45 minutes), then read QUICKSTART.md, 'What still blocks another device'"
+      "libraries": ["libggml-base.so.0.27.0", "libggml-cpu.so.0.27.0", "libggml-cuda.so.0.27.0", "libggml.so.0.27.0",
+                    "libllama-common.so.0.7.0", "libllama-server-impl.so", "libllama.so.0.7.0", "libmtmd.so.0.7.0"],
+      "pinned_by_accepted_build": "SHA-256 of the reference device's own build: llama-server 282105a90e18ee6fdfad9b39ef8e63f4392d094b26ab8ca9c83f7c72e3f50157 and seven libraries beside it; libggml-cuda.so.0.27.0 by size 217029768 and modification time 2026-10-27T20:27:39+00:00. A build made on another device, or in another directory, has other bytes: the default admission refuses it (scene_not_admitted). The device-artifacts route needs this build made by build-llama.sh at this commit with these options, and the eight libraries listed here beside the binary",
+      "how": "Run: bash build-llama.sh (about 45 minutes), then read QUICKSTART.md, section 1"
     },
     {
       "id": "detector_engine",
@@ -94,8 +96,9 @@
       "from": "detector_weights",
       "export": {"format": "engine", "imgsz": 640, "batch": 1, "half": false, "int8": false, "dynamic": false, "simplify": true, "nms": false, "device": 0},
       "tool": "Ultralytics 8.4.25 with TensorRT 10.3.0",
-      "pinned_by_accepted_build": "SHA-256 08370639f961d2c67148c19562718ef80527c7085e88d2d923176180f1b98637, the reference device's engine (FP32, 640x640, batch 1, exported 2026-04-18 with Ultralytics 8.4.25). A TensorRT engine built on another device has other bytes: the accepted build refuses it (engine_hash_mismatch) and runs without person detection",
-      "how": "Run: bash build-engine.sh, then read QUICKSTART.md, 'What still blocks another device'"
+      "tools": {"ultralytics": "8.4.25", "tensorrt": "10.3.0"},
+      "pinned_by_accepted_build": "SHA-256 08370639f961d2c67148c19562718ef80527c7085e88d2d923176180f1b98637, the reference device's engine (FP32, 640x640, batch 1, exported 2026-04-18 with Ultralytics 8.4.25). A TensorRT engine built on another device has other bytes: the default admission refuses it (engine_hash_mismatch) and runs without person detection. The device-artifacts route needs this engine exported by build-engine.sh from the pinned yolov8n.pt with these settings and tools",
+      "how": "Run: bash build-engine.sh, then read QUICKSTART.md, section 1"
     }
   ]
 }

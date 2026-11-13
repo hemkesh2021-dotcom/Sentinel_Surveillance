@@ -22,6 +22,7 @@ import os
 import pty
 import re
 import select
+import shutil
 import signal
 import subprocess
 import sys
@@ -48,6 +49,15 @@ if [ "$1" = -B ] && [[ "$2" == */lib/admission_check.py ]]; then
   printf '%s\n' "${@:3}" > "$FIXTURE/admission.args"; cat "$FIXTURE/admission.out"; exit "$(cat "$FIXTURE/admission.rc")"
 fi
 if [ "$1" = -m ] && [ "$2" = sentinel.cli ] && [ "$3" = config ]; then exec "$REAL_PYTHON" -B "$@"; fi
+# the installed versions, as the environment's metadata gives them (lib/artifacts.py asks; nothing is imported)
+if [ "$1" = -I ] && [ "$2" = -B ] && [ "$3" = -c ]; then cat "$FIXTURE/environment.json"; exit 0; fi
+# build-engine.sh: its check of the export's packages, then the export itself (no GPU, no Ultralytics: a stand-in file)
+if [ "$1" = -B ] && [ "$2" = - ]; then cat > /dev/null; exit 0; fi
+if [ "$1" = - ]; then
+  cat > /dev/null; printf '%s\n' "$2" "$3" > "$FIXTURE/export.args"
+  [ "$(cat "$FIXTURE/export.rc")" = 0 ] || exit 1
+  printf 'a stand-in engine exported with %s' "$3" > yolov8n.engine; exit 0
+fi
 if [ "$1" = -m ] && [ "$2" = sentinel.cli ] && [ "$3" = run ]; then exec "$REAL_PYTHON" -B "$FIXTURE/standin/runtime.py" "$@"; fi
 echo "stand-in interpreter: unexpected use: $*" >&2; exit 97
 '''
@@ -97,6 +107,54 @@ while not stop["now"]:
     time.sleep(0.05)
 print(json.dumps({"run": "stopped"}), flush=True)
 '''
+GIT = r'''#!/bin/bash
+# Stand-in for git in build-llama.sh: no network, no clone; it answers what the script and its note ask.
+case " $* " in
+  *" clone "*) mkdir -p "${@: -1}/.git" ;;
+  *" rev-parse HEAD "*) cat "$FIXTURE/llama.head" ;;
+  *" status --porcelain "*) cat "$FIXTURE/llama.status" ;;
+esac
+exit 0
+'''
+CMAKE = r'''#!/bin/bash
+# Stand-in for cmake: "configures" by writing the options it was given, "builds" small files. Nothing is compiled.
+if [ "$1" = --version ]; then echo "cmake version 3.28.3"; exit 0; fi
+if [ "$1" = -S ]; then
+  mkdir -p "$4"; : > "$4/CMakeCache.txt"
+  for option in "${@:5}"; do option="${option#-D}"; echo "${option%%=*}:STRING=${option#*=}" >> "$4/CMakeCache.txt"; done
+  [ ! -s "$FIXTURE/cmake.cache.extra" ] || cat "$FIXTURE/cmake.cache.extra" >> "$4/CMakeCache.txt"
+  printf '%s\n' "CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/c++" "CMAKE_C_COMPILER:FILEPATH=$FIXTURE/home/toolchain/bin/cc" \
+    "CMAKE_C_FLAGS:STRING=" "CMAKE_CXX_FLAGS:STRING=" "CMAKE_CUDA_FLAGS:STRING=" >> "$4/CMakeCache.txt"
+  exit 0
+fi
+if [ "$1" = --build ]; then
+  mkdir -p "$2/bin"
+  left=""; for name in llama-server $(cat "$FIXTURE/build.libraries"); do [ ! -e "$2/bin/$name" ] || left="$left $name"; done
+  echo "left in place when the build command ran:$left" > "$FIXTURE/build.before"
+  printf '#!/bin/bash\necho "version: 0.7.0-dev (build 11938, commit $(cat "$FIXTURE/llama.commit"))"\n# %s\n' "$(cat "$FIXTURE/build.salt")" > "$2/bin/llama-server"
+  chmod 755 "$2/bin/llama-server"
+  for name in $(cat "$FIXTURE/build.libraries"); do printf 'library %s %s' "$name" "$(cat "$FIXTURE/build.salt")" > "$2/bin/$name"; done
+  exit 0
+fi
+exit 0
+'''
+LIBRARIES = ["libggml-base.so.0.27.0", "libggml-cuda.so.0.27.0", "libllama.so.0.7.0"]
+CMAKE_OPTIONS = ["-DCMAKE_BUILD_TYPE=Release", "-DGGML_CUDA=ON", "-DCMAKE_CUDA_ARCHITECTURES=87",
+                 "-DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.6/bin/nvcc"]
+EXPORT = {"format": "engine", "imgsz": 640, "batch": 1, "half": False, "int8": False, "dynamic": False, "simplify": True,
+          "nms": False, "device": 0}
+ENVIRONMENT = {"python": "3.10.12", "packages": {
+    "torch": "2.9.1", "torchvision": "0.24.1", "ultralytics": "8.4.25", "tensorrt": "10.3.0", "onnx": "1.20.1",
+    "onnxslim": "0.1.90", "onnxruntime-gpu": "1.23.0", "onnxruntime": "1.23.2", "tensorflow": "2.21.0",
+    "tf_keras": "2.21.0", "deepface": "0.0.99", "opencv-python": "4.13.0.92", "numpy": "2.2.6"}}
+ROUTE_ADMITTED = "\n".join((
+    "stream_profile=main_single", "notification_channels=0", "thresholds=unchanged", "default_admission_detector_engine=refused",
+    "default_admission_scene=refused", "detector_engine=the_recorded_engine_validation_run_only",
+    "scene_admission=files_as_recorded_validation_run_only", "face_admission_without_validation_flag=refused",
+    "face_admission_validation_run=allowed", "identity_retention_rule=proposed_defaults",
+    "identity_retention_without_validation_flag=refused", "display_labels=0", "chat_admitted=False",
+    "chat_validation_run_allowed=True", "resource_validation=pending", "admission_check=as_expected_for_device_artifacts")) + "\n"
+
 PYTHON3 = r'''#!/bin/bash
 # Stand-in for python3 on the PATH: the process scan never looks at, or closes, a real process here.
 for argument in "$@"; do
@@ -126,22 +184,33 @@ class Launch(World):
         assert start.count("MEMINFO=/proc/meminfo\n") == 1
         (self.package / "start.sh").write_text(start.replace("MEMINFO=/proc/meminfo\n", f'MEMINFO="{tmp}/meminfo"\n'))
         files = {"scene_model": ("models/lfm3-vl/model.gguf", b"model"), "scene_mmproj": ("models/lfm3-vl/mmproj.gguf", b"mmproj"),
-                 "face_weights": ("deepface-home/.deepface/weights/weights.h5", b"weights")}
-        assets = [{"id": key, "kind": "download", "path": path, "url": "https://example.invalid/unused", "size": len(content),
+                 "face_weights": ("deepface-home/.deepface/weights/weights.h5", b"weights"),
+                 "face_detector": ("deepface-home/.deepface/weights/detector.onnx", b"detector"),
+                 "detector_weights": ("engine/yolov8n.pt", b"detector weights")}
+        (tmp / "upstream").mkdir()  # what "upstream" serves: the same small files, from a local directory
+        for path, content in files.values():
+            (tmp / "upstream" / Path(path).name).write_bytes(content)
+        assets = [{"id": key, "kind": "download", "path": path, "url": (tmp / "upstream" / Path(path).name).as_uri(),
+                   "revision": "a-synthetic-revision", "size": len(content),
                    "sha256": hashlib.sha256(content).hexdigest(), "how": "Run: bash fetch-assets.sh"}
                   for key, (path, content) in files.items()]
         assets += [{"id": "llama_server", "kind": "build", "path": "llama.cpp/build/bin/llama-server", "commit": COMMIT,
-                    "how": "Run: bash build-llama.sh"},
-                   {"id": "detector_engine", "kind": "build", "path": "engine/yolov8n.engine", "how": "Run: bash build-engine.sh"}]
+                    "repo": "https://example.invalid/llama.cpp", "cmake": CMAKE_OPTIONS, "cmake_target": "llama-server",
+                    "libraries": LIBRARIES, "how": "Run: bash build-llama.sh"},
+                   {"id": "detector_engine", "kind": "build", "path": "engine/yolov8n.engine", "export": EXPORT,
+                    "tools": {"ultralytics": "8.4.25", "tensorrt": "10.3.0"}, "how": "Run: bash build-engine.sh"}]
         (self.package / "manifest/assets.json").write_text(json.dumps({"schema": "sentinel-beta-assets/1", "assets": assets}))
         sealed_again(self.package)
         installed = self.install()
         assert installed.returncode == 0, said(installed)
+        owned = subprocess.run([str(self.bin / "python3"), "-I", "-B", str(self.installed / "lib/beta.py"), "own", "--prefix",
+                                str(self.prefix), "assets"], env=self.env, capture_output=True, text=True, timeout=60)
+        assert owned.returncode == 0, said(owned)  # recorded as the installer's before it is made, as the scripts do
         for path, content in files.values():
             target = self.prefix / "assets" / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
-        (self.prefix / "assets/engine").mkdir(parents=True)
+        (self.prefix / "assets/engine").mkdir(parents=True, exist_ok=True)
         (self.prefix / "assets/engine/yolov8n.engine").write_bytes(b"engine")
         self.script(self.prefix / "assets/llama.cpp/build/bin/llama-server",
                     '#!/bin/bash\necho "version: 0.7.0-dev (build 11938, commit $(cat "$FIXTURE/llama.commit"))"\n')
@@ -159,8 +228,14 @@ class Launch(World):
         self.command("sync", "exit 0")
         for name, text in (("meminfo", "MemTotal: 7802736 kB\nMemFree: 6300000 kB\nMemAvailable: 6600000 kB\n"),
                            ("admission.out", ADMITTED), ("admission.rc", "0\n"), ("scan.rc", "0\n"), ("desktop", "inactive\n"),
-                           ("llama.commit", COMMIT[:9] + "\n"), ("calls.log", "")):
+                           ("llama.commit", COMMIT[:9] + "\n"), ("calls.log", ""),
+                           # the stand-in build steps and the environment's installed versions (the device-artifacts route)
+                           ("environment.json", json.dumps(ENVIRONMENT)), ("export.rc", "0\n"), ("llama.head", COMMIT + "\n"),
+                           ("llama.status", ""), ("build.salt", "first build\n"), ("build.libraries", " ".join(LIBRARIES)),
+                           ("cmake.cache.extra", "")):
             self.fixture(name, text)
+        self.script(self.bin / "git", GIT)
+        self.script(self.bin / "cmake", CMAKE)
         (self.data / "identity/gallery.sealed").write_bytes(b"a placeholder, not an enrollment")
         (self.data / "identity/gallery.sealed").chmod(0o600)
         (self.data / "identity/audit.jsonl").write_text("{}\n")
@@ -173,8 +248,34 @@ class Launch(World):
         path.write_text(text)
         path.chmod(0o755)
 
-    def check(self, **env: str) -> subprocess.CompletedProcess:
-        return self.run("check.sh", package=self.installed, **env)
+    def check(self, *args: str, **env: str) -> subprocess.CompletedProcess:
+        return self.run("check.sh", *args, package=self.installed, **env)
+
+    # ---- the device-artifacts route: the package's own build steps (with stand-ins), then its record ----
+
+    @property
+    def record(self) -> Path:
+        return self.data / "config/device-artifacts.json"
+
+    def build_llama(self) -> subprocess.CompletedProcess:
+        """build-llama.sh as a tester runs it; git and cmake are stand-ins, so nothing is fetched or compiled."""
+        if not (self.prefix / "assets/llama.cpp/.git").is_dir():
+            shutil.rmtree(self.prefix / "assets/llama.cpp")  # the fixture's ready-made binary: not a clone of the script's
+        return self.run("build-llama.sh", package=self.installed)
+
+    def build_engine(self) -> subprocess.CompletedProcess:
+        (self.prefix / "assets/engine/yolov8n.engine").unlink(missing_ok=True)
+        return self.run("build-engine.sh", package=self.installed, stdin="BUILD\n")
+
+    def record_artifacts(self, *args: str) -> subprocess.CompletedProcess:
+        return self.run("record-artifacts.sh", *args, package=self.installed)
+
+    def recorded(self) -> Path:
+        """Both build steps run, then the record written: a device ready for the opt-in route."""
+        for step in (self.build_llama(), self.build_engine(), self.record_artifacts()):
+            assert step.returncode == 0, said(step)
+        self.fixture("admission.out", ROUTE_ADMITTED)
+        return self.record
 
     def observations(self) -> list[Path]:
         return sorted((self.data / "observe").glob("obs-*"))
@@ -275,8 +376,9 @@ def test_the_offline_check_passes_without_credentials_sudo_camera_or_model(launc
     assert "admission_check=as_expected" in result.stdout and "command_line_check=run: rtsp_url_missing" in result.stdout
     assert "BETA_CHECK=passed (no credentials asked, no sudo, the camera was not opened, no model was loaded)" in result.stdout
     assert re.search(r"^package=sentinel-personal-beta-949da67-mod[0-9a-f]{7}-r0-worktree$", result.stdout, re.M)
-    assert re.search(r"^application=the accepted code with 1 file\(s\) changed after acceptance \(below\); this is NOT "
-                     r"the unchanged accepted build$", result.stdout, re.M)
+    assert re.search(r"^application=the accepted code with 4 file\(s\) changed or added after acceptance \(below\); "
+                     r"this is NOT the unchanged accepted build$", result.stdout, re.M)
+    assert "BETA_CHECK_ROUTE" not in result.stdout and "artifact_verification" not in result.stdout  # the default path
     assert launch.observations() == [] and not (launch.tmp / "runtime.json").exists()  # nothing was launched or recorded
     assert not any(call.startswith("sudo") for call in launch.calls())
     seen = json.loads((launch.tmp / "runtime-check.json").read_text())
@@ -288,6 +390,7 @@ def test_the_offline_check_passes_without_credentials_sudo_camera_or_model(launc
                  "--live-preview", "--feature-controls", "--workload-thp-disable", "--post-load-release"):
         assert flag in argv, flag
     assert "--snapshots" not in argv  # snapshots stay off
+    assert "--device-artifacts" not in argv  # the route is never taken unless the tester asks for it
     assert argv[argv.index("--scene-model-set") + 1] == "lfm3-vl"
     assert argv[argv.index("--engine") + 1] == str(launch.prefix / "assets/engine/yolov8n.engine")
     assert argv[argv.index("--llama-server") + 1] == str(launch.prefix / "assets/llama.cpp/build/bin/llama-server")
@@ -298,6 +401,7 @@ def test_the_offline_check_passes_without_credentials_sudo_camera_or_model(launc
     assert given[0] == str(launch.data / "config/live.yaml") and given[1] == str(launch.data / "identity")
     assert given[given.index("--engine") + 1] == str(launch.prefix / "assets/engine/yolov8n.engine")
     assert given[given.index("--weights-dir") + 1] == str(launch.prefix / "assets/deepface-home/.deepface/weights")
+    assert "--device-artifacts" not in given
 
 
 def missing(launch: Launch, case: str) -> dict[str, str]:
@@ -362,7 +466,8 @@ def test_whatever_is_missing_or_refused_stops_the_check_and_the_launch_with_what
         assert "nobody else's gallery comes with this package" in said(result)
     if case == "not_admitted":
         assert "detector_engine=refused" in result.stdout and "nothing is bypassed here" in said(result)
-        assert "What still blocks another device" in said(result)
+        assert "The default admission admits only the reference device's own files" in said(result)
+        assert "the opt-in device-artifacts route, QUICKSTART.md, section 1" in said(result)
     launch.env.update(env)
     terminal = Terminal(launch)  # the launch stops at the same place, before any prompt
     assert terminal.finish() == 1
@@ -520,3 +625,494 @@ def test_a_desktop_that_does_not_restart_is_recorded_and_stop_sh_still_says_what
     assert "sudo systemctl start display-manager" in later.stdout
     launch.fixture("desktop", "active\n")  # once it is back, the advice is not repeated
     assert "sudo systemctl start display-manager" not in launch.run("stop.sh", package=launch.installed).stdout
+
+
+# ---------------------------------------------------------------- the opt-in device-artifacts route
+#
+# The package's own build steps run here with stand-ins for git, cmake and the export (nothing is fetched, compiled
+# or loaded), then record-artifacts.sh writes the record and check.sh / start.sh are given it. What is established:
+# the scripts' own logic. No real build, no engine, no model; a pass says nothing about any device's resources.
+
+NVCC = Path("/usr/local/cuda-12.6/bin/nvcc")  # build-llama.sh requires this path to exist; it is never run as a compiler
+
+
+@pytest.fixture
+def routed(launch: Launch) -> Launch:
+    if not os.access(NVCC, os.X_OK):
+        pytest.skip("build-llama.sh stops where the CUDA 12.6 compiler's path does not exist")
+    return launch
+
+
+def artifacts(launch: Launch, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([str(launch.bin / "python3"), "-I", "-B", str(launch.installed / "lib/artifacts.py"), *args],
+                          env=launch.env, capture_output=True, text=True, timeout=120)
+
+
+def digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def edited(record: Path, change) -> None:
+    document = json.loads(record.read_text())
+    change(document)
+    record.write_text(json.dumps(document, indent=1, sort_keys=True) + "\n")
+
+
+def test_the_build_steps_note_what_they_built_and_the_record_holds_only_what_was_observed(routed: Launch) -> None:
+    launch = routed
+    built = launch.build_llama()
+    assert built.returncode == 0 and "Noted what this step built" in built.stdout, said(built)
+    binary = launch.prefix / "assets/llama.cpp/build/bin/llama-server"
+    note = json.loads((launch.prefix / "assets/provenance/llama_server.json").read_text())
+    assert (note["observed"], note["step"], note["commit"], note["cmake"], note["target"]) == (
+        "built_by_package_step", "build-llama.sh", COMMIT, CMAKE_OPTIONS, "llama-server")
+    assert note["repository"] == "https://example.invalid/llama.cpp" and note["reports"].startswith("version: 0.7.0-dev")
+    assert sorted(note["outputs"]) == sorted(["llama-server", *LIBRARIES])
+    assert note["outputs"]["llama-server"] == {"sha256": digest(binary), "bytes": binary.stat().st_size}
+    assert note["tools"]["cmake"] == "cmake version 3.28.3"
+    # compilers by name: a path can lie under the tester's home (this one does), and a record holds no such path
+    assert (note["tools"]["cmake_cuda_compiler"], note["tools"]["cmake_c_compiler"]) == ("nvcc", "cc")
+    assert sorted(note) == ["cmake", "commit", "observed", "outputs", "package", "reports", "repository", "step", "target",
+                            "tools", "utc"]
+    assert (launch.tmp / "build.before").read_text() == "left in place when the build command ran:\n"
+    exported = launch.build_engine()
+    assert exported.returncode == 0 and "Noted what this step built" in exported.stdout, said(exported)
+    weights, settings = (launch.tmp / "export.args").read_text().splitlines()
+    assert weights == str(launch.prefix / "assets/engine/yolov8n.pt") and json.loads(settings) == EXPORT  # as given to the export
+    engine = launch.prefix / "assets/engine/yolov8n.engine"
+    note = json.loads((launch.prefix / "assets/provenance/detector_engine.json").read_text())
+    assert (note["observed"], note["weights_sha256"], note["export"]) == (
+        "built_by_package_step", hashlib.sha256(b"detector weights").hexdigest(), EXPORT)
+    assert note["tools"]["ultralytics"] == "8.4.25" and note["tools"]["tensorrt"] == "10.3.0"
+    assert note["outputs"] == {"yolov8n.engine": {"sha256": digest(engine), "bytes": engine.stat().st_size}}
+
+    recorded = launch.record_artifacts()
+    assert recorded.returncode == 0, said(recorded)
+    assert f"device_artifacts_record={launch.record} (written)" in recorded.stdout
+    assert "resource_validation=pending" in recorded.stdout and "platform_preflight=verified_combination" in recorded.stdout
+    assert "TEST FIXTURE: this record's platform facts came from a test fixture, not from a device; no run uses it" in recorded.stdout
+    assert "no run on this device has been measured or judged" in recorded.stdout
+    assert f"Next: bash {launch.installed}/check.sh --device-artifacts '{launch.record}'" in recorded.stdout
+    assert launch.record.stat().st_mode & 0o777 == 0o600
+    text = launch.record.read_text()
+    document = json.loads(text)
+    assert sorted(document) == ["artifacts", "created_utc", "package", "platform", "purpose", "resource_validation", "schema"]
+    assert document["resource_validation"] == "pending" and "it is not a resource profile and measures nothing" in document["purpose"]
+    for word in ("steady", "peak", "fps", "profile_id", "criteria", str(launch.prefix), str(launch.data), str(launch.home)):
+        assert word not in text.replace("resource profile", ""), word  # no measurement and no path of the installation
+    seen = {role: item["provenance"] for role, item in document["artifacts"].items()}
+    assert seen["llama_server"]["observed"] == "built_by_package_step" and seen["llama_server"]["commit"] == COMMIT
+    assert seen["llama_server"]["cmake"] == CMAKE_OPTIONS
+    assert sorted(seen["llama_server"]) == ["cmake", "commit", "observed", "package", "reports", "repository", "step",
+                                            "target", "tools", "utc"]  # the schema's keys, nothing else of the note
+    assert sorted(seen["detector_engine"]) == ["export", "observed", "package", "step", "tools", "utc", "weights_sha256"]
+    assert seen["detector_engine"]["observed"] == "built_by_package_step" and seen["detector_engine"]["export"] == EXPORT
+    assert document["artifacts"]["llama_server"]["file"]["sha256"] == digest(binary)
+    assert [item["name"] for item in document["artifacts"]["llama_server"]["libraries"]] == sorted(LIBRARIES)
+    for role in ("scene_model", "scene_mmproj", "face_model_weights", "face_detector_weights"):
+        # the fixture put these files in place: they equal the pinned checksum, and no download was observed
+        assert seen[role]["observed"] == "verified_against_pinned_checksum", role
+        assert seen[role]["statement"] == "this file equals the pinned SHA-256; this package did not observe its download"
+    platform = document["platform"]
+    assert (platform["l4t"], platform["os"], platform["tensorrt"], platform["python"]) == (
+        "36.4.7", "ubuntu 24.04", "10.3.0.30-1+cuda12.5", "3.10.12")
+    assert platform["packages"] == ENVIRONMENT["packages"] and platform["preflight"] == "verified_combination"
+    assert platform["test_fixture"] == "facts were read from a test fixture, not from a device"
+
+    # the runtime's own, stricter reader takes the record the package wrote, and says the same about it
+    from sentinel import device_artifacts
+
+    read = device_artifacts.load(launch.record)
+    assert read.files["detector_engine"].sha256 == digest(engine)
+    assert read.startup_entry(scene=True)["resource_validation"] == "pending"
+    assert device_artifacts.PURPOSE == document["purpose"] and device_artifacts.SCHEMA == document["schema"]
+    assert device_artifacts.llama_problem(read, model_set="lfm3-vl", library_names=tuple(LIBRARIES)) == (
+        "the llama.cpp build is not https://github.com/ggml-org/llama.cpp at the pinned commit "
+        "19cce6919992fdffd92e0ac152caaf1e2b8f254e")  # read, and judged by the runtime's own pins (the fixture's repository)
+    # ... and the runtime never runs on a record whose platform facts came from a fixture, as this one's did
+    assert device_artifacts.engine_problem(read) == (
+        "the record's platform facts were read from a test fixture, not from a device: no run uses it")
+
+    # a download is recorded as this package's own only when fetch-assets.sh made it
+    model = launch.prefix / "assets/models/lfm3-vl/model.gguf"
+    model.unlink()
+    fetched = launch.run("fetch-assets.sh", "--only", "scene_model", package=launch.installed)
+    assert fetched.returncode == 0 and "asset scene_model: ok" in fetched.stdout, said(fetched)
+    launch.record.rename(launch.record.with_suffix(".old"))
+    assert launch.record_artifacts().returncode == 0
+    seen = {role: item["provenance"] for role, item in json.loads(launch.record.read_text())["artifacts"].items()}
+    assert seen["scene_model"]["observed"] == "downloaded_by_package_step" and seen["scene_model"]["step"] == "fetch-assets.sh"
+    assert seen["scene_model"]["url"] == (launch.tmp / "upstream/model.gguf").as_uri()
+    assert seen["scene_mmproj"]["observed"] == "verified_against_pinned_checksum"
+    # ... and only for the very copy it wrote: the same bytes put there again are a file whose download nobody observed
+    copy = model.read_bytes()
+    model.unlink()
+    model.write_bytes(copy)
+    os.utime(model, (model.stat().st_atime, model.stat().st_mtime + 120))
+    launch.record.rename(launch.record.with_suffix(".older"))
+    assert launch.record_artifacts().returncode == 0
+    seen = json.loads(launch.record.read_text())["artifacts"]["scene_model"]["provenance"]
+    assert seen["observed"] == "verified_against_pinned_checksum" and "step" not in seen
+
+
+@pytest.mark.parametrize("case", ["never_built_by_the_steps", "binary_replaced", "library_replaced", "engine_replaced"])
+def test_a_built_file_that_the_packages_steps_did_not_make_is_inspected_only_and_nothing_is_recorded(
+        routed: Launch, case: str) -> None:
+    launch = routed
+    binary = launch.prefix / "assets/llama.cpp/build/bin/llama-server"
+    if case == "never_built_by_the_steps":  # a build and an engine that were simply put there
+        for name in LIBRARIES:
+            (binary.parent / name).write_bytes(b"a library from somewhere")
+    else:
+        assert launch.build_llama().returncode == 0 and launch.build_engine().returncode == 0
+        if case == "binary_replaced":
+            binary.write_text(binary.read_text() + "# rebuilt by hand\n")
+        elif case == "library_replaced":
+            (binary.parent / LIBRARIES[1]).write_bytes(b"another build's library")
+        else:
+            (launch.prefix / "assets/engine/yolov8n.engine").write_bytes(b"an engine from somewhere")
+    result = launch.record_artifacts()
+    assert result.returncode == 1 and not launch.record.exists(), said(result)
+    llama = case != "engine_replaced"
+    engine = case in ("never_built_by_the_steps", "engine_replaced")
+    assert ("artifact llama_server: llama-server SHA-256 " + digest(binary) + " [inspected_only]" in result.stdout) is llama
+    assert ("NOT USABLE FOR A LAUNCH: llama_server: its build was not observed by this package's step. A checksum does "
+            "not show how a file was built." in result.stdout) is llama
+    assert ("NOT USABLE FOR A LAUNCH: detector_engine: its build was not observed" in result.stdout) is engine
+    assert "nothing was recorded: a record of these files could not be used for a launch" in result.stderr
+
+
+@pytest.mark.parametrize(("case", "told"), [
+    ("another_commit", "the llama.cpp source tree is not at the pinned commit"),
+    ("local_changes", "the llama.cpp source tree has local changes"),
+    ("other_options", "the build tree was not configured with -DGGML_CUDA=ON (it has 'OFF')"),
+    ("library_not_built", "the build ended without"),
+    ("no_marker", "was not started by build-llama.sh for the pinned commit and options"),
+    ("marker_of_other_options", "was not started by build-llama.sh for the pinned commit and options"),
+    ("extra_compiler_flags", "the build tree was configured with extra compiler flags (CMAKE_CXX_FLAGS=-O1 -march=native)"),
+    ("other_export_settings", "the export settings given are not the asset manifest's"),
+    ("other_weights", "are not the pinned file (WRONG CHECKSUM)"),
+])
+def test_a_step_notes_nothing_for_a_tree_or_an_export_that_is_not_the_pinned_one(routed: Launch, case: str, told: str) -> None:
+    launch = routed
+    assert launch.build_llama().returncode == 0 and launch.build_engine().returncode == 0
+    step, extra = "build-llama", []
+    note = launch.prefix / "assets/provenance/llama_server.json"
+    cache = launch.prefix / "assets/llama.cpp/build/CMakeCache.txt"
+    if case == "another_commit":
+        launch.fixture("llama.head", "0" * 40 + "\n")
+    elif case == "local_changes":
+        launch.fixture("llama.status", " M src/llama.cpp\n")
+    elif case == "other_options":
+        cache.write_text(cache.read_text().replace("GGML_CUDA:STRING=ON", "GGML_CUDA:STRING=OFF"))
+    elif case == "library_not_built":
+        (launch.prefix / "assets/llama.cpp/build/bin" / LIBRARIES[0]).unlink()
+    elif case == "no_marker":
+        (cache.parent / ".sentinel-beta-build").unlink()
+    elif case == "marker_of_other_options":
+        (cache.parent / ".sentinel-beta-build").write_text(f"{COMMIT} -DCMAKE_BUILD_TYPE=Debug\n")
+    elif case == "extra_compiler_flags":
+        cache.write_text(cache.read_text().replace("CMAKE_CXX_FLAGS:STRING=", "CMAKE_CXX_FLAGS:STRING=-O1 -march=native"))
+    else:
+        step, note = "build-engine", launch.prefix / "assets/provenance/detector_engine.json"
+        extra = ["--export", json.dumps({**EXPORT, "imgsz": 1280} if case == "other_export_settings" else EXPORT)]
+        if case == "other_weights":
+            (launch.prefix / "assets/engine/yolov8n.pt").write_bytes(b"DETECTOR WEIGHTS")
+    note.unlink()
+    result = artifacts(launch, "note", "--package", str(launch.installed), "--step", step, *extra)
+    assert result.returncode == 1 and told in result.stderr and "nothing was noted" in result.stderr, said(result)
+    assert not note.exists()
+
+
+def test_the_build_script_builds_only_in_a_tree_it_started_and_links_again_what_it_then_notes(routed: Launch) -> None:
+    launch = routed
+    source = launch.prefix / "assets/llama.cpp"
+    binary = source / "build/bin/llama-server"
+    assert launch.build_llama().returncode == 0
+    first = json.loads((launch.prefix / "assets/provenance/llama_server.json").read_text())["outputs"]["llama-server"]["sha256"]
+    # a binary from somewhere else put in the script's own tree, and the script run again: it is not noted as built.
+    # The script removes what an earlier run left, so the build command makes the file again and that one is hashed
+    binary.write_text("#!/bin/bash\necho 'version: 0.7.0-dev (build 11938, commit 19cce6919)'\n# built elsewhere\n")
+    foreign = digest(binary)
+    again = launch.build_llama()
+    assert again.returncode == 0, said(again)
+    assert (launch.tmp / "build.before").read_text() == "left in place when the build command ran:\n"
+    noted = json.loads((launch.prefix / "assets/provenance/llama_server.json").read_text())["outputs"]["llama-server"]["sha256"]
+    assert noted == digest(binary) == first and noted != foreign
+    # compiler or linker flags from the shell would make another build: refused before anything is configured
+    flagged = launch.run("build-llama.sh", package=launch.installed, CXXFLAGS="-O1")
+    assert flagged.returncode == 1 and "CXXFLAGS is set in this shell: unset it first" in flagged.stderr, said(flagged)
+    # a build tree that the script did not start (configured by hand, perhaps with other settings) is never built on
+    (source / "build/.sentinel-beta-build").unlink()
+    (launch.prefix / "assets/provenance/llama_server.json").unlink()
+    by_hand = launch.build_llama()
+    assert by_hand.returncode == 1 and "exists and was not started by this script for this commit and these options" in by_hand.stderr
+    assert not (launch.prefix / "assets/provenance/llama_server.json").exists()
+    shutil.rmtree(source / "build")
+    (source / "build").mkdir()
+    (source / "build/.sentinel-beta-build").write_text(f"{'0' * 40} {' '.join(CMAKE_OPTIONS)}\n")  # another commit's tree
+    assert launch.build_llama().returncode == 1 and not (launch.prefix / "assets/provenance/llama_server.json").exists()
+
+
+def test_the_record_and_its_check_use_the_interpreter_and_binding_the_installation_was_made_with(routed: Launch) -> None:
+    """A tester whose Python 3.10 is not on the PATH names it at installation; a later shell without that variable
+    must get the same preflight answer (the installation's own record of it), not a refusal."""
+    launch = routed
+    custom = launch.tmp / "custom/python3.10"
+    launch.script(custom, '#!/bin/bash\ncase "$*" in *version_info*) echo 3.10 ;; esac; exit 0\n')
+    binding = launch.tmp / "custom/dist-packages"
+    (binding / "tensorrt").mkdir(parents=True)
+    (binding / "tensorrt/__init__.py").write_text("")
+    named = launch.install(SENTINEL_BETA_PYTHON310=str(custom), SENTINEL_BETA_TENSORRT_PYTHON=str(binding))
+    assert named.returncode == 0, said(named)
+    shutil.rmtree(launch.root / "usr/lib/python3.10/dist-packages")  # the binding is nowhere but where the tester named it
+    plain = launch.run("preflight.sh", package=launch.installed)  # a later shell, without the two variables
+    assert plain.returncode == 1 and "no TensorRT Python binding for Python 3.10" in plain.stdout
+    record = launch.recorded()
+    assert json.loads(record.read_text())["platform"]["preflight"] == "verified_combination"
+    checked = launch.check("--device-artifacts", str(record))
+    assert checked.returncode == 0 and "artifact_verification=passed" in checked.stdout, said(checked)
+
+
+def test_an_export_that_fails_leaves_no_engine_note_and_the_script_says_so(routed: Launch) -> None:
+    launch = routed
+    launch.fixture("export.rc", "1\n")
+    result = launch.build_engine()
+    assert result.returncode == 1 and "the export failed" in said(result), said(result)
+    assert not (launch.prefix / "assets/provenance/detector_engine.json").exists()
+    assert not (launch.prefix / "assets/engine/yolov8n.engine").exists()
+
+
+def test_a_record_is_never_replaced_and_an_unverified_platform_is_recorded_only_on_the_testers_word(routed: Launch) -> None:
+    launch = routed
+    record = launch.recorded()
+    first = record.read_bytes()
+    time.sleep(1.1)  # another second: only the record's own time could differ
+    again = launch.record_artifacts()
+    assert again.returncode == 0 and "(already there and unchanged; kept)" in again.stdout and record.read_bytes() == first
+    launch.fixture("build.salt", "second build\n")  # a rebuild: other bytes
+    assert launch.build_llama().returncode == 0
+    refused = launch.record_artifacts()
+    assert refused.returncode == 1 and "it is not replaced. Move it away yourself" in refused.stderr, said(refused)
+    assert record.read_bytes() == first
+    record.rename(record.with_suffix(".old"))
+    launch.fact("etc/os-release", 'ID=ubuntu\nVERSION_ID="22.04"\n')  # stock JetPack 6: never verified
+    unverified = launch.record_artifacts()
+    assert unverified.returncode == 1 and not record.exists(), said(unverified)
+    assert "NOT VERIFIED userland: Ubuntu 22.04" in unverified.stdout
+    assert "this platform was NOT verified (above); nothing was recorded" in unverified.stderr
+    assert "record-artifacts.sh --accept-unverified-platform" in unverified.stderr
+    accepted = launch.record_artifacts("--accept-unverified-platform")
+    assert accepted.returncode == 0 and "platform_preflight=not_verified_acknowledged" in accepted.stdout, said(accepted)
+    assert json.loads(record.read_text())["platform"]["preflight"] == "not_verified_acknowledged"
+    checked = launch.check("--device-artifacts", str(record))
+    assert checked.returncode == 0, said(checked)
+    assert ("platform_preflight=not_verified_acknowledged (NOT VERIFIED: nothing was ever run on this combination; "
+            "acknowledged when the record was made)") in checked.stdout
+    assert "platform not_verified_acknowledged_test_fixture)" in checked.stdout  # the route's closing line says it too
+    launch.fact("etc/os-release", 'ID=debian\nVERSION_ID="12"\n')  # a platform the preflight fails is never recorded
+    record.rename(record.with_suffix(".older"))
+    failed = launch.record_artifacts("--accept-unverified-platform")
+    assert failed.returncode == 1 and "the preflight failed on this device (above); nothing was recorded" in failed.stderr
+    assert not record.exists()
+
+
+def test_the_check_with_a_record_passes_and_says_what_it_did_and_did_not_establish(routed: Launch) -> None:
+    launch = routed
+    record = launch.recorded()
+    result = launch.check("--device-artifacts", str(record))
+    assert result.returncode == 0, said(result)
+    out = result.stdout
+    for role in ("detector_engine", "llama_server", "scene_model", "scene_mmproj", "face_model_weights", "face_detector_weights"):
+        assert f"artifact {role}: ok (" in out, role
+    assert f"device_artifacts_record={record}" in out and f"device_artifacts_record_sha256={digest(record)}" in out
+    assert "artifact_verification=passed (every file equals the record, whole, by SHA-256)" in out
+    assert "resource_validation=pending" in out
+    assert ("resource_validation_note=no run on this device has been measured or judged. The accepted resource profile, "
+            "the launch gates and the guard's limits come from the reference device: here they are limits, not evidence "
+            "about this device") in out
+    assert "TEST FIXTURE: this record's platform facts came from a test fixture, not from a device" in out
+    assert "platform_facts=test_fixture" in out.splitlines()
+    assert "admission_check=as_expected_for_device_artifacts" in out and "command_line_check=run: rtsp_url_missing" in out
+    route = next(line for line in out.splitlines() if line.startswith("BETA_CHECK_ROUTE="))
+    assert "opt-in, experimental validation runs only" in route and "its resources are NOT validated" in route
+    assert "resource_validation=pending" in route and route.endswith("platform verified_combination_test_fixture)")
+    assert out.rstrip().endswith("BETA_CHECK=passed (no credentials asked, no sudo, the camera was not opened, no model was loaded)")
+    for word in ("validated=yes", "resource_validation=passed", "admitted_by_profile"):
+        assert word not in out
+    given = (launch.tmp / "admission.args").read_text().split("\n")  # the runtime's decisions are asked for that record
+    assert given[given.index("--device-artifacts") + 1] == str(record)
+    argv = json.loads((launch.tmp / "runtime-check.json").read_text())["argv"]
+    assert argv[argv.index("--device-artifacts") + 1] == str(record)
+    for flag in ("--face", "--face-validation", "--chat-validation", "--workload-thp-disable", "--post-load-release"):
+        assert flag in argv, flag
+    assert "--snapshots" not in argv and launch.observations() == [] and not (launch.tmp / "runtime.json").exists()
+    assert not any(call.startswith("sudo") for call in launch.calls())
+    relative = launch.run("check.sh", "--device-artifacts", os.path.relpath(record, launch.tmp), package=launch.installed)
+    assert relative.returncode == 0 and f"device_artifacts_record={record}" in relative.stdout  # a relative path is this shell's
+    # the default check on the same device is exactly the default: no record is read, and none is passed on
+    launch.fixture("admission.out", ADMITTED)
+    plain = launch.check()
+    assert plain.returncode == 0 and "device_artifacts" not in plain.stdout and "BETA_CHECK_ROUTE" not in plain.stdout
+    assert "--device-artifacts" not in (launch.tmp / "admission.args").read_text()
+    assert "--device-artifacts" not in json.loads((launch.tmp / "runtime-check.json").read_text())["argv"]
+    usage = launch.check("--device-artifacts")
+    assert usage.returncode == 2 and "usage: bash start.sh [--check] [--device-artifacts FILE]" in usage.stdout
+
+
+def differs(launch: Launch, case: str) -> str:
+    record = launch.record
+    binary = launch.prefix / "assets/llama.cpp/build/bin/llama-server"
+    if case == "engine_rebuilt":
+        (launch.prefix / "assets/engine/yolov8n.engine").write_bytes(b"another engine, built later")
+    elif case == "library_missing":
+        (binary.parent / LIBRARIES[2]).unlink()
+    elif case == "binary_changed":
+        binary.write_text(binary.read_text() + "# changed\n")
+    elif case == "model_copied_again":
+        model = launch.prefix / "assets/models/lfm3-vl/model.gguf"
+        os.utime(model, (model.stat().st_atime, model.stat().st_mtime + 3600))
+    elif case == "record_claims_a_validation":
+        edited(record, lambda d: d.update(resource_validation="passed"))
+    elif case == "record_carries_a_measurement":
+        edited(record, lambda d: d.update(resource_profile={"steady_max_bytes": 4_397_879_296}))
+    elif case == "provenance_carries_a_claim":
+        edited(record, lambda d: d["artifacts"]["detector_engine"]["provenance"].update(resource_validation="validated"))
+    elif case == "platform_carries_a_claim":
+        edited(record, lambda d: d["platform"].update(resource_validated=True))
+    elif case == "record_of_mistyped_export_settings":
+        edited(record, lambda d: d["artifacts"]["detector_engine"]["provenance"]["export"].update(batch=True, device=False))
+    elif case == "record_with_an_impossible_time":
+        edited(record, lambda d: d.update(created_utc="9999-99-99T99:99:99Z"))
+    elif case == "record_of_an_inspected_build":
+        edited(record, lambda d: d["artifacts"]["llama_server"].update(provenance={
+            "observed": "inspected_only",
+            "statement": ("only this file's checksum was read; how it was built was not observed by this package's "
+                          "build step, so nothing is recorded about its source or settings")}))
+    elif case == "record_of_another_commit":
+        edited(record, lambda d: d["artifacts"]["llama_server"]["provenance"].update(commit="0" * 40))
+    elif case == "record_of_other_export_settings":
+        edited(record, lambda d: d["artifacts"]["detector_engine"]["provenance"]["export"].update(imgsz=1280))
+    elif case == "record_of_other_tools":
+        edited(record, lambda d: d["artifacts"]["detector_engine"]["provenance"]["tools"].update(ultralytics="8.4.26"))
+    elif case == "record_not_json":
+        record.write_text("not a record\n")
+    elif case == "record_missing":
+        record.unlink()
+    elif case == "tensorrt_upgraded":
+        launch.dpkg({"cuda-toolkit-12-6": "12.6.11-1", "libnvinfer10": "10.7.0.23-1+cuda12.6", "libcudnn9-cuda-12": "9.3.0.75-1"})
+    elif case == "tensorrt_patched":
+        launch.dpkg({"cuda-toolkit-12-6": "12.6.11-1", "libnvinfer10": "10.3.0.31-1+cuda12.5", "libcudnn9-cuda-12": "9.3.0.75-1"})
+    elif case == "package_upgraded":
+        launch.fixture("environment.json", json.dumps({**ENVIRONMENT, "packages": {**ENVIRONMENT["packages"], "torch": "2.9.2"}}))
+    elif case == "userland_changed":
+        launch.fact("etc/os-release", 'ID=ubuntu\nVERSION_ID="22.04"\n')
+    elif case == "refused_by_the_runtime":
+        launch.fixture("admission.out", "detector_engine=refused\nadmission_check=failed:detector_engine\n")
+        launch.fixture("admission.rc", "1\n")
+    else:
+        raise AssertionError(case)
+    return str(record)
+
+
+@pytest.mark.parametrize(("case", "expected", "launch_too"), [
+    ("engine_rebuilt", "REFUSED: detector_engine: ", True),
+    ("library_missing", "libllama.so.0.7.0 is MISSING", False),
+    ("binary_changed", "has CHANGED since it was recorded", False),
+    ("model_copied_again", "has the recorded content but another modification time", False),
+    ("record_claims_a_validation", 'the record\'s resource_validation is not "pending": a record identifies files and validates nothing', True),
+    ("record_carries_a_measurement", "the record's top level does not hold exactly", False),
+    ("provenance_carries_a_claim", "the record's artifacts.detector_engine.provenance does not hold exactly", False),
+    ("platform_carries_a_claim", "the record's platform does not hold exactly its versions, packages and preflight", False),
+    ("record_of_mistyped_export_settings", "REFUSED: detector_engine: it was not exported from the pinned weights with the pinned settings", False),
+    ("record_with_an_impossible_time", "the record's created_utc or package is not as the schema requires", False),
+    ("record_of_an_inspected_build", "REFUSED: llama_server: its build was not observed by this package's step", False),
+    ("record_of_another_commit", "REFUSED: llama_server: it was not built from the pinned repository and commit with the pinned options", False),
+    ("record_of_other_export_settings", "REFUSED: detector_engine: it was not exported from the pinned weights with the pinned settings", False),
+    ("record_of_other_tools", "REFUSED: detector_engine: it was not exported with the pinned tool versions", False),
+    ("record_not_json", "the record is not a JSON document", False),
+    ("record_missing", "there is no device-artifacts record at", True),
+    ("tensorrt_upgraded", "REFUSED: platform: the preflight fails on this device now", False),
+    ("tensorrt_patched", 'REFUSED: platform: tensorrt is "10.3.0.31-1+cuda12.5" now; the record has "10.3.0.30-1+cuda12.5"', False),
+    ("package_upgraded", "REFUSED: platform: packages is ", False),
+    ("userland_changed", "REFUSED: platform: the preflight now reads 'not_verified_acknowledged', the record has 'verified_combination'", False),
+    ("refused_by_the_runtime", "an admission decision is not as the device-artifacts route expects", True),
+])
+def test_whatever_is_not_as_the_record_says_stops_the_check_and_the_launch(
+        routed: Launch, case: str, expected: str, launch_too: bool) -> None:
+    launch = routed
+    launch.recorded()
+    record = differs(launch, case)
+    result = launch.check("--device-artifacts", record)
+    assert result.returncode == 1 and expected in said(result), said(result)
+    assert "BETA_CHECK=passed" not in result.stdout and "BETA_CHECK_ROUTE" not in result.stdout
+    assert "The camera was not opened." in result.stdout
+    assert ("Nothing is bypassed" in result.stdout) is (case != "record_missing")  # a missing record: how to make one
+    assert "artifact_verification=passed" not in result.stdout
+    if "REFUSED: " in expected:
+        assert "artifact_verification=FAILED" in result.stdout and "never edit a record or a file's time by hand" in result.stdout
+    if case != "refused_by_the_runtime":
+        assert not (launch.tmp / "admission.args").exists()  # stopped before the runtime's decisions were even asked for
+    if launch_too:
+        terminal = Terminal(launch, "--device-artifacts", record)  # the launch stops at the same place, before any prompt
+        assert terminal.finish() == 1
+        assert expected in terminal.text() and "type START" not in terminal.text()
+    assert launch.observations() == [] and not (launch.tmp / "runtime.json").exists()
+
+
+def test_a_launch_with_a_record_keeps_every_gate_and_says_that_nothing_was_validated(routed: Launch) -> None:
+    launch = routed
+    record = launch.recorded()
+    script = (launch.installed / "start.sh").read_text()  # the gates and limits are the accepted launcher's, as they were
+    for line in ("DURATION_S=3600  # the guard's own maximum", "FLOOR=$((5647138816 + HELD_PICTURES_BYTES))",
+                 "IN_USE_LIMIT=$((1327566848 - HELD_PICTURES_BYTES))", '[ "$A" = START ] || stop_now "you did not type START"',
+                 '--require-ready face_chat_windows --scene-layers 25/25 --duration-s "$DURATION_S" --ready-timeout-s 300'):
+        assert line in script, line
+    declined = Terminal(launch, "--device-artifacts", str(record))
+    to_the_start_prompt(declined)
+    declined.type("")  # Enter: with a record too, only START opens the camera
+    assert declined.finish() == 1 and "STOP: you did not type START" in declined.text()
+    assert not (launch.tmp / "runtime.json").exists() and not (launch.tmp / "guard.json").exists()
+    for folder in launch.observations():
+        assert not (folder / "device-artifacts.json").exists()  # nothing of the route was written before START
+        shutil.rmtree(folder)
+    time.sleep(1.1)  # observation folders are named by the second
+
+    terminal = Terminal(launch, "--device-artifacts", str(record))
+    to_the_start_prompt(terminal)
+    before = terminal.text()
+    assert "DEVICE-ARTIFACTS ROUTE (opt-in, experimental)" in before and "NOT validated" in before
+    assert "Resource" in before and "validation is PENDING: nothing was measured on this device." in before
+    assert "here they are limits, not evidence." in before and "Platform      : TEST FIXTURE: the platform facts did not come from this device (the verified combination)" in before
+    assert "DEVICE-ARTIFACTS ROUTE: this device's own files, as recorded; this device's resources are NOT validated (pending)." in before
+    assert not (launch.tmp / "runtime.json").exists()  # still nothing started
+    terminal.type("START")
+    assert terminal.wait_for(r"Features this run started with:", 30), terminal.text()
+    terminal.interrupt()
+    assert terminal.finish() == 0, terminal.text()
+    text = terminal.text()
+    assert re.search(r"Observation ended: status=operator_interrupt .* camera_opened=yes clean=yes", text), text
+    assert ("route=device artifacts (experimental validation run on this device's own files; resource_validation=pending: "
+            "this run measured and validated nothing)") in text and "OBS_exit=0" in text
+    (observation,) = launch.observations()
+    kept = observation / "device-artifacts.json"
+    assert kept.read_bytes() == record.read_bytes() and kept.stat().st_mode & 0o777 == 0o600
+    seen = json.loads((launch.tmp / "runtime.json").read_text())
+    argv = seen["argv"]
+    assert argv[argv.index("--device-artifacts") + 1] == str(kept)  # the run reads its own copy: the bytes that were checked
+    assert argv.count("--device-artifacts") == 1
+    for flag in ("--scene", "--face", "--face-validation", "--identity-retention", "--chat", "--chat-validation",
+                 "--live-preview", "--feature-controls", "--workload-thp-disable", "--post-load-release"):
+        assert flag in argv, flag
+    assert "--snapshots" not in argv and not seen["telegram"]  # snapshots and notifications stay off
+    assert seen["url_sha256"] == sha(URL) and seen["passphrase_sha256"] == sha(PASSPHRASE)
+    guard = json.loads((launch.tmp / "guard.json").read_text())["guard_args"]  # the guard is started exactly as without a record
+    assert guard[guard.index("--duration-s") + 1] == "3600" and guard[guard.index("--require-ready") + 1] == "face_chat_windows"
+    assert "--step4-headroom" in guard and guard[guard.index("--scene-layers") + 1] == "25/25"
+    assert guard[guard.index("--ready-timeout-s") + 1] == "300" and "--device-artifacts" not in guard
+    note = (observation / "launch.txt").read_text()
+    for line in ("kind=live_observation_validates_nothing", "route=device_artifacts_experimental_validation_run",
+                 f"device_artifacts_record_sha256={digest(record)}", "artifact_verification=passed",
+                 "resource_validation=pending", "platform_preflight=verified_combination_test_fixture"):
+        assert line in note.splitlines(), line
+    assert launch.secrets_in_files() == [] and URL not in text and PASSPHRASE not in text

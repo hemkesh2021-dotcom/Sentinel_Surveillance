@@ -3,10 +3,18 @@ functions on this device's real files. Prints fixed labels; exit 0 only when eve
 Nothing is admitted, changed or bypassed here: a refusal is reported and the launch stops.
 
 usage: PYTHONPATH=src python -B admission_check.py LIVE_YAML IDENTITY_DIR --engine FILE
-           --llama-server FILE --scene-model FILE --scene-mmproj FILE --weights-dir DIR
+           --llama-server FILE --scene-model FILE --scene-mmproj FILE --weights-dir DIR [--device-artifacts FILE]
 The five paths are this installation's own (the accepted launcher used the same files at their default places).
 The detector engine is compared with the accepted build's own pin, as the detector does when it loads: the accepted
 launcher left that to the run itself; here it is said before anything starts.
+
+With --device-artifacts FILE (the opt-in route for experimental validation runs on the tester's own device): the
+same decisions, made as the runtime makes them for a run on that record. The default admission's own answers are
+printed beside them and are not changed by the record; the record is read by the runtime's own strict reader; the
+files are compared with it by the runtime's own startup rule; and what is expected is different in one way only:
+the engine, the llama.cpp build and the model files are this device's, as recorded. Face recognition, retention and
+chat must still be refused without their validation flags. It ends with resource_validation=pending: a record
+identifies files, and no decision here is a measurement of this device.
 """
 
 from __future__ import annotations
@@ -16,7 +24,9 @@ import sys
 from pathlib import Path
 
 from sentinel.config import STREAM_MAIN_SINGLE, load_config
-from sentinel.demo_runtime import FaceOptions, SceneOptions, face_admission, scene_admission
+from sentinel.demo_runtime import FaceOptions, SceneOptions, device_engine_problem, face_admission, scene_admission
+from sentinel.device_artifacts import RESOURCE_VALIDATION_PENDING, DeviceArtifactsError
+from sentinel.device_artifacts import load as load_device_artifacts
 from sentinel.identity.retention import reported_numbers
 from sentinel.identity.vault import Secret
 from sentinel.inference.legacy_ultralytics import LEGACY_ENGINE_SHA256, file_sha256
@@ -42,7 +52,17 @@ def main() -> int:
     parser.add_argument("--scene-model", type=Path, required=True)
     parser.add_argument("--scene-mmproj", type=Path, required=True)
     parser.add_argument("--weights-dir", type=Path, required=True)
+    parser.add_argument("--device-artifacts", type=Path, default=None)
     args = parser.parse_args()
+    record = None
+    if args.device_artifacts is not None:
+        try:
+            record = load_device_artifacts(args.device_artifacts)
+        except DeviceArtifactsError as exc:
+            print("device_artifacts=refused")
+            print(f"device_artifacts_refusal: {exc.label}", file=sys.stderr)
+            print("admission_check=failed:device_artifacts")
+            return 1
     config = load_config(args.config)
     identity_dir = args.identity_dir
     failed: list[str] = []
@@ -61,24 +81,36 @@ def main() -> int:
         pinned = file_sha256(args.engine) == LEGACY_ENGINE_SHA256
     except OSError:
         pinned = False
-    line("detector_engine", "the_pinned_engine" if pinned else "refused", pinned)
-    if not pinned:
-        print("detector_refusal: engine_hash_mismatch: the accepted build loads only the engine with SHA-256 "
-              f"{LEGACY_ENGINE_SHA256}; an engine built on this device is another file", file=sys.stderr)
-
     chosen = scene_model_set(SET)
     options = SceneOptions(args.llama_server, args.scene_model, args.scene_mmproj, model_set=chosen.key)
     problem, _ = scene_admission(config, options, policy=CANDIDATE_POLICY)
-    line("scene_admission", "admitted" if problem is None else "refused", problem is None)
-    if problem is not None:
-        print(f"scene_refusal: {problem}", file=sys.stderr)
+    if record is None:
+        line("detector_engine", "the_pinned_engine" if pinned else "refused", pinned)
+        if not pinned:
+            print("detector_refusal: engine_hash_mismatch: the accepted build loads only the engine with SHA-256 "
+                  f"{LEGACY_ENGINE_SHA256}; an engine built on this device is another file", file=sys.stderr)
+        line("scene_admission", "admitted" if problem is None else "refused", problem is None)
+        if problem is not None:
+            print(f"scene_refusal: {problem}", file=sys.stderr)
+    else:  # the default admission's own answers, as they are; then the run on the record, as the runtime decides it
+        print(f"default_admission_detector_engine={'the_pinned_engine' if pinned else 'refused'}")
+        print(f"default_admission_scene={'admitted' if problem is None else 'refused'}")
+        print(f"device_artifacts_record_sha256={record.record_sha256}")
+        problem = device_engine_problem(args.engine, record)
+        line("detector_engine", "the_recorded_engine_validation_run_only" if problem is None else "refused", problem is None)
+        if problem is not None:
+            print(f"detector_refusal: {problem}", file=sys.stderr)
+        problem, _ = scene_admission(config, options, policy=CANDIDATE_POLICY, artifacts=record)
+        line("scene_admission", "files_as_recorded_validation_run_only" if problem is None else "refused", problem is None)
+        if problem is not None:
+            print(f"scene_refusal: {problem}", file=sys.stderr)
 
     weights = args.weights_dir
     secret = Secret("not-the-passphrase-no-gallery-is-opened")
     plain = face_admission(config, FaceOptions(identity_dir, secret, validation_run=False), policy=CANDIDATE_POLICY,
-                           weights_dir=weights)
+                           weights_dir=weights, artifacts=record)
     validated = face_admission(config, FaceOptions(identity_dir, secret, validation_run=True), policy=CANDIDATE_POLICY,
-                               weights_dir=weights)
+                               weights_dir=weights, artifacts=record)
     line("face_admission_without_validation_flag", "refused" if plain is not None else "ALLOWED", plain is not None)
     line("face_admission_validation_run", "allowed" if validated is None else "refused", validated is None)
     if validated is not None:
@@ -87,7 +119,7 @@ def main() -> int:
     retention = reported_numbers(config.identity.retention_policy(), config.identity.continuity_policy())
     line("identity_retention_rule", "proposed_defaults" if retention == RETENTION else "CHANGED", retention == RETENTION)
     plain_retention = face_admission(config, FaceOptions(identity_dir, secret, validation_run=False, retention=True),
-                                     policy=CANDIDATE_POLICY, weights_dir=weights)
+                                     policy=CANDIDATE_POLICY, weights_dir=weights, artifacts=record)
     line("identity_retention_without_validation_flag", "refused" if plain_retention is not None else "ALLOWED",
          plain_retention is not None)
     labels = len(config.identity.display_labels)
@@ -100,6 +132,10 @@ def main() -> int:
     if failed:
         print("admission_check=failed:" + ",".join(failed))
         return 1
+    if record is not None:
+        print(f"resource_validation={RESOURCE_VALIDATION_PENDING}")
+        print("admission_check=as_expected_for_device_artifacts")
+        return 0
     print("admission_check=as_expected")
     return 0
 

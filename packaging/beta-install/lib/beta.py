@@ -17,6 +17,9 @@ touches anything outside the prefix and the data directory it is given. Sub-comm
   fetch-assets --package DIR [--manifest FILE] [--only ID]   download the listed files and check them
   verify-assets --package DIR [--manifest FILE]      check every listed asset that is a file; no download
   asset        --package DIR ID FIELD        print one field of one asset (for the build scripts)
+
+The device-artifacts record (what this device's own files are, for experimental validation runs) is lib/artifacts.py's;
+this file only notes a download it made itself (write_note), which that record then reports as observed.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 MANIFEST_NAME = "install-manifest.txt"
@@ -524,6 +528,15 @@ def check_file(asset: dict, target: Path) -> str | None:
     return None
 
 
+def write_note(paths: dict[str, str], asset_id: str, note: dict) -> None:
+    """What a step of this package observed itself about an asset it has just made or downloaded, kept under
+    <prefix>/assets/provenance/ for the device-artifacts record (lib/artifacts.py). A note is only ever written by
+    the step that did the work, and names the SHA-256 of what it produced: a file with other bytes is not its."""
+    folder = Path(paths["ASSETS"]) / "provenance"
+    folder.mkdir(parents=True, exist_ok=True)
+    atomic_write(folder / f"{asset_id}.json", json.dumps(note, indent=1, sort_keys=True) + "\n", 0o600)
+
+
 def download(url: str, target: Path, token: str | None) -> None:
     request = urllib.request.Request(url)
     if token and url.startswith("https://huggingface.co/"):
@@ -572,6 +585,15 @@ def command_fetch(args: argparse.Namespace) -> int:
             failed += 1
             continue
         os.replace(part, target)
+        try:  # this step downloaded it from the pinned address and it equals the pinned checksum: noted as observed
+            write_note(paths, asset["id"], {
+                "observed": "downloaded_by_package_step", "step": "fetch-assets.sh", "url": asset["url"],
+                "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "sha256": asset.get("sha256"),
+                "bytes": target.stat().st_size, "target": str(target),  # this very copy: its place and its time
+                "mtime_utc": datetime.fromtimestamp(target.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")})
+        except OSError as error:
+            say(f"asset {asset['id']}: the download could not be noted ({type(error).__name__}); a record will say "
+                "that the file equals the pinned checksum, not that this package downloaded it")
         say(f"asset {asset['id']}: ok ({target})")
     return 1 if failed else 0
 
@@ -601,7 +623,8 @@ def command_asset(args: argparse.Namespace) -> int:
             value = str(asset_target(paths, asset)) if args.field == "target" else asset.get(args.field)
             if value is None:
                 raise Stop(f"asset {args.id} has no '{args.field}'")
-            say(" ".join(value) if isinstance(value, list) else str(value))
+            say(" ".join(value) if isinstance(value, list) else json.dumps(value, sort_keys=True)
+                if isinstance(value, dict) else str(value))
             return 0
     raise Stop(f"no asset '{args.id}' in the manifest")
 

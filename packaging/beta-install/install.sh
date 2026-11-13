@@ -44,14 +44,20 @@ python3 -I -B "$HERE/lib/beta.py" install --source "$HERE" --prefix "$PREFIX" --
 cat <<NEXT
 
 Installed. Nothing was started, and nothing starts by itself.
-NOTE: this package CANNOT LAUNCH ON ANOTHER JETSON YET. The accepted build admits only the reference device's own
-detector engine, llama.cpp build and model-file copies; check.sh will say so. QUICKSTART.md, section 1, explains.
+NOTE: on a Jetson other than the reference device, the default check and launch are REFUSED: the default admission
+admits only the reference device's own detector engine, llama.cpp build and model-file copies. Your own files can be
+used only through the opt-in device-artifacts route, for experimental validation runs: it identifies your files by a
+record made here, and validates nothing about this device's resources. It has never been run on another device.
+QUICKSTART.md, section 1, explains.
 Next, in this order (QUICKSTART.md explains each; all run from $PREFIX/package):
   bash setup-env.sh       the Python environment (downloads the pinned packages)
   bash fetch-assets.sh    the model files (downloads, each checked against its checksum)
   bash build-llama.sh     llama.cpp at the pinned commit, built on this device
   bash build-engine.sh    the detector's TensorRT engine, built on this device
   bash identity.sh ...    your own enrollment, with your recorded consent
-  bash check.sh           everything checked offline; the camera stays closed
-  bash start.sh           the manual launch; the camera opens only after you type START
+  bash record-artifacts.sh                the record of this device's own files (reads them; changes nothing)
+  bash check.sh --device-artifacts FILE   everything checked offline; the camera stays closed
+  bash start.sh --device-artifacts FILE   the manual launch; the camera opens only after you type START
+(FILE is the record's path, which record-artifacts.sh prints. Without --device-artifacts, check.sh and start.sh use
+the default admission, which passes on the reference device only.)
 NEXT

@@ -2,6 +2,10 @@
 # Sentinel personal beta: the manual launch (local only; see QUICKSTART.md). Run as yourself, from a plain SSH shell.
 #   bash start.sh           checks, asks for the camera URL and the passphrase (hidden), and opens the camera ONLY after you type START
 #   bash start.sh --check   checks only: no credentials, no sudo, no camera, no model; keeps no record outside a temporary directory
+#   either, with --device-artifacts FILE   opt-in, experimental: this device's own detector engine, llama.cpp build and
+#                           model files, identified by your record FILE (record-artifacts.sh) instead of by the
+#                           reference device's records. Every file is checked whole against the record first. For
+#                           validation runs only; this device's resources are NOT validated (QUICKSTART.md, section 1).
 # It validates and admits nothing: face recognition, identity retention and chat run as experimental validation-run
 # features, exactly as in the build this package was made from. Snapshots and external notifications stay off.
 set -uo pipefail
@@ -58,8 +62,15 @@ on_exit() {
 }
 trap on_exit EXIT
 
-MODE=launch
-case "${1:-}" in "") ;; --check) MODE=check ;; *) echo "usage: bash start.sh [--check]"; exit 2 ;; esac
+MODE=launch; DEVICE_RECORD=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --check) MODE=check; shift ;;
+    --device-artifacts) [ $# -ge 2 ] && [ -n "$2" ] || { echo "usage: bash start.sh [--check] [--device-artifacts FILE]"; exit 2; }
+                        DEVICE_RECORD="$2"; shift 2 ;;
+    *) echo "usage: bash start.sh [--check] [--device-artifacts FILE]"; exit 2 ;;
+  esac
+done
 
 # ---- checks, in both modes; none of them opens the camera or loads a model ----
 [ "$(id -u)" != 0 ] || stop_now "run as your own user, without sudo"
@@ -81,24 +92,57 @@ if pgrep -u "$(id -u)" -x llama-server >/dev/null 2>&1; then stop_now "a llama-s
 if pgrep -u "$(id -u)" -f -- "-m sentinel\.cli run" >/dev/null 2>&1; then stop_now "a Sentinel runtime is running: stop it first (bash $PKG/stop.sh)"; fi
 if ss -ltnH 2>/dev/null | awk '{print $4}' | grep -Eq ":($PORTS)\$"; then stop_now "port 18090 or 18081 is already in use"; fi
 
+# ---- the opt-in device-artifacts route: this device's own files, each checked whole against your record ----
+# Nothing here admits or measures anything. Without --device-artifacts none of it runs and the default admission
+# below is the only one.
+ROUTE=(); RUN_ROUTE=(); RECORD_SHA=""; ARTIFACTS=""; PLATFORM_STATE=""; PLATFORM_SAY=""
+if [ -n "$DEVICE_RECORD" ]; then
+  case "$DEVICE_RECORD" in /*) ;; *) DEVICE_RECORD="$PWD/$DEVICE_RECORD" ;; esac
+  [ -f "$DEVICE_RECORD" ] || stop_now "there is no device-artifacts record at $DEVICE_RECORD. Make one with: bash $PKG/record-artifacts.sh"
+  ARTIFACTS="$(python3 -I -B "$PKG/lib/artifacts.py" verify --package "$PKG" --record "$DEVICE_RECORD")" \
+    || { printf '%s\n' "$ARTIFACTS"; stop_now "this device's files are not as the record says, or the record cannot be used (above). Nothing is bypassed: QUICKSTART.md, section 1"; }
+  RECORD_SHA="$(sed -n 's/^device_artifacts_record_sha256=//p' <<<"$ARTIFACTS" | head -n 1)"
+  PLATFORM_STATE="$(sed -n 's/^platform_preflight=\([a-z_]*\).*/\1/p' <<<"$ARTIFACTS" | head -n 1)"
+  case "$PLATFORM_STATE" in
+    verified_combination) PLATFORM_SAY="the verified combination" ;;
+    not_verified_acknowledged) PLATFORM_SAY="NOT VERIFIED: nothing was ever run on this combination (you acknowledged that when the record was made)" ;;
+    *) stop_now "the record's check did not report the platform's state" ;;
+  esac
+  [ "${#RECORD_SHA}" = 64 ] || stop_now "the record's check did not report the record's checksum"
+  case "$(sed -n 's/^platform_facts=//p' <<<"$ARTIFACTS" | head -n 1)" in
+    this_device) ;;
+    test_fixture) PLATFORM_STATE="${PLATFORM_STATE}_test_fixture"; PLATFORM_SAY="TEST FIXTURE: the platform facts did not come from this device ($PLATFORM_SAY)" ;;
+    *) stop_now "the record's check did not report where the platform facts came from" ;;
+  esac
+  ROUTE=(--device-artifacts "$DEVICE_RECORD")
+fi
+
 cd "$APP" || stop_now "the package's application tree is not at $APP"
 VALID="$("${RT[@]}" config validate "$CONFIG" 2>&1)" || { printf '%s\n' "$VALID"; stop_now "the configuration did not validate ($CONFIG)"; }
 grep -qxF '  adapter llama-lfm2-vl-scene: enabled (enabled)' <<<"$VALID" || { printf '%s\n' "$VALID"; stop_now "the scene adapter is not enabled in $CONFIG"; }
 grep -qxF '  adapter legacy-deepface-facenet512-yunet: enabled (enabled for guarded --face-validation runs only (admission pending validation))' <<<"$VALID" \
   || { printf '%s\n' "$VALID"; stop_now "the face adapter is not as expected in $CONFIG"; }
 ADMIT="$(env -u SENTINEL_RTSP_URL -u SENTINEL_IDENTITY_PASSPHRASE PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src "$RT_PY" -B "$PKG/lib/admission_check.py" \
-          "$CONFIG" "$IDENT" --engine "$ENGINE" --llama-server "$LLAMA_SERVER" --scene-model "$SCENE_MODEL" --scene-mmproj "$SCENE_MMPROJ" --weights-dir "$WEIGHTS_DIR")" \
-  || { printf '%s\n' "$ADMIT"; stop_now "an admission decision is not as this package expects (above). The accepted build admits only the files it was measured with, and nothing is bypassed here: QUICKSTART.md, 'What still blocks another device'"; }
-[ "$MODE" = check ] && printf '%s\n' "$ADMIT"
+          "$CONFIG" "$IDENT" --engine "$ENGINE" --llama-server "$LLAMA_SERVER" --scene-model "$SCENE_MODEL" --scene-mmproj "$SCENE_MMPROJ" --weights-dir "$WEIGHTS_DIR" "${ROUTE[@]}")" \
+  || { printf '%s\n' "$ADMIT"
+       if [ -n "$DEVICE_RECORD" ]; then stop_now "an admission decision is not as the device-artifacts route expects (above). Nothing is bypassed: QUICKSTART.md, section 1"; fi
+       stop_now "an admission decision is not as this package expects (above). The default admission admits only the reference device's own files, and nothing is bypassed here. On your own device: the opt-in device-artifacts route, QUICKSTART.md, section 1"; }
+if [ "$MODE" = check ]; then
+  printf '%s\n' "$ADMIT"
+  [ -z "$ARTIFACTS" ] || printf '%s\n' "$ARTIFACTS"
+fi
 
 if [ "$MODE" = check ]; then
   TMPCHECK="$(mktemp -d)" || stop_now "no temporary directory"
-  LINE="$(env -u SENTINEL_RTSP_URL SENTINEL_IDENTITY_PASSPHRASE=check-only-not-a-passphrase "${RT[@]}" run "$CONFIG" --data-dir "$TMPCHECK/db" "${FLAGS[@]}" 2>&1 >/dev/null | tail -n 1)"
+  LINE="$(env -u SENTINEL_RTSP_URL SENTINEL_IDENTITY_PASSPHRASE=check-only-not-a-passphrase "${RT[@]}" run "$CONFIG" --data-dir "$TMPCHECK/db" "${FLAGS[@]}" "${ROUTE[@]}" 2>&1 >/dev/null | tail -n 1)"
   echo "command_line_check=$LINE"
   [ "$LINE" = "run: rtsp_url_missing" ] || stop_now "the launch command was not accepted up to the camera URL check"
   echo "package=$(head -n 1 "$PKG/VERSION")"
   grep -m 1 '^application=' "$PKG/VERSION" || echo "application=not stated in $PKG/VERSION"
   echo "memfree_bytes=$(meminfo MemFree) launch_floor_bytes=$FLOOR display_manager=$(systemctl is-active display-manager 2>/dev/null || true)"
+  if [ -n "$DEVICE_RECORD" ]; then
+    echo "BETA_CHECK_ROUTE=device_artifacts (opt-in, experimental validation runs only: this device's files equal its record; its resources are NOT validated, resource_validation=pending; platform $PLATFORM_STATE)"
+  fi
   echo "BETA_CHECK=passed (no credentials asked, no sudo, the camera was not opened, no model was loaded)"
   exit 0
 fi
@@ -119,6 +163,22 @@ cat <<'BOX'
 =========================================================================
 
 BOX
+if [ -n "$DEVICE_RECORD" ]; then
+  cat <<BOX
+================ DEVICE-ARTIFACTS ROUTE (opt-in, experimental) ================
+  Files         : this device's own detector engine, llama.cpp build and
+                  model files; each equals your record by SHA-256 (checked
+                  just now). That is all the record shows.
+  NOT validated : this device's memory use, speed and stability. Resource
+                  validation is PENDING: nothing was measured on this device.
+                  The memory gates and the guard's limits are the reference
+                  device's; here they are limits, not evidence.
+  Platform      : $PLATFORM_SAY
+  Record        : $DEVICE_RECORD
+===============================================================================
+
+BOX
+fi
 
 OBS="$OBS_ROOT/obs-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p -m 700 "$OBS_ROOT" && chmod 700 "$OBS_ROOT" && mkdir -m 700 "$OBS" "$OBS/db" || stop_now "could not make $OBS"
@@ -169,6 +229,7 @@ echo "main-stream head-window recognition, experimental; your own enrollment; id
 echo "experimental (PROPOSED values); live view on; capped LFM3 scene analysis; chat, experimental (a validation run;"
 echo "not admitted) with recorded-fact answers, follow-ups, refresh, zoom and scan; feature controls; no snapshots;"
 echo "no notifications."
+[ -z "$DEVICE_RECORD" ] || echo "DEVICE-ARTIFACTS ROUTE: this device's own files, as recorded; this device's resources are NOT validated (pending)."
 read -rp 'type START to open the camera now, or press Enter to stop without opening it: ' A
 [ "$A" = START ] || stop_now "you did not type START"
 START_UTC="$(date -u +%FT%TZ)"
@@ -182,6 +243,14 @@ FREE="$(meminfo MemFree)"; AVAIL="$(meminfo MemAvailable)"; IN_USE=$(( $(meminfo
 [ "$IN_USE" -lt "$IN_USE_LIMIT" ] || stop_now "memory in use $IN_USE B is at or above $IN_USE_LIMIT B: the rise measured on the reference device would reach the guard's 4.8 GB stop; close what is running, then rerun start.sh"
 { echo "kind=live_observation_validates_nothing"; echo "prepared_utc=$PREPARED_UTC"; echo "camera_start_typed_utc=$START_UTC"; echo "package=$(head -n 1 "$PKG/VERSION")"
   echo "memfree_before_launch_bytes=$FREE"; echo "in_use_before_launch_bytes=$IN_USE"; echo "display_manager_stopped_by_launcher=$DM_STOPPED"; } > "$OBS/launch.txt"
+if [ -n "$DEVICE_RECORD" ]; then
+  # The run reads its own copy of the record, kept with its records: exactly the bytes that were checked above.
+  cp -- "$DEVICE_RECORD" "$OBS/device-artifacts.json" && chmod 600 "$OBS/device-artifacts.json" || stop_now "the record could not be copied into $OBS"
+  [ "$(sha256sum "$OBS/device-artifacts.json" | cut -d' ' -f1)" = "$RECORD_SHA" ] || stop_now "the device-artifacts record changed after it was checked: rerun start.sh"
+  RUN_ROUTE=(--device-artifacts "$OBS/device-artifacts.json")
+  { echo "route=device_artifacts_experimental_validation_run"; echo "device_artifacts_record_sha256=$RECORD_SHA"; echo "artifact_verification=passed"
+    echo "resource_validation=pending"; echo "platform_preflight=$PLATFORM_STATE"; } >> "$OBS/launch.txt"
+fi
 
 CAMERA_STARTED=1
 trap '' HUP QUIT TSTP  # inherited: a lost terminal or a stray key must never separate the guard from the camera
@@ -197,7 +266,7 @@ echo "Start nothing else on this device until OBS_exit: extra memory use can tri
 echo "Feature controls key, once the run is ready (it is deleted at the stop); from another SSH shell: cat $OBS/db/control-key"
 bash -c 'printf %s "$$" > "$1"; shift; exec "$@"' observe-guard "$OBS/guard.pid" \
   "${G[@]}" --out "$OBS/guard" --require-ready face_chat_windows --scene-layers 25/25 --duration-s "$DURATION_S" --ready-timeout-s 300 -- \
-  "${RT[@]}" run "$CONFIG" --data-dir "$OBS/db" "${FLAGS[@]}" > "$OBS/guard-console.log" 2>&1
+  "${RT[@]}" run "$CONFIG" --data-dir "$OBS/db" "${FLAGS[@]}" "${RUN_ROUTE[@]}" > "$OBS/guard-console.log" 2>&1
 GX=$?
 trap '' INT TERM       # nothing cuts the report short
 unset SENTINEL_RTSP_URL SENTINEL_IDENTITY_PASSPHRASE
@@ -254,6 +323,7 @@ echo "Observation ended: $RESULT"
 echo "ended_by=$ENDED_BY"
 echo "runtime_after_guard=$RESIDUE"
 echo "enrollment=$ENROLL"
+[ -z "$DEVICE_RECORD" ] || echo "route=device artifacts (experimental validation run on this device's own files; resource_validation=pending: this run measured and validated nothing)"
 echo "records: $OBS (per-face numbers from the run are in guard/run.jsonl; no pictures; delete the folder when you no longer need it)"
 { echo "$RESULT"; echo "ended_by=$ENDED_BY"; echo "runtime_after_guard=$RESIDUE"; echo "enrollment=$ENROLL"; echo "guard_exit=$GX"; } >> "$OBS/launch.txt"
 [ "$ENROLL" = unchanged ] || CODE=1

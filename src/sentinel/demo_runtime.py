@@ -124,6 +124,7 @@ from .features import APPLIED, FEATURES, REFUSED, UNCHANGED, Change, FeatureCont
 from .alerts.telegram import NotifierUnavailable, TelegramNotifier
 from .config import STREAM_MAIN_SINGLE, WORKING_SIZE, CaptureConfig, NotificationsConfig, SentinelConfig
 from .contracts import FrameKey, FrameRef, StreamIdentity, TrackStatus
+from .device_artifacts import DeviceArtifacts, engine_problem, llama_problem, pinned_problem
 from .identity.gallery import GalleryDocument, check_consent_date
 from .identity.association import AssociationGeometry
 from .identity.comparison import ComparisonPolicy, FullScaleComparator
@@ -1393,6 +1394,9 @@ class RunOptions:
     chat: bool = False  # D74: advisory chat on the status page; off by default, and unavailable unless admitted
     chat_validation: bool = False  # D77: --chat-validation: chat may ask the model in this guarded run, not admitted
     feature_controls: bool = False  # D99: --feature-controls: the page may pause and resume what this run started
+    # Session 116, part 41: --device-artifacts: this device's own files, identified by a record instead of by the
+    # reference device's; --face-validation runs only. It admits nothing and measures nothing (device_artifacts).
+    device_artifacts: DeviceArtifacts | None = None
 
 
 @dataclass(frozen=True)
@@ -1426,7 +1430,8 @@ class Devices:
     """How the device-side parts are made; tests pass fakes."""
 
     capture_source: Callable[[CaptureConfig], VideoSource]
-    tracker_backend: Callable[[Path], Any]  # has load(), track(), reset()
+    # has load(), track(), reset(); with device artifacts it is also given expected_sha256=, the recorded engine's
+    tracker_backend: Callable[..., Any]
     scene_server: Callable[[SceneOptions, int], Any]  # has start(ready_timeout_s), status(), stop(grace_s)
     # (port, request timeout, the selected scene model set: its request name and template arguments) -> the scene
     # job (LlamaSceneRequest)
@@ -1497,26 +1502,75 @@ def _sha256(path: Path) -> str | None:
     return digest.hexdigest()
 
 
-def _identity_problem(label: str, path: Path, recorded: FileFacts) -> str | None:
-    """Hash files up to STARTUP_HASH_LIMIT_BYTES; compare larger ones by name, size and mtime only."""
+def _identity_problem(label: str, path: Path, recorded: FileFacts, source: str = "profiled") -> str | None:
+    """Hash files up to STARTUP_HASH_LIMIT_BYTES; compare larger ones by name, size and mtime only. ``source`` names
+    where ``recorded`` comes from: the accepted profile ("profiled"), or a device-artifacts record ("recorded")."""
     actual = file_facts(path)
     if actual is None:
         return f"{label} {Path(path).name} is missing"
     if actual.name != recorded.name:
-        return f"{label} {actual.name} is not the profiled {recorded.name}"
+        return f"{label} {actual.name} is not the {source} {recorded.name}"
     if recorded.bytes <= STARTUP_HASH_LIMIT_BYTES and recorded.sha256:
         if actual.bytes != recorded.bytes or _sha256(path) != recorded.sha256:
-            return f"{label} {actual.name} does not have the profiled SHA-256"
+            return f"{label} {actual.name} does not have the {source} SHA-256"
         return None
     if (actual.bytes, actual.mtime_utc) != (recorded.bytes, recorded.mtime_utc):
-        return (f"{label} {actual.name} ({actual.bytes} B, {actual.mtime_utc}) is not the profiled "
+        return (f"{label} {actual.name} ({actual.bytes} B, {actual.mtime_utc}) is not the {source} "
                 f"{recorded.name} ({recorded.bytes} B, {recorded.mtime_utc})")
     return None
 
 
+def _metadata_problem(label: str, path: Path, recorded: FileFacts, source: str) -> str | None:
+    """A model file by name, size and modification time only (never hashed at startup: U18)."""
+    actual = file_facts(path)
+    if actual is None:
+        return f"{label} {Path(path).name} is missing"
+    if (actual.name, actual.bytes, actual.mtime_utc) != (recorded.name, recorded.bytes, recorded.mtime_utc):
+        return (f"{label} {actual.name} ({actual.bytes} B, {actual.mtime_utc}) is not the {source} "
+                f"{recorded.name} ({recorded.bytes} B, {recorded.mtime_utc})")
+    return None
+
+
+def device_scene_problem(profile: ResourceProfile, scene: SceneOptions, artifacts: DeviceArtifacts) -> str | None:
+    """Session 116, part 41: the scene files of a ``--device-artifacts`` run. None when the record is one this build
+    can use (the pinned llama.cpp commit and options, built by the package's step, with the accepted profile's build
+    layout; the selected set's pinned model and projector by SHA-256) and the files given are the recorded ones, by
+    the default path's own rule: llama-server and the libraries up to STARTUP_HASH_LIMIT_BYTES by SHA-256, larger
+    libraries and the model files by name, size and modification time. Else the first difference."""
+    chosen = scene_model_set(scene.model_set)
+    problem = (llama_problem(artifacts, model_set=chosen.key,
+                             library_names=tuple(library.name for library in profile.llama_libraries))
+               or pinned_problem(artifacts, "scene_model", chosen.model, "scene model")
+               or pinned_problem(artifacts, "scene_mmproj", chosen.mmproj, "scene projector"))
+    if problem is not None:
+        return f"device artifacts: {problem}"
+    problem = _identity_problem("llama-server", scene.binary, artifacts.files["llama_server"], "recorded")
+    if problem is not None:
+        return problem
+    for library in artifacts.libraries:
+        problem = _identity_problem("llama.cpp library", Path(scene.binary).parent / library.name, library, "recorded")
+        if problem is not None:
+            return problem
+    for label, path, role in (("scene model", scene.model, "scene_model"),
+                              ("scene projector", scene.mmproj, "scene_mmproj")):
+        problem = _metadata_problem(label, path, artifacts.files[role], "recorded")
+        if problem is not None:
+            return problem
+    return None
+
+
+def device_engine_problem(engine: Path, artifacts: DeviceArtifacts) -> str | None:
+    """Session 116, part 41: None when the record's detector engine was exported by the package's step with the
+    pinned settings and ``engine`` is that file (the detector checks its SHA-256 again when it loads)."""
+    problem = engine_problem(artifacts)
+    if problem is not None:
+        return f"device artifacts: {problem}"
+    return _identity_problem("detector engine", engine, artifacts.files["detector_engine"], "recorded")
+
+
 def profile_mismatch(
     profile: ResourceProfile, config: SentinelConfig, scene: SceneOptions, *, engine_sha256: str = LEGACY_ENGINE_SHA256,
-    policy: MemoryPolicy = DEFAULT_POLICY,
+    policy: MemoryPolicy = DEFAULT_POLICY, artifacts: DeviceArtifacts | None = None,
 ) -> str | None:
     """None if the selected runtime configuration is the one ``profile`` measured, else the first difference.
 
@@ -1528,6 +1582,11 @@ def profile_mismatch(
     before the MemFree precheck (U18). Metadata checks do not detect a same-size
     replacement that keeps its modification time (STARTUP_IDENTITY_LIMITATION);
     the step-4 identity snapshot and acceptance rehashing cover the measured run.
+
+    ``artifacts`` (session 116, part 41; validation runs only, see assemble): the configuration checks are the same,
+    and the files are compared with the device's own record instead of the profile's (device_scene_problem). The
+    profile then names the configuration that is run; it did not measure those files, and the detector engine is
+    the record's, checked by assemble.
     """
     if profile.memory_policy != policy:
         return (f"resource profile {profile.profile_id} measured memory policy ({profile.memory_policy.describe()}), "
@@ -1545,6 +1604,8 @@ def profile_mismatch(
         return f"resource profile {profile.profile_id} measured another scene request than the runtime sends"
     if profile.llama_server is None:
         return f"resource profile {profile.profile_id} lacks the llama-server identity"
+    if artifacts is not None:  # part 41: the device's own files by its record; the profile's engine pin as below
+        return device_scene_problem(profile, scene, artifacts) or _engine_pin_problem(profile, engine_sha256)
     problem = _identity_problem("llama-server", scene.binary, profile.llama_server)
     if problem is not None:
         return problem
@@ -1560,6 +1621,10 @@ def profile_mismatch(
         if (actual.name, actual.bytes, actual.mtime_utc) != (recorded.name, recorded.bytes, recorded.mtime_utc):
             return (f"{label} {actual.name} ({actual.bytes} B, {actual.mtime_utc}) is not the profiled "
                     f"{recorded.name} ({recorded.bytes} B, {recorded.mtime_utc})")
+    return _engine_pin_problem(profile, engine_sha256)
+
+
+def _engine_pin_problem(profile: ResourceProfile, engine_sha256: str) -> str | None:
     if profile.engine_sha256 != engine_sha256:
         return f"resource profile {profile.profile_id} measured another detector engine than the pinned one"
     return None
@@ -1571,13 +1636,19 @@ def scene_admission(
     *,
     profiles: Mapping[str, ResourceProfile] = RESOURCE_PROFILES,
     policy: MemoryPolicy = DEFAULT_POLICY,
+    artifacts: DeviceArtifacts | None = None,
 ) -> tuple[str | None, str | None]:
     """(problem, producer revision) for ``--scene``: an enabled scene adapter whose resource
     profile is ACCEPTED (step-4 evidence, D46) and matches the selected configuration, memory policy included.
 
     Session 115: a declared model_revision must be the selected scene model set's (it is every scene evidence
     record's producer revision), and a set that no accepted profile measured is refused here, before the profile
-    check, with the reason (D46, kept unchanged: there is no way around it)."""
+    check, with the reason (D46, kept unchanged: there is no way around it).
+
+    ``artifacts`` (session 116, part 41): every rule above applies unchanged; only the files' identity is taken from
+    the device's own record (profile_mismatch). That is not an admission of those files by a measured profile:
+    assemble passes a record only in a --face-validation run, and the starting line says resource validation is
+    pending."""
     statuses = [s for s in resolve(config.adapters, profiles=profiles) if s.manifest.adapter_id == SCENE_ADAPTER_ID]
     if not statuses:
         return f"no {SCENE_ADAPTER_ID} adapter in the configuration", None
@@ -1597,7 +1668,7 @@ def scene_admission(
                 f"(--scene-model-set {FALLBACK_SCENE_MODEL_SET} selects the explicit fallback, "
                 f"{ROLLBACK_SCENE_MODEL_SET} the rollback, each admitted only by its own accepted profile)"), None
     profile = profiles[status.manifest.resource_profile_id]  # type: ignore[index]  # resolve() checked it
-    problem = profile_mismatch(profile, config, scene, policy=policy)
+    problem = profile_mismatch(profile, config, scene, policy=policy, artifacts=artifacts)
     if problem is not None:
         return f"{SCENE_ADAPTER_ID}: {problem}", None
     return None, status.manifest.producer_revision
@@ -1611,10 +1682,14 @@ def face_admission(
     admissions: Mapping[str, FaceAdmission] = FACE_ADMISSIONS,
     policy: MemoryPolicy = DEFAULT_POLICY,
     weights_dir: Path,
+    artifacts: DeviceArtifacts | None = None,
 ) -> str | None:
     """None if ``--face`` may run: an enabled face adapter whose face admission record allows this run (PENDING_VALIDATION
     only with --face-validation), on the memory policy its profile measured, at the measured cadence, with the
-    measured weights (SHA-256 up to STARTUP_HASH_LIMIT_BYTES, else name, size and modification time)."""
+    measured weights (SHA-256 up to STARTUP_HASH_LIMIT_BYTES, else name, size and modification time).
+
+    ``artifacts`` (session 116, part 41): the same rules; the weights must be the pinned ones by SHA-256 in the
+    device's own record, and the files are compared with that record (its modification times are this device's)."""
     statuses = [s for s in resolve(config.adapters, profiles=profiles, face_admissions=admissions)
                 if s.manifest.adapter_id == FACE_ADAPTER_ID]
     if not statuses:
@@ -1634,9 +1709,15 @@ def face_admission(
     if abs(config.identity.face_interval_s * admission.face_hz - 1.0) > 1e-9:
         return (f"{FACE_ADAPTER_ID}: the face admission measured {admission.face_hz:g} Hz, not the configured "
                 f"{config.identity.face_interval_s:g} s interval")
-    for label, recorded in (("face model weights", admission.model_weights),
-                            ("face detector weights", admission.detector_weights)):
-        problem = _identity_problem(label, Path(weights_dir) / recorded.name, recorded)
+    for label, recorded, role in (("face model weights", admission.model_weights, "face_model_weights"),
+                                  ("face detector weights", admission.detector_weights, "face_detector_weights")):
+        source = "profiled"
+        if artifacts is not None:
+            problem = pinned_problem(artifacts, role, recorded, label)
+            if problem is not None:
+                return f"{FACE_ADAPTER_ID}: device artifacts: {problem}"
+            recorded, source = artifacts.files[role], "recorded"
+        problem = _identity_problem(label, Path(weights_dir) / recorded.name, recorded, source)
         if problem is not None:
             return f"{FACE_ADAPTER_ID}: {problem}"
     return None
@@ -1769,9 +1850,23 @@ def assemble(
         source = devices.capture_source(config.capture)  # the URL is checked before any model loads
     except SourceError as exc:
         raise StartupRefused(exc.reason) from None
+    # Session 116, part 41: a device-artifacts record is for experimental validation runs alone, and its engine must
+    # be the package's own export and the file given; refused here, before anything opens or loads.
+    artifacts = options.device_artifacts
+    if artifacts is not None:
+        if options.face is None or not options.face.validation_run:
+            raise StartupRefused("device_artifacts_needs_validation: a device-artifacts record identifies this "
+                                 "device's own files for --face --face-validation runs only; it admits nothing")
+        problem = device_engine_problem(options.engine, artifacts)
+        if problem is not None:
+            raise StartupRefused(f"device_artifacts_refused: {problem}")
     revision = None
     if options.scene is not None:
-        problem, revision = scene_admission(config, options.scene, profiles=profiles, policy=policy)
+        if artifacts is None:  # the default path's own call, as it has always been made
+            problem, revision = scene_admission(config, options.scene, profiles=profiles, policy=policy)
+        else:
+            problem, revision = scene_admission(config, options.scene, profiles=profiles, policy=policy,
+                                                artifacts=artifacts)
         if problem is not None:
             raise StartupRefused(f"scene_not_admitted: {problem}")
     gallery: GalleryDocument | None = None
@@ -1852,13 +1947,19 @@ def assemble(
                                                      and hasattr(face_backend, "enable_landmarks")):
             raise StartupRefused("landmark_diagnostic_unavailable: this face backend has no native-scale landmark pass")
         face_weights = _weights_dir(face_backend, options.face.weights_dir)
-        problem = face_admission(config, options.face, profiles=profiles, admissions=face_admissions, policy=policy,
-                                 weights_dir=face_weights)
+        if artifacts is None:  # the default path's own call, as it has always been made
+            problem = face_admission(config, options.face, profiles=profiles, admissions=face_admissions,
+                                     policy=policy, weights_dir=face_weights)
+        else:
+            problem = face_admission(config, options.face, profiles=profiles, admissions=face_admissions,
+                                     policy=policy, weights_dir=face_weights, artifacts=artifacts)
         if problem is not None:
             raise StartupRefused(f"face_not_admitted: {problem}")
         gallery, face_problem = open_gallery(devices.identity_store(options.face.identity_dir), options.face.secret)
         shadow, experiment_capture = _experiment(options.face, gallery, devices, config.identity.match_threshold)
     startup: dict[str, Any] = {"memory_policy": policy.labels()}
+    if artifacts is not None:  # part 41: said in the run's own first line: files identified, nothing validated
+        startup["device_artifacts"] = artifacts.startup_entry(scene=options.scene is not None)
     if thp_off:
         before_launch = {"runtime": ops.thp_enabled("self")}
         startup["thp_scope"] = {"before_launch": before_launch}
@@ -1940,7 +2041,11 @@ def assemble(
         if tracking is not None and detector_problem is not None:  # session 80: no detector, no diagnostic, no run
             raise StartupRefused(f"tracking_diagnostic_not_ready:{detector_problem}")
         if detector_problem is None:
-            backend = devices.tracker_backend(options.engine)
+            if artifacts is None:
+                backend = devices.tracker_backend(options.engine)
+            else:  # part 41: the detector's own pin is then the recorded engine's SHA-256, checked again at its load
+                backend = devices.tracker_backend(options.engine,
+                                                  expected_sha256=artifacts.files["detector_engine"].sha256)
             if tracking is not None:  # before load(): the backend verifies what it reads while loading
                 if not callable(getattr(backend, "enable_diagnostic", None)):
                     raise StartupRefused("tracking_diagnostic_unavailable: this detector backend has no diagnostic")
