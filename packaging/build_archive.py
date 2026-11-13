@@ -66,7 +66,9 @@ CHANGED_SINCE_ACCEPTED = {
     "src/sentinel/cli.py": (
         "the device-artifacts route (session 116, part 41): the option --device-artifacts FILE of `sentinel run`, "
         "refused without --face --face-validation and for a record that cannot be read; the detector is then given "
-        "the recorded engine's SHA-256 as its pin. Without the option nothing differs", _ROUTE_RUN_WITH),
+        "the recorded engine's SHA-256 as its pin. Without the option the command decides as before, with one "
+        "difference in how it is typed: the abbreviation --d, which used to select --data-dir, is now ambiguous",
+        _ROUTE_RUN_WITH),
 }
 # The package's own files (under PACKAGE_SOURCE) that differ from the previous revision's, or that it did not have:
 # path -> what changed. The builder refuses unless exactly these differ from PREVIOUS_PACKAGE_COMMIT.
