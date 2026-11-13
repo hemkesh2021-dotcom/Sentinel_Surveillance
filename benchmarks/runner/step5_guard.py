@@ -14,8 +14,22 @@ llama-server, which runs in its own session. That happens when:
 - the runtime is not ready within ``--ready-timeout-s``; or
 - this process gets SIGINT or SIGTERM.
 
-If the runtime has not exited ``--stop-grace-s`` after that, its process group gets SIGTERM and then SIGKILL. Any
-llama-server left afterwards is stopped and reported; none may run before launch.
+If the runtime has not exited ``--stop-grace-s`` after that, its process group gets SIGTERM and then SIGKILL. A
+llama-server that this run started and that is left afterwards is stopped and reported; none may run before launch.
+
+Which processes are this run's is never read from a name or a port. Before launch the guard asks the kernel to hand it
+the processes its runtime leaves behind (``PR_SET_CHILD_SUBREAPER``; refused before launch as
+``ownership_unavailable`` without it), so that after the runtime's exit everything the run started is this process's
+own descendant, whatever session it started. Only such a descendant named llama-server is signalled, through a handle
+on the process itself after its number and start time are read again, so a later process with the same number is
+never signalled. A llama-server of this user that is not a descendant (somebody else's, started during the run) is
+counted as ``leftovers.llama_server_unresolved``, left running and never signalled, and the run is then not reported
+clear. Any other process this run started that is still running afterwards is reported with the runtime's group
+(``leftovers.runtime_group_left``), in whatever session it runs, and is not signalled here. The runtime's group is
+signalled only while the runtime itself has not been collected: until then its number, which is the group's, cannot
+pass to another process. If this guard itself fails with an error, it first stops what it started in the same way,
+then raises the error. The guard is meant to run as a process of its own that starts nothing but the runtime: what a
+process it already had before the launch leaves behind afterwards would be taken for this run's.
 
 With ``--step4-headroom`` it also refuses before launch unless operator_check's step-4 admission headroom holds
 (pressure below 2.0 GB, MemFree at least 3.5 GB, MemAvailable at least 4.0 GB; ``baseline_problem``, unchanged).
@@ -181,6 +195,199 @@ def process_ids(comm: str, proc: Path = Path("/proc"), uid: int | None = None) -
     return sorted(found)
 
 
+# ---------------------------------------------------------------- which processes are this run's
+
+PR_SET_CHILD_SUBREAPER, PR_GET_CHILD_SUBREAPER = 36, 37  # <linux/prctl.h>, Linux 3.4
+
+
+def process_info(pid: int, proc: Path = Path("/proc"), uid: int | None = None) -> dict[str, Any] | None:
+    """One process of this user from ``/proc/<pid>/stat``: name, state, parent, group and start time (clock ticks
+    since boot). The number with the start time is an identity that no later process has. None once it has gone."""
+    uid = os.getuid() if uid is None else uid
+    path = proc / str(pid)
+    try:
+        if path.stat().st_uid != uid:
+            return None
+        text = (path / "stat").read_text(errors="replace")
+        fields = text[text.rindex(")") + 2:].split()
+        return {"pid": pid, "comm": text[text.index("(") + 1:text.rindex(")")], "state": fields[0],
+                "ppid": int(fields[1]), "pgrp": int(fields[2]), "start": int(fields[19])}
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def process_table(proc: Path = Path("/proc"), uid: int | None = None) -> dict[int, dict[str, Any]]:
+    """This user's processes by number."""
+    found: dict[int, dict[str, Any]] = {}
+    try:
+        names = [path.name for path in proc.iterdir()]
+    except OSError:
+        return found
+    for name in names:
+        if name.isdigit():
+            info = process_info(int(name), proc, uid)
+            if info is not None:
+                found[info["pid"]] = info
+    return found
+
+
+def still_running(info: dict[str, Any], proc: Path = Path("/proc")) -> bool:
+    """Whether the process still runs. ``stat`` shows the state of its first thread alone: that one may have ended
+    (Z) while others still hold the memory and the ports, so an ended first thread counts as gone only once no other
+    thread is left."""
+    if info["state"] != "Z":
+        return True
+    try:
+        return len(os.listdir(proc / str(info["pid"]) / "task")) > 1
+    except OSError:
+        return False
+
+
+def descendants(table: dict[int, dict[str, Any]], root: int, skip=frozenset()) -> list[dict[str, Any]]:
+    """The processes of ``table`` below ``root``, ended ones not yet collected included, parents before children. A
+    link counts only when the child did not start before its parent, so a number that passed to a later process never
+    joins two families; ``skip`` holds (number, start time) identities left out with everything below them."""
+    children: dict[int, list[dict[str, Any]]] = {}
+    for info in table.values():
+        children.setdefault(info["ppid"], []).append(info)
+    found, stack, seen = [], [root], {root}
+    while stack:
+        parent = stack.pop()
+        if parent not in table:
+            continue
+        for info in sorted(children.get(parent, ()), key=lambda item: item["pid"]):
+            if info["pid"] in seen or (info["pid"], info["start"]) in skip or info["start"] < table[parent]["start"]:
+                continue
+            seen.add(info["pid"])
+            found.append(info)
+            stack.append(info["pid"])
+    return found
+
+
+def child_subreaper(enable: bool | None = None) -> bool:
+    """Whether this process is handed the processes its descendants leave behind; sets it first when ``enable`` is
+    given. Raises OSError when the kernel or libc cannot do it."""
+    import ctypes
+
+    prctl = ctypes.CDLL(None, use_errno=True).prctl
+    prctl.restype = ctypes.c_int
+    if enable is not None:
+        prctl.argtypes = [ctypes.c_int] + [ctypes.c_ulong] * 4
+        if prctl(PR_SET_CHILD_SUBREAPER, 1 if enable else 0, 0, 0, 0) != 0:
+            raise OSError(ctypes.get_errno(), "PR_SET_CHILD_SUBREAPER")
+    value = ctypes.c_int(-1)
+    prctl.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_int)] + [ctypes.c_ulong] * 3
+    if prctl(PR_GET_CHILD_SUBREAPER, ctypes.byref(value), 0, 0, 0) != 0 or value.value not in (0, 1):
+        raise OSError(ctypes.get_errno(), "PR_GET_CHILD_SUBREAPER")
+    return value.value == 1
+
+
+def send_to_process(info: dict[str, Any], signum: int, proc: Path = Path("/proc"), own_pid: int | None = None,
+                    open_handle=None, send_handle=None, kill=os.kill) -> bool:
+    """Signal exactly the process ``info`` names (number and start time). The handle is taken first and the identity
+    read again after it, so the handle is on that process or the signal is not sent; a later process with the same
+    number is never signalled. Without process handles (before Linux 5.3) only this process's own child is signalled:
+    its number cannot pass on before this process collects it. False when nothing was sent."""
+    open_handle = getattr(os, "pidfd_open", None) if open_handle is None else open_handle
+    send_handle = getattr(signal, "pidfd_send_signal", None) if send_handle is None else send_handle
+    own_pid = os.getpid() if own_pid is None else own_pid
+    handle = None
+    if open_handle is not None and send_handle is not None:
+        try:
+            handle = open_handle(info["pid"])
+        except ProcessLookupError:
+            return False
+        except OSError:
+            handle = None
+    try:
+        now = process_info(info["pid"], proc)
+        if now is None or now["start"] != info["start"] or not still_running(now, proc):
+            return False
+        if handle is not None:
+            send_handle(handle, signum)
+        elif now["ppid"] == own_pid:
+            kill(info["pid"], signum)
+        else:
+            return False
+        return True
+    except OSError:
+        return False
+    finally:
+        if handle is not None:
+            os.close(handle)
+
+
+class Ownership:
+    """What this run may signal besides the runtime it started: this process's descendants that were not there before
+    the launch. With the kernel handing orphans to this process, that is everything the run started and left."""
+
+    def __init__(self, proc: Path = Path("/proc"), pid: int | None = None, subreaper=child_subreaper,
+                 send=send_to_process, collect=os.waitpid) -> None:
+        self.proc, self.pid = proc, os.getpid() if pid is None else pid
+        self._subreaper, self._send, self._collect = subreaper, send, collect
+        self._restore: bool | None = None
+        self._before: frozenset = frozenset()
+        self.leader: int | None = None  # the runtime: collected by its own Popen, never here
+        self.active = False
+
+    def begin(self) -> str | None:
+        """Before launch. A fixed label when ownership cannot be established (then nothing may be launched)."""
+        try:
+            was = self._subreaper()
+            if not self._subreaper(True):
+                return "ownership_unavailable"
+        except (OSError, AttributeError, TypeError, ImportError):
+            return "ownership_unavailable"
+        self._restore = was
+        table = process_table(self.proc)
+        if self.pid not in table:
+            self.end()
+            return "ownership_unavailable"
+        self._before = frozenset((info["pid"], info["start"]) for info in descendants(table, self.pid))
+        self.active = True
+        return None
+
+    def owned(self) -> list[dict[str, Any]]:
+        """The running processes this run owns now (the runtime too, while it runs). Those that have ended and were
+        handed to this process are collected, so that neither their numbers nor their group stay taken."""
+        if not self.active:
+            return []
+        found = []
+        for info in descendants(process_table(self.proc), self.pid, self._before):
+            if still_running(info, self.proc):
+                found.append(info)
+            elif info["ppid"] == self.pid and info["pid"] != self.leader:
+                try:
+                    done = self._collect(info["pid"], os.WNOHANG)
+                except OSError:
+                    continue
+                if isinstance(done, tuple) and done[0] == 0:  # not collectable yet: it has not wholly ended
+                    found.append(info)
+        return found
+
+    def not_owned(self, comm: str) -> list[dict[str, Any]]:
+        """This user's running processes named ``comm`` that are not shown to be this run's: one reading of /proc, so
+        a process is never counted both as owned and as not."""
+        table = process_table(self.proc)
+        mine = {(info["pid"], info["start"]) for info in descendants(table, self.pid, self._before)} if self.active else set()
+        return [info for _, info in sorted(table.items()) if info["comm"] == comm and still_running(info, self.proc)
+                and info["pid"] != self.pid and (info["pid"], info["start"]) not in mine]
+
+    def signal(self, info: dict[str, Any], signum: int) -> bool:
+        if not any(item["pid"] == info["pid"] and item["start"] == info["start"] for item in self.owned()):
+            return False  # not shown to be this run's now: not signalled
+        return self._send(info, signum, self.proc, self.pid)
+
+    def end(self) -> None:
+        self.active = False
+        if self._restore is not None:
+            try:
+                self._subreaper(self._restore)
+            except (OSError, AttributeError, TypeError, ImportError):
+                pass
+            self._restore = None
+
+
 def thp_enabled_self() -> int | None:
     try:
         for line in Path("/proc/self/status").read_text().splitlines():
@@ -225,7 +432,10 @@ class Child:
                 pass
 
     def signal_group(self, signum: int) -> bool:
-        """Signal the runtime's whole group; False once nothing in it is left."""
+        """Signal the runtime's whole group; False once nothing in it is left, and once the runtime has been
+        collected: from then on its number, which is the group's, may pass to a process that is not this run's."""
+        if self.process.returncode is not None:
+            return False
         try:
             os.killpg(self.pid, signum)
             return True
@@ -233,36 +443,55 @@ class Child:
             return False
 
     def group_alive(self) -> bool:
-        self.process.poll()
-        return self.signal_group(0)
+        """Whether a process of the runtime's group is still running. Read from /proc and nothing is collected, so
+        that the runtime keeps its number (and with it the group's) until the loop has seen its exit."""
+        return any(info["pgrp"] == self.pid and still_running(info) for info in process_table().values())
 
 
 class SystemBackend:
     clock = staticmethod(time.monotonic)
     sleep = staticmethod(time.sleep)
     utc = staticmethod(utc_now)
-    spawn = staticmethod(Child)
     listeners = staticmethod(listeners)
     fetch = staticmethod(fetch_status)
     thp_self = staticmethod(thp_enabled_self)
 
     def __init__(self) -> None:
         self._oc = oc.SystemBackend()
+        self._ownership = Ownership()
 
     def sample(self) -> dict:
         return self._oc.sample()
 
-    @staticmethod
-    def llama_pids() -> list[int]:
-        return process_ids("llama-server")
+    def spawn(self, argv: list[str], stdout: Path, stderr: Path) -> Child:
+        child = Child(argv, stdout, stderr)
+        self._ownership.leader = child.pid
+        return child
 
     @staticmethod
-    def kill(pid: int, signum: int) -> bool:
-        try:
-            os.kill(pid, signum)
-            return True
-        except ProcessLookupError:
-            return False
+    def llama_pids() -> list[int]:
+        """Every llama-server of this user, by name: for the refusal before launch and for the count of those that
+        are not this run's. Nothing is ever signalled from this list."""
+        return process_ids("llama-server")
+
+    def own(self) -> str | None:
+        """Before launch: have the kernel hand this process what the runtime leaves behind. A label if it cannot."""
+        return self._ownership.begin()
+
+    def owned(self) -> list[dict[str, Any]]:
+        """The running processes this run started (number, start time, name), read now."""
+        return self._ownership.owned()
+
+    def signal(self, info: dict[str, Any], signum: int) -> bool:
+        """Signal one process of ``owned()``, if it is still that process; False when nothing was sent."""
+        return self._ownership.signal(info, signum)
+
+    def unresolved_servers(self) -> list[dict[str, Any]]:
+        """This user's running llama-servers that are not shown to be this run's. Reported, never signalled."""
+        return self._ownership.not_owned("llama-server")
+
+    def disown(self) -> None:
+        self._ownership.end()
 
 
 # ---------------------------------------------------------------- the runtime's own output
@@ -464,14 +693,69 @@ def preflight(backend, out: Path, step4_headroom: bool = False) -> str | None:
     return None
 
 
-def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: bool = False,
-              ready_timeout_s: float = READY_TIMEOUT_S, stop_grace_s: float = STOP_GRACE_S,
-              status_at: tuple[tuple[float, str], ...] = (), step4_headroom: bool = False, backend=None,
-              interrupted=lambda: False, cues: tuple[tuple[float, str, str], ...] = (),
-              say=lambda text: (sys.stderr.write(text + "\n"), sys.stderr.flush()),
-              require_ready: str | None = None, scene_layers: str | None = None,
-              shadow_digest: str | None = None) -> dict:
+def owned_servers(backend) -> list[dict[str, Any]]:
+    return [info for info in backend.owned() if info["comm"] == "llama-server"]
+
+
+def stop_owned_servers(backend) -> tuple[int, list[dict[str, Any]]]:
+    """SIGTERM to the llama-servers this run owns, SIGKILL to those left KILL_GRACE_S later, and KILL_GRACE_S for
+    those to go: (how many there were, those still running). One handed to this process meanwhile gets the signal of
+    the stage it appears in. No other process is signalled, whatever its name."""
+    seen: set[tuple[int, int]] = set()
+    for signum in (signal.SIGTERM, signal.SIGKILL):
+        sent: set[tuple[int, int]] = set()
+        deadline = None
+        while True:
+            servers = owned_servers(backend)
+            for info in servers:
+                key = (info["pid"], info["start"])
+                seen.add(key)
+                if key not in sent:
+                    sent.add(key)
+                    backend.signal(info, signum)
+            deadline = backend.clock() + KILL_GRACE_S if deadline is None else deadline
+            if not servers or backend.clock() >= deadline:
+                break
+            backend.sleep(0.1)
+    return len(seen), owned_servers(backend)
+
+
+def stop_after_failure(child, backend, stop_grace_s: float) -> None:
+    """The guard itself failed: what it started must not go on without it. The same order and the same waits as a
+    stop: SIGINT to the runtime, its group after the grace, then the llama-servers this run owns."""
+    child.signal(signal.SIGINT)
+    deadline = backend.clock() + stop_grace_s
+    while child.poll() is None and backend.clock() < deadline:
+        backend.sleep(0.1)
+    if child.poll() is None:
+        child.signal_group(signal.SIGTERM)
+        deadline = backend.clock() + KILL_GRACE_S
+        while child.group_alive() and backend.clock() < deadline:
+            backend.sleep(0.1)
+        child.signal_group(signal.SIGKILL)
+        deadline = backend.clock() + KILL_GRACE_S
+        while child.poll() is None and backend.clock() < deadline:
+            backend.sleep(0.1)
+    stop_owned_servers(backend)
+
+
+def supervise(argv: list[str], out: Path, *, backend=None, **options) -> dict:
+    """One guarded run (the options are ``_supervise``'s). Ownership of what the run starts is set up before the
+    launch and given back afterwards, whatever happens in between."""
     backend = backend or SystemBackend()
+    try:
+        return _supervise(argv, out, backend=backend, **options)
+    finally:
+        backend.disown()
+
+
+def _supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: bool = False,
+               ready_timeout_s: float = READY_TIMEOUT_S, stop_grace_s: float = STOP_GRACE_S,
+               status_at: tuple[tuple[float, str], ...] = (), step4_headroom: bool = False, backend=None,
+               interrupted=lambda: False, cues: tuple[tuple[float, str, str], ...] = (),
+               say=lambda text: (sys.stderr.write(text + "\n"), sys.stderr.flush()),
+               require_ready: str | None = None, scene_layers: str | None = None,
+               shadow_digest: str | None = None) -> dict:
     result: dict[str, Any] = {"schema_version": 1, "mode": "step5_guard", "status": None,
                               "parameters": {"duration_s": duration_s, "from_launch": from_launch,
                                              "ready_timeout_s": ready_timeout_s, "stop_grace_s": stop_grace_s,
@@ -484,7 +768,7 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
                               "limits": {"pressure_stop_bytes": oc.PRESSURE_STOP, "mem_free_floor_bytes": oc.FREE_FLOOR,
                                          "mem_available_floor_bytes": oc.AVAILABLE_FLOOR,
                                          "swap_counters": "unchanged", "max_sample_gap_s": 0.5}}
-    refused = preflight(backend, out, step4_headroom)
+    refused = preflight(backend, out, step4_headroom) or backend.own()  # no launch without ownership of its leftovers
     if refused:
         result["status"] = f"refused:{refused}"
         result["preflight_sample"] = oc.safe_sample(backend.sample())
@@ -597,6 +881,9 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
                 worker.start()
                 workers.append(worker)
             backend.sleep(SAMPLE_S)
+    except BaseException:
+        stop_after_failure(child, backend, stop_grace_s)
+        raise
     finally:
         guard_file.close()
         for worker in workers:
@@ -612,15 +899,11 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
         captures.append({"name": name, "at_s": at, "status": "not_reached", "bytes": 0, "listeners": None})
     for at, name, _ in cue_queue:
         printed.append({"name": name, "at_s": at, "printed_after_launch_s": None, "printed_mono_s": None})
-    orphans = backend.llama_pids()
-    for signum in (signal.SIGTERM, signal.SIGKILL):
-        for pid in orphans:
-            backend.kill(pid, signum)
-        deadline = backend.clock() + KILL_GRACE_S
-        while backend.llama_pids() and backend.clock() < deadline:
-            backend.sleep(0.1)
-    left = backend.llama_pids()
-    group_left = child.group_alive()
+    orphans, left = stop_owned_servers(backend)  # this run's own, by descent; never by name
+    others = [info for info in backend.owned() if info["comm"] != "llama-server"]
+    # a llama-server of this user that is not shown to be this run's: counted, left running, never signalled
+    unresolved = backend.unresolved_servers()
+    group_left = child.group_alive() or bool(others)
     after = backend.listeners()
     result.update(
         stop=stop,
@@ -632,7 +915,8 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
         cues=printed,
         run_output=read_run_output(stdout),
         run_error_label=last_error_label(stderr),
-        leftovers={"llama_server_after_exit": len(orphans), "llama_server_left": len(left),
+        leftovers={"llama_server_after_exit": orphans, "llama_server_left": len(left),
+                   "llama_server_unresolved": len(unresolved),
                    "runtime_group_left": group_left, "listeners_after": after},
     )
     clear = not left and not group_left and not after
@@ -647,7 +931,7 @@ def supervise(argv: list[str], out: Path, *, duration_s: float, from_launch: boo
     else:
         status = "child_exited"
     result["status"] = status
-    result["cleanup_clear"] = clear and not orphans
+    result["cleanup_clear"] = clear and not orphans and not unresolved
     return result
 
 

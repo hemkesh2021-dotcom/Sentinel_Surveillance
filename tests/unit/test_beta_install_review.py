@@ -568,3 +568,80 @@ def test_a_release_with_no_usable_file_is_refused_by_the_lock_tool_ir8() -> None
                                ("!=3.10.*", False), (">=3.8, !=3.9.*", True), ("something else", False), (None, True), ("", True)):
         assert tool.admits_python(requires) is admitted, requires
         assert bool(tool.usable([{**fitting, "requires_python": requires}])) is admitted, requires
+
+
+# ---------------------------------------------------------------- the changed guard is packaged, and labelled as changed
+
+GUARD = "benchmarks/runner/step5_guard.py"
+
+
+def builder():
+    import beta_install_fixture
+
+    return beta_install_fixture.build_archive
+
+
+def test_the_package_ships_the_corrected_guard_and_names_it_as_changed() -> None:
+    build = builder()
+    name, members = build.package_members(0, worktree=True)
+    packaged = members[f"app/{GUARD}"]
+    accepted = build.git("show", f"{build.ACCEPTED}:{GUARD}")
+    assert packaged == (REPO / GUARD).read_bytes() and packaged != accepted
+    assert b"PR_SET_CHILD_SUBREAPER" in packaged and b"llama_server_unresolved" in packaged
+    assert b"backend.kill(pid, signum)" in accepted and b"backend.kill(" not in packaged  # the cleanup by name is gone
+    sha = {"accepted": build.hashlib.sha256(accepted).hexdigest(), "packaged": build.hashlib.sha256(packaged).hexdigest()}
+    version = members["VERSION"].decode().splitlines()
+    mark = build.modification_mark({GUARD: sha["packaged"]})
+    assert name == f"sentinel-personal-beta-949da67-mod{mark[:7]}-r0-worktree" and version[0] == name
+    assert f"accepted_code_commit={build.ACCEPTED}" in version and f"modification_mark={mark}" in version
+    assert ("application=the accepted code with 1 file(s) changed after acceptance (below); this is NOT the unchanged "
+            "accepted build") in version
+    assert f"changed_file=app/{GUARD} accepted_sha256={sha['accepted']} packaged_sha256={sha['packaged']}" in version
+    assert any(line.startswith(f"changed_file_reason=app/{GUARD}: process ownership") for line in version)
+    assert any(line.startswith(f"changed_file_run_with=app/{GUARD}: synthetic and stand-in-process tests") and
+               "no guarded run with a camera or a model" in line for line in version)
+    unchanged = next(line for line in version if line.startswith("unchanged_from_accepted="))
+    assert f"app/{GUARD}" not in unchanged and all(f"app/{path}" in unchanged for path in build.GUARD_FILES if path != GUARD)
+    assert f"{sha['packaged']}  app/{GUARD}\n" in members["SHA256SUMS"].decode()
+    # every other application file is the accepted commit's
+    differs = build.git("diff", "--name-only", build.ACCEPTED, "--", build.APP_TREE, *build.GUARD_FILES).decode().split()
+    assert differs == [GUARD]
+    # the guide a tester reads names this package, and says what is not the accepted build's
+    released, _ = build.package_members(build.DEFAULT_REVISION, worktree=True)
+    released = released[:-len("-worktree")]
+    guide = members["QUICKSTART.md"].decode()
+    assert f"tar -xzf {released}.tar.gz && cd {released}\n" in guide
+    assert "**One file is not the accepted build's.**" in guide and "stops every `llama-server`" not in guide
+    assert "The accepted guard itself has already stopped" not in members["start.sh"].decode()
+
+
+@pytest.mark.parametrize(("differs", "declared", "told"), [
+    (f"{GUARD}\nsrc/sentinel/cli.py\n", None, "changed but not declared: src/sentinel/cli.py"),
+    ("", None, f"declared but identical to the accepted file: {GUARD}"),
+    (f"{GUARD}\n", {}, f"changed but not declared: {GUARD}"),
+])
+def test_the_builder_refuses_a_change_it_does_not_declare_and_a_declaration_without_a_change(
+        monkeypatch: pytest.MonkeyPatch, differs: str, declared: dict | None, told: str) -> None:
+    build = builder()
+    real = build.git
+    monkeypatch.setattr(build, "git", lambda *args: differs.encode() if args[0] == "diff" else real(*args))
+    if declared is not None:
+        monkeypatch.setattr(build, "CHANGED_SINCE_ACCEPTED", declared)
+    for worktree in (True, False):
+        with pytest.raises(SystemExit) as stop:
+            build.package_members(1, worktree=worktree)
+        assert "are not exactly the ones this package declares as changed" in str(stop.value) and told in str(stop.value)
+
+
+def test_only_a_package_without_changed_files_carries_the_accepted_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    build = builder()
+    real = build.git
+    monkeypatch.setattr(build, "git", lambda *args: b"" if args[0] == "diff" else real(*args))
+    monkeypatch.setattr(build, "CHANGED_SINCE_ACCEPTED", {})
+    name, members = build.package_members(3, worktree=True)
+    version = members["VERSION"].decode()
+    assert name == "sentinel-personal-beta-949da67-r3-worktree" and "-mod" not in name
+    assert "application=the accepted code, unchanged (" in version and "changed_file" not in version
+    monkeypatch.undo()
+    name, members = build.package_members(3, worktree=True)  # as this branch is: the mark is part of the name
+    assert "-mod" in name and "application=the accepted code, unchanged" not in members["VERSION"].decode()

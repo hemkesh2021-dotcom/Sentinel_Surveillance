@@ -757,6 +757,7 @@ RESULT = JsonProfile({  # step5_guard.supervise
     "run_output.stopped.database_closed": maybe(BOOL), "run_output.stopped.signals_not_recorded": COUNT,
     "run_error_label": maybe(TEXT),
     "leftovers.llama_server_after_exit": INT, "leftovers.llama_server_left": INT,
+    "leftovers.llama_server_unresolved": INT,  # session 116, part 40: not this run's; counted, never signalled
     "leftovers.runtime_group_left": BOOL, **{f"leftovers.listeners_after[].{k}": v for k, v in LISTENER.items()},
     "cleanup_clear": BOOL,
 }, keys={"preflight_sample": SAMPLE_KEYS, "baseline": SAMPLE_KEYS, "guard.trigger.sample": SAMPLE_KEYS,

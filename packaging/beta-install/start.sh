@@ -97,6 +97,7 @@ if [ "$MODE" = check ]; then
   echo "command_line_check=$LINE"
   [ "$LINE" = "run: rtsp_url_missing" ] || stop_now "the launch command was not accepted up to the camera URL check"
   echo "package=$(head -n 1 "$PKG/VERSION")"
+  grep -m 1 '^application=' "$PKG/VERSION" || echo "application=not stated in $PKG/VERSION"
   echo "memfree_bytes=$(meminfo MemFree) launch_floor_bytes=$FLOOR display_manager=$(systemctl is-active display-manager 2>/dev/null || true)"
   echo "BETA_CHECK=passed (no credentials asked, no sudo, the camera was not opened, no model was loaded)"
   exit 0
@@ -227,8 +228,8 @@ PY
 
 # The guard is gone: nothing this run started may be left running without it (a refused guard started nothing).
 # Only what this run's own record names, or a runtime whose arguments name this run's data directory, is signalled;
-# any other process, whatever its name, is reported and left alone. The accepted guard itself has already stopped
-# every llama-server of this user before it ended (QUICKSTART.md, 'Operating limits').
+# any other process, whatever its name, is reported and left alone. This package's guard (changed after acceptance:
+# VERSION) has already stopped the llama-server its own run started, and no other (QUICKSTART.md, 'Operating limits').
 RESIDUE=none
 case "$RESULT" in
   status=refused:*) ;;

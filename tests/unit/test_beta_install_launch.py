@@ -274,7 +274,9 @@ def test_the_offline_check_passes_without_credentials_sudo_camera_or_model(launc
     assert result.returncode == 0, said(result)
     assert "admission_check=as_expected" in result.stdout and "command_line_check=run: rtsp_url_missing" in result.stdout
     assert "BETA_CHECK=passed (no credentials asked, no sudo, the camera was not opened, no model was loaded)" in result.stdout
-    assert re.search(r"^package=sentinel-personal-beta-949da67-r0-worktree$", result.stdout, re.M)
+    assert re.search(r"^package=sentinel-personal-beta-949da67-mod[0-9a-f]{7}-r0-worktree$", result.stdout, re.M)
+    assert re.search(r"^application=the accepted code with 1 file\(s\) changed after acceptance \(below\); this is NOT "
+                     r"the unchanged accepted build$", result.stdout, re.M)
     assert launch.observations() == [] and not (launch.tmp / "runtime.json").exists()  # nothing was launched or recorded
     assert not any(call.startswith("sudo") for call in launch.calls())
     seen = json.loads((launch.tmp / "runtime-check.json").read_text())

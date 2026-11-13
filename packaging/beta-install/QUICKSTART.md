@@ -10,6 +10,13 @@ Private, for the maintainer's testers only; not for redistribution. It validates
 identity retention and chat run as experimental validation-run features, exactly as in the build it was made from
 (code `949da67`). Snapshots and external notifications are off. Testing with more than one person is deferred.
 
+**One file is not the accepted build's.** The memory guard (`app/benchmarks/runner/step5_guard.py`) was changed after
+acceptance: when a run ends it now signals only the processes that run started, and no longer every `llama-server`
+of your user. Its memory limits, readiness checks and deadlines are the accepted ones. The package's name carries a
+modification mark (`-mod…`) for that reason, and `VERSION` names the file with the accepted and the packaged SHA-256.
+The changed guard has run in synthetic and stand-in-process tests on the reference device only: no guarded run with
+a camera or a model has used it yet. Everything else under `app/` equals `949da67`.
+
 ## 1. What still blocks another device
 
 The accepted code compares three kinds of file with records made on the reference device. No option changes this.
@@ -57,7 +64,7 @@ You install the system prerequisites yourself; the package never uses sudo for t
 Extract the archive anywhere, then, as your own user (never with sudo):
 
 ```bash
-tar -xzf sentinel-personal-beta-949da67-r1.tar.gz && cd sentinel-personal-beta-949da67-r1
+tar -xzf sentinel-personal-beta-949da67-mod1d12a8b-r2.tar.gz && cd sentinel-personal-beta-949da67-mod1d12a8b-r2
 bash preflight.sh        # reads facts only; changes nothing
 bash install.sh          # defaults: ~/sentinel-beta (the installation) and ~/sentinel-beta-data (your data)
 ```
@@ -164,8 +171,11 @@ A Ctrl-C or the 60-minute stop that ends cleanly reads `clean=yes` and `OBS_exit
 - **Time.** At most 60 minutes per run after readiness; readiness within 300 s.
 - **Scope.** One camera (its main stream), one enrolled person, one person in view. Recognition is context only.
 - **Chat.** Advisory answers about one frame; one question at a time, at most 300 characters. Monitoring comes first.
-- **Other programs.** The memory guard stops every `llama-server` of your user when a run ends, and the launcher
-  refuses to start while one runs: do not run another one during an observation.
+- **Other programs.** When a run ends, the memory guard stops a `llama-server` only if that run started it (it
+  descends from the guard; checked by process number and start time). Another `llama-server` of your user is counted
+  (`llama_server_unresolved` in `guard/result.json`), named in a NOTE by the launcher, left running and never
+  signalled; the run then reads `clean=no`. The launcher still refuses to start while one runs, and its memory use
+  can trigger the guard's stop: do not run another one during an observation.
 - **Privacy.** The page is on the Jetson's 127.0.0.1 only. Each run keeps records (numbers per face result, no
   pictures) in `~/sentinel-beta-data/observe/obs-<UTC time>/`; `guard/run.err` holds the runtime's own messages,
   which can name the camera's host and port. Delete a folder when you no longer need it; never share footage, the
@@ -209,5 +219,6 @@ scripts' logic is covered by the package's tests with synthetic fixtures.
 
 **Not verified:** anything on another device; stock JetPack 6 on Ubuntu 22.04 (JetPack's `python3-libnvinfer`
 binding linked into the environment, cuDSS from NVIDIA's repository); `build-llama.sh` beyond its configure step;
-`build-engine.sh` (it has never run); an enrollment made with this package; any launch from this package. Tests with
-stand-ins are not an installation on a clean Jetson.
+`build-engine.sh` (it has never run); an enrollment made with this package; any launch from this package; the
+changed memory guard in a guarded run with a camera or a model (its ownership of processes is covered by synthetic
+tests and by tests with small stand-in processes only). Tests with stand-ins are not an installation on a clean Jetson.

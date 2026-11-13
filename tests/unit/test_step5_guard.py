@@ -94,13 +94,22 @@ class FakeChild:
 
 
 class FakeBackend:
+    """``processes``: what else runs once the runtime has been launched, each a dict with ``pid``, ``start``,
+    ``owned`` (this run started it, or somebody else did), ``appears`` (seconds after launch, or ``after_exit``),
+    ``term_s`` and ``kill_s`` (how long after SIGTERM or SIGKILL it has gone; None: that signal is ignored) and
+    ``comm`` (llama-server unless given). ``orphan_after_exit`` is one owned llama-server left by the runtime."""
+
     def __init__(self, **script) -> None:
         self.now = 100.0
         self.script = script
         self.children = []
-        self.killed = []
+        self.signalled = []  # (pid, signal, seconds after launch): every signal sent to anything but the runtime
         self.llama = list(script.get("llama_before", ()))
         self.fetched = []
+        self.processes = [dict(item) for item in script.get("processes", ())]
+        if script.get("orphan_after_exit"):
+            self.processes.append({"pid": 5151, "start": 900, "owned": True})
+        self.owning = self.disowned = 0
 
     def clock(self):
         return self.now
@@ -116,23 +125,58 @@ class FakeBackend:
         for at, changes in self.script.get("memory", ()):
             if self.children and self.now - self.children[0].started >= at:
                 values.update(changes)
+        fail_at = self.script.get("guard_fails_at")
+        if fail_at is not None and self.children and self.now - self.children[0].started >= fail_at:
+            raise RuntimeError("the guard's own failure")
         return {"t_mono": self.now, **values}
 
     def spawn(self, argv, stdout, stderr):
+        assert self.owning == 1 and self.disowned == 0  # ownership is set up before anything is launched
         child = FakeChild(self, argv, stdout, stderr)
         self.children.append(child)
-        if self.script.get("orphan_after_exit"):
-            self.llama_after = [5151]
         return child
 
-    def llama_pids(self):
-        if self.children and self.children[0].rc is not None:
-            return [pid for pid in getattr(self, "llama_after", []) if pid not in self.killed]
-        return self.llama
+    def _running(self, item) -> bool:
+        if not self.children:
+            return False
+        appears = item.get("appears", "after_exit")
+        shown = (self.children[0].rc is not None if appears == "after_exit"
+                 else self.now - self.children[0].started >= appears)
+        return shown and not (item.get("gone_at") is not None and self.now >= item["gone_at"])
 
-    def kill(self, pid, signum):
-        self.killed.append(pid)
-        return True
+    @staticmethod
+    def _info(item) -> dict:
+        return {"pid": item["pid"], "start": item["start"], "comm": item.get("comm", "llama-server")}
+
+    def llama_pids(self):
+        if not self.children:
+            return self.llama
+        return sorted(item["pid"] for item in self.processes
+                      if self._running(item) and item.get("comm", "llama-server") == "llama-server")
+
+    def own(self):
+        self.owning += 1
+        return self.script.get("own_problem")
+
+    def disown(self):
+        self.disowned += 1
+
+    def owned(self):
+        return [self._info(item) for item in self.processes if item["owned"] and self._running(item)]
+
+    def unresolved_servers(self):
+        return [self._info(item) for item in self.processes if not item["owned"] and self._running(item)
+                and item.get("comm", "llama-server") == "llama-server"]
+
+    def signal(self, info, signum):
+        self.signalled.append((info["pid"], signum, round(self.now - self.children[0].started, 1)))
+        for item in self.processes:  # the real backend sends only to a process this run owns, still that process
+            if item["owned"] and self._running(item) and (item["pid"], item["start"]) == (info["pid"], info["start"]):
+                delay = item.get("term_s", 0.3) if signum == signal.SIGTERM else item.get("kill_s", 0.1)
+                if delay is not None:
+                    item["gone_at"] = min(item.get("gone_at", float("inf")), self.now + delay)
+                return True
+        return False
 
     def listeners(self):
         return list(self.script.get("listeners", ()))
@@ -247,7 +291,114 @@ def test_a_llama_server_left_after_exit_is_stopped_and_reported(mod, tmp_path) -
     backend = FakeBackend(ready_s=1.0, stop_s=1.0, orphan_after_exit=True)
     result, _ = run(mod, tmp_path, backend, duration_s=2.0)
     assert result["leftovers"]["llama_server_after_exit"] == 1 and result["leftovers"]["llama_server_left"] == 0
-    assert 5151 in backend.killed and result["cleanup_clear"] is False
+    assert [(pid, signum) for pid, signum, _ in backend.signalled] == [(5151, signal.SIGTERM)]
+    assert result["leftovers"]["llama_server_unresolved"] == 0 and result["cleanup_clear"] is False
+    assert result["status"] == "duration_stop" and backend.disowned == 1
+
+
+UNRELATED = {"pid": 6262, "start": 950, "owned": False, "appears": 1.5}  # somebody else's, started during the run
+
+
+def test_an_unrelated_llama_server_of_the_same_user_is_reported_and_never_signalled(mod, tmp_path) -> None:
+    backend = FakeBackend(ready_s=1.0, stop_s=1.0, processes=[UNRELATED])
+    result, _ = run(mod, tmp_path, backend, duration_s=5.0)
+    left = result["leftovers"]
+    assert backend.signalled == [] and backend.children[0].signals == [signal.SIGINT]
+    assert (left["llama_server_after_exit"], left["llama_server_left"], left["llama_server_unresolved"]) == (0, 0, 1)
+    assert left["runtime_group_left"] is False
+    assert result["status"] == "duration_stop" and result["cleanup_clear"] is False  # ended as usual; not clear
+    # beside this run's own leftover: that one is stopped, the other still is not touched
+    backend = FakeBackend(ready_s=1.0, stop_s=1.0, orphan_after_exit=True, processes=[UNRELATED])
+    result, _ = mod.supervise(["sentinel", "run"], tmp_path / "second", backend=backend, duration_s=5.0), None
+    left = result["leftovers"]
+    assert [(pid, signum) for pid, signum, _ in backend.signalled] == [(5151, signal.SIGTERM)]
+    assert (left["llama_server_after_exit"], left["llama_server_left"], left["llama_server_unresolved"]) == (1, 0, 1)
+    assert 6262 in backend.llama_pids() and 5151 not in backend.llama_pids()
+
+
+def test_an_owned_llama_server_keeps_the_same_two_deadlines(mod, tmp_path) -> None:
+    """SIGTERM at the runtime's exit, SIGKILL KILL_GRACE_S later, KILL_GRACE_S more to go: as before."""
+    stubborn = {"pid": 5151, "start": 900, "owned": True, "term_s": None}  # ignores SIGTERM
+    backend = FakeBackend(ready_s=1.0, stop_s=1.0, processes=[stubborn, UNRELATED])
+    result, _ = run(mod, tmp_path, backend, duration_s=5.0)
+    (first, term, at_term), (second, kill, at_kill) = backend.signalled
+    assert (first, term, second, kill) == (5151, signal.SIGTERM, 5151, signal.SIGKILL)
+    assert mod.KILL_GRACE_S == 5.0 and 5.0 <= at_kill - at_term <= 5.2
+    assert result["leftovers"]["llama_server_left"] == 0 and result["status"] == "duration_stop"
+    immortal = {"pid": 5151, "start": 900, "owned": True, "term_s": None, "kill_s": None}
+    backend = FakeBackend(ready_s=1.0, stop_s=1.0, processes=[immortal])
+    before = backend.now
+    result, _ = mod.supervise(["sentinel", "run"], tmp_path / "second", backend=backend, duration_s=5.0), None
+    assert [signum for _, signum, _ in backend.signalled] == [signal.SIGTERM, signal.SIGKILL]
+    assert result["leftovers"]["llama_server_left"] == 1 and result["status"] == "cleanup_failed"
+    assert backend.now - before <= 1.0 + 5.0 + 1.0 + 2 * 5.0 + 1.0  # readiness, duration, stop, both deadlines
+
+
+def test_owned_processes_are_never_signalled_while_the_runtime_runs(mod, tmp_path) -> None:
+    during = {"pid": 5151, "start": 900, "owned": True, "appears": 0.5}  # the runtime's own scene server
+    helper = {"pid": 5152, "start": 901, "owned": True, "appears": 0.5, "comm": "python"}
+    backend = FakeBackend(ready_s=1.0, stop_s=1.0, processes=[during, helper])
+    result, _ = run(mod, tmp_path, backend, duration_s=5.0)
+    launched = [at for _, _, at in backend.signalled]
+    assert launched and min(launched) >= 1.0 + 5.0 + 1.0  # only after the runtime's exit
+    assert {pid for pid, _, _ in backend.signalled} == {5151}  # an owned process that is no llama-server: reported
+    assert result["leftovers"]["runtime_group_left"] is True and result["status"] == "cleanup_failed"
+
+
+@pytest.mark.parametrize(("script", "status"), [
+    ({"exit_s": 2.0, "exit_rc": 1}, "child_exited"),  # the runtime fails on its own
+    ({"ready_s": 1.0}, "forced_stop"),  # it ignores the stop: its group is terminated, then killed
+    ({"ready_s": 1.0, "stop_s": 2.0, "memory": ((3.0, {"MemAvailable": 3_100_000_000}),)}, "guard_stop"),
+])
+def test_after_a_runtime_failure_only_this_runs_llama_server_is_stopped(mod, tmp_path, script, status) -> None:
+    backend = FakeBackend(orphan_after_exit=True, processes=[UNRELATED], **script)
+    result, _ = run(mod, tmp_path, backend, duration_s=60.0, from_launch=status == "child_exited", stop_grace_s=20.0)
+    assert result["status"] == status
+    assert [(pid, signum) for pid, signum, _ in backend.signalled] == [(5151, signal.SIGTERM)]
+    left = result["leftovers"]
+    assert (left["llama_server_after_exit"], left["llama_server_left"], left["llama_server_unresolved"]) == (1, 0, 1)
+    assert result["cleanup_clear"] is False and backend.disowned == 1
+
+
+def test_a_guard_failure_stops_what_the_run_started_and_nothing_else(mod, tmp_path) -> None:
+    backend = FakeBackend(ready_s=1.0, stop_s=2.0, guard_fails_at=4.0, orphan_after_exit=True, processes=[UNRELATED])
+    with pytest.raises(RuntimeError, match="the guard's own failure"):
+        run(mod, tmp_path, backend, duration_s=600.0)
+    child = backend.children[0]
+    assert child.signals == [signal.SIGINT] and child.rc == 0  # the runtime's own clean stop, as for any stop
+    assert [(pid, signum) for pid, signum, _ in backend.signalled] == [(5151, signal.SIGTERM)]
+    assert backend.disowned == 1 and backend.llama_pids() == [6262]
+    # a runtime that ignores the request: its group after the same grace, then this run's server
+    backend = FakeBackend(ready_s=1.0, guard_fails_at=4.0, orphan_after_exit=True, processes=[UNRELATED])
+    with pytest.raises(RuntimeError):
+        mod.supervise(["sentinel", "run"], tmp_path / "second", backend=backend, duration_s=600.0, stop_grace_s=20.0)
+    child = backend.children[0]
+    assert child.signals == [signal.SIGINT, ("group", signal.SIGTERM), ("group", signal.SIGKILL)]
+    assert 4.0 + 20.0 <= backend.signalled[0][2] <= 4.0 + 20.0 + 5.0 + 1.5
+    assert [(pid, signum) for pid, signum, _ in backend.signalled] == [(5151, signal.SIGTERM)]
+
+
+def test_the_evidence_profile_knows_every_leftover_field_the_guard_writes(mod, tmp_path) -> None:
+    evidence = importlib.import_module("face_evidence")
+    result, _ = run(mod, tmp_path, FakeBackend(ready_s=1.0, stop_s=1.0, processes=[UNRELATED]), duration_s=2.0)
+    assert sorted(result["leftovers"]) == ["listeners_after", "llama_server_after_exit", "llama_server_left",
+                                           "llama_server_unresolved", "runtime_group_left"]
+    assert all(evidence.RESULT.known(f"leftovers.{name}") for name in result["leftovers"])
+    assert all(type(result["leftovers"][name]) is int for name in result["leftovers"] if name.startswith("llama"))
+    refused = FakeBackend(ready_s=1.0, stop_s=1.0, own_problem="ownership_unavailable")
+    status = mod.supervise(["sentinel", "run"], tmp_path / "refused", backend=refused, duration_s=1.0)["status"]
+    assert status == "refused:ownership_unavailable" and evidence.GUARD_STATUS.fit(status)[0] is True
+
+
+def test_without_ownership_nothing_is_launched(mod, tmp_path) -> None:
+    backend = FakeBackend(ready_s=1.0, stop_s=1.0, own_problem="ownership_unavailable", processes=[UNRELATED])
+    result, out = run(mod, tmp_path, backend)
+    assert result["status"] == "refused:ownership_unavailable" and backend.children == []
+    assert backend.signalled == [] and backend.disowned == 1 and list(out.iterdir()) == []
+    backend = FakeBackend(ready_s=1.0, stop_s=1.0, thp=0)  # an earlier refusal never reaches the ownership step
+    assert mod.supervise(["sentinel", "run"], tmp_path / "other", backend=backend,
+                         duration_s=1.0)["status"] == "refused:thp_enabled_not_1"
+    assert backend.owning == 0 and backend.disowned == 1
 
 
 def test_readiness_has_a_bound_and_an_operator_interrupt_stops_cleanly(mod, tmp_path) -> None:
@@ -332,6 +483,9 @@ def test_a_real_runtime_stand_in_stops_on_sigint_and_leaves_nothing(mod, tmp_pat
 
         @staticmethod
         def llama_pids():
+            return []
+
+        def unresolved_servers(self):  # as llama_pids: whatever else this user runs is not this test's subject
             return []
 
         @staticmethod
