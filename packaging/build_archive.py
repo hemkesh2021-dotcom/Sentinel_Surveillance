@@ -75,6 +75,11 @@ CHANGED_SINCE_ACCEPTED = {
 PREVIOUS_PACKAGE_COMMIT = "5dfeb1097c518aafa38225e811928dad89cad412"
 PREVIOUS_PACKAGE_NAME = "sentinel-personal-beta-949da67-mod79c18d4-r3"
 PACKAGE_FILES_CHANGED = {
+    "build-engine.sh": "reads free memory before the detector is loaded on the GPU and refuses below 1,500,000,000 B "
+                       "with what to do; a failed export says what free memory was. In the installation rehearsal "
+                       "the export failed in its first GPU allocations with the page cache full (MemFree 0.08 to "
+                       "0.84 GB, 4.6 to 5.5 GB 'available'). The minimum is the runtime's own for loading the "
+                       "detector; what the export needs was not measured. No export has completed with this package",
     "QUICKSTART.md": "names this package and the build script's --jobs option",
     "install.sh": "installing again over an installation uses the Python 3.10 interpreter and the TensorRT binding "
                   "it was made with unless they are named anew (the rehearsal's re-installation from a later shell "
@@ -83,7 +88,7 @@ PACKAGE_FILES_CHANGED = {
                       "rehearsal on the reference device needed two compile jobs and the script offered no way to "
                       "ask for them. The files built are the same either way",
 }
-DEFAULT_REVISION = 4
+DEFAULT_REVISION = 5
 EXECUTABLE = (".sh",)
 REPO = Path(__file__).resolve().parents[1]
 

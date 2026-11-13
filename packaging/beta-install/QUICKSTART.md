@@ -102,7 +102,7 @@ You install the system prerequisites yourself; the package never uses sudo for t
 Extract the archive anywhere, then, as your own user (never with sudo):
 
 ```bash
-tar -xzf sentinel-personal-beta-949da67-mod79c18d4-r4.tar.gz && cd sentinel-personal-beta-949da67-mod79c18d4-r4
+tar -xzf sentinel-personal-beta-949da67-mod79c18d4-r5.tar.gz && cd sentinel-personal-beta-949da67-mod79c18d4-r5
 bash preflight.sh        # reads facts only; changes nothing
 bash install.sh          # defaults: ~/sentinel-beta (the installation) and ~/sentinel-beta-data (your data)
 ```
@@ -128,7 +128,10 @@ what the last two scripts build; only the opt-in route can use it, and only when
 the two notes what it built when it finishes (under `assets/provenance/`); if a build is interrupted, run the
 script again rather than finishing it by hand. `build-llama.sh` builds only in a build tree it started itself,
 refuses compiler or linker flags set in your shell (`CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `CUDAFLAGS`, `LDFLAGS`), and
-links the binaries again each time it runs, so run it once and record afterwards.
+links the binaries again each time it runs, so run it once and record afterwards. `build-engine.sh` refuses to
+start when MemFree is below 1.5 GB: on a Jetson the GPU takes free memory, and memory that is only "available" as
+page cache does not count (after the downloads and the llama.cpp build the cache is usually full). Run it after a
+reboot, or free memory yourself first; the script tells you how and frees nothing itself.
 
 ## 4. Your own enrollment
 

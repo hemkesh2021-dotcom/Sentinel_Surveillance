@@ -181,9 +181,10 @@ class Launch(World):
 
     def __init__(self, tmp: Path) -> None:
         super().__init__(tmp)
-        start = (self.package / "start.sh").read_text()
-        assert start.count("MEMINFO=/proc/meminfo\n") == 1
-        (self.package / "start.sh").write_text(start.replace("MEMINFO=/proc/meminfo\n", f'MEMINFO="{tmp}/meminfo"\n'))
+        for script in ("start.sh", "build-engine.sh"):  # the memory reading of both comes from the fixture file
+            text = (self.package / script).read_text()
+            assert text.count("MEMINFO=/proc/meminfo\n") == 1
+            (self.package / script).write_text(text.replace("MEMINFO=/proc/meminfo\n", f'MEMINFO="{tmp}/meminfo"\n'))
         files = {"scene_model": ("models/lfm3-vl/model.gguf", b"model"), "scene_mmproj": ("models/lfm3-vl/mmproj.gguf", b"mmproj"),
                  "face_weights": ("deepface-home/.deepface/weights/weights.h5", b"weights"),
                  "face_detector": ("deepface-home/.deepface/weights/detector.onnx", b"detector"),
@@ -908,11 +909,39 @@ def test_the_record_and_its_check_use_the_interpreter_and_binding_the_installati
     assert checked.returncode == 0 and "artifact_verification=passed" in checked.stdout, said(checked)
 
 
+def test_the_engine_export_is_refused_before_anything_loads_when_free_memory_is_low(routed: Launch) -> None:
+    """Found by the installation rehearsal: with the page cache full the export crashed in its first GPU allocation
+    with an error that names NVML. The script now reads free memory first and says what to do; "available" memory
+    does not count."""
+    launch = routed
+    launch.fixture("meminfo", "MemTotal: 7802736 kB\nMemFree: 820000 kB\nMemAvailable: 5400000 kB\n")
+    refused = launch.build_engine()
+    assert refused.returncode == 1, said(refused)
+    assert "MemFree is 839680000 B, below the 1500000000 B needed before the detector is loaded on the GPU" in refused.stderr
+    assert "only \"available\" (page cache) does not count" in refused.stderr and "Nothing was built" in refused.stderr
+    assert "sync; sudo sysctl -w vm.drop_caches=1" in refused.stderr and "type BUILD" not in said(refused)
+    assert not (launch.tmp / "export.args").exists()  # the export was never started
+    assert not (launch.prefix / "assets/engine/yolov8n.engine").exists()
+    assert not (launch.prefix / "assets/provenance/detector_engine.json").exists()
+    assert not any(call.startswith("sudo") for call in launch.calls())  # the script frees nothing itself
+    launch.fixture("meminfo", "MemTotal: 7802736 kB\nMemAvailable: 5400000 kB\n")
+    unreadable = launch.build_engine()
+    assert unreadable.returncode == 1 and "free memory could not be read" in unreadable.stderr
+    launch.fixture("meminfo", "MemTotal: 7802736 kB\nMemFree: 1464844 kB\nMemAvailable: 5400000 kB\n")  # 1,500,000,256 B
+    built = launch.build_engine()
+    assert built.returncode == 0 and "MemFree is 1500000256 B (at least 1500000000 B is required" in built.stdout, said(built)
+    script = (launch.installed / "build-engine.sh").read_text()
+    assert script.index("MIN_FREE_BYTES=1500000000") < script.index("type BUILD to build the engine now")
+    assert "the export itself needs was NOT measured" in script and "nothing here frees memory for you" in script
+
+
 def test_an_export_that_fails_leaves_no_engine_note_and_the_script_says_so(routed: Launch) -> None:
     launch = routed
     launch.fixture("export.rc", "1\n")
     result = launch.build_engine()
     assert result.returncode == 1 and "the export failed" in said(result), said(result)
+    assert "MemFree was 6451200000 B before it and is 6451200000 B now" in said(result)
+    assert "the GPU could not get memory" in said(result) and "Nothing was noted, and no engine is in place" in said(result)
     assert not (launch.prefix / "assets/provenance/detector_engine.json").exists()
     assert not (launch.prefix / "assets/engine/yolov8n.engine").exists()
 

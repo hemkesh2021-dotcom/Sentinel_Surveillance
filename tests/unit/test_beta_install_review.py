@@ -673,7 +673,7 @@ def test_the_version_names_every_file_of_the_route_and_every_package_file_that_c
     # the guide a tester reads names this package, and says what is not the accepted build's and what is not validated
     released, _ = build.package_members(build.DEFAULT_REVISION, worktree=True)
     released = released[:-len("-worktree")]
-    assert released.endswith("-r4")
+    assert released.endswith("-r5")
     guide = members["QUICKSTART.md"].decode()
     assert f"tar -xzf {released}.tar.gz && cd {released}\n" in guide
     assert "**Four application files are not the accepted build's.**" in guide and "stops every `llama-server`" not in guide

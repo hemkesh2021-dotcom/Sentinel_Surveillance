@@ -45,12 +45,25 @@ for name, version in wanted.items():
 print("\n".join(wrong))
 sys.exit(1 if wrong else 0)
 PY
+# On a Jetson the GPU's memory is taken out of free memory. An export on the reference device (the installation
+# rehearsal, 2026-11-13) failed in its first GPU allocations (NvMapMemAlloc errors, then an unrelated-looking
+# PyTorch NVML assertion) with MemFree between 0.08 and 0.84 GB while 4.6 to 5.5 GB were "available" as page cache:
+# the downloads, the llama.cpp build and other reading before it had filled the cache. So free memory is checked
+# here, before anything is loaded. The minimum is the runtime's own for loading the detector (1,500,000,000 B). What
+# the export itself needs was NOT measured and may be more; nothing here frees memory for you.
+MEMINFO=/proc/meminfo
+MIN_FREE_BYTES=1500000000
+memfree() { awk '$1 == "MemFree:" {print $2 * 1024}' "$MEMINFO"; }
+FREE_BEFORE="$(memfree)"
+[ -n "$FREE_BEFORE" ] || beta_stop "free memory could not be read ($MEMINFO)"
+[ "$FREE_BEFORE" -ge "$MIN_FREE_BYTES" ] || beta_stop "MemFree is $FREE_BEFORE B, below the $MIN_FREE_BYTES B needed before the detector is loaded on the GPU. Memory that is only \"available\" (page cache) does not count: on a Jetson the GPU takes free memory. Free some yourself, then run this again: close what is running, or reboot; or, as your own step with sudo: sync; sudo sysctl -w vm.drop_caches=1. Nothing was built"
 echo "This loads the detector on this device's GPU to build the engine (a few minutes). The camera is not opened."
+echo "MemFree is $FREE_BEFORE B (at least $MIN_FREE_BYTES B is required; what the export needs was not measured)."
 read -rp 'type BUILD to build the engine now, or press Enter to stop: ' ANSWER
 [ "$ANSWER" = BUILD ] || beta_stop "nothing was built"
 python3 -I -B "$PKG/lib/beta.py" own --prefix "$PREFIX" assets || exit 1
 cd "$ASSETS/engine" || exit 1
-env PYTHONDONTWRITEBYTECODE=1 "LD_PRELOAD=$L4T_LIBCUDA" YOLO_OFFLINE=true "$RT_PY" - "$WEIGHTS" "$EXPORT" <<'PY' || beta_stop "the export failed (above)"
+env PYTHONDONTWRITEBYTECODE=1 "LD_PRELOAD=$L4T_LIBCUDA" YOLO_OFFLINE=true "$RT_PY" - "$WEIGHTS" "$EXPORT" <<'PY' || beta_stop "the export failed (above). MemFree was $FREE_BEFORE B before it and is $(memfree) B now. If the lines above show NvMapMemAlloc errors or a PyTorch NVML assertion, the GPU could not get memory: free more (see the top of this script's memory check) and run this again. Nothing was noted, and no engine is in place"
 import json, sys
 from ultralytics import YOLO
 YOLO(sys.argv[1]).export(**json.loads(sys.argv[2]))
