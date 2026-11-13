@@ -1,8 +1,8 @@
 # Repository traffic — hemkesh2021-dotcom/Sentinel_Surveillance
 
-Last successful collection: **2026-11-12T04:12:53.834292Z**. Daily dates are UTC.
+Last successful collection: **2026-11-13T03:34:28.758775Z**. Daily dates are UTC.
 
-Observed daily coverage: **2026-10-05 → 2026-11-10**. Missing dates are unknown, not zero.
+Observed daily coverage: **2026-10-05 → 2026-11-11**. Missing dates are unknown, not zero.
 
 This report measures repository interest, not product usage or validated adoption. Clones may include automation and development activity. The collector uses API calls only, with no git clone/fetch/checkout.
 
@@ -12,8 +12,8 @@ GitHub supplies approximately the last 14 days. These window-level unique counts
 
 | Metric | Events | Unique visitors/cloners in API window | Latest daily bucket |
 | --- | ---: | ---: | --- |
-| Views | 55 | 4 | 2026-11-10 |
-| Clones | 158 | 71 | 2026-11-10 |
+| Views | 56 | 5 | 2026-11-11 |
+| Clones | 140 | 59 | 2026-11-11 |
 
 ## Totals across recorded days
 
@@ -21,8 +21,8 @@ These cover only observed dates, not the repository's lifetime. Daily unique cou
 
 | Metric | Recorded events | Sum of daily uniques | Observed dates |
 | --- | ---: | ---: | ---: |
-| Views | 158 | 29 | 37 |
-| Clones | 485 | 239 | 37 |
+| Views | 161 | 32 | 38 |
+| Clones | 490 | 242 | 38 |
 
 ## Monthly summary
 
@@ -30,7 +30,7 @@ Months may be partial. Separate coverage counts expose gaps in either metric.
 
 | Month | View dates | Views | Visitor-days | Clone dates | Clones | Cloner-days |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 2026-11 | 10 | 42 | 6 | 10 | 105 | 50 |
+| 2026-11 | 11 | 45 | 9 | 11 | 110 | 53 |
 | 2026-10 | 27 | 116 | 23 | 27 | 380 | 189 |
 
 ## Referrers in latest response
@@ -39,7 +39,7 @@ Absence from the top 10 does not establish zero traffic.
 
 | Referrer | Rolling-window views | Rolling-window uniques |
 | --- | ---: | ---: |
-| github.com | 12 | 1 |
+| github.com | 13 | 1 |
 | forums.developer.nvidia.com | 1 | 1 |
 
 ## Historically observed referrer peaks
@@ -49,14 +49,14 @@ Peaks refer to overlapping rolling windows; they are not cumulative totals or cu
 | Referrer | Peak window views | Peak window uniques | Last observed UTC |
 | --- | ---: | ---: | --- |
 | Google | 3 | 2 | 2026-10-30T02:56:06.645220Z |
-| forums.developer.nvidia.com | 1 | 1 | 2026-11-12T04:12:53.834292Z |
-| github.com | 21 | 3 | 2026-11-12T04:12:53.834292Z |
+| forums.developer.nvidia.com | 1 | 1 | 2026-11-13T03:34:28.758775Z |
+| github.com | 21 | 3 | 2026-11-13T03:34:28.758775Z |
 
 ## Popular paths in latest response
 
 | Path | Views | Uniques |
 | --- | ---: | ---: |
-| /hemkesh2021-dotcom/Sentinel_Surveillance | 27 | 4 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance | 28 | 5 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/graphs/traffic | 6 | 1 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/pulse | 6 | 1 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/graphs/community | 2 | 1 |
@@ -73,6 +73,7 @@ Recent dates may be partial or revised by GitHub. A later response replaces the 
 
 | UTC date | Views | Daily unique visitors | Clones | Daily unique cloners |
 | --- | ---: | ---: | ---: | ---: |
+| 2026-11-11 | 3 | 3 | 5 | 3 |
 | 2026-11-10 | 1 | 1 | 2 | 2 |
 | 2026-11-09 | 0 | 0 | 29 | 9 |
 | 2026-11-08 | 3 | 1 | 21 | 8 |
