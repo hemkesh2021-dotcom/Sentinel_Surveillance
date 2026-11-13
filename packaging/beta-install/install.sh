@@ -27,6 +27,16 @@ if [ "$(basename "$HERE")" = package ] && [ -f "$(dirname "$HERE")/install.conf"
   beta_stop "this is an installed copy. Run install.sh from the extracted archive"
 fi
 
+# Installing again over an installation: the Python 3.10 interpreter and the TensorRT binding it was made with are
+# used again unless they are named anew, so that refreshing the package needs no variable from the first shell.
+# The file is read as text; a recorded place that is no longer there is not used, and the preflight below checks
+# whatever is used.
+if [ -f "$PREFIX/install.conf" ] && [ ! -L "$PREFIX/install.conf" ]; then
+  WAS_PY="$(sed -n 's/^PYTHON310=//p' "$PREFIX/install.conf" | head -n 1)"
+  WAS_TRT="$(sed -n 's/^TENSORRT_PYTHON=//p' "$PREFIX/install.conf" | head -n 1)"
+  if [ -z "${SENTINEL_BETA_PYTHON310:-}" ] && [ -n "$WAS_PY" ] && [ -x "$WAS_PY" ]; then export SENTINEL_BETA_PYTHON310="$WAS_PY"; fi
+  if [ -z "${SENTINEL_BETA_TENSORRT_PYTHON:-}" ] && [ -f "$WAS_TRT/tensorrt/__init__.py" ]; then export SENTINEL_BETA_TENSORRT_PYTHON="$WAS_TRT"; fi
+fi
 bash "$HERE/preflight.sh"; PREFLIGHT=$?
 case "$PREFLIGHT" in
   0) ;;

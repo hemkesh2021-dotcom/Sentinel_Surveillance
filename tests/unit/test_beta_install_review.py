@@ -44,7 +44,7 @@ def helper(world: World, name: str = "beta_under_test"):
 
 def install_arguments(world: World) -> list[str]:
     return ["install", "--source", str(world.package), "--prefix", str(world.prefix), "--data-dir", str(world.data),
-            "--python310", "/usr/bin/python3.10"]
+            "--python310", str(world.bin / "python3.10")]  # what install.sh records here: the one its preflight found
 
 
 class Sleepers:
@@ -582,7 +582,7 @@ def test_a_release_with_no_usable_file_is_refused_by_the_lock_tool_ir8() -> None
 
 GUARD = "benchmarks/runner/step5_guard.py"
 ROUTE = ("src/sentinel/cli.py", "src/sentinel/demo_runtime.py", "src/sentinel/device_artifacts.py")
-NEW_PACKAGE_FILES = ("lib/artifacts.py", "record-artifacts.sh")
+NEW_PACKAGE_FILES: tuple = ()  # none since revision 3
 
 
 def builder():
@@ -642,8 +642,8 @@ def test_the_version_names_every_file_of_the_route_and_every_package_file_that_c
         assert (f"changed_file_run_with=app/{path}: synthetic tests on the reference device only (temporary "
                 "directories, synthetic files, stand-ins); never on another device, and no run with a camera or a "
                 "model has used it") in version, path
-    # the package's own files against revision 2's
-    assert build.PREVIOUS_PACKAGE_NAME == "sentinel-personal-beta-949da67-mod1d12a8b-r2"
+    # the package's own files against revision 3's
+    assert build.PREVIOUS_PACKAGE_NAME == "sentinel-personal-beta-949da67-mod79c18d4-r3"
     assert build.git("rev-parse", "--verify", f"{build.PREVIOUS_PACKAGE_COMMIT}^{{commit}}").decode().strip() == build.PREVIOUS_PACKAGE_COMMIT
     own = {path: content for path, content in members.items()
            if not path.startswith("app/") and path not in ("VERSION", "SHA256SUMS")}
@@ -659,7 +659,8 @@ def test_the_version_names_every_file_of_the_route_and_every_package_file_that_c
                sha256(build.git("show", f"{build.PREVIOUS_PACKAGE_COMMIT}:{build.PACKAGE_SOURCE}/{path}")))
         assert f"package_file_changed={path} previous_sha256={was} packaged_sha256={sha256(own[path])}" in version, path
         assert any(line.startswith(f"package_file_changed_reason={path}: ") and len(line) > len(path) + 40 for line in version)
-    for path in ("stop.sh", "preflight.sh", "setup-env.sh", "fetch-assets.sh", "lib/hostprep.py", "templates/live.yaml"):
+    for path in ("stop.sh", "preflight.sh", "setup-env.sh", "fetch-assets.sh", "lib/hostprep.py", "templates/live.yaml",
+                 "start.sh", "check.sh", "lib/artifacts.py", "record-artifacts.sh", "lib/admission_check.py"):
         assert path in own and not any(line.startswith(f"package_file_changed={path} ") for line in version), path
     launch = next(line for line in version if line.startswith("launch="))
     assert "REFUSES on another Jetson" in launch and "validates nothing about that device's resources" in launch
@@ -672,7 +673,7 @@ def test_the_version_names_every_file_of_the_route_and_every_package_file_that_c
     # the guide a tester reads names this package, and says what is not the accepted build's and what is not validated
     released, _ = build.package_members(build.DEFAULT_REVISION, worktree=True)
     released = released[:-len("-worktree")]
-    assert released.endswith("-r3")
+    assert released.endswith("-r4")
     guide = members["QUICKSTART.md"].decode()
     assert f"tar -xzf {released}.tar.gz && cd {released}\n" in guide
     assert "**Four application files are not the accepted build's.**" in guide and "stops every `llama-server`" not in guide
@@ -692,10 +693,10 @@ def test_the_version_names_every_file_of_the_route_and_every_package_file_that_c
      "as changed; changed but not declared: src/sentinel/cli.py"),
     ("CHANGED_SINCE_ACCEPTED", "drop:src/sentinel/device_artifacts.py", "changed but not declared: src/sentinel/device_artifacts.py"),
     ("CHANGED_SINCE_ACCEPTED", "add:src/sentinel/config.py", "declared but identical: src/sentinel/config.py"),
-    ("PACKAGE_FILES_CHANGED", "drop:start.sh",
-     "the package's own files that differ from sentinel-personal-beta-949da67-mod1d12a8b-r2 are not exactly the ones "
-     "this package declares as changed; changed but not declared: start.sh"),
-    ("PACKAGE_FILES_CHANGED", "drop:lib/artifacts.py", "changed but not declared: lib/artifacts.py"),
+    ("PACKAGE_FILES_CHANGED", "drop:build-llama.sh",
+     "the package's own files that differ from sentinel-personal-beta-949da67-mod79c18d4-r3 are not exactly the ones "
+     "this package declares as changed; changed but not declared: build-llama.sh"),
+    ("PACKAGE_FILES_CHANGED", "drop:QUICKSTART.md", "changed but not declared: QUICKSTART.md"),
     ("PACKAGE_FILES_CHANGED", "add:stop.sh", "declared but identical: stop.sh"),
 ])
 def test_the_builder_refuses_a_change_it_does_not_declare_and_a_declaration_without_a_change(

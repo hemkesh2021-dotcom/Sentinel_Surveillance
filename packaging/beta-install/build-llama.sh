@@ -1,7 +1,11 @@
 #!/bin/bash
 # Sentinel personal beta: build llama.cpp's llama-server on THIS device, at the commit the asset manifest pins.
 #
-#   bash build-llama.sh
+#   bash build-llama.sh [--jobs N] [--configure-only]
+#
+#   --jobs N           compile with N parallel jobs (1 to 8; default 4). Fewer jobs use less memory and take longer:
+#                      use 2 when anything else runs on the device. The files built are the same either way.
+#   --configure-only   clone and configure; compile nothing
 #
 # Clones https://github.com/ggml-org/llama.cpp at commit 19cce69 (tag b11938) into <prefix>/assets/llama.cpp and builds
 # the llama-server target with the official CUDA options (docs/build.md at that commit) and the reference device's
@@ -16,6 +20,15 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 . "$HERE/lib/common.sh"
 [ "$(id -u)" != 0 ] || beta_stop "run as your own user, without sudo"
+JOBS=4; CONFIGURE_ONLY=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --configure-only) CONFIGURE_ONLY=1; shift ;;
+    --jobs) [ $# -ge 2 ] && [[ "$2" =~ ^[1-8]$ ]] || beta_stop "--jobs needs a number from 1 to 8"
+            JOBS="$2"; shift 2 ;;
+    *) echo "usage: bash build-llama.sh [--jobs N] [--configure-only]"; exit 2 ;;
+  esac
+done
 beta_verify_package "$HERE"
 beta_load_paths "$HERE"
 asset() { python3 -I -B "$PKG/lib/beta.py" asset --package "$PKG" llama_server "$1"; }
@@ -49,13 +62,13 @@ else
 fi
 echo "Configuring llama.cpp ${COMMIT:0:12} with: ${CMAKE_OPTIONS[*]}"
 cmake -S "$SRC" -B "$SRC/build" "${CMAKE_OPTIONS[@]}" || beta_stop "cmake could not configure the build (above)"
-if [ "${1:-}" = --configure-only ]; then echo "Configured only, as asked; nothing was compiled."; exit 0; fi
+if [ "$CONFIGURE_ONLY" = 1 ]; then echo "Configured only, as asked; nothing was compiled."; exit 0; fi
 # What is hashed and noted afterwards is what THIS run linked: a binary or library left in place by an earlier run
 # (or put there some other way) is removed first, so the build command makes it again from the tree's own objects.
 read -r -a LIBRARIES <<<"$(asset libraries)"
 for NAME in "$TARGET" "${LIBRARIES[@]}"; do rm -f -- "$SRC/build/bin/$NAME"; done
-echo "Building $TARGET (about 45 minutes; four parallel jobs)."
-cmake --build "$SRC/build" --target "$TARGET" -j 4 || beta_stop "the build failed (above)"
+echo "Building $TARGET with $JOBS parallel job(s) (about 45 minutes with four on the reference device; longer with fewer)."
+cmake --build "$SRC/build" --target "$TARGET" -j "$JOBS" || beta_stop "the build failed (above)"
 "$SRC/build/bin/llama-server" --version 2>&1 | head -n 2
 echo "Built: $SRC/build/bin/llama-server"
 python3 -I -B "$PKG/lib/artifacts.py" note --package "$PKG" --step build-llama \

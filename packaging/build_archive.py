@@ -72,33 +72,18 @@ CHANGED_SINCE_ACCEPTED = {
 }
 # The package's own files (under PACKAGE_SOURCE) that differ from the previous revision's, or that it did not have:
 # path -> what changed. The builder refuses unless exactly these differ from PREVIOUS_PACKAGE_COMMIT.
-PREVIOUS_PACKAGE_COMMIT = "929b6d8659a007ac885331e1e5e3fbb052cfc436"
-PREVIOUS_PACKAGE_NAME = "sentinel-personal-beta-949da67-mod1d12a8b-r2"
+PREVIOUS_PACKAGE_COMMIT = "5dfeb1097c518aafa38225e811928dad89cad412"
+PREVIOUS_PACKAGE_NAME = "sentinel-personal-beta-949da67-mod79c18d4-r3"
 PACKAGE_FILES_CHANGED = {
-    "QUICKSTART.md": "the guide: the default admission and the opt-in device-artifacts route, its commands, what "
-                     "the route does not validate, what was and was not verified",
-    "build-engine.sh": "takes the export settings from the asset manifest and, after the export, notes what it "
-                       "exported for the device-artifacts record; the settings themselves are unchanged",
-    "build-llama.sh": "builds only in a tree it started itself (a marker), refuses compiler flags from the shell, "
-                      "removes an earlier run's binaries so that its own build links what it notes, and notes what "
-                      "it built for the device-artifacts record. A defect of revisions 1 and 2 is corrected: the "
-                      "build command was given the binary's path instead of the target's name (the build had never "
-                      "run past its configure step)",
-    "check.sh": "passes --device-artifacts FILE on to start.sh --check",
-    "install.sh": "its closing note names the route and the two new steps; the installation itself is unchanged",
-    "lib/admission_check.py": "with --device-artifacts FILE, makes the runtime's decisions for a run on that record "
-                              "and prints the default admission's own answers beside them; without it, unchanged",
-    "lib/artifacts.py": "a new file: writes the device-artifacts record from what the package's steps observed, "
-                        "and checks every file, the pins and the platform against a record before a launch",
-    "lib/beta.py": "notes a download that fetch-assets.sh made itself; prints an asset's settings as JSON for the "
-                   "build script",
-    "manifest/assets.json": "names the llama.cpp build's libraries, its build target (as cmake_target) and the "
-                            "export's tool versions; its notes name the route",
-    "record-artifacts.sh": "a new file: the step that writes the record",
-    "start.sh": "the opt-in --device-artifacts FILE: the record's check before anything else, the route's notice, "
-                "the run's own copy of the record; gates, guard options, the 60-minute limit and START are unchanged",
+    "QUICKSTART.md": "names this package and the build script's --jobs option",
+    "install.sh": "installing again over an installation uses the Python 3.10 interpreter and the TensorRT binding "
+                  "it was made with unless they are named anew (the rehearsal's re-installation from a later shell "
+                  "would otherwise have failed its preflight)",
+    "build-llama.sh": "a new option, --jobs N (1 to 8; four when it is not given, as before): the installation "
+                      "rehearsal on the reference device needed two compile jobs and the script offered no way to "
+                      "ask for them. The files built are the same either way",
 }
-DEFAULT_REVISION = 3
+DEFAULT_REVISION = 4
 EXECUTABLE = (".sh",)
 REPO = Path(__file__).resolve().parents[1]
 

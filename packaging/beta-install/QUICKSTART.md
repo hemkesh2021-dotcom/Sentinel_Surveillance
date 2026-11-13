@@ -102,7 +102,7 @@ You install the system prerequisites yourself; the package never uses sudo for t
 Extract the archive anywhere, then, as your own user (never with sudo):
 
 ```bash
-tar -xzf sentinel-personal-beta-949da67-mod79c18d4-r3.tar.gz && cd sentinel-personal-beta-949da67-mod79c18d4-r3
+tar -xzf sentinel-personal-beta-949da67-mod79c18d4-r4.tar.gz && cd sentinel-personal-beta-949da67-mod79c18d4-r4
 bash preflight.sh        # reads facts only; changes nothing
 bash install.sh          # defaults: ~/sentinel-beta (the installation) and ~/sentinel-beta-data (your data)
 ```
@@ -117,7 +117,7 @@ Then, from the installed package (`cd ~/sentinel-beta/package`), in this order:
 ```bash
 bash setup-env.sh        # a new Python 3.10 environment with the pinned packages (downloads about 1.5 GB)
 bash fetch-assets.sh     # the model files (about 1.35 GB), each checked against its SHA-256
-bash build-llama.sh      # llama.cpp at the pinned commit, built on this device (about 45 minutes)
+bash build-llama.sh      # llama.cpp at the pinned commit, built on this device (about 45 minutes; --jobs 2 uses less memory and takes longer)
 bash build-engine.sh     # the detector's TensorRT engine, built on this device (asks BUILD; uses the GPU)
 ```
 

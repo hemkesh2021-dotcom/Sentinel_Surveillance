@@ -129,6 +129,7 @@ if [ "$1" = -S ]; then
 fi
 if [ "$1" = --build ]; then
   mkdir -p "$2/bin"
+  echo "${@:3}" > "$FIXTURE/build.args"
   left=""; for name in llama-server $(cat "$FIXTURE/build.libraries"); do [ ! -e "$2/bin/$name" ] || left="$left $name"; done
   echo "left in place when the build command ran:$left" > "$FIXTURE/build.before"
   printf '#!/bin/bash\necho "version: 0.7.0-dev (build 11938, commit $(cat "$FIXTURE/llama.commit"))"\n# %s\n' "$(cat "$FIXTURE/build.salt")" > "$2/bin/llama-server"
@@ -257,11 +258,11 @@ class Launch(World):
     def record(self) -> Path:
         return self.data / "config/device-artifacts.json"
 
-    def build_llama(self) -> subprocess.CompletedProcess:
+    def build_llama(self, *args: str) -> subprocess.CompletedProcess:
         """build-llama.sh as a tester runs it; git and cmake are stand-ins, so nothing is fetched or compiled."""
         if not (self.prefix / "assets/llama.cpp/.git").is_dir():
             shutil.rmtree(self.prefix / "assets/llama.cpp")  # the fixture's ready-made binary: not a clone of the script's
-        return self.run("build-llama.sh", package=self.installed)
+        return self.run("build-llama.sh", *args, package=self.installed)
 
     def build_engine(self) -> subprocess.CompletedProcess:
         (self.prefix / "assets/engine/yolov8n.engine").unlink(missing_ok=True)
@@ -854,6 +855,28 @@ def test_the_build_script_builds_only_in_a_tree_it_started_and_links_again_what_
     assert launch.build_llama().returncode == 1 and not (launch.prefix / "assets/provenance/llama_server.json").exists()
 
 
+def test_the_build_uses_four_jobs_unless_the_tester_asks_for_another_number(routed: Launch) -> None:
+    """Found by the installation rehearsal: the script compiled with four jobs and offered no way to use fewer on a
+    device that is doing something else. The target is still built by its name, and the note is the same."""
+    launch = routed
+    assert launch.build_llama().returncode == 0
+    assert (launch.tmp / "build.args").read_text().split() == ["--target", "llama-server", "-j", "4"]
+    two = launch.build_llama("--jobs", "2")
+    assert two.returncode == 0 and "Building llama-server with 2 parallel job(s)" in two.stdout, said(two)
+    assert (launch.tmp / "build.args").read_text().split() == ["--target", "llama-server", "-j", "2"]
+    assert json.loads((launch.prefix / "assets/provenance/llama_server.json").read_text())["observed"] == "built_by_package_step"
+    (launch.tmp / "build.args").unlink()
+    for bad in (["--jobs"], ["--jobs", "0"], ["--jobs", "9"], ["--jobs", "two"], ["--jobs", "2 4"], ["--jobs", ""]):
+        refused = launch.build_llama(*bad)
+        assert refused.returncode == 1 and "--jobs needs a number from 1 to 8" in refused.stderr, (bad, said(refused))
+    unknown = launch.build_llama("--fast")
+    assert unknown.returncode == 2 and "usage: bash build-llama.sh [--jobs N] [--configure-only]" in unknown.stdout
+    assert not (launch.tmp / "build.args").exists()  # nothing was built for any of them
+    configured = launch.build_llama("--jobs", "1", "--configure-only")
+    assert configured.returncode == 0 and "Configured only, as asked; nothing was compiled." in configured.stdout
+    assert not (launch.tmp / "build.args").exists()
+
+
 def test_the_record_and_its_check_use_the_interpreter_and_binding_the_installation_was_made_with(routed: Launch) -> None:
     """A tester whose Python 3.10 is not on the PATH names it at installation; a later shell without that variable
     must get the same preflight answer (the installation's own record of it), not a refusal."""
@@ -868,6 +891,17 @@ def test_the_record_and_its_check_use_the_interpreter_and_binding_the_installati
     shutil.rmtree(launch.root / "usr/lib/python3.10/dist-packages")  # the binding is nowhere but where the tester named it
     plain = launch.run("preflight.sh", package=launch.installed)  # a later shell, without the two variables
     assert plain.returncode == 1 and "no TensorRT Python binding for Python 3.10" in plain.stdout
+    # refreshing the package from that later shell uses what the installation was made with (found by the rehearsal)
+    again = launch.install()
+    assert again.returncode == 0 and "PREFLIGHT: this is the verified combination." in again.stdout, said(again)
+    conf = (launch.prefix / "install.conf").read_text()
+    assert f"PYTHON310={custom}\n" in conf and f"TENSORRT_PYTHON={binding}\n" in conf
+    elsewhere = launch.tmp / "another/dist-packages"  # and what is named anew still wins
+    (elsewhere / "tensorrt").mkdir(parents=True)
+    (elsewhere / "tensorrt/__init__.py").write_text("")
+    assert launch.install(SENTINEL_BETA_TENSORRT_PYTHON=str(elsewhere)).returncode == 0
+    assert f"TENSORRT_PYTHON={elsewhere}\n" in (launch.prefix / "install.conf").read_text()
+    assert launch.install(SENTINEL_BETA_TENSORRT_PYTHON=str(binding)).returncode == 0
     record = launch.recorded()
     assert json.loads(record.read_text())["platform"]["preflight"] == "verified_combination"
     checked = launch.check("--device-artifacts", str(record))
