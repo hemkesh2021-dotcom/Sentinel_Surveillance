@@ -1,5 +1,5 @@
 {
-  "collected_at": "2026-11-13T03:34:28.758775Z",
+  "collected_at": "2026-11-14T03:31:20.515999Z",
   "days": {
     "2026-10-05": {
       "clones": {
@@ -304,168 +304,175 @@
     "2026-10-30": {
       "clones": {
         "count": 18,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 11
       },
       "views": {
         "count": 1,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 1
       }
     },
     "2026-10-31": {
       "clones": {
         "count": 4,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 3
       },
       "views": {
         "count": 0,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 0
       }
     },
     "2026-11-01": {
       "clones": {
         "count": 13,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 7
       },
       "views": {
         "count": 0,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 0
       }
     },
     "2026-11-02": {
       "clones": {
         "count": 9,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 5
       },
       "views": {
         "count": 11,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 1
       }
     },
     "2026-11-03": {
       "clones": {
         "count": 17,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 11
       },
       "views": {
         "count": 15,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 1
       }
     },
     "2026-11-04": {
       "clones": {
         "count": 1,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 1
       },
       "views": {
         "count": 4,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 1
       }
     },
     "2026-11-05": {
       "clones": {
         "count": 9,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 4
       },
       "views": {
         "count": 8,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 1
       }
     },
     "2026-11-06": {
       "clones": {
         "count": 1,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 1
       },
       "views": {
         "count": 0,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 0
       }
     },
     "2026-11-07": {
       "clones": {
         "count": 3,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 2
       },
       "views": {
         "count": 0,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 0
       }
     },
     "2026-11-08": {
       "clones": {
         "count": 21,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 8
       },
       "views": {
         "count": 3,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 1
       }
     },
     "2026-11-09": {
       "clones": {
         "count": 29,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 9
       },
       "views": {
         "count": 0,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 0
       }
     },
     "2026-11-10": {
       "clones": {
         "count": 2,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 2
       },
       "views": {
         "count": 1,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 1
       }
     },
     "2026-11-11": {
       "clones": {
         "count": 5,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 3
       },
       "views": {
         "count": 3,
-        "observed_at": "2026-11-13T03:34:28.758775Z",
+        "observed_at": "2026-11-14T03:31:20.515999Z",
         "uniques": 3
+      }
+    },
+    "2026-11-12": {
+      "clones": {
+        "count": 2,
+        "observed_at": "2026-11-14T03:31:20.515999Z",
+        "uniques": 2
+      },
+      "views": {
+        "count": 1,
+        "observed_at": "2026-11-14T03:31:20.515999Z",
+        "uniques": 1
       }
     }
   },
   "latest": {
     "clones": {
       "clones": [
-        {
-          "count": 8,
-          "timestamp": "2026-10-29T00:00:00Z",
-          "uniques": 7
-        },
         {
           "count": 18,
           "timestamp": "2026-10-30T00:00:00Z",
@@ -530,46 +537,39 @@
           "count": 5,
           "timestamp": "2026-11-11T00:00:00Z",
           "uniques": 3
+        },
+        {
+          "count": 2,
+          "timestamp": "2026-11-12T00:00:00Z",
+          "uniques": 2
         }
       ],
-      "count": 140,
-      "uniques": 59
+      "count": 134,
+      "uniques": 56
     },
     "paths": [
       {
-        "count": 28,
+        "count": 25,
         "path": "/hemkesh2021-dotcom/Sentinel_Surveillance",
         "title": "Overview",
         "uniques": 5
       },
       {
-        "count": 6,
+        "count": 5,
         "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/graphs/traffic",
         "title": "/graphs/traffic",
         "uniques": 1
       },
       {
-        "count": 6,
+        "count": 5,
         "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/pulse",
         "title": "/pulse",
         "uniques": 1
       },
       {
         "count": 2,
-        "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/graphs/community",
-        "title": "/graphs/community",
-        "uniques": 1
-      },
-      {
-        "count": 2,
         "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/stargazers",
         "title": "/stargazers",
-        "uniques": 1
-      },
-      {
-        "count": 2,
-        "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/tags",
-        "title": "/tags",
         "uniques": 1
       },
       {
@@ -586,8 +586,8 @@
       },
       {
         "count": 1,
-        "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/graphs/contributors",
-        "title": "/graphs/contributors",
+        "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/graphs/community",
+        "title": "/graphs/community",
         "uniques": 1
       },
       {
@@ -595,11 +595,23 @@
         "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/releases",
         "title": "/releases",
         "uniques": 1
+      },
+      {
+        "count": 1,
+        "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/tags",
+        "title": "/tags",
+        "uniques": 1
+      },
+      {
+        "count": 1,
+        "path": "/hemkesh2021-dotcom/Sentinel_Surveillance/tree/alpha-candidate-2026-10",
+        "title": "/tree/alpha-candidate-2026-10",
+        "uniques": 1
       }
     ],
     "referrers": [
       {
-        "count": 13,
+        "count": 11,
         "referrer": "github.com",
         "uniques": 1
       },
@@ -610,14 +622,9 @@
       }
     ],
     "views": {
-      "count": 56,
+      "count": 47,
       "uniques": 5,
       "views": [
-        {
-          "count": 10,
-          "timestamp": "2026-10-29T00:00:00Z",
-          "uniques": 1
-        },
         {
           "count": 1,
           "timestamp": "2026-10-30T00:00:00Z",
@@ -682,6 +689,11 @@
           "count": 3,
           "timestamp": "2026-11-11T00:00:00Z",
           "uniques": 3
+        },
+        {
+          "count": 1,
+          "timestamp": "2026-11-12T00:00:00Z",
+          "uniques": 1
         }
       ]
     }
@@ -693,12 +705,12 @@
       "peak_14d_views": 3
     },
     "forums.developer.nvidia.com": {
-      "last_seen": "2026-11-13T03:34:28.758775Z",
+      "last_seen": "2026-11-14T03:31:20.515999Z",
       "peak_14d_uniques": 1,
       "peak_14d_views": 1
     },
     "github.com": {
-      "last_seen": "2026-11-13T03:34:28.758775Z",
+      "last_seen": "2026-11-14T03:31:20.515999Z",
       "peak_14d_uniques": 3,
       "peak_14d_views": 21
     }
