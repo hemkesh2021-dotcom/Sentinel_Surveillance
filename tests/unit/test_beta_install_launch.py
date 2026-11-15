@@ -582,6 +582,7 @@ def test_declining_close_or_prepare_stops_without_closing_preparing_or_opening_a
     assert "closed" not in launch.calls()
     launch.fixture("scan.rc", "0\n")
     launch.fixture("desktop", "active\n")
+    time.sleep(1.1)  # observation folders are named by the second: a second launch in the same one cannot make its own
     terminal = Terminal(launch)
     assert terminal.wait_for(r"type PREPARE to do that now")
     terminal.type("")
