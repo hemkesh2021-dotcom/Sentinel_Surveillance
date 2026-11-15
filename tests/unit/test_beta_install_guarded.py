@@ -537,11 +537,20 @@ def test_the_guide_describes_this_package_and_keeps_the_three_memory_figures_apa
     assert "Without an enrollment it stops at `there is no enrollment`: that is a refusal, not a pass" in flat
 
 
-def test_no_file_of_the_package_names_the_maintainers_device_account_or_rehearsal() -> None:
+def test_no_file_of_the_package_names_anybodys_account_device_or_rehearsal() -> None:
+    """By pattern, so that this public file holds no private value itself: no home directory of any account, no
+    particular remote-desktop display, no rehearsal or preparation folder, no working environment of the reference
+    device, no resumed assistant session."""
+    private = {"a home directory": re.compile(r"/home/[A-Za-z0-9_.-]+"),
+               "a particular remote-desktop display": re.compile(r"vncserver (?:-kill )?:\d"),
+               "a rehearsal folder": re.compile(r"rehearsal-20\d\d|sentinel-installer-rehearsals"),
+               "the reference device's preparation folder or environment": re.compile(r"sentinel-prep|onvif_env"),
+               "a resumed assistant session": re.compile(r"claude --resume")}
+    assert private["a particular remote-desktop display"].search("vncserver -kill :7")  # the patterns do match
+    assert private["a home directory"].search("cd /home/someone/x") and not private["a home directory"].search("~/sentinel-beta")
     for path in sorted((REPO / "packaging/beta-install").rglob("*")):
         if path.is_file() and "__pycache__" not in path.parts:
             text = path.read_text("utf-8", errors="replace")
-            for private in ("villain8001", "sentinel-installer-rehearsals", "rehearsal-2026", "sentinel-prep", "onvif_env",
-                            "vncserver :2", "claude --resume", "manual_export_once", "headless_export"):
-                assert private not in text, (str(path.relative_to(REPO)), private)
+            for what, pattern in private.items():
+                assert not pattern.search(text), (str(path.relative_to(REPO)), what)
 
