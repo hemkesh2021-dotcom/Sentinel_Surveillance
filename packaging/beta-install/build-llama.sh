@@ -9,7 +9,9 @@
 #
 # Clones https://github.com/ggml-org/llama.cpp at commit 19cce69 (tag b11938) into <prefix>/assets/llama.cpp and builds
 # the llama-server target with the official CUDA options (docs/build.md at that commit) and the reference device's
-# explicit ones (manifest/assets.json). About 45 minutes on a Jetson Orin Nano. No model is loaded, no sudo is used.
+# explicit ones (manifest/assets.json). The one measured build of this package took 53 minutes with two jobs on the
+# reference device; no duration is promised. No model is loaded, no sudo is used.
+# To run it under the memory monitor:   bash guarded-build.sh llama --jobs 2   (QUICKSTART.md, 'Building on this device')
 #
 # READ FIRST: the default admission admits scene analysis and chat only with the llama-server binary it was measured
 # with on the reference device, compared by SHA-256. A build made here has other bytes, so the default check refuses
@@ -68,7 +70,7 @@ if [ "$CONFIGURE_ONLY" = 1 ]; then echo "Configured only, as asked; nothing was 
 # (or put there some other way) is removed first, so the build command makes it again from the tree's own objects.
 read -r -a LIBRARIES <<<"$(asset libraries)"
 for NAME in "$TARGET" "${LIBRARIES[@]}"; do rm -f -- "$SRC/build/bin/$NAME"; done
-echo "Building $TARGET with $JOBS parallel job(s) (about 45 minutes with four on the reference device; longer with fewer)."
+echo "Building $TARGET with $JOBS parallel job(s) (53 minutes with two on the reference device, the one measured build; no duration is promised)."
 cmake --build "$SRC/build" --target "$TARGET" -j "$JOBS" || beta_stop "the build failed (above)"
 "$SRC/build/bin/llama-server" --version 2>&1 | head -n 2
 echo "Built: $SRC/build/bin/llama-server"

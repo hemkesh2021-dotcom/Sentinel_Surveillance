@@ -121,7 +121,7 @@ done
 TRT_PY="${SENTINEL_BETA_TENSORRT_PYTHON:-$ROOT/usr/lib/python3.10/dist-packages}"
 if [ -f "$TRT_PY/tensorrt/__init__.py" ]; then ok "TensorRT Python binding for 3.10 ($TRT_PY/tensorrt)"
 else
-  fail "no TensorRT Python binding for Python 3.10 at $TRT_PY/tensorrt" "on JetPack's Ubuntu 22.04: sudo apt install python3-libnvinfer   (run it yourself). If you have the binding elsewhere, set SENTINEL_BETA_TENSORRT_PYTHON to the directory that holds its 'tensorrt' folder"
+  fail "no TensorRT Python binding for Python 3.10 at $TRT_PY/tensorrt" "on JetPack's Ubuntu 22.04: sudo apt install python3-libnvinfer   (run it yourself). If you have the binding elsewhere, set SENTINEL_BETA_TENSORRT_PYTHON to the directory that holds its 'tensorrt' folder. QUICKSTART.md, 'The TensorRT Python binding', gives the one route that was used on the reference device: NVIDIA's own package, downloaded and extracted without installing it"
 fi
 
 echo

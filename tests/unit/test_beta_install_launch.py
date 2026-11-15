@@ -932,7 +932,10 @@ def test_the_engine_export_is_refused_before_anything_loads_when_free_memory_is_
     assert built.returncode == 0 and "MemFree is 1500000256 B (at least 1500000000 B is required" in built.stdout, said(built)
     script = (launch.installed / "build-engine.sh").read_text()
     assert script.index("MIN_FREE_BYTES=1500000000") < script.index("type BUILD to build the engine now")
-    assert "the export itself needs was NOT measured" in script and "nothing here frees memory for you" in script
+    assert "The least the export needs was NOT measured" in script and "nothing here frees memory for you" in script
+    # what the reference device showed is stated as that device's, with its three attempts, and no duration is promised
+    assert "completed in 187 s" in script and "ended the build after 136 s" in script and "a few minutes" not in script
+    assert "no duration is promised" in script and "not a figure known to be enough" in script
 
 
 def test_an_export_that_fails_leaves_no_engine_note_and_the_script_says_so(routed: Launch) -> None:

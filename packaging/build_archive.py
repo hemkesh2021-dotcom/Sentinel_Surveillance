@@ -84,26 +84,38 @@ PREVIOUS_PACKAGE_NAME = "sentinel-personal-beta-949da67-mod79c18d4-r5"
 _LOCAL = ("PIP_CACHE_DIR, XDG_CACHE_HOME, XDG_CONFIG_HOME, XDG_DATA_HOME, HF_HOME, TORCH_HOME, YOLO_CONFIG_DIR, "
           "DEEPFACE_HOME, CUDA_CACHE_PATH, KERAS_HOME, MPLCONFIGDIR and TMPDIR")
 PACKAGE_FILES_CHANGED = {
-    "QUICKSTART.md": "names this package (revision 6) and the revision its own files are compared with (revision 5, "
-                     "the one that ran on the reference device); the guide itself is rewritten in a later change of "
-                     "this revision",
+    "QUICKSTART.md": "rewritten as one sequence for a tester: prerequisites and the TensorRT Python binding (the "
+                     "extraction route used on the reference device, with its source, version and SHA-256); archive "
+                     "verification and installation; where the installation keeps its files; the environment and the "
+                     "downloads; manual memory preparation and the guarded builds, with the reference device's "
+                     "observations kept apart from the chosen 5 GiB preparation figure and from the unmeasured "
+                     "minimum; enrollment; settings; record and check; launch; limits; uninstall and recovery; which "
+                     "steps touch a camera or face data; what ran for real with revision 5 and what was verified "
+                     "offline only for this revision",
     "lib/beta.py": "installation-local caches: two more names the installer owns (cache, tmp); a new command, "
                    "local-env, which records, makes and checks <prefix>/cache/... and <prefix>/tmp and prints the "
                    "variables lib/common.sh exports (a link, a directory the installer did not make, or a place that "
                    "resolves outside the installation is refused); uninstall removes both in both of its forms; "
                    "configure shows the two folders. Every other command is as it was",
-    "lib/common.sh": "a new function, beta_local_env: PIP_CACHE_DIR, XDG_CACHE_HOME, XDG_CONFIG_HOME, XDG_DATA_HOME, "
-                     "HF_HOME, TORCH_HOME, YOLO_CONFIG_DIR, DEEPFACE_HOME, CUDA_CACHE_PATH, KERAS_HOME, MPLCONFIGDIR "
-                     "and TMPDIR are exported as directories inside the installation, for the script and for "
-                     "everything it starts, before anything is imported; a value inherited from the shell is "
-                     "replaced for that run and named once, and seven variables that would move such a place again "
-                     "are removed; HOME is not changed",
+    "lib/common.sh": f"a new function, beta_local_env: {_LOCAL} are exported as directories inside the installation, "
+                     "for the script and for everything it starts, before anything is imported; a value inherited "
+                     "from the shell is replaced for that run and named once, and seven variables that would move "
+                     "such a place again are removed; HOME is not changed",
     "setup-env.sh": "calls beta_local_env before anything is downloaded or imported, so that pip's download cache "
                     "and the libraries' caches stay inside the installation; the environment is created, and its "
                     "package directory read, without writing bytecode outside it. The pinned requirements, their "
                     "order and the import check are unchanged",
     "fetch-assets.sh": "calls beta_local_env before the downloads; what is downloaded and how it is checked is "
                        "unchanged",
+    "build-llama.sh": "calls beta_local_env before cloning and building; states the one measured build (53 minutes "
+                      "with two jobs on the reference device) instead of an unmeasured 45 minutes; names "
+                      "guarded-build.sh. The repository, the pinned commit, the options and the note are unchanged",
+    "build-engine.sh": "calls beta_local_env before the export; its comments and two messages state what was "
+                       "observed on the reference device in three attempts (a failure with too little free memory, a "
+                       "monitor stop after 136 s, one export completed in 187 s) instead of 'a few minutes', and "
+                       "that the least the export needs was not measured; names guarded-build.sh. The export call, "
+                       "its settings from the asset manifest, the 1,500,000,000 B start check, the BUILD "
+                       "confirmation and the note are unchanged",
     "record-artifacts.sh": "calls beta_local_env before the record is made; the record and its checks are unchanged",
     "identity.sh": "calls beta_local_env before the enrollment command; the face weights' own place is named on the "
                    "command as before",
@@ -111,12 +123,11 @@ PACKAGE_FILES_CHANGED = {
                 "directory and the caches of everything a launch starts are inside the installation; check mode "
                 "prints the places in effect (local_env lines). Every gate, limit and prompt, the guard's options "
                 "and the runtime's command are unchanged",
+    "install.sh": "its closing list of next steps names guarded-build.sh for the two builds; nothing else",
+    "preflight.sh": "the failure line for a missing TensorRT Python binding also points to the guide's extraction "
+                    "route; no check is changed",
     "uninstall.sh": "its header says that cache and tmp are removed too and what the data directory keeps; the "
                     "command it runs is unchanged",
-    "build-engine.sh": "calls beta_local_env before the export. The export call, its settings from the asset "
-                       "manifest, the 1,500,000,000 B start check, the BUILD confirmation and the note are unchanged",
-    "build-llama.sh": "calls beta_local_env before cloning and building. The repository, the pinned commit, the "
-                      "options and the note are unchanged",
     "guarded-build.sh": "a new file: runs build-llama.sh or build-engine.sh, unchanged, under the memory monitor "
                         "(lib/guarded_build.py, lib/guarded_run.py), with --check, --status and --stop; it uses no "
                         "sudo, stops no service and frees no memory",
@@ -130,7 +141,6 @@ PACKAGE_FILES_CHANGED = {
                           "supervised the reference device's engine export attempts of 2026-11-14 (stopped at its "
                           "MemFree limit) and 2026-11-15 (completed). It samples memory five times a second, stops "
                           "the step at the limits it is given and signals only the processes that step owns",
-    "install.sh": "its closing list of next steps names guarded-build.sh for the two builds; nothing else",
 }
 DEFAULT_REVISION = 6
 EXECUTABLE = (".sh",)

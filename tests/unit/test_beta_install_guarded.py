@@ -14,6 +14,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -22,7 +23,7 @@ import time
 from pathlib import Path
 
 import pytest
-from beta_install_fixture import REPO, World, said
+from beta_install_fixture import REPO, World, build_archive, said
 
 pytestmark = pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="process identity is read from /proc (Linux)")
 
@@ -449,4 +450,98 @@ def test_a_monitor_that_dies_leaves_nothing_of_its_step_running(guarded: Guarded
     text = guarded.result("engine")
     assert "OUTCOME=monitor_failed" in text and "leftover_processes_of_this_run=none" in text
     assert "ending its session's processes" in (guarded.records("engine")[0] / "frontend.log").read_text()
+
+
+# ---------------------------------------------------------------- the recipe and the guide
+
+def commands(text: str) -> list[str]:
+    """A script without its comments and its plain messages: what it runs, checks and asks."""
+    return [line.strip() for line in text.splitlines()
+            if line.strip() and not line.lstrip().startswith("#") and not line.startswith('echo "')]
+
+
+@pytest.mark.parametrize("script", ["build-engine.sh", "build-llama.sh"])
+def test_the_build_recipes_are_revision_5s_which_ran_on_the_reference_device(script: str) -> None:
+    """What ran for real on the reference device was revision 5. Apart from comments, messages and the one call that
+    sets the installation's own locations, the two build scripts are that revision's, line for line: the export call
+    and its settings, the clone, the pinned commit, the options, the checks, the typed word, the note."""
+    was = build_archive.git("show", f"{build_archive.PREVIOUS_PACKAGE_COMMIT}:packaging/beta-install/{script}").decode()
+    now = (REPO / "packaging/beta-install" / script).read_text()
+    added = 'beta_local_env "$HERE"'
+    assert now.count(added + "\n") == 1 and added not in was
+    assert [line for line in commands(now) if line != added] == commands(was)
+    if script == "build-engine.sh":
+        assert 'YOLO_OFFLINE=true "$RT_PY" - "$WEIGHTS" "$EXPORT" <<' in now and "MIN_FREE_BYTES=1500000000" in now
+        assert "read -rp 'type BUILD to build the engine now, or press Enter to stop: ' ANSWER" in now
+
+
+def test_the_guide_describes_this_package_and_keeps_the_three_memory_figures_apart() -> None:
+    package = REPO / "packaging/beta-install"
+    guide = (package / "QUICKSTART.md").read_text()
+    flat = " ".join(guide.split())
+    scripts = {path.name for path in package.glob("*.sh")}
+    assert set(re.findall(r"\b([a-z][a-z-]*\.sh)\b", guide)) == scripts  # every script is named, and no other
+    front_end = packaged("guarded_build")
+    shell = (package / "guarded-build.sh").read_text()
+    for option in ("--check", "--status", "--stop", "--jobs", "--min-start-free-bytes"):
+        assert option in guide and option in shell, option
+    # 1: the stops; 2: the chosen preparation figure; 3: what one device showed; and what nobody measured
+    assert f"{front_end.STEPS['engine']['start_free_bytes']:,} B of MemFree" in flat and "It was **chosen**" in flat
+    assert "below 1 GiB of MemFree, below 2 GiB of MemAvailable, or after one hour" in flat
+    assert "below 2 GiB of MemAvailable or after three hours" in flat and "They are not what a build needs." in flat
+    assert "**completed in 187 s**; lowest MemFree 2.62 GB, lowest MemAvailable 3.51 GB, no swap used" in flat
+    assert "MemFree 6.95 GB, no desktop session, after a page-cache release" in flat
+    assert "**The least memory the export needs has not been measured**, on any device." in flat
+    assert "Not every 8 GB Jetson needs the same preparation, and no completion time is promised" in flat
+    assert "arithmetic on one run of one device, not a requirement" in flat
+    for unmeasured in ("about 45 minutes", "a few minutes", "is enough for", "guaranteed"):
+        assert unmeasured not in flat, unmeasured
+    # the exit statuses in the guide are the front end's
+    for outcome, row in (("built", "| 0 | built"), ("refused", "| 10 | refused before anything started"),
+                         ("stopped_by_monitor", "| 20 | the monitor stopped the step"),
+                         ("failed", "| 21 | the build script failed by itself"), ("stopped_by_operator", "| 22 | stopped by you"),
+                         ("active", "| 11 | another guarded build")):
+        assert row.startswith(f"| {front_end.EXIT[outcome]} |") and row in guide, outcome
+    assert (front_end.EXIT["refused_at_monitor_start"], front_end.EXIT["monitor_failed"], front_end.EXIT["leftovers"]) == (23, 24, 5)
+    assert "| 23 / 24 / 5 |" in guide
+    # memory preparation is the tester's own, by hand, and generic: no tester is assumed to have one kind of desktop
+    assert "**Preparing memory is your own step, done by hand.**" in flat
+    assert "**stopping the display manager does not end it**" in flat and "`vncserver -kill :N`" in flat
+    assert "sync; sudo sysctl -w vm.drop_caches=1" in guide and "sudo systemctl stop display-manager" in guide
+    for script in ("guarded-build.sh", "build-engine.sh", "build-llama.sh", "setup-env.sh", "fetch-assets.sh",
+                   "record-artifacts.sh", "install.sh", "uninstall.sh"):
+        assert not re.search(r"^\s*sudo\b", (package / script).read_text(), re.M), script  # no build step runs sudo
+    # recovery after each ending is said
+    for ending in ("**After a success:**", "**After a refusal (10):**", "**After a monitor stop (20):**",
+                   "**After a failure (21):**", "**After a lost SSH connection:**", "**If you cannot log in at all:**"):
+        assert ending in guide, ending
+    # the TensorRT binding: the prerequisite, the variable, the one verified route with its source and checksum
+    assert "SENTINEL_BETA_TENSORRT_PYTHON" in guide and "apt-get download python3-libnvinfer=10.3.0.30-1+cuda12.5" in guide
+    assert "d2b7d6e9755e7dc470c1bdb2a5564c0916989ae6a4b4063a1cbfc2510b644a6d" in guide and "649,382 B" in guide
+    assert "https://repo.download.nvidia.com/jetson/common" in guide and "dpkg-deb -x" in guide
+    assert "**Extracting it does not make a platform supported:**" in flat and "**Not verified**" in flat
+    assert "none is borrowed from anybody's device" in flat
+    # the locations, uninstall, and which steps touch a camera or face data
+    for variable in ("PIP_CACHE_DIR", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "HF_HOME", "TORCH_HOME",
+                     "YOLO_CONFIG_DIR", "DEEPFACE_HOME", "CUDA_CACHE_PATH", "KERAS_HOME", "MPLCONFIGDIR", "TMPDIR"):
+        assert f"`{variable}`" in guide, variable
+    assert "**A value you have set in your shell is not used.**" in flat and "**The face weights are not a cache.**" in flat
+    assert "the package, the Python environment, the assets, `cache/`, `tmp/`" in flat
+    assert "**Your data directory is never removed**" in flat
+    assert "**This is the only step that opens a camera, and only after you type START.**" in flat
+    assert "**This step collects face data: your own.**" in flat and "| `start.sh`, after you type START | **yes: the camera's main stream**" in guide
+    assert "**Nothing private comes with it:**" in flat and "no device-artifacts record" in flat
+    # revision 5's evidence and this revision's verification are not mixed
+    assert "**those changes were verified offline only**" in flat
+    assert "**Nothing of this revision has run a download, a build, an export, a model or a camera on any device.**" in flat
+    assert "Without an enrollment it stops at `there is no enrollment`: that is a refusal, not a pass" in flat
+
+
+def test_no_file_of_the_package_names_the_maintainers_device_account_or_rehearsal() -> None:
+    for path in sorted((REPO / "packaging/beta-install").rglob("*")):
+        if path.is_file() and "__pycache__" not in path.parts:
+            text = path.read_text("utf-8", errors="replace")
+            for private in ("villain8001", "sentinel-installer-rehearsals", "rehearsal-2026", "sentinel-prep", "onvif_env",
+                            "vncserver :2", "claude --resume", "manual_export_once", "headless_export"):
+                assert private not in text, (str(path.relative_to(REPO)), private)
 

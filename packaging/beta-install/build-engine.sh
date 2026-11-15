@@ -6,7 +6,9 @@
 # Exports <prefix>/assets/engine/yolov8n.pt (fetch-assets.sh) to a TensorRT engine with Ultralytics 8.4.25, with the
 # reference engine's settings: FP32, 640x640, batch 1, static shape (manifest/assets.json; Ultralytics' Jetson guide:
 # `format=engine`). A TensorRT engine belongs to one TensorRT version and one kind of GPU, so it is built where it
-# runs. This loads the detector on this device's GPU for a few minutes; no camera is opened and no sudo is used.
+# runs. This loads the detector on this device's GPU; no camera is opened and no sudo is used.
+# To run it under the memory monitor, which ends it at fixed stops instead of letting the device run out of memory:
+#   bash guarded-build.sh engine        (QUICKSTART.md, 'Building on this device'; prepare memory yourself first)
 #
 # READ FIRST: the default admission loads only the engine with the reference device's SHA-256. An engine built here
 # is another file: the default check refuses it (engine_hash_mismatch). The opt-in device-artifacts route
@@ -46,20 +48,27 @@ for name, version in wanted.items():
 print("\n".join(wrong))
 sys.exit(1 if wrong else 0)
 PY
-# On a Jetson the GPU's memory is taken out of free memory. An export on the reference device (the installation
-# rehearsal, 2026-11-13) failed in its first GPU allocations (NvMapMemAlloc errors, then an unrelated-looking
-# PyTorch NVML assertion) with MemFree between 0.08 and 0.84 GB while 4.6 to 5.5 GB were "available" as page cache:
-# the downloads, the llama.cpp build and other reading before it had filled the cache. So free memory is checked
-# here, before anything is loaded. The minimum is the runtime's own for loading the detector (1,500,000,000 B). What
-# the export itself needs was NOT measured and may be more; nothing here frees memory for you.
+# On a Jetson the GPU's memory is taken out of free memory, and memory that is only "available" (page cache: the
+# downloads, the llama.cpp build and other reading fill it) does not count for it. What is known comes from ONE
+# device, the reference device, in three attempts of the installation rehearsal:
+#   2026-11-13  MemFree 0.08 to 0.84 GB while 4.6 to 5.5 GB were "available": failed in its first GPU allocations
+#               (NvMapMemAlloc errors, then an unrelated-looking PyTorch NVML assertion);
+#   2026-11-14  about 5.12 GB of MemFree at the start, a desktop and other programs running: the rehearsal's
+#               monitor ended the build after 136 s, when MemFree crossed below 1 GiB; no allocation error;
+#   2026-11-15  about 6.95 GB of MemFree at the start, no desktop session: completed in 187 s; MemFree was about
+#               2.62 GB at its lowest, and no swap was used.
+# These are whole-device readings: other programs and the page cache move them too, so they are not the export's
+# own demand. The least the export needs was NOT measured, on any device, and no duration is promised. So free
+# memory is checked here, before anything is loaded. The minimum below is the runtime's own for loading the detector
+# (1,500,000,000 B): a minimum for trying, not a figure known to be enough; nothing here frees memory for you.
 MEMINFO=/proc/meminfo
 MIN_FREE_BYTES=1500000000
 memfree() { awk '$1 == "MemFree:" {print $2 * 1024}' "$MEMINFO"; }
 FREE_BEFORE="$(memfree)"
 [ -n "$FREE_BEFORE" ] || beta_stop "free memory could not be read ($MEMINFO)"
 [ "$FREE_BEFORE" -ge "$MIN_FREE_BYTES" ] || beta_stop "MemFree is $FREE_BEFORE B, below the $MIN_FREE_BYTES B needed before the detector is loaded on the GPU. Memory that is only \"available\" (page cache) does not count: on a Jetson the GPU takes free memory. Free some yourself, then run this again: close what is running, or reboot; or, as your own step with sudo: sync; sudo sysctl -w vm.drop_caches=1. Nothing was built"
-echo "This loads the detector on this device's GPU to build the engine (a few minutes). The camera is not opened."
-echo "MemFree is $FREE_BEFORE B (at least $MIN_FREE_BYTES B is required; what the export needs was not measured)."
+echo "This loads the detector on this device's GPU to build the engine. The camera is not opened. On the reference device it took about three minutes, once; no duration is promised."
+echo "MemFree is $FREE_BEFORE B (at least $MIN_FREE_BYTES B is required to try; the least the export needs was not measured)."
 read -rp 'type BUILD to build the engine now, or press Enter to stop: ' ANSWER
 [ "$ANSWER" = BUILD ] || beta_stop "nothing was built"
 python3 -I -B "$PKG/lib/beta.py" own --prefix "$PREFIX" assets || exit 1
