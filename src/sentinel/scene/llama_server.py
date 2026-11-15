@@ -1,0 +1,338 @@
+"""llama-server scene requests for the Oct 20 demo (D24; V2-26 demo form, full acceptance pending).
+
+The scene model is an LFM2-VL-family model (Q4_0 with its own Q8_0 vision
+projector) served by llama.cpp's llama-server (b8932, provisionally retained
+under D36): v1's LFM2-VL-1.6B, which the accepted profile measured, or, since
+session 115, LFM2.5-VL-1.6B (scene.models: one set serves scene and chat).
+This module fixes how that server is launched and how one scene job is asked
+of it; a request names its set's model, and nothing else differs between sets.
+It is not V2-26 proper, which compares models and records the choice.
+
+- **Loopback only (D42).** The server is always started with
+  ``--host 127.0.0.1``, which on the command line overrides any
+  ``LLAMA_ARG_HOST``. Every ``LLAMA_ARG_*`` variable is removed from its
+  environment, and the client connects only to 127.0.0.1 with ``http.client``,
+  which never consults proxy settings. Frames never leave the device.
+- **Fixed model flags.** These are the flags check 8 profiled for the
+  provisional demo profile (D33), plus ``--cache-ram 0`` (D41). S1 showed that
+  llama-server's default host-RAM prompt cache grew by about 5.4 MiB per
+  request. Configuration chooses only the port and the request timeout.
+- **The same request S1 and check 8 measured, plus the schema's grammar.** A
+  480×360 JPEG at quality 60, the v2 SceneReport prompt, schema-constrained
+  output (U20), at most 200 tokens, non-streaming. The report schema goes as
+  OpenAI's ``response_format`` and, since session 115, part 20, its grammar
+  goes as llama.cpp's own top-level ``grammar`` field (``scene_report_grammar``:
+  the server's own conversion of ``scene_report_schema``, pinned with the
+  schema's hash). llama-server b8932's special case for the LFM2.5-VL chat
+  template builds a grammar only for tools and ignores ``response_format``
+  (part 16); the top-level ``json_schema`` field tried in part 17 is converted
+  by the server but typed as an output-format grammar and prefilled with the
+  template's generation prompt, which the conversion cannot accept, so every
+  such request failed before decoding (part 19). A request's own ``grammar``
+  is typed USER and never prefilled; where the template builds its own grammar
+  (LFM2-VL), that one is kept instead. The fingerprint (D47) includes the
+  grammar, so a profile measured without it is refused until a new step-4
+  measurement is accepted (D46).
+- **Fail closed.** The response is read up to a bound. The envelope must be one
+  complete ``stop`` choice (U20's ``scene_completion_content``). Only then does
+  the report text go to the scene lane, which parses it strictly. Problems are
+  fixed labels and exception class names; model text, image bytes and server
+  messages are never copied into details.
+
+Device adapter: OpenCV is imported only by the default JPEG encoder.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import http.client
+import json
+import socket
+import threading
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
+from typing import Any
+
+from ..jobs import AnalysisJob, OutcomeKind, WorkerOutcome
+from .completion import SceneCompletionError, scene_completion_content, scene_report_grammar, scene_response_format
+
+LOOPBACK_HOST = "127.0.0.1"
+COMPLETIONS_PATH = "/v1/chat/completions"
+# check 8's provisional demo profile (start_sentinel.sh's flags), plus D41.
+PROFILED_FLAGS = ("--n-gpu-layers", "999", "--ctx-size", "2048", "--parallel", "1")
+PROMPT_CACHE_FLAGS = ("--cache-ram", "0")
+L4T_LIBCUDA = "/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1"  # D27 preload
+IMAGE_SIZE = (480, 360)  # v1's scene image; width, height
+JPEG_QUALITY = 60
+MAX_TOKENS = 200
+TEMPERATURE = 0.05
+MODEL_NAME = "lfm2-vl"  # the profiled request's model name (D47); scene.models names each set's
+MAX_RESPONSE_BYTES = 1_000_000
+SCENE_SYSTEM = (
+    "You are the scene-analysis component of a home security camera. "
+    "Reply with exactly one JSON object and nothing else."
+)
+SCENE_PROMPT = (
+    "Describe this camera image as JSON with exactly these fields: "
+    '"persons_visible" (integer 0-50), "fire_or_smoke" (true or false), '
+    '"threat" ("none", "low", "medium" or "high"), '
+    '"observations" (up to 3 short phrases, aim under 48 characters each), '
+    '"uncertainty" ("low", "medium" or "high"), '
+    '"summary" (one short complete sentence, aim under 100 characters). '
+    "Finish descriptions well before the schema limits; do not fill the available space."
+)
+
+
+def request_fingerprint(
+    *, system: str, prompt: str, image_size: tuple[int, int], jpeg_quality: int, max_tokens: int,
+    temperature: float, model: str, chat_template_kwargs: Mapping[str, object] | None = None,
+) -> str:
+    """SHA-256 of everything that shapes a scene request except the image (D47).
+
+    The step-4 workload records it for what it sent; an accepted profile keeps it, and
+    ``sentinel run --scene`` refuses a profile whose fingerprint differs from SCENE_REQUEST_SHA256.
+    Since session 115, part 20, the top-level ``grammar`` field is part of it: every profile
+    measured before that field (part 17's ``json_schema`` field included) is refused until the
+    request is measured again. A set's chat-template arguments (session 116: LFM3-VL's
+    ``enable_thinking: false``) are part of it when the set sends any; the sets that send none keep
+    their fingerprints.
+    """
+    canonical = {
+        "system": system, "prompt": prompt, "image_size": list(image_size), "jpeg_quality": jpeg_quality,
+        "max_tokens": max_tokens, "temperature": temperature, "model": model, "stream": False,
+        "response_format": scene_response_format(), "grammar": scene_report_grammar(),
+    }
+    if chat_template_kwargs is not None:
+        canonical["chat_template_kwargs"] = dict(chat_template_kwargs)
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def log_verbosity_flags(verbosity: int | None) -> tuple[str, ...]:
+    """The launch flags that set a build's log verbosity (session 116), or none.
+
+    Builds after llama.cpp 67b2b7f2f ("logs : reduce", 2026-05-14) print the library's INFO lines only from
+    verbosity 4: the placement lines readiness requires (D27: ``offloaded N/N layers to GPU``, ``CLIP using
+    CUDA0``) are hidden at their default 3. b8932 predates that change and needs none."""
+    if verbosity is None:
+        return ()
+    if isinstance(verbosity, bool) or not isinstance(verbosity, int) or not 0 <= verbosity <= 5:
+        raise ValueError("log verbosity must be an integer from 0 to 5")
+    return ("--log-verbosity", str(verbosity))
+
+
+def image_max_tokens_flags(tokens: int | None) -> tuple[str, ...]:
+    """The launch flags that cap a dynamic-resolution projector's image tokens (session 116, part 7), or none.
+
+    The LFM3 build sizes the vision encoder's compute buffer by a warm-up image: by default 46x46 tokens
+    (1,472x1,472 px), which step4cand-lfm3-20261028T111507Z's server reported as 372.08 MiB, while every image Sentinel
+    sends is 480x360 (IMAGE_SIZE: 165 tokens after the build's resize). ``--image-max-tokens N`` lowers the warm-up to
+    floor(sqrt(N))**2 tokens and the largest accepted image to N tokens; an image above N would be downscaled, so N
+    must stay above what is sent. 4096 is the build's own ceiling for LFM3."""
+    if tokens is None:
+        return ()
+    if isinstance(tokens, bool) or not isinstance(tokens, int) or not 1 <= tokens <= 4096:
+        raise ValueError("image max tokens must be an integer from 1 to 4096")
+    return ("--image-max-tokens", str(tokens))
+
+
+def llama_server_command(binary: Path, model: Path, mmproj: Path, port: int,
+                         extra_flags: Sequence[str] = ()) -> list[str]:
+    """The demo scene server's argv: loopback only, profiled flags, prompt cache off, then the selected set's own
+    launch flags (``SceneModelSet.server_flags``: its log verbosity and image-token cap, session 116), which nothing
+    else can set."""
+    if not 1024 <= port <= 65535:
+        raise ValueError("port must be between 1024 and 65535")
+    return [
+        str(binary), "--model", str(model), "--mmproj", str(mmproj),
+        "--host", LOOPBACK_HOST, "--port", str(port), *PROFILED_FLAGS, *PROMPT_CACHE_FLAGS, *extra_flags,
+    ]
+
+
+def llama_server_environment(base: Mapping[str, str]) -> dict[str, str]:
+    """The server's environment: no ``LLAMA_ARG_*`` overrides, L4T libcuda (D27), unified memory as v1."""
+    env = {key: value for key, value in base.items() if not key.startswith("LLAMA_ARG_")}
+    env["LD_PRELOAD"] = L4T_LIBCUDA
+    env["GGML_CUDA_ENABLE_UNIFIED_MEMORY"] = "1"  # v1's launcher and check 8 (session 4)
+    return env
+
+
+def scene_request_body(jpeg: bytes, model: str = MODEL_NAME,
+                       chat_template_kwargs: Mapping[str, object] | None = None) -> bytes:
+    image = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
+    body: dict[str, Any] = {
+        "model": model,
+        "max_tokens": MAX_TOKENS,
+        "temperature": TEMPERATURE,
+        "stream": False,
+        "response_format": scene_response_format(),
+        "grammar": scene_report_grammar(),  # llama.cpp's own field: a USER grammar, never prefilled (part 20)
+    }
+    if chat_template_kwargs is not None:  # the set's template arguments (session 116: LFM3-VL's no-think switch)
+        body["chat_template_kwargs"] = dict(chat_template_kwargs)
+    body["messages"] = [
+            {"role": "system", "content": SCENE_SYSTEM},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": image}},
+                    {"type": "text", "text": SCENE_PROMPT},
+                ],
+            },
+        ]
+    return json.dumps(body).encode("utf-8")
+
+
+SCENE_REQUEST_SHA256 = request_fingerprint(
+    system=SCENE_SYSTEM, prompt=SCENE_PROMPT, image_size=IMAGE_SIZE, jpeg_quality=JPEG_QUALITY,
+    max_tokens=MAX_TOKENS, temperature=TEMPERATURE, model=MODEL_NAME,
+)
+
+
+def opencv_jpeg(image: Any) -> bytes:
+    """v1's scene image: resized to 480×360 and JPEG-encoded at quality 60 (needs OpenCV)."""
+    import cv2
+
+    ok, jpeg = cv2.imencode(".jpg", cv2.resize(image, IMAGE_SIZE), [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+    if not ok:
+        raise ValueError("JPEG encoding failed")
+    return jpeg.tobytes()
+
+
+class TransportError(Exception):
+    """A request failure described by a fixed label; ``aborted`` when another thread ended it (AbortHandle)."""
+
+    def __init__(self, label: str, *, timed_out: bool = False, aborted: bool = False) -> None:
+        super().__init__(label)
+        self.label = label
+        self.timed_out = timed_out
+        self.aborted = aborted
+
+
+class AbortHandle:
+    """Lets another thread end one request in flight (D77).
+
+    ``abort`` shuts the request's connection down, so the blocked call returns at once. llama-server (b8932: the
+    installed source, tools/server, checks a non-streamed request's connection about once a second while its task
+    runs, then queues a cancel ahead of other tasks, which frees the slot after the batch it is working on) stops the
+    task: the next request does not wait for this one to finish. A handle aborted before the request starts stops it
+    from starting. Thread-safe; ``reason`` is fixed text.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._sock: socket.socket | None = None
+        self._reason: str | None = None
+
+    @property
+    def reason(self) -> str | None:
+        with self._lock:
+            return self._reason
+
+    def attach(self, sock: socket.socket | None) -> bool:
+        """Called by the transport once connected; False if the handle was already aborted."""
+        with self._lock:
+            if self._reason is not None:
+                return False
+            self._sock = sock
+            return True
+
+    def detach(self) -> None:
+        with self._lock:
+            self._sock = None
+
+    def abort(self, reason: str) -> bool:
+        """End the request (or stop it from starting); False if it was already aborted."""
+        with self._lock:
+            if self._reason is not None:
+                return False
+            self._reason = reason
+            sock = self._sock
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass  # already closed: the request has ended either way
+        return True
+
+
+class LoopbackTransport:
+    """POSTs a completion request to llama-server on 127.0.0.1; returns the bounded response body."""
+
+    def __init__(
+        self,
+        port: int,
+        timeout_s: float,
+        *,
+        connection: Callable[..., Any] = http.client.HTTPConnection,
+    ) -> None:
+        self._port = port
+        self._timeout_s = timeout_s
+        self._connection = connection
+
+    def post(self, body: bytes, *, abort: AbortHandle | None = None) -> bytes:
+        """The response body; with ``abort``, another thread may end the request (TransportError ``aborted``)."""
+        conn = self._connection(LOOPBACK_HOST, self._port, timeout=self._timeout_s)
+        try:
+            if abort is not None:
+                conn.connect()
+                if not abort.attach(getattr(conn, "sock", None)):
+                    raise TransportError("aborted", aborted=True)
+            conn.request("POST", COMPLETIONS_PATH, body=body, headers={"Content-Type": "application/json"})
+            response = conn.getresponse()
+            data = response.read(MAX_RESPONSE_BYTES + 1)
+            status = response.status
+        except (TimeoutError, socket.timeout):
+            if abort is not None and abort.reason is not None:
+                raise TransportError("aborted", aborted=True) from None
+            raise TransportError("request_timed_out", timed_out=True) from None
+        except (OSError, http.client.HTTPException) as exc:
+            if abort is not None and abort.reason is not None:
+                raise TransportError("aborted", aborted=True) from None
+            raise TransportError(f"request_failed:{type(exc).__name__}") from None
+        finally:
+            if abort is not None:
+                abort.detach()
+            conn.close()
+        if abort is not None and abort.reason is not None:
+            raise TransportError("aborted", aborted=True)  # an answer that arrived as it was aborted is not used
+        if status != 200:
+            raise TransportError(f"http_{status}" if 100 <= status <= 599 else "http_invalid_status")
+        if len(data) > MAX_RESPONSE_BYTES:
+            raise TransportError("response_too_large")
+        return data
+
+
+class LlamaSceneRequest:
+    """Runs one scene job against llama-server: encode, request, check the envelope.
+
+    Called on the analyzer's worker thread; it blocks for the request. ``model`` is the name the request carries
+    (the selected scene model set's).
+    """
+
+    def __init__(self, transport: Any, *, encode: Callable[[Any], bytes] = opencv_jpeg,
+                 model: str = MODEL_NAME, chat_template_kwargs: Mapping[str, object] | None = None) -> None:
+        self._transport = transport
+        self._encode = encode
+        self._model = model
+        self._chat_template_kwargs = chat_template_kwargs
+
+    def __call__(self, job: AnalysisJob, image: Any) -> WorkerOutcome:
+        try:
+            jpeg = self._encode(image)
+        except Exception as exc:  # a bad frame is that job's error, not a worker crash
+            return WorkerOutcome.failed(job.job_id, OutcomeKind.ERROR, f"image encoding failed: {type(exc).__name__}")
+        try:
+            data = self._transport.post(scene_request_body(jpeg, self._model, self._chat_template_kwargs))
+        except TransportError as exc:
+            kind = OutcomeKind.TIMEOUT if exc.timed_out else OutcomeKind.ERROR
+            return WorkerOutcome.failed(job.job_id, kind, exc.label)
+        try:
+            payload = json.loads(data)
+        except (ValueError, UnicodeDecodeError):
+            return WorkerOutcome.failed(job.job_id, OutcomeKind.ERROR, "completion rejected: malformed_response")
+        try:
+            content = scene_completion_content(payload)
+        except SceneCompletionError as exc:
+            return WorkerOutcome.failed(job.job_id, OutcomeKind.ERROR, f"completion rejected: {exc.reason}")
+        return WorkerOutcome.completed(job.job_id, content)  # the lane parses the report strictly

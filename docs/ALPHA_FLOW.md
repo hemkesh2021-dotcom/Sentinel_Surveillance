@@ -1,0 +1,204 @@
+# Alpha flow: inspect, stop, acknowledge, restart, inspect
+
+This is the Review 1 alpha's incident flow on the device (D67, D68 in
+`docs/IMPLEMENTATION_STATUS.md`). It covers the guide's journey steps "inspect
+an incident and evidence → acknowledge it → see the notification outcome →
+restart … and retain the incident" in their alpha form.
+
+> **Monitoring is interrupted during this flow.** From the moment `sentinel
+> run` stops until the restarted runtime reports `"run": "starting"` and its
+> camera is streaming again, nothing is watched. During that gap there is no
+> detection, no incident, no alert and no status page. The gap includes the
+> runtime's startup and model loading. Its length on the device has not been
+> measured. Do not use this flow when the space must be watched continuously.
+
+## Why monitoring has to stop
+
+The status page is read only and bound to 127.0.0.1 (D45); it has no
+acknowledge button. Acknowledging is a write to the incident database, and
+that database has exactly one writer at a time. The writer lock is a
+kernel `flock` on `sentinel.db.lock`, taken without waiting:
+
+- while `sentinel run` owns the database, `sentinel incident ack` is refused
+  (`database_busy`) and changes nothing;
+- while `sentinel incident ack` owns it, a `sentinel run` that starts is refused
+  at startup (`database: another process is writing to sentinel.db; only one
+  Sentinel runtime or operator command may own it`), before any model loads;
+- the kernel releases the lock when its owner closes the database or exits,
+  even after a crash, so no stale lock is left behind.
+
+This is a lock on the database file, not a check of process names.
+
+## What acknowledging does, and does not do
+
+- It moves an **open** incident to **acknowledged**, as one transaction. The
+  acknowledgment is the incident's transition record: the UTC time, `operator:<actor>` and the
+  note. It is stored with the database's durable settings (`synchronous=FULL`).
+- It is **not** resolving. The incident stays unresolved, and a later
+  observation of the same rule and zone can still join it (guide ch. 9: acknowledged means seen, not ended).
+- It changes no evidence, severity or rule state. It sends no alert and withdraws none. An alert that
+  was still waiting before the acknowledgment is delivered as before (delivery
+  is at least once).
+- **Repeating it changes nothing.** The command reports `already_acknowledged`
+  with the first acknowledgment's time, actor and note.
+- Refusals change nothing, and each is a fixed label with exit status 1:
+  - `invalid_incident_id`: not an incident ID's form; the database is not opened;
+  - `no_database`: no `sentinel.db` in `--data-dir`; nothing is created;
+  - `database_busy`: monitoring is still running;
+  - `unknown_incident`: no such incident in that database;
+  - `not_acknowledgeable`: the incident is resolved or dismissed.
+
+## The steps
+
+Use the same `--data-dir` in every step. The commands below use the runtime's
+interpreter, as the operator packages do; in a development checkout,
+`.venv/bin/sentinel` is the same command.
+
+1. **Inspect, while monitoring runs.** Forward the page from the Mac with
+   `ssh -L 18090:127.0.0.1:18090 <device>`, open `http://127.0.0.1:18090/` and
+   follow the incident's link. Note its ID (`inc-…`), its status (`open`), its
+   rule observations and its alert rows. The acknowledgment line reads
+   `not acknowledged`.
+2. **Stop monitoring.** Press Ctrl-C in the terminal running `sentinel run`,
+   or send it SIGTERM. Under an operator guard, the guard stops it at its
+   duration. Wait until it has exited. **Monitoring is now interrupted.**
+3. **Acknowledge.** From the repository directory:
+
+   ```bash
+   PYTHONPATH=src ~/onvif_env/bin/python -m sentinel.cli incident ack --data-dir "$DATA" inc-…
+   ```
+
+   Optional: `--actor NAME` (default `local`) and `--note TEXT`. It prints one JSON line, with
+   `"outcome": "acknowledged"` and the `acknowledged_utc` time, and exits 0.
+4. **Restart monitoring** with the same `sentinel run` command and
+   `--data-dir`. Monitoring resumes only after the runtime is ready and its
+   camera is streaming.
+5. **Inspect again.** Open the same incident page. Its status is
+   `acknowledged`, and its acknowledgment line gives the time, the actor and
+   the note. The incident, its evidence and its alert rows were kept across the
+   restart. If the person is still in the zone, the new observation may join
+   this acknowledged incident, which then stays acknowledged with no new
+   alert. Or it may open a new, linked incident with its own alert: that
+   depends on the rule's merge window (120 s by default) and on whether the
+   device rebooted.
+
+## Live view and incident snapshots (D69, D70; both opt-in)
+
+Add `--live-preview --snapshots` to the `sentinel run` command, in both runs of the
+flow. Without them, nothing below exists and the outputs are as before.
+
+- **Live view** (`--live-preview`, needs the status page): the status page shows
+  the newest frame the runtime already reads. It opens no second camera
+  connection. It shows a picture only while that frame is live: from the
+  connected stream and younger than `freshness.stale_after_s` (2 s). Otherwise it
+  states `STALE: not current`, `OFFLINE` or `STARTING`, with the frame's age and
+  identity and no picture. The time shown is the ingest time, when the Jetson
+  received and decoded the frame, not when the camera captured it. Pictures are
+  at most 640×480, and at most 2 are encoded per second for all viewers, only
+  while someone views the page. Nothing is saved.
+- **When the status page stops updating** (D71, D73, with or without these
+  flags): the page never reloads itself; its script asks for an update every
+  2 s and places only what changed, so scrolling, keyboard focus, expanded
+  sections and a selected incident stay as they are. When updates stop (a
+  stalled tunnel, a hung request, a stopped runtime), the page stays as it was,
+  and every current claim on it (`This page is current`, the green `All
+  components working`, the green `LIVE`) lasts only 5 s after the request of the
+  last valid update was sent. Then the page turns rust-red at the top, `NOT
+  CURRENT: this page has not refreshed for 5 s`, and what follows is dimmed and
+  labelled as last reported: `Last reported: all components working`, `NOT
+  CURRENT: last reported LIVE`. The last picture stays, dimmed and marked as
+  old; a picture that could not be loaded, or a frame that is no longer live,
+  is marked `OLD FRAME` with its time. Only a valid, newer update brings the
+  current claims back, and only when its own report is current; updates are
+  retried automatically, backing off to 15 s. A chat answer (below) never
+  restarts any of this. Without JavaScript the page is read-only: it turns NOT
+  CURRENT after 5 s, and reloading updates it.
+- **Snapshots** (`--snapshots`): each new incident gets one JPEG. It is the frame
+  that the observation that opened the incident came from, saved by a writer
+  thread in `<data-dir>/snapshots/` (folder 0700, files 0600). If that frame was
+  no longer held, the incident page says `missing` with the reason. No other
+  frame is ever used in its place. The incident page shows the picture, its
+  stream epoch and frame, its ingest time with the time-quality label, and its
+  SHA-256, with a download link. A picture whose file no longer matches its
+  record is not shown. Retention: 7 days; the oldest are deleted first beyond
+  200 MB or 2000 snapshots; nothing is saved while free space would fall below
+  the greater of 1 GB and 10 % of the volume. Deletions are kept on the record
+  (`deleted by retention …`). Later observations that join an incident do not
+  replace its snapshot.
+- **Privacy:** neither feature masks any region (no privacy masks exist in this
+  build). Both stay on the loopback page, reached over SSH. No image is sent to
+  Telegram. Keep `--data-dir` outside the repository; `.gitignore` also lists
+  `sentinel.db*`, `snapshots/` and `snap-*.jpg`.
+- **Not measured:** the CPU, memory and disk cost of either on the device.
+
+## Chat about the live picture (D74; opt-in, not admitted in this build)
+
+`--chat` adds a panel beside the live view (below the incidents on a narrow
+window) for questions about the picture the camera is showing. In a normal run
+it says `Unavailable` and why: chat is not admitted, because concurrent scene
+analysis and chat have not passed the operator-run resource and interference
+checks. Ask stays disabled, the runtime keeps no frames for it, and no question
+reaches a model. Without `--chat` the panel says chat is off. A guarded
+validation run (`--chat-validation`, D77) asks the model to make those checks,
+and the page says so; it does not admit chat.
+
+When chat may ask (admitted, or a validation run; it also needs `--scene`):
+
+- **Monitoring first.** A question goes to the same scene model, on the scene
+  worker. Scene jobs go first: a question asked during one waits for it, one
+  question at a time, one per 4 s, never queued. An incident's scene job ends a
+  running question at once. A periodic one lets it finish within a 1.5 s grace
+  (D81), then ends it; a cancelled question says why and is not retried.
+- **An answer sized to its time (session 114).** When a question could start,
+  the worker knows how long it has before the next periodic scene job's grace
+  would end it. Its answer limit is set from that time and from chat's own
+  measured pace (the time before the first answer token, and per token, from
+  the server's timings for earlier answers), never above the 120-token cap.
+  Until a pace has been measured, or after an answer ran past its planned end
+  (the load changed), a deliberately slow assumed pace is used. With a
+  measured pace, a time too short for a useful answer makes the question wait
+  for the next gap, for at most 5 s after it was accepted; after that it ends
+  as busy, without reaching the model. The grace and its cut-off are
+  unchanged, so a wrong estimate ends as a cancelled question, as before.
+- **Shortened answers say so.** An answer stopped by its smaller limit shows
+  its complete sentences and says that it was shortened and may have said
+  more; the unfinished rest is shown apart, marked as left unfinished. With no
+  complete sentence, the question ends as `Incomplete`, never as an empty
+  answer.
+- **About one identified, live frame.** A question takes the newest live
+  frame. When it starts, the frame sent must still be live: the one asked
+  about if it still is; otherwise (it waited, or the camera reconnected) the
+  newest frame if that one is live, which the answer then names with its own
+  stream epoch, frame and age when sent, saying that it replaced the one asked
+  about. With neither, the question ends as `No fresh frame` and the model is
+  not asked. The answer gives its frame's ingest time and its age when asked
+  (or sent) and when answered, and is marked historical once that frame was no
+  longer live.
+- **The question is kept.** One that ends without an answer (cancelled, busy,
+  incomplete, no fresh frame) comes back into the question box if it is empty,
+  to send again without retyping.
+- It is advisory: chat cannot acknowledge incidents, change rules, control the
+  camera, run commands or say who anyone is. Text in the question, the picture
+  or an answer is treated as data.
+- Only this page can ask (same origin, a token from the server that sent the
+  page). The conversation stays in the browser tab, and after a runtime
+  restart the page asks for a reload before the next question.
+- The runtime status gets counters and numbers only: the pace in use, the
+  wait for the worker apart from the time on the model, and the answer limits
+  and tokens of recent questions. No question or answer is logged.
+- Memory pressure stops new questions above 4.7 GB (three samples) and ends a
+  running one above 5.0 GB (D77).
+- **Not yet measured on the device:** the pace, how often answers are now
+  shortened or cancelled, the waits for the next gap and the scene jobs' waits
+  behind a question. The slow assumed pace, the 30-token minimum and the
+  0.5 s reserve are proposed values, not measurements.
+
+## Limits
+
+- This is the alpha's stand-in for the guide's authenticated acknowledge
+  action (V2-17). There are no users, roles or sessions; the actor is whatever
+  name the operator types.
+- There is no undo: an acknowledged incident can be resolved or dismissed, but
+  not set back to open. No command for those transitions exists yet.
+- The incident page appears only while `sentinel run` is running; nothing
+  serves it from a stopped runtime's database.

@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentinel-surveillance"
+version = "2.0.0b1"
+description = "Sentinel v2 edge monitoring runtime (portable foundation; v1 prototype remains in the repository root)"
+requires-python = ">=3.10"
+# Portable dependencies only. Jetson-only libraries (TensorRT, CUDA, GStreamer,
+# JetPack OpenCV) belong to a separate, device-verified dependency profile.
+dependencies = [
+    "pydantic==2.13.5",
+    "PyYAML==6.0.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+]
+
+[project.scripts]
+sentinel = "sentinel.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"sentinel.web" = ["*.css", "*.js"]
+"sentinel.scene" = ["*.gbnf"]
+
+[tool.pytest.ini_options]
+# The v1 dashboard tests in tests/test_dashboard.py need Flask and keep running
+# under unittest in the existing "Dashboard checks" workflow. tests/replay holds
+# synthetic-timeline regressions (no footage); they are portable like tests/unit.
+testpaths = ["tests/unit", "tests/replay"]
+# Test-only helpers such as the B0 v1 snapshot (decision D12) and the browser harness import by module name.
+pythonpath = ["tests/replay", "tests/support"]
+addopts = ["--import-mode=importlib", "-ra", "--strict-markers", "--strict-config"]
+xfail_strict = true
+filterwarnings = ["error"]

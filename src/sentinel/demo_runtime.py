@@ -1,0 +1,2199 @@
+"""``sentinel run``: the demo runtime loop (D-1; demo only, not a backlog package).
+
+It wires the existing components through their own contracts:
+
+    CaptureWorker --LatestFrame--> loop thread: PersonTracker -> EdgeCore (zone and hazard rules)
+        -> IncidentService.record() -> outbox rows -> OutboxLoop thread -> notifiers (Telegram)
+    EdgeCore's scene lane <-> ThreadedSceneAnalyzer -> llama-server on 127.0.0.1 (optional)
+
+What the loop keeps:
+
+- **One capture owner, bounded hand-off, explicit frame ownership.** Only the
+  CaptureWorker reads the camera. The loop takes each frame from the one-slot
+  LatestFrame, so a slow loop skips frames instead of queueing them. The loop
+  owns the taken image: the tracker uses it synchronously, RecentImages keeps
+  a reference to the last IMAGES_KEPT frames only while scene analysis runs,
+  and the loop drops its own reference before the next frame.
+- **Epochs and staleness.** The loop passes ``capture.connected`` to EdgeCore,
+  which decides freshness and what is current. A frame from an epoch that has
+  already ended skips inference. PersonTracker resets per epoch and processes
+  each frame once, in order. Scene outcomes are delivered on the loop thread,
+  and late ones only annotate their own incident (D15, D35).
+- **Durable incidents (D31).** Every zone observation and hazard candidate
+  becomes an IncidentSignal and is acknowledged only after ``record()``
+  returns. A failed ``record()`` keeps the signal, in order, and retries it at
+  most once a second. ``record()`` deduplicates by observation ID, so a retry
+  after a commit whose return was lost changes nothing. At most
+  MAX_PENDING_SIGNALS wait. Beyond that, new signals are dropped, counted and
+  shown as lost durability: this is not a spool, and nothing pretends it is.
+- **Enrichment (D35).** Evidence that names an incident is passed to
+  ``annotate()``. A newly created zone incident asks the scene lane to enrich
+  its own source frame while scene analysis runs.
+- **Delivery (D32)** stays the OutboxWorker's: leased, at least once, with
+  retries and ambiguity recorded in SQLite. OutboxLoop only runs it in its own
+  thread.
+- **Visible state.** ``snapshot()`` returns numbers and fixed labels, including
+  every degradation reason. It never includes URLs, credentials, images or
+  exception text.
+- **Bounded shutdown.** Each component that the runtime started gets a bounded
+  stop, and the result says which ones did not stop in time.
+
+Not V2-29: there is no memory-pressure admission or degradation controller.
+GPU components are loaded once at startup, behind the D27 guard and a
+provisional MemFree precheck (U18 stays open). A component that fails is shown
+unavailable; nothing is restarted or re-admitted at runtime (V2-19, V2-29).
+Face recognition (V2-25 demo form, ``--face``; off by default): the 1 Hz FaceWorker analyses a private copy of a
+processed live frame that has people, and EdgeCore applies each result to that frame's own people
+(``on_face_outcome``); each tick, each result (with every person's vote and its frame time) and each identity
+transition is kept as an opaque record (``drain_identity_records``). In a ``--face-validation`` run the records are
+schema 3: each result's person also carries numbers for diagnosing a failed validation (its box and detector
+confidence, its face's size and score, the vote's similarity; runtime.FaceDiagnostics), and each result the
+diagnostic full-scale face pass's counts (D86; runtime.full_scale_numbers), never an image, embedding or name. With
+``--face-comparison`` as well (D87, schema 4) the worker embeds, within a predeclared budget, one full-scale candidate
+of an analysed frame after that frame's production result (identity.comparison), and each eligible person's outcome
+becomes a "comparison" record: its kind, disposition, the candidate's score and width, and the best similarity to the
+enrollment (runtime.ComparisonRecord), never a vote.
+With ``--face-full-scale-detection`` instead (D88, validation runs only; schema 6 from D90, schema 5 before it) the
+face adapter's detection stage is the full-scale candidate (legacy_deepface): the same capture, the same loaded
+detector and recognition models, one detection and one embedding per analysed frame, and each result also carries the
+candidate's own numbers (runtime.detection_numbers) and, per person, the position of the prototype behind the vote's
+similarity and the assigned face's geometry (D90, runtime.face_geometry_numbers). Neither D86's pass nor D87's
+comparison runs with it; everything after the faces (association, votes, identity state, retention, records' privacy)
+is unchanged. The camera-side enrollment experiment (D91, identity.experiment) runs with it on the substream (on route B,
+main_single, only the shadow comparison and the raw capture, with the head-window faces): ``--face-capture-gallery``
+keeps the one person's compared faces in memory and writes a separate working gallery at the stop (a "capture" record,
+numbers only), ``--face-capture-raw`` (route B only) seals those faces for the multi-pose builder instead, and
+``--face-shadow-gallery`` compares each compared face with such a gallery read only, its similarity and the production
+decision (schema 6's or 8's "shadow"); the original gallery alone votes and is never written.
+The gallery is sealed (sentinel.identity.vault) and opened at startup with a passphrase the
+operator types; startup refuses on a sealing error, and a missing or empty gallery leaves face recognition
+unavailable without loading the model. The face adapter needs its own admission record, which starts
+PENDING_VALIDATION: only ``--face-validation`` runs may use it. Nothing here shows names, photos or embeddings.
+
+Live view (D69, ``--live-preview``; off by default): the loop puts each frame it takes into RecentFrames (a
+reference, before inference; the last RECENT_FRAMES_KEPT only). Since D75 the page's player receives continuous
+pictures: LivePreview's encoder thread, which runs only while someone watches and at a lower OS priority, encodes the
+newest live frame, bounded, and encodes less while incident signals wait to be recorded or snapshots are queued
+(``_monitoring_backlog``). Nothing else reads the camera, and the loop never waits on a viewer; shutdown stops the
+encoder (``stopped["live_view"]``).
+
+Incident snapshots (D70, ``--snapshots``; off by default): when a zone ENTERED observation or a hazard candidate is
+queued, the loop looks up the frame it came from, by identity, among the images it still holds (RecentFrames, and the
+scene lane's RecentImages), and keeps that image with the observation until it is recorded (at most
+MAX_PINNED_SNAPSHOT_FRAMES distinct frames). When ``record()`` creates an incident, the job goes to the
+SnapshotWriter's thread; a frame that was gone is recorded as missing, never replaced by another. The loop never
+encodes or writes a file.
+
+Memory policies (D58; opt-in, off by default, see ``assemble``): this process
+can disable transparent huge pages for itself before the detector loads, and
+release each loaded model's files from the page cache after it settles. Both
+use ``sentinel.memory_policy``, the code the profiler's workload runs, and a
+resource profile admits scene analysis only when it measured the same policy.
+
+Not thread-safe apart from ``snapshot()`` and ``request_stop()``: one loop thread calls ``step()``.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import hashlib
+import threading
+import time
+from collections import Counter, OrderedDict, deque
+from datetime import datetime, timezone
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Any, Protocol
+
+from .adapters import (
+    FACE_ADAPTER_ID,
+    FACE_ADMISSIONS,
+    RESOURCE_PROFILES,
+    FaceAdmission,
+    face_admission_problem,
+    STARTUP_HASH_LIMIT_BYTES,
+    AdapterState,
+    FileFacts,
+    ResourceProfile,
+    resolve,
+)
+from .alerts.outbox import Notifier, OutboxWorker
+from .features import APPLIED, FEATURES, REFUSED, UNCHANGED, Change, FeatureControls
+from .alerts.telegram import NotifierUnavailable, TelegramNotifier
+from .config import STREAM_MAIN_SINGLE, WORKING_SIZE, CaptureConfig, NotificationsConfig, SentinelConfig
+from .contracts import FrameKey, FrameRef, StreamIdentity, TrackStatus
+from .device_artifacts import DeviceArtifacts, engine_problem, llama_problem, pinned_problem
+from .identity.gallery import GalleryDocument, check_consent_date
+from .identity.association import AssociationGeometry
+from .identity.comparison import ComparisonPolicy, FullScaleComparator
+from .identity.experiment import Capture as ExperimentCapture
+from .identity.experiment import ExperimentRefused, RawCapture, Shadow, open_shadow, same_directory
+from .identity.landmarks import marker as landmark_marker
+from .identity.legacy_deepface import (
+    DETECTION_DEEPFACE,
+    DETECTION_FULL_SCALE,
+    DETECTION_WINDOWS,
+    FaceBackendError,
+    static_difference,
+)
+from .identity.window_stage import MIN_FACE_INSIDE_FOR_WINDOWS, WindowSettings
+from .identity.window_stage import prepare as prepare_windows
+from .identity.vault import Secret, VaultError
+from .identity.worker import FaceWorker
+from .incidents.service import IncidentService, RecordOutcome
+from .incidents.snapshots import (
+    SNAPSHOT_DIR,
+    STOP_TIMEOUT_S as SNAPSHOT_STOP_TIMEOUT_S,
+    SnapshotDirectoryError,
+    SnapshotJob,
+    SnapshotPolicy,
+    SnapshotStore,
+    SnapshotWriter,
+)
+from .inference.legacy_ultralytics import LEGACY_ENGINE_SHA256
+from .incidents.signals import IncidentSignal, signal_from_hazard, signal_from_zone
+from .jobs import AnalysisJob, WorkerOutcome
+from .identity.state import IdentityState
+from .live_preview import LivePreview
+from .live_state import Capability, LiveState
+from .media.capture import (
+    CapturedFrame,
+    CaptureState,
+    CaptureStatus,
+    LatestFrame,
+    SourceError,
+    VideoSource,
+    WorkingCopy,
+)
+from .media.clock import NS_PER_SECOND, Clock
+from .media.health import assess_frame
+from .media.jpeg import Encoder, encode_jpeg
+from .media.opencv_source import area_resize
+from .media.recent import RecentFrames
+from .memory_policy import (
+    DEFAULT_POLICY,
+    RELEASE_POST_LOAD,
+    RELEASE_SETTLE_S,
+    THP_WORKLOAD_DISABLED,
+    MemoryPolicy,
+    disable_thp_for_this_process,
+    read_thp_enabled,
+    release_component_files,
+    release_file_cache,
+)
+from .rules.zones import ZonePhase
+from .identity.continuity import ContinuityPolicy
+from .identity.retention import ESTABLISHED, NONE as NO_ASSOCIATION, RetentionPolicy, reported_numbers
+from .history import RecentHistory
+from .page_reads import ASSOCIATION, IDENTITY, PageReadLatency, page_read_record
+from .runtime import (
+    IDENTITY_COMPARISON_SCHEMA,
+    IDENTITY_FULL_SCALE_SCHEMA,
+    IDENTITY_GEOMETRY_SCHEMA,
+    IDENTITY_LANDMARK_SCHEMA,
+    IDENTITY_RECORD_SCHEMA,
+    IDENTITY_WINDOWS_SCHEMA,
+    CoreOutput,
+    EdgeCore,
+    association_record,
+    break_record,
+    tick_record,
+)
+from .scene.analyzer import IMAGES_KEPT, RecentImages, ThreadedSceneAnalyzer
+from .scene.chat import CHAT_ADMISSION, ChatAdmission, ChatService
+from .scene.roi import PinnedFrames
+from .scene.chat_gate import SAMPLE_INTERVAL_S as CHAT_GATE_SAMPLE_S, ChatGate, read_pressure
+from .scene.llama_server import PROFILED_FLAGS, PROMPT_CACHE_FLAGS
+from .scene.models import FALLBACK_SCENE_MODEL_SET, ROLLBACK_SCENE_MODEL_SET, SceneModelSet, scene_model_set
+from .storage.database import Database, DatabaseError
+from .tracking.diagnostic import (
+    DiagnosticBounds,
+    TrackerDiagnostics,
+    bounded_line,
+    frame_record,
+    settings_problem,
+    summary_record,
+)
+from .tracking.tracker import FrameOutcome, PersonTracker, TrackerError, TrackingResult, frame_counted_settings
+
+SCENE_ADAPTER_ID = "llama-lfm2-vl-scene"
+DATABASE_NAME = "sentinel.db"
+MAX_PENDING_SIGNALS = 256
+PENDING_DURABILITY = (
+    f"rule observations waiting to be recorded are held in memory only (at most {MAX_PENDING_SIGNALS}); "
+    "they are lost if the process stops abruptly: not a crash-safe spool"
+)
+RECORD_RETRY_NS = NS_PER_SECOND
+RATE_WINDOW_NS = 10 * NS_PER_SECOND
+FACE_STOP_TIMEOUT_S = 2.0  # a DeepFace call cannot be interrupted; p99 989 ms in the replay profile
+# Shutdown steps with no part of their own; each appears in "stopped" (as false) only when it raised.
+SHUTDOWN_STEPS = ("status", "face_capture", "tracking_summary", "flush")
+MAX_IDENTITY_RECORDS = 10_000  # identity records (ticks, results, transitions) per run; more are counted, not kept
+MAX_PINNED_SNAPSHOT_FRAMES = 4  # distinct frames whose images wait with unrecorded observations (D70)
+MAX_FACE_ROWS = 8  # D95: people listed with their recognition state on the status page; more are counted, not listed
+
+
+class Capture(Protocol):
+    """The camera reader; CaptureWorker satisfies it."""
+
+    @property
+    def connected(self) -> StreamIdentity | None: ...
+
+    def status(self) -> CaptureStatus: ...
+
+    def start(self) -> None: ...
+
+    def stop(self, timeout_s: float) -> bool: ...
+
+
+class ServerHandle(Protocol):
+    """A started scene server; LlamaServerProcess satisfies it."""
+
+    def status(self) -> Any: ...
+
+    def stop(self, grace_s: float) -> bool: ...
+
+
+@dataclass(frozen=True)
+class _Shot:
+    """An observation's snapshot source: its frame's identity, and that frame's record and image while held."""
+
+    key: FrameKey
+    frame: FrameRef | None
+    image: Any | None
+    missing: str | None
+
+
+class RuntimeState(str, Enum):
+    STARTING = "starting"
+    RUNNING = "running"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+
+
+@dataclass
+class FaceRuntime:
+    worker: FaceWorker
+    identities: int  # enrolled identities in the opened gallery (a count; IDs stay out of the status)
+    validation_run: bool
+    comparison: bool = False  # D87: the worker has a full-scale comparator (validation runs only)
+    detection: str = DETECTION_DEEPFACE  # D88: DETECTION_FULL_SCALE when the candidate is selected
+    shadow: Any = None  # D91: a working gallery compared read only (identity.experiment.Shadow)
+    capture: Any = None  # D91: the capture of a working gallery, written at shutdown (identity.experiment.Capture)
+    continuity: ContinuityPolicy | None = None  # D97: the continuity rule (--face-continuity, validation runs only)
+    landmarks: bool = False  # session 90: the landmark diagnostic (--face-landmark-diagnostic, validation runs only)
+    windows: WindowSettings | None = None  # route B: the head-window stage (main_single, validation runs only)
+    # route B's shadow comparison (the multi-pose comparison): each track life's start and end recorded, so a reading
+    # can replay both galleries with the runtime's own life boundaries; it decides nothing
+    lives: bool = False
+    retention: RetentionPolicy | None = None  # part 28: the track-retention rule (--identity-retention, validation runs)
+
+    @property
+    def experiment(self) -> str | None:
+        return "shadow" if self.shadow is not None else "capture" if self.capture is not None else None
+
+
+@dataclass
+class SceneRuntime:
+    analyzer: ThreadedSceneAnalyzer
+    images: RecentImages
+    server: ServerHandle | None = None
+
+
+class OutboxLoop:
+    """Runs ``OutboxWorker.run_once()`` in its own thread until stopped."""
+
+    def __init__(self, worker: OutboxWorker, *, interval_s: float = 1.0, batch: int = 10) -> None:
+        self.worker = worker
+        self._interval_s = interval_s
+        self._batch = batch
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._passes = 0
+        self._problem: str | None = None
+
+    def start(self) -> None:
+        if self._thread is not None:
+            raise RuntimeError("the outbox loop can be started once")
+        self._thread = threading.Thread(target=self._run, name="sentinel-outbox", daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout_s: float) -> bool:
+        """False if a send is still running after ``timeout_s``; its lease then expires and it is retried."""
+        self._stop.set()
+        if self._thread is None:
+            return True
+        self._thread.join(timeout_s)
+        return not self._thread.is_alive()
+
+    def status(self) -> dict[str, Any]:
+        thread = self._thread
+        if thread is None:
+            state = "not_started"
+        elif thread.is_alive():
+            state = "running"
+        else:
+            state = "stopped"
+        with self._lock:
+            return {"state": state, "passes": self._passes, "problem": self._problem,
+                    "counters": dict(sorted(self.worker.counters.items()))}
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.worker.run_once(self._batch)
+                problem = None
+            except Exception as exc:  # noqa: BLE001 - a database error must not end delivery for good
+                problem = f"outbox_error:{type(exc).__name__}"
+            with self._lock:
+                self._passes += 1
+                self._problem = problem
+            self._stop.wait(self._interval_s)
+
+
+class DemoRuntime:
+    def __init__(
+        self,
+        config: SentinelConfig,
+        clock: Clock,
+        *,
+        capture: Capture,
+        slot: LatestFrame,
+        incidents: IncidentService,
+        outbox: OutboxLoop | None = None,
+        tracker: PersonTracker | None = None,
+        detector_problem: str | None = None,
+        scene: SceneRuntime | None = None,
+        scene_problem: str | None = None,
+        face: FaceRuntime | None = None,
+        face_problem: str | None = None,
+        enrollment: Any = None,
+        notifier_problems: Mapping[str, str] | None = None,
+        tick_s: float = 0.25,
+        status_refresh_s: float = 0.5,
+        live_preview: bool = False,
+        encode: Encoder = encode_jpeg,
+        snapshots: SnapshotWriter | None = None,
+        chat: bool = False,
+        chat_run: Callable[..., Any] | None = None,
+        chat_admission: ChatAdmission = CHAT_ADMISSION,
+        chat_validation: bool = False,
+        pressure: Callable[[], int | None] = read_pressure,
+        feature_controls: bool = False,
+        tracking_diagnostic: DiagnosticBounds | None = None,
+    ) -> None:
+        if tracker is None and detector_problem is None:
+            detector_problem = "detector_not_configured"
+        # The tracking diagnostic (session 79): one bounded record per processed frame, in its own budget
+        self._tracking = tracking_diagnostic
+        self._tracking_bytes = 0
+        self._tracking_max_line = 0
+        self._tracking_problems: Counter[str] = Counter()
+        self._config = config
+        self._decoded_size: tuple[int, int] | None = None  # route B: the last decoded picture's size
+        self._clock = clock
+        self._capture = capture
+        self._slot = slot
+        self._incidents = incidents
+        self._outbox = outbox
+        self._tracker = tracker
+        self._detector_problem = detector_problem  # set at startup; never cleared
+        self._scene = scene
+        self._scene_problem = None if scene is not None else scene_problem
+        self._face = face
+        self._face_problem = None if face is not None else face_problem
+        self._notifier_problems = dict(notifier_problems or {})
+        self._tick_s = tick_s
+        self._status_refresh_ns = round(status_refresh_s * NS_PER_SECOND)
+        self._core = EdgeCore(
+            config,
+            clock,
+            scene.analyzer if scene is not None else None,
+            detector=Capability.AVAILABLE if tracker is not None else Capability.UNAVAILABLE,
+            face_recognition=(Capability.AVAILABLE if face is not None
+                              else Capability.UNAVAILABLE if face_problem is not None else Capability.DISABLED),
+            enrollment=enrollment if face is not None else None,
+            scene_problem=self._scene_problem,
+            shadow=face.shadow if face is not None else None,
+            capture=face.capture if face is not None else None,
+            continuity=face.continuity if face is not None else None,
+            record_lives=face.lives if face is not None else False,
+            retention=face.retention if face is not None else None,
+        )
+        self._identity_records: deque[dict[str, Any]] = deque()
+        # A face validation run's records carry the diagnostic numbers (schema 3, D84 and D86), with the full-scale
+        # comparison its records too (schema 4, D87), and with the full-scale detection candidate its own numbers
+        # instead of D86's and, from D90, each face's geometry and prototype position (schema 6; D88's schema 5 is
+        # read, never written); with the landmark diagnostic, schema 7 (session 90); other runs, schema 1.
+        self._identity_schema = (
+            IDENTITY_RECORD_SCHEMA if face is None or not face.validation_run
+            else IDENTITY_WINDOWS_SCHEMA if face.windows is not None  # route B (main_single)
+            else IDENTITY_GEOMETRY_SCHEMA if face.detection == DETECTION_FULL_SCALE
+            else IDENTITY_COMPARISON_SCHEMA if face.comparison
+            else IDENTITY_LANDMARK_SCHEMA if face.landmarks else IDENTITY_FULL_SCALE_SCHEMA)
+        self._snapshots = snapshots
+        # D74: chat reads frames only when it can be used (admitted, with the scene model); otherwise it keeps none.
+        chat_allowed = chat_admission.admitted or (chat_validation and chat_admission.validation_allowed)
+        chat_usable = chat and chat_allowed and scene is not None and chat_run is not None
+        self._recent = (RecentFrames() if live_preview or snapshots is not None or chat_usable
+                        else None)  # only when something reads it
+        self._pinned: Counter[FrameKey] = Counter()  # D70: frames whose images wait with unrecorded observations
+        self._preview = (LivePreview(self._recent, clock, config.freshness, lambda: capture.connected, encode=encode,
+                                     pressure=self._monitoring_backlog)
+                         if live_preview and self._recent is not None else None)
+        self._chat: ChatService | None = None
+        self._pins: PinnedFrames | None = None
+        self._chat_gate: ChatGate | None = None  # D77: chat's pressure response, sampled on this loop at most once a second
+        self._pressure = pressure
+        self._next_gate_ns = 0
+        if chat:  # D74: advisory, and unavailable (saying why) unless admitted (or validated, D77) and the scene model runs
+            watching = clock.mono()
+            recent = self._recent
+            self._chat_gate = ChatGate() if chat_usable else None
+            # part 28: the newest frame's pictures in one slot, and the frames viewers pin for a zoom or a scan
+            # (scene.roi); only where chat can ask the model, and never while chat is turned off
+            self._pins = PinnedFrames() if chat_usable else None
+            self._chat = ChatService(
+                enabled=True, admission=chat_admission, scene=scene.analyzer if scene is not None else None,
+                latest=recent.latest if chat_usable and recent is not None else lambda: None, clock=clock,
+                run=chat_run if chat_usable else None,
+                assess=lambda frame: assess_frame(frame, capture.connected, clock.mono(), watching, config.freshness),
+                stale_after_s=config.freshness.stale_after_s, gate=self._chat_gate, validation_run=chat_validation,
+                pins=self._pins, encode=encode if chat_usable else None)
+        # Part 28: what chat's recorded-fact answers read (chat_evidence): the runtime's own bounded history and its
+        # current view of tracked people. Only with --chat; nothing else reads or changes them.
+        self._history = RecentHistory(clock) if chat else None
+        self._occupants: dict[str, Any] | None = None
+        # D99: what the operator turned off at runtime (Features); everything this run started starts on
+        self._face_on = True
+        self._snapshots_on = True
+        self._controls = FeatureControls(clock, {
+            "face": face is not None, "scene": scene is not None,
+            "chat": self._chat is not None and self._chat.usable,
+            "live_view": self._preview is not None, "snapshots": snapshots is not None,
+        }) if feature_controls else None
+        self._frames: OrderedDict[FrameKey, FrameRef] = OrderedDict()
+        self._pending: deque[tuple[IncidentSignal, FrameKey | None, _Shot | None]] = deque()
+        self._retry_at_ns = 0
+        self._record_problem: str | None = None
+        self._annotate_problem: str | None = None
+        self._last_frame_problem: str | None = None  # the latest tracker failure, until a frame succeeds
+        self._live: LiveState | None = None
+        self.counters: Counter[str] = Counter()
+        self._samples: deque[tuple[int, int, int, int]] = deque()
+        self._next_status_ns = 0
+        self._state = RuntimeState.STARTING
+        self._stop = threading.Event()
+        self._status_lock = threading.Lock()
+        self._snapshot: dict[str, Any] = {}
+        # part 28 (measurement only, --identity-retention runs): when a page first read an identity change
+        self._page_reads = PageReadLatency() if face is not None and face.retention is not None else None
+        self._shutdown: dict[str, Any] | None = None
+        self._refresh_status(force=True)
+
+    @property
+    def core(self) -> EdgeCore:
+        return self._core
+
+    @property
+    def preview(self) -> LivePreview | None:
+        """The status page's live view (D69); None when it is off."""
+        return self._preview
+
+    def _monitoring_backlog(self) -> bool:
+        """Whether monitoring work waits (D75: the live view then encodes less): incident signals not yet recorded, or
+        snapshots queued. Read from the encoder's thread; both reads are single, thread-safe operations."""
+        if self._pending:
+            return True
+        return self._snapshots is not None and self._snapshots.status().get("queued", 0) > 0
+
+    @property
+    def chat(self) -> ChatService | None:
+        """The status page's chat (D74); None when it is off."""
+        return self._chat
+
+    @property
+    def controls(self) -> FeatureControls | None:
+        """The status page's feature controls (D99); None without --feature-controls."""
+        return self._controls
+
+    # ------------------------------------------------------------ lifecycle
+
+    def start(self) -> None:
+        """Start the threads this runtime owns: capture, scene worker, outbox, snapshot writer."""
+        if self._snapshots is not None:
+            self._snapshots.start()
+        if self._scene is not None:
+            self._scene.analyzer.start()
+        if self._face is not None:
+            self._face.worker.start()
+        if self._outbox is not None:
+            self._outbox.start()
+        self._capture.start()
+        self._state = RuntimeState.RUNNING
+        self._refresh_status(force=True)
+
+    @property
+    def stop_requested(self) -> bool:
+        return self._stop.is_set()
+
+    def request_stop(self) -> None:
+        """Safe from a signal handler or another thread."""
+        self._stop.set()
+        self._slot.close()
+
+    def run(self) -> None:
+        """Run the loop on this thread until request_stop()."""
+        while not self._stop.is_set():
+            self.step()
+
+    def shutdown(self) -> dict[str, Any]:
+        """Stop what this runtime started, each within its own bound; returns what stopped.
+
+        Every step runs even when an earlier one raised. A step that raises counts as not stopped: under its part's
+        name, or, for a step with no part of its own, under one of SHUTDOWN_STEPS (only then present). So
+        ``all_stopped`` is false, and the rest of the stop (the final flush and the outbox among it) still happens."""
+        failed: list[str] = []
+
+        def attempt(part: str, action: Callable[[], Any], default: Any = None) -> Any:
+            try:
+                return action()
+            except Exception:  # noqa: BLE001 - one part that fails must not skip the rest of the stop
+                failed.append(part)
+                return default
+
+        if self._chat is not None:  # part 28: no picture stays held once the runtime stops; the stores close for
+            self._chat.release_pictures()  # good, so a question still in flight below cannot fill them again
+
+        def record() -> dict[str, Any]:
+            stopped.update(dict.fromkeys(failed, False))  # a part that raised, whatever a later call of it returned
+            return {"stopped": stopped, "all_stopped": all(stopped.values()),
+                    "signals_not_recorded": len(self._pending) + self.counters["signals_dropped"]}
+
+        self._state = RuntimeState.STOPPING
+        attempt("status", lambda: self._refresh_status(force=True))
+        capture = self._config.capture
+        stopped: dict[str, bool] = {"capture": attempt(
+            "capture", lambda: self._capture.stop(capture.open_timeout_s + capture.read_timeout_s + 1.0), False)}
+        face = self._face
+        if face is not None:
+            stopped["face_worker"] = attempt("face_worker", lambda: face.worker.stop(FACE_STOP_TIMEOUT_S), False)
+            experiment = face.capture
+            if experiment is not None:  # D91: after the worker stops (a result in flight is not applied, as in every
+                # run); the working gallery is written or refused once, and its record is numbers only
+                attempt("face_capture",
+                        lambda: self._keep_record({**experiment.finish(), "schema": self._identity_schema}))
+        if self._tracking is not None:  # the diagnostic's summary: what was kept, dropped and shortened
+            attempt("tracking_summary", lambda: self._identity_records.append(summary_record(
+                self.counters["tracking_records_kept"], self.counters["tracking_records_dropped"],
+                self._tracking_bytes, self.counters["tracking_records_truncated"], self._tracking_max_line,
+                self.counters["frames_processed"], dict(self._tracking_problems), self._tracking)))
+        scene = self._scene
+        if scene is not None:
+            # Drop a waiting job; a running request ends when the server goes.
+            attempt("scene_worker", lambda: scene.analyzer.stop(0.0))
+            server = scene.server
+            if server is not None:
+                stopped["scene_server"] = attempt("scene_server", lambda: server.stop(10.0), False)
+            stopped["scene_worker"] = attempt(
+                "scene_worker", lambda: scene.analyzer.stop(self._config.scene_server.request_timeout_s + 1.0), False)
+        preview = self._preview
+        if preview is not None:  # D75: its encoder thread, if a viewer started it; waiting requests are answered
+            stopped["live_view"] = attempt("live_view", lambda: preview.close(1.0), False)
+        attempt("flush", lambda: self._flush(force=True))  # last chance for observations that are still waiting
+        snapshots = self._snapshots
+        if snapshots is not None:  # saves what is queued, including incidents the flush just created
+            stopped["snapshots"] = attempt("snapshots", lambda: snapshots.stop(SNAPSHOT_STOP_TIMEOUT_S), False)
+        outbox = self._outbox
+        if outbox is not None:
+            stopped["outbox"] = attempt(
+                "outbox", lambda: outbox.stop(self._config.notifications.request_timeout_s + 2.0), False)
+        self._shutdown = record()
+        self._state = RuntimeState.STOPPED
+        attempt("status", lambda: self._refresh_status(force=True))
+        self._shutdown = record()  # again, in case that last refresh failed
+        return dict(self._shutdown)
+
+    # ------------------------------------------------------------ one step
+
+    def step(self, timeout_s: float | None = None) -> None:
+        self._apply_features()
+        captured = self._slot.take(self._tick_s if timeout_s is None else timeout_s)
+        connected = self._capture.connected
+        if captured is None:
+            output = self._core.tick(connected)
+        else:
+            output = self._on_frame(captured, connected)
+            del captured  # the loop's reference to the image ends here
+        self._handle(output)
+        if self._scene is not None:
+            for job_id, outcome in self._scene.analyzer.drain():
+                self._handle(self._core.on_scene_outcome(job_id, outcome, self._capture.connected))
+        if self._face is not None:
+            result = self._face.worker.drain()
+            if result is not None:
+                self._handle(self._core.on_face_outcome(result.frame, result.persons, result.faces,
+                                                        self._capture.connected, processing_ms=result.processing_ms,
+                                                        error=result.error, full_scale=result.full_scale,
+                                                        detection=result.detection, geometry=result.geometry,
+                                                        landmarks=self._identity_schema == IDENTITY_LANDMARK_SCHEMA,
+                                                        windows=result.windows))
+            for comparison in self._face.worker.drain_comparisons():  # D87: after their frames' production results
+                self._keep_record(self._core.on_face_comparison(comparison).record(self._identity_schema))
+        if self._pending:
+            self._handle(None)
+        self._observe_chat_gate()
+        if self._chat is not None:  # part 28: held pictures and pinned frames end on time, whoever is or is not asking
+            self._chat.expire_pictures()
+        self._refresh_status()
+        if self._page_reads is not None:  # part 28: what page requests read since the last step
+            for item in self._page_reads.drain():
+                self._keep_record(page_read_record(item, self._identity_schema))
+
+    # ------------------------------------------------------------ D99: features turned on and off at runtime
+
+    def _apply_features(self) -> None:
+        """Apply the operator's waiting changes, in order, on this loop thread (the only place features change)."""
+        if self._controls is None:
+            return
+        for change in self._controls.take():
+            if self._state is not RuntimeState.RUNNING:
+                self._controls.done(change, REFUSED)
+                continue
+            self._controls.done(change, APPLIED if self._set_feature(change) else UNCHANGED)
+            self._refresh_status(force=True)
+
+    def _set_feature(self, change: Change) -> bool:
+        """Pause or resume one feature this run started; False if it already was so. Nothing loads or unloads."""
+        name, on = change.feature, change.on
+        if name == "face" and self._face is not None and on != self._face_on:
+            self._face_on = on
+            self._core.set_face_recognition(Capability.AVAILABLE if on else Capability.DISABLED)
+            if not on:
+                self._face.worker.discard_pending()
+            return True
+        if name == "scene" and self._scene is not None and on != self._core.scene_on:
+            self._core.set_scene_analysis(on)
+            self._scene.analyzer.set_periodic_paused(not on)  # paused, no periodic job ends a question
+            return True
+        if name == "chat" and self._chat is not None and on == self._chat.operator_off:
+            self._chat.set_operator_off(not on)
+            return True
+        if name == "live_view" and self._preview is not None and on == self._preview.paused:
+            self._preview.set_paused(not on)
+            return True
+        if name == "snapshots" and self._snapshots is not None and on != self._snapshots_on:
+            self._snapshots_on = on
+            return True
+        return False
+
+    def drain_control_records(self) -> list[dict[str, Any]]:
+        """D99: one line per change the loop applied (or found unchanged, or refused), in order."""
+        return [] if self._controls is None else self._controls.drain_records()
+
+    def _features_view(self) -> dict[str, Any]:
+        """D99: each feature's requested and actual state, the actual one read from the component itself."""
+        assert self._controls is not None
+        return {"accepting": self._state is RuntimeState.RUNNING,
+                "items": {name: self._feature_item(name) for name in FEATURES}, **self._controls.view()}
+
+    def _feature_item(self, name: str) -> dict[str, Any]:
+        controls = self._controls
+        assert controls is not None
+        item: dict[str, Any] = {"requested": "on" if controls.requested(name) else "off",
+                                "switchable": controls.switchable(name), "problem": None, "validation": None}
+
+        def state(actual: str, why: str, problem: str | None = None) -> dict[str, Any]:
+            return {**item, "actual": actual, "why": why, "problem": problem}
+
+        if name == "face" and self._face is not None:
+            item["validation"] = "pending_validation"  # the face admission is PENDING_VALIDATION (D61, D92)
+        if name == "chat" and self._chat is not None:
+            item["validation"] = "validation_run" if self._chat.summary().get("validation_run") else (
+                None if self._chat.usable else "not_admitted")
+        started = {"face": self._face, "scene": self._scene, "chat": self._chat, "live_view": self._preview,
+                   "snapshots": self._snapshots}[name]
+        if started is None:
+            problem = {"face": self._face_problem, "scene": self._scene_problem}.get(name)
+            return state("unavailable", "failed_at_start", problem) if problem else state("off", "not_started")
+        if name == "chat" and not self._chat.usable:  # type: ignore[union-attr]
+            return state("unavailable", "not_admitted", self._chat.availability()["reason"])  # type: ignore[union-attr]
+        if controls.waiting(name):
+            return state("starting" if controls.requested(name) else "stopping", "pending")
+        if name == "face":
+            if self._face_on:
+                alive = self._face.worker.status()["state"] == "running"  # type: ignore[union-attr]
+                return state("running", "running") if alive else state("error", "worker_stopped")
+            return state("stopping", "finishing") if self._face.worker.busy else state("off", "turned_off")  # type: ignore[union-attr]
+        if name == "scene":
+            lane = self._core.lane
+            if self._core.scene_on:
+                problem = self._scene_status().get("problem")
+                return state("error", "server_not_ready", problem) if problem else state("running", "running")
+            return state("stopping", "finishing") if lane is not None and lane.in_flight else state("off", "turned_off")
+        if name == "chat":
+            if self._chat.operator_off:  # type: ignore[union-attr]
+                return state("off", "turned_off")
+            available = self._chat.availability()  # type: ignore[union-attr]
+            if available["state"] == "paused":
+                return state("busy", "paused_by_gate", available["reason"])
+            return state("running", "running") if available["state"] == "available" else \
+                state("unavailable", "not_admitted", available["reason"])
+        if name == "live_view":
+            return state("off", "turned_off") if self._preview.paused else state("running", "running")  # type: ignore[union-attr]
+        writer = self._snapshots.status()  # type: ignore[union-attr]
+        if self._snapshots_on:
+            return state("error", "writer_problem", writer.get("problem")) if writer.get("problem") else \
+                state("running", "running")
+        return state("stopping", "finishing") if writer.get("queued", 0) else state("off", "turned_off")
+
+    def _observe_chat_gate(self) -> None:
+        """D77: one pressure sample (and the scene deadline misses so far) for chat's gate, at most once a second; a
+        cancellation it asks for ends the running question. Monitoring itself is never changed by it."""
+        if self._chat_gate is None:
+            return
+        now = self._clock.monotonic_ns()
+        if now < self._next_gate_ns:
+            return
+        self._next_gate_ns = now + round(CHAT_GATE_SAMPLE_S * NS_PER_SECOND)
+        lane = self._core.lane
+        misses = 0 if lane is None else lane.counters["deadline_missed"] + lane.counters["enrichment_skipped"]
+        try:
+            pressure = self._pressure()
+        except Exception:  # noqa: BLE001 - an unreadable reading closes chat (the gate fails closed)
+            pressure = None
+        self._chat_gate.observe(now, pressure, misses)
+        reason = self._chat_gate.take_cancel()
+        if reason is not None and self._chat is not None:
+            self._chat.abort_running(reason)
+
+    def _on_frame(self, captured: CapturedFrame, connected: StreamIdentity | None) -> CoreOutput:
+        frame = captured.frame
+        self.counters["frames_taken"] += 1
+        if captured.full is not None:  # route B: the decoded size, for the status (one geometry per epoch)
+            self._decoded_size = (frame.native_width, frame.native_height)
+        if self._recent is not None:
+            self._recent.put(frame, captured.image)  # a reference; the preview judges freshness itself
+        self._frames[frame.key] = frame
+        while len(self._frames) > IMAGES_KEPT:
+            self._frames.popitem(last=False)
+        if self._scene is not None:
+            self._scene.images.put(frame.key, captured.image)
+        if self._tracker is None:
+            return self._core.on_frame(frame, (), connected)
+        if connected is None or frame.stream != connected:
+            self.counters["frames_not_live"] += 1  # its epoch already ended: no inference
+            return self._core.on_frame(frame, (), connected)
+        result = self._tracker.process(frame, captured.image)
+        if result.outcome is FrameOutcome.PROCESSED:
+            self.counters["frames_processed"] += 1
+            self._last_frame_problem = None
+            self._core.set_detector(Capability.AVAILABLE)
+            output = self._core.on_frame(frame, result.persons, connected)
+            if self._tracking is not None:
+                self._keep_tracking(frame, result, output)
+            if self._pins is not None and self._chat is not None and not self._chat.operator_off:
+                # part 28: references to this frame's pictures (its working copy and, on route B, the decoded picture)
+                # and the tracker's people on it, replacing the previous frame's: what a zoom or a scan may pin
+                self._pins.latest(frame, captured.image, captured.full, result.persons)
+            if self._face is not None and self._face_on:  # D99: not offered while turned off
+                # route B: the decoded picture the working copy was made from (the worker copies its windows only)
+                picture = captured.image if captured.full is None else captured.full
+                tick = self._face.worker.consider(frame, result.persons, picture)  # copies it if offered
+                if tick is not None:
+                    self._keep_record(tick_record(frame, result.persons, tick, self._identity_schema))
+            return output
+        if result.outcome is FrameOutcome.FAILED:
+            self.counters["frames_failed"] += 1
+            detail = f" ({result.error_type})" if result.error_type else ""
+            self._last_frame_problem = f"{result.problem}{detail}"
+            self._core.set_detector(Capability.UNAVAILABLE)  # occupancy is unknown, never empty (D18)
+            return self._core.on_frame(frame, (), connected)
+        self.counters["frames_skipped"] += 1
+        return self._core.tick(connected)
+
+    def _handle(self, output: CoreOutput | None) -> None:
+        outputs = deque([output] if output is not None else [None])
+        while outputs:
+            current = outputs.popleft()
+            if current is not None:
+                self._live = current.state
+                if current.face_result is not None:
+                    self._keep_record(current.face_result.record(self._identity_schema))
+                for life in current.track_lives:  # the lives this step began or ended, before its transitions
+                    self._keep_record(life.record(self._identity_schema))
+                for item in current.identity_breaks:  # D97: before the transitions they cause
+                    self._keep_record(break_record(item, self._identity_schema))
+                for transition in current.identity_transitions:
+                    self._keep_record(transition.record(self._identity_schema))
+                for change in current.identity_associations:  # part 28: track retention (only in those runs)
+                    self._keep_record(association_record(change, self._identity_schema))
+                if self._history is not None:  # part 28: the bounded history chat's recorded answers read
+                    self._history.observe(current.state)
+                    for transition in current.identity_transitions:
+                        self._history.note_identity(transition.stream_epoch, transition.track_id,
+                                                    transition.from_state, transition.to_state)
+                    for change in current.identity_associations:
+                        self._history.note_association(change.stream_epoch, change.track_id, change.from_state,
+                                                       change.to_state, change.reason)
+                if self._page_reads is not None:  # part 28: timed from here, where the live state holds them
+                    known = IdentityState.KNOWN.value
+                    for transition in current.identity_transitions:
+                        self._page_reads.changed(
+                            transition.stream_epoch, transition.track_id, IDENTITY, transition.to_state,
+                            transition.mono_ns, holds=transition.to_state == known,
+                            watch=transition.to_state == known and transition.from_state != known)
+                    for change in current.identity_associations:
+                        self._page_reads.changed(
+                            change.stream_epoch, change.track_id, ASSOCIATION, change.to_state, change.mono_ns,
+                            holds=change.to_state != NO_ASSOCIATION, watch=change.reason == ESTABLISHED)
+                self._annotate(current)
+                for zone in current.zones:
+                    enrich = zone.last_source if zone.phase is ZonePhase.ENTERED else None
+                    self._enqueue(signal_from_zone(zone), enrich, enrich)  # ENTERED can open: its frame is the shot
+                for candidate in current.candidates:
+                    self._enqueue(signal_from_hazard(candidate), None, candidate.last_source)
+            for frame, incident_id in self._flush():
+                outputs.append(self._core.request_enrichment(frame, incident_id, self._capture.connected))
+
+    def _keep_record(self, record: dict[str, Any]) -> None:
+        if self.counters["identity_records_kept"] >= MAX_IDENTITY_RECORDS:
+            self.counters["identity_records_dropped"] += 1
+            return
+        self.counters["identity_records_kept"] += 1
+        self._identity_records.append(record)
+
+    def _keep_tracking(self, frame: FrameRef, result: TrackingResult, output: CoreOutput) -> None:
+        """The frame's tracking record, shortened to its line bound and kept within the run's count and byte
+        budgets; what was shortened or dropped is counted, never silent."""
+        bounds = self._tracking
+        assert bounds is not None
+        started = time.perf_counter_ns()
+        diagnostics = result.diagnostics
+        if diagnostics is None:
+            diagnostics = TrackerDiagnostics(None, problems=("no_backend_diagnostics",))
+        current = [person.track_id for person in output.state.people]
+        record = frame_record(frame, diagnostics, current, self.counters["frames_processed"], result.backend_ns,
+                              bounds)
+        record["ns"]["record"] = time.perf_counter_ns() - started
+        record, line = bounded_line(record, bounds)
+        for problem in record["problems"]:
+            self._tracking_problems[problem] += 1
+        size = len(line.encode())
+        self._tracking_max_line = max(self._tracking_max_line, size)
+        if self.counters["tracking_records_kept"] >= bounds.max_records \
+                or self._tracking_bytes + size > bounds.max_bytes:
+            self.counters["tracking_records_dropped"] += 1
+            return
+        if record["trunc"]:
+            self.counters["tracking_records_truncated"] += 1
+        self.counters["tracking_records_kept"] += 1
+        self._tracking_bytes += size
+        self._identity_records.append(record)
+
+    def _tracking_status(self) -> dict[str, Any]:
+        bounds = self._tracking
+        assert bounds is not None
+        return {"kept": self.counters["tracking_records_kept"], "dropped": self.counters["tracking_records_dropped"],
+                "truncated_lines": self.counters["tracking_records_truncated"], "bytes": self._tracking_bytes,
+                "max_line_bytes_seen": self._tracking_max_line, "limit": bounds.max_records,
+                "byte_limit": bounds.max_bytes, "problems": dict(sorted(self._tracking_problems.items()))}
+
+    def drain_identity_records(self) -> list[dict[str, Any]]:
+        """Opaque identity records (ticks, results, transitions) since the last call, in order (loop thread)."""
+        records = list(self._identity_records)
+        self._identity_records.clear()
+        return records
+
+    def _annotate(self, output: CoreOutput) -> None:
+        for routed in output.evidence:
+            if routed.routing.annotates is None:
+                continue
+            try:
+                result = self._incidents.annotate(routed.evidence, routed.routing.applicability)
+            except Exception as exc:  # noqa: BLE001 - enrichment is history; core monitoring continues
+                self.counters["annotations_failed"] += 1
+                self._annotate_problem = f"annotate_failed:{type(exc).__name__}"
+                continue
+            self.counters[f"annotation_{result.outcome.value}"] += 1
+
+    def _enqueue(self, signal: IncidentSignal, enrich: FrameKey | None, source: FrameKey | None = None) -> None:
+        if len(self._pending) >= MAX_PENDING_SIGNALS:
+            self.counters["signals_dropped"] += 1
+            return
+        self._pending.append((signal, enrich, self._shot(source)))
+
+    def _shot(self, source: FrameKey | None) -> _Shot | None:
+        """D70: the image of exactly ``source``, if still held and within the bound; else why not."""
+        if self._snapshots is None or source is None:
+            return None
+        if not self._snapshots_on:  # D99: turned off: recorded as missing, saying why; no image is held
+            return _Shot(source, self._frames.get(source), None, "snapshots_off")
+        held = self._recent.get(source) if self._recent is not None else None
+        frame, image = held if held is not None else (self._frames.get(source), None)
+        if image is None and self._scene is not None:
+            image = self._scene.images.get(source)  # the scene lane holds its recent frames' images too
+        if frame is None or image is None:
+            return _Shot(source, frame, None, "frame_not_retained")
+        if source not in self._pinned and len(self._pinned) >= MAX_PINNED_SNAPSHOT_FRAMES:
+            return _Shot(source, frame, None, "too_many_waiting")
+        self._pinned[source] += 1
+        return _Shot(source, frame, image, None)
+
+    def _unpin(self, shot: _Shot | None) -> None:
+        if shot is not None and shot.image is not None:
+            self._pinned[shot.key] -= 1
+            if self._pinned[shot.key] <= 0:
+                del self._pinned[shot.key]
+
+    def _flush(self, *, force: bool = False) -> list[tuple[FrameRef, str]]:
+        """Record waiting signals in order; returns enrichment requests for created incidents.
+
+        After a failure, the next attempt waits RECORD_RETRY_NS unless ``force``.
+        """
+        enrich: list[tuple[FrameRef, str]] = []
+        if not force and self._clock.monotonic_ns() < self._retry_at_ns:
+            return enrich
+        while self._pending:
+            signal, source, shot = self._pending[0]
+            try:
+                result = self._incidents.record(signal)
+            except Exception as exc:  # noqa: BLE001 - kept and retried; record() deduplicates
+                self.counters["record_failures"] += 1
+                self._record_problem = f"record_failed:{type(exc).__name__}"
+                self._retry_at_ns = self._clock.monotonic_ns() + RECORD_RETRY_NS
+                break
+            self._pending.popleft()  # acknowledged only now (D31)
+            self._unpin(shot)
+            self._record_problem = None
+            self.counters[f"record_{result.outcome.value}"] += 1
+            if result.outcome is RecordOutcome.CREATED and shot is not None and self._snapshots is not None:
+                job = SnapshotJob(result.incident_id, signal.observation_id, shot.key, shot.frame,  # type: ignore[arg-type]
+                                  shot.image, shot.missing)
+                if not self._snapshots.submit(job):
+                    self.counters["snapshots_not_queued"] += 1
+                del job
+            if result.outcome is RecordOutcome.CREATED and source is not None and self._scene is not None:
+                frame = self._frames.get(source)
+                if frame is None:
+                    self.counters["enrichment_frame_gone"] += 1
+                else:
+                    enrich.append((frame, result.incident_id))  # type: ignore[arg-type]
+        return enrich
+
+    # ------------------------------------------------------------ status
+
+    def snapshot(self) -> dict[str, Any]:
+        """The latest status: numbers and fixed labels only. Thread-safe."""
+        with self._status_lock:
+            return self._snapshot
+
+    @property
+    def history(self) -> RecentHistory | None:
+        """Part 28: the bounded history chat's recorded answers read (None without --chat). Thread-safe to read."""
+        return self._history
+
+    def occupants(self) -> dict[str, Any] | None:
+        """Part 28: who is tracked now, for chat's "who is in the room" answer only (chat_evidence.who_answer): the
+        tracks and their recognition state as last published, and an enrolment's display label where the operator
+        configured one (identity.display_labels). Never part of the status. None until a state is published, and
+        without --chat. Thread-safe."""
+        with self._status_lock:
+            return self._occupants
+
+    def _occupants_view(self) -> dict[str, Any] | None:
+        live = self._live
+        if live is None or self._history is None:
+            return None
+        labels = self._config.identity.display_labels
+        face = ("off" if self._face is None or not self._face_on
+                else {"available": "available", "disabled": "off"}.get(live.face_recognition.value, "unavailable"))
+        people = sorted(live.people, key=lambda p: (p.stream_epoch, p.track_id))
+        rows = []
+        for person in people[:MAX_FACE_ROWS]:
+            association = person.association
+            identity_id = association.identity_id if association is not None else person.identity_id
+            rows.append({
+                "track_id": person.track_id, "stream_epoch": person.stream_epoch, "status": person.status.value,
+                "identity": person.identity.value,
+                "basis": None if person.identity_basis is None else person.identity_basis.value,
+                "vote_age_ms": person.identity_vote_age_ms,
+                "association": None if association is None else {
+                    "state": association.state.value, "last_match_age_ms": association.last_match_age_ms},
+                "label": labels.get(identity_id) if identity_id is not None else None})
+        return {"published_utc": live.published_utc.isoformat(), "video": live.video.value,
+                "last_frame_age_ms": live.last_frame_age_ms, "occupancy": live.occupancy.value,
+                "occupancy_reason": live.occupancy_reason, "face_recognition": face, "people": rows,
+                "omitted": len(people) - len(rows)}
+
+    def page_snapshot(self) -> dict[str, Any]:
+        """The latest status for a status page's own request (the page, or its update): the same status, and in an
+        --identity-retention run the read is timed (page_reads; measurement only). Thread-safe."""
+        with self._status_lock:
+            if self._page_reads is not None:
+                self._page_reads.read(self._clock.mono().ns)
+            return self._snapshot
+
+    def _refresh_status(self, *, force: bool = False) -> None:
+        now = self._clock.mono()
+        if not force and now.ns < self._next_status_ns:
+            return
+        self._next_status_ns = now.ns + self._status_refresh_ns
+        slot = self._slot.counts()
+        self._samples.append((now.ns, slot["published"], self.counters["frames_processed"], self.counters["frames_failed"]))
+        while len(self._samples) > 2 and now.ns - self._samples[1][0] >= RATE_WINDOW_NS:
+            self._samples.popleft()
+        capture = self._capture.status()
+        components = {
+            "capture": self._capture_status(capture),
+            "detector": self._detector_status(),
+            "scene": self._scene_status(),
+            "face": self._face_status(),
+            "incidents": {
+                "state": "degraded" if self._pending or self.counters["signals_dropped"] else "ok",
+                "pending_signals": len(self._pending),
+                "pending_limit": MAX_PENDING_SIGNALS,
+                "durability": PENDING_DURABILITY,
+                "signals_dropped": self.counters["signals_dropped"],
+                "problem": self._record_problem,
+                "annotation_problem": self._annotate_problem,
+            },
+            "notifications": self._notification_status(),
+        }
+        if self._snapshots is not None:  # only when enabled, as the preview
+            components["snapshots"] = {**self._snapshots.status(), "pinned_frames": len(self._pinned),
+                                       "not_queued": self.counters["snapshots_not_queued"]}
+        if self._preview is not None:  # only when enabled: the output of a run without it is unchanged
+            components["preview"] = self._preview.summary()
+        if self._chat is not None:  # only when enabled; availability and counters, never a question or an answer
+            components["chat"] = self._chat.summary()
+        snapshot = {
+            "runtime": {
+                "state": self._state.value,
+                "camera_id": self._config.camera.id,
+                "updated_utc": self._clock.utc_now().isoformat(),
+                "shutdown": self._shutdown,
+            },
+            "components": components,
+            "frames": {
+                "captured": slot["published"],
+                "replaced": slot["replaced"],
+                "discarded": slot["discarded"],
+                **{name: self.counters[f"frames_{name}"] for name in ("taken", "processed", "failed", "skipped", "not_live")},
+            },
+            "rates": self._rates(),
+            "live": self._live_summary(),
+            "records": {key: value for key, value in sorted(self.counters.items())
+                        if key.startswith(("record_", "annotation_", "enrichment_"))},
+        }
+        if self._controls is not None:  # D99: only with --feature-controls, as every new output key
+            snapshot["features"] = self._features_view()
+        snapshot["degraded"] = degradation(snapshot)
+        occupants = self._occupants_view()
+        with self._status_lock:
+            self._snapshot = snapshot
+            self._occupants = occupants
+            if self._page_reads is not None:  # under the swap's lock: a page read sees both or neither
+                self._page_reads.published(self._clock.mono().ns)
+
+    def _capture_status(self, status: CaptureStatus) -> dict[str, Any]:
+        route_b = self._config.capture.stream_profile == STREAM_MAIN_SINGLE
+        return {
+            **({"stream": self._stream_status()} if route_b else {}),  # only then: evidence profiles are strict
+            "state": status.state.value,
+            "ready": status.state is CaptureState.STREAMING,
+            "stream_epoch": status.stream.stream_epoch if status.stream is not None else None,
+            "connects": status.connects,
+            "reconnects": max(0, status.connects - 1),
+            "open_failures": status.open_failures,
+            "stream_ends": status.stream_ends,
+            "retry_delay_s": status.retry_delay_s,
+            "problem": status.problem,
+        }
+
+    def _stream_status(self) -> dict[str, Any]:
+        """Route B: the profile, the working copy, the last decoded size, and the tracker's frame-counted settings at the
+        measured processed rate (unchanged settings; their duration follows the rate)."""
+        capture = self._config.capture
+        fps = self._rates().get("processed_fps") if len(self._samples) > 1 else None
+        return {"profile": capture.stream_profile, "decode_threads": capture.stream_decode_threads,
+                "working": list(WORKING_SIZE), "decoded": None if self._decoded_size is None else list(self._decoded_size),
+                "tracker_frame_counted": (frame_counted_settings(self._tracker.confirm_detections, fps)
+                                          if self._tracker is not None else None)}
+
+    def _detector_status(self) -> dict[str, Any]:
+        if self._tracker is None:
+            return {"state": Capability.UNAVAILABLE.value, "problem": self._detector_problem}
+        state = Capability.UNAVAILABLE if self._last_frame_problem else Capability.AVAILABLE
+        return {"state": state.value, "problem": self._last_frame_problem,
+                "counters": dict(sorted(self._tracker.counters.items())),
+                **({"tracking": self._tracking_status()} if self._tracking is not None else {})}
+
+    def _scene_status(self) -> dict[str, Any]:
+        if self._scene is None:
+            state = Capability.DISABLED if self._scene_problem is None else Capability.UNAVAILABLE
+            return {"state": state.value, "problem": self._scene_problem}
+        server = None
+        problem = None
+        if self._scene.server is not None:
+            status = self._scene.server.status()
+            server = {"state": status.state.value, "problem": status.problem, "layers": status.layers,
+                      "vision_on_gpu": status.vision_on_gpu}
+            if status.state.value != "ready":
+                problem = f"server_{status.state.value}"
+        lane = self._core.lane
+        paused = lane is not None and not self._core.scene_on  # D99: turned off in Features; the model stays loaded
+        return {
+            "state": (Capability.UNAVAILABLE if problem else Capability.DISABLED if paused
+                      else Capability.AVAILABLE).value,
+            "problem": problem,
+            **({"paused": True} if paused else {}),
+            "server": server,
+            "worker": dict(sorted(self._scene.analyzer.counters.items())),
+            "lane": dict(sorted(lane.counters.items())) if lane is not None else {},
+        }
+
+    def _face_status(self) -> dict[str, Any]:
+        if self._face is None:
+            state = Capability.DISABLED if self._face_problem is None else Capability.UNAVAILABLE
+            return {"state": state.value, "problem": self._face_problem}
+        retention = self._core.retention_numbers  # part 28: the rule this core applies; None without track retention
+        return {
+            "state": (Capability.AVAILABLE if self._face_on else Capability.DISABLED).value,
+            "problem": None,
+            **({} if self._face_on else {"paused": True}),  # D99: turned off in Features; loaded, not analysing
+            "validation_run": self._face.validation_run,
+            **({"detection": self._face.detection} if self._face.detection != DETECTION_DEEPFACE else {}),
+            **({"experiment": self._face.experiment} if self._face.experiment is not None else {}),
+            "identities_enrolled": self._face.identities,
+            # D95: the rule the page explains, as configured (numbers only; nothing here changes it)
+            "policy": {"confirmations": self._config.identity.confirmations,
+                       "vote_ttl_s": self._config.identity.vote_ttl_s,
+                       "fresh_window_s": self._config.identity.face_result_max_age_s,
+                       **({"continuity": self._face.continuity.numbers()} if self._face.continuity is not None
+                          else {}),
+                       # part 28: PROPOSED, a validation run's retention rule, with the monitor's values that decide its
+                       # breaks (not as "continuity": that key means --face-continuity's rule, votes and all)
+                       **({"retention": {**retention, "experimental": True, "values": "proposed"}}
+                          if retention is not None else {})},
+            "worker": self._face.worker.status(),
+            "results": self._core.identity_counters,
+            **({"comparison_results": dict(sorted(self._core.comparison_counters.items()))}
+               if self._face.comparison else {}),
+            "records": {"kept": self.counters["identity_records_kept"],
+                        "dropped": self.counters["identity_records_dropped"], "limit": MAX_IDENTITY_RECORDS},
+            # part 28, --identity-retention runs only: the page-read timing's counts (measurement only)
+            **({"page_reads": self._page_reads.numbers()} if self._page_reads is not None else {}),
+        }
+
+    def _notification_status(self) -> dict[str, Any]:
+        channels = {}
+        for channel in self._config.notifications.channels:
+            problem = self._notifier_problems.get(channel)
+            channels[channel] = {"state": "unavailable" if problem else "available", "problem": problem}
+        return {
+            "channels": channels,
+            "min_severity": self._config.notifications.min_severity,
+            "worker": self._outbox.status() if self._outbox is not None else {"state": "not_configured"},
+        }
+
+    def _rates(self) -> dict[str, Any]:
+        first, last = self._samples[0], self._samples[-1]
+        span_s = (last[0] - first[0]) / NS_PER_SECOND
+        if span_s <= 0:
+            return {"window_s": 0.0, "captured_fps": None, "processed_fps": None, "failed_per_s": None}
+        return {
+            "window_s": round(span_s, 1),
+            "captured_fps": round((last[1] - first[1]) / span_s, 2),
+            "processed_fps": round((last[2] - first[2]) / span_s, 2),
+            "failed_per_s": round((last[3] - first[3]) / span_s, 2),
+        }
+
+    def _live_summary(self) -> dict[str, Any] | None:
+        live = self._live
+        if live is None:
+            return None
+        report = live.scene_report
+        return {
+            "sequence": live.sequence,
+            "video": live.video.value,
+            "last_frame_age_ms": live.last_frame_age_ms,
+            "detector": live.detector.value,
+            "face_recognition": live.face_recognition.value,
+            "scene_analysis": live.scene_analysis.value,
+            "occupancy": live.occupancy.value,
+            "occupancy_reason": live.occupancy_reason,
+            "people": len(live.people),
+            "confirmed_people": sum(1 for p in live.people if p.status is TrackStatus.CONFIRMED),
+            "identity": {
+                **{state.value: sum(1 for p in live.people if p.identity is state) for state in IdentityState},
+                **{basis: sum(1 for p in live.people if p.identity_basis is not None and p.identity_basis.value == basis)
+                   for basis in ("fresh", "retained")},
+                **({"associations_retained": sum(1 for p in live.people if p.association is not None
+                                                 and p.association.state.value == "retained")}
+                   if self._face is not None and self._face.retention is not None else {}),  # part 28
+            },
+            "published_utc": live.published_utc.isoformat(),
+            **(self._face_rows(live, self._face.continuity is not None or self._face.retention is not None,
+                               self._face.retention is not None)
+               if self._face is not None and self._face_on else {}),  # D99: no rows while turned off
+            "scene": live.scene.value,
+            "scene_reason": live.scene_reason,
+            "scene_report": None if report is None else {
+                "persons_visible": report.persons_visible,
+                "fire_or_smoke": report.fire_or_smoke,
+                "threat": report.threat.value,
+                "uncertainty": report.uncertainty.value,
+                "summary": report.summary,
+            },
+        }
+
+    @staticmethod
+    def _face_rows(live: LiveState, continuity: bool = False, retention: bool = False) -> dict[str, Any]:
+        """D95: each current person's recognition state as the core derived it for this publication (identity.state):
+        the track it lives on, KNOWN/UNKNOWN/UNCERTAIN/UNRESOLVED with its basis (fresh or retained) and the newest
+        current vote's age. Numbers and fixed labels only: no identity ID (the status stays free of IDs, D61; with one
+        enrolled identity KNOWN names it unambiguously). Bounded to MAX_FACE_ROWS (the rest counted). The page shows
+        it; nothing here votes, retains, expires or changes a state. Part 28 (``retention``): each row also carries the
+        track's established association, numbers and fixed labels only, and its most recent end while none stands."""
+        people = sorted(live.people, key=lambda p: (p.stream_epoch, p.track_id))
+        return {
+            "faces": [
+                {"track_id": p.track_id, "stream_epoch": p.stream_epoch, "track_status": p.status.value,
+                 "predicted": p.predicted, "last_measured_age_ms": p.last_measured_age_ms, "state": p.identity.value,
+                 "basis": None if p.identity_basis is None else p.identity_basis.value,
+                 "vote_age_ms": p.identity_vote_age_ms, "reason": p.identity_reason,
+                 **({"followed_ms": p.identity_followed_ms} if continuity else {}),  # D97
+                 **(_association_fields(p) if retention else {})}  # part 28
+                for p in people[:MAX_FACE_ROWS]
+            ],
+            "faces_not_shown": max(0, len(people) - MAX_FACE_ROWS),
+        }
+
+
+def _association_fields(person: Any) -> dict[str, Any]:
+    """Part 28: a status row's retention block (live.faces[*].association) and most recent end: never the identity ID."""
+    view, ended = person.association, person.association_ended
+    return {
+        "association": None if view is None else {
+            "state": view.state.value, "last_match_age_ms": view.last_match_age_ms, "evidence": view.evidence.value,
+            "evidence_age_ms": view.evidence_age_ms, "contradictions": view.contradictions,
+            "contradiction_limit": view.contradiction_limit, "conflicts": view.conflicts,
+            "conflict_limit": view.conflict_limit, "max_since_match_ms": view.max_since_match_ms},
+        "association_ended": None if ended is None else {"reason": ended.reason.value, "age_ms": ended.age_ms},
+    }
+
+
+def degradation(snapshot: Mapping[str, Any]) -> list[str]:
+    """Why the runtime is not fully working, as short fixed phrases (empty when it is)."""
+    reasons = []
+    components = snapshot["components"]
+    capture = components["capture"]
+    if not capture["ready"]:
+        reasons.append(f"capture {capture['state']}" + (f" ({capture['problem']})" if capture["problem"] else ""))
+    live = snapshot.get("live")
+    if live is not None and live["video"] != "fresh":
+        reasons.append(f"video {live['video']}")
+    detector = components["detector"]
+    if detector["state"] != "available":
+        reasons.append(f"detector unavailable ({detector['problem']})")
+    scene = components["scene"]
+    if scene["state"] == "unavailable":
+        reasons.append(f"scene analysis unavailable ({scene['problem']})")
+    face = components.get("face", {})
+    if face.get("state") == "unavailable":
+        reasons.append(f"face recognition unavailable ({face['problem']})")
+    incidents = components["incidents"]
+    if incidents["pending_signals"]:
+        reasons.append(f"{incidents['pending_signals']} rule observation(s) not yet recorded ({incidents['problem']})")
+    if incidents["signals_dropped"]:
+        reasons.append(f"{incidents['signals_dropped']} rule observation(s) lost: not recorded")
+    notifications = components["notifications"]
+    for channel, state in notifications["channels"].items():
+        if state["state"] != "available":
+            reasons.append(f"{channel} unavailable ({state['problem']}); its alerts stay queued")
+    snapshots = components.get("snapshots")
+    if snapshots is not None and snapshots.get("problem"):
+        reasons.append(f"snapshots: {snapshots['problem']}")
+    if snapshots is not None and snapshot["runtime"]["state"] == "running" and snapshots.get("state") == "stopped":
+        reasons.append("snapshot writer stopped")
+    worker = notifications["worker"]
+    if notifications["channels"] and worker.get("problem"):
+        reasons.append(f"delivery worker problem ({worker['problem']})")
+    if snapshot["runtime"]["state"] == "running" and notifications["channels"] and worker.get("state") == "stopped":
+        reasons.append("delivery worker stopped")
+    return reasons
+
+
+# ---------------------------------------------------------------- assembly (device side)
+
+
+class StartupRefused(Exception):
+    """``sentinel run`` cannot start; the label says why. Nothing it started is left running."""
+
+    def __init__(self, label: str) -> None:
+        super().__init__(label)
+        self.label = label
+
+
+@dataclass(frozen=True)
+class SceneOptions:
+    binary: Path
+    model: Path
+    mmproj: Path
+    ready_timeout_s: float = 180.0
+    min_free_bytes: int = 3_000_000_000  # demo_profile's precheck before llama-server (V2-01)
+    # D58: the server keeps the system THP setting: no spawn from a process with THP disabled, and its own THP_enabled
+    # must read 1 when ready. assemble() sets it with the THP policy; LlamaServerProcess enforces it.
+    require_system_thp: bool = False
+    # Session 115: the scene model set (scene.models) that model and mmproj must be, for scene and chat alike. This
+    # default is the accepted profile's; `sentinel run` selects --scene-model-set (default lfm2.5-vl).
+    model_set: str = ROLLBACK_SCENE_MODEL_SET
+
+
+@dataclass(frozen=True)
+class FaceOptions:
+    """``--face``: the sealed gallery's directory and the passphrase typed at startup (never printed: Secret)."""
+
+    identity_dir: Path
+    secret: Secret
+    validation_run: bool = False  # --face-validation: the only way to use a PENDING_VALIDATION admission
+    comparison: bool = False  # --face-comparison (D87): the full-scale comparison; validation runs only
+    detection: str = DETECTION_DEEPFACE  # --face-full-scale-detection (D88): DETECTION_FULL_SCALE; validation runs only
+    # D91, the camera-side enrollment experiment (validation runs with the candidate; on route B with its head-window
+    # stage, only the shadow comparison and the raw capture; one of the two):
+    shadow_dir: Path | None = None  # --face-shadow-gallery: a working gallery compared read only, never voting
+    capture_dir: Path | None = None  # --face-capture-gallery (or --face-capture-raw): where the capture is written
+    capture_raw: bool = False  # --face-capture-raw (route B only): a sealed raw capture for the offline builder
+    capture_consent_date: str | None = None  # --face-capture-consent-date, the enrolled person's, for that gallery
+    continuity: bool = False  # --face-continuity (D97): the continuity rule; validation runs, production detection only
+    retention: bool = False  # --identity-retention (part 28, PROPOSED): track retention; validation runs, plain rules
+    # --tracking-diagnostic (session 79): the detector backend's per-frame reading, recorded; validation runs with
+    # production detection and the plain identity rules only; nothing it reads changes
+    tracking_diagnostic: bool = False
+    # --face-landmark-diagnostic (session 90): D86's native pass keeps each candidate's landmarks and the records carry
+    # derived numbers per person (schema 7); validation runs with production detection and the plain rules only
+    landmark_diagnostic: bool = False
+    weights_dir: Path | None = None  # DeepFace's weights; None: ~/.deepface/weights
+    min_free_bytes: int = 1_500_000_000  # the detector's provisional precheck, reused (U18 open)
+
+
+@dataclass(frozen=True)
+class RunOptions:
+    data_dir: Path
+    engine: Path
+    min_free_bytes: int = 1_500_000_000  # the track probe's provisional guard (U18 open)
+    scene: SceneOptions | None = None  # None: scene analysis disabled (the default)
+    face: FaceOptions | None = None  # None: face recognition disabled (the default)
+    memory_policy: MemoryPolicy = DEFAULT_POLICY  # D58: opt-in; the default changes nothing
+    live_preview: bool = False  # D69: the status page's live view; off by default
+    snapshots: SnapshotPolicy | None = None  # D70: incident snapshots under data_dir/snapshots; None: off (default)
+    chat: bool = False  # D74: advisory chat on the status page; off by default, and unavailable unless admitted
+    chat_validation: bool = False  # D77: --chat-validation: chat may ask the model in this guarded run, not admitted
+    feature_controls: bool = False  # D99: --feature-controls: the page may pause and resume what this run started
+    # Session 116, part 41: --device-artifacts: this device's own files, identified by a record instead of by the
+    # reference device's; --face-validation runs only. It admits nothing and measures nothing (device_artifacts).
+    device_artifacts: DeviceArtifacts | None = None
+
+
+@dataclass(frozen=True)
+class MemoryOps:
+    """How the D58 policies act on this process; tests pass fakes, never the real calls in a test process."""
+
+    disable_thp: Callable[[], dict[str, Any]] = disable_thp_for_this_process  # this process alone, verified
+    thp_enabled: Callable[[int | str | None], int | None] = read_thp_enabled  # read-only, /proc/<pid>/status
+    release: Callable[[Path], dict[str, Any]] = release_file_cache  # posix_fadvise(DONTNEED) on one file
+    sleep: Callable[[float], None] = time.sleep
+
+
+def environment_notifiers(
+    config: NotificationsConfig, environ: Mapping[str, str] | None = None
+) -> tuple[dict[str, Notifier], dict[str, str]]:
+    """Notifiers for the listed channels; a channel without credentials is unavailable and its rows wait."""
+    notifiers: dict[str, Notifier] = {}
+    problems: dict[str, str] = {}
+    if "telegram" in config.channels:
+        try:
+            notifiers["telegram"] = TelegramNotifier.from_environment(
+                timeout_s=config.request_timeout_s, environ=None if environ is None else dict(environ)
+            )
+        except NotifierUnavailable:
+            problems["telegram"] = "credentials_missing"
+    return notifiers, problems
+
+
+@dataclass
+class Devices:
+    """How the device-side parts are made; tests pass fakes."""
+
+    capture_source: Callable[[CaptureConfig], VideoSource]
+    # has load(), track(), reset(); with device artifacts it is also given expected_sha256=, the recorded engine's
+    tracker_backend: Callable[..., Any]
+    scene_server: Callable[[SceneOptions, int], Any]  # has start(ready_timeout_s), status(), stop(grace_s)
+    # (port, request timeout, the selected scene model set: its request name and template arguments) -> the scene
+    # job (LlamaSceneRequest)
+    scene_request: Callable[[int, float, SceneModelSet], Callable[[AnalysisJob, Any], WorkerOutcome]]
+    meminfo: Callable[[], dict[str, int] | None]
+    notifiers: Callable[[NotificationsConfig], tuple[dict[str, Notifier], dict[str, str]]] = environment_notifiers
+    memory: MemoryOps = field(default_factory=MemoryOps)  # D58; used only when a policy is selected
+    face_backend: Callable[[Path | None], Any] | None = None  # has load(), compatibility(), faces(), weight_files
+    identity_store: Callable[[Path], Any] | None = None  # has exists(), load(secret)
+    encode: Encoder = encode_jpeg  # D69/D70 pictures; cv2 is imported only when it runs
+    # Route B: the working copy and a scaled window, (image, width, height) -> a new array; cv2 imported only when it runs
+    resize: Callable[[Any, int, int], Any] = area_resize
+    # D74: a question on the scene worker (LlamaChatRequest), with the same three arguments as scene_request
+    chat_request: Callable[[int, float, SceneModelSet], Any] | None = None
+
+
+@dataclass
+class Assembly:
+    runtime: DemoRuntime
+    database: Database
+    startup: dict[str, Any] = field(default_factory=dict)
+
+    def close(self, shutdown: Mapping[str, Any]) -> bool:
+        """Close the database unless a thread that uses it is still running."""
+        if not shutdown["stopped"].get("outbox", True) or not shutdown["stopped"].get("snapshots", True):
+            return False
+        self.database.close()
+        return True
+
+
+def memfree_problem(meminfo: Callable[[], dict[str, int] | None], min_free_bytes: int) -> tuple[str | None, Any]:
+    before = meminfo()
+    if before is not None and before["MemFree"] < min_free_bytes:
+        return "memfree_below_minimum", before
+    return None, before
+
+
+def post_load_release(ops: MemoryOps, component: str, files: Mapping[str, Path]) -> dict[str, Any]:
+    """D58: after the component's load, wait the profiler's settle, then release its eligible model files with
+    sentinel.memory_policy's call and rule. Startup is refused unless every call returned 0."""
+    ops.sleep(RELEASE_SETTLE_S)
+    record = release_component_files(component, files, release=ops.release)
+    if not record["verified"]:
+        raise StartupRefused(f"post_load_release_failed:{component}:{record['problem']}")
+    return {"settle_s": RELEASE_SETTLE_S,  # numbers and fixed labels only: no file names or paths
+            "files": {role: {key: item.get(key) for key in ("result", "returncode", "error", "bytes", "elapsed_s")}
+                      for role, item in record["files"].items()}}
+
+
+def file_facts(path: Path) -> FileFacts | None:
+    """Name, size and modification time, as demo_profile.py records them; metadata only, nothing is read."""
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return None
+    mtime = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds")
+    return FileFacts(Path(path).name, stat.st_size, mtime)
+
+
+def _sha256(path: Path) -> str | None:
+    digest = hashlib.sha256()
+    try:
+        with Path(path).open("rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(block)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def _identity_problem(label: str, path: Path, recorded: FileFacts, source: str = "profiled") -> str | None:
+    """Hash files up to STARTUP_HASH_LIMIT_BYTES; compare larger ones by name, size and mtime only. ``source`` names
+    where ``recorded`` comes from: the accepted profile ("profiled"), or a device-artifacts record ("recorded")."""
+    actual = file_facts(path)
+    if actual is None:
+        return f"{label} {Path(path).name} is missing"
+    if actual.name != recorded.name:
+        return f"{label} {actual.name} is not the {source} {recorded.name}"
+    if recorded.bytes <= STARTUP_HASH_LIMIT_BYTES and recorded.sha256:
+        if actual.bytes != recorded.bytes or _sha256(path) != recorded.sha256:
+            return f"{label} {actual.name} does not have the {source} SHA-256"
+        return None
+    if (actual.bytes, actual.mtime_utc) != (recorded.bytes, recorded.mtime_utc):
+        return (f"{label} {actual.name} ({actual.bytes} B, {actual.mtime_utc}) is not the {source} "
+                f"{recorded.name} ({recorded.bytes} B, {recorded.mtime_utc})")
+    return None
+
+
+def _metadata_problem(label: str, path: Path, recorded: FileFacts, source: str) -> str | None:
+    """A model file by name, size and modification time only (never hashed at startup: U18)."""
+    actual = file_facts(path)
+    if actual is None:
+        return f"{label} {Path(path).name} is missing"
+    if (actual.name, actual.bytes, actual.mtime_utc) != (recorded.name, recorded.bytes, recorded.mtime_utc):
+        return (f"{label} {actual.name} ({actual.bytes} B, {actual.mtime_utc}) is not the {source} "
+                f"{recorded.name} ({recorded.bytes} B, {recorded.mtime_utc})")
+    return None
+
+
+def device_scene_problem(profile: ResourceProfile, scene: SceneOptions, artifacts: DeviceArtifacts) -> str | None:
+    """Session 116, part 41: the scene files of a ``--device-artifacts`` run. None when the record is one this build
+    can use (the pinned llama.cpp commit and options, built by the package's step, with the accepted profile's build
+    layout; the selected set's pinned model and projector by SHA-256) and the files given are the recorded ones, by
+    the default path's own rule: llama-server and the libraries up to STARTUP_HASH_LIMIT_BYTES by SHA-256, larger
+    libraries and the model files by name, size and modification time. Else the first difference."""
+    chosen = scene_model_set(scene.model_set)
+    problem = (llama_problem(artifacts, model_set=chosen.key,
+                             library_names=tuple(library.name for library in profile.llama_libraries))
+               or pinned_problem(artifacts, "scene_model", chosen.model, "scene model")
+               or pinned_problem(artifacts, "scene_mmproj", chosen.mmproj, "scene projector"))
+    if problem is not None:
+        return f"device artifacts: {problem}"
+    problem = _identity_problem("llama-server", scene.binary, artifacts.files["llama_server"], "recorded")
+    if problem is not None:
+        return problem
+    for library in artifacts.libraries:
+        problem = _identity_problem("llama.cpp library", Path(scene.binary).parent / library.name, library, "recorded")
+        if problem is not None:
+            return problem
+    for label, path, role in (("scene model", scene.model, "scene_model"),
+                              ("scene projector", scene.mmproj, "scene_mmproj")):
+        problem = _metadata_problem(label, path, artifacts.files[role], "recorded")
+        if problem is not None:
+            return problem
+    return None
+
+
+def device_engine_problem(engine: Path, artifacts: DeviceArtifacts) -> str | None:
+    """Session 116, part 41: None when the record's detector engine was exported by the package's step with the
+    pinned settings and ``engine`` is that file (the detector checks its SHA-256 again when it loads)."""
+    problem = engine_problem(artifacts)
+    if problem is not None:
+        return f"device artifacts: {problem}"
+    return _identity_problem("detector engine", engine, artifacts.files["detector_engine"], "recorded")
+
+
+def profile_mismatch(
+    profile: ResourceProfile, config: SentinelConfig, scene: SceneOptions, *, engine_sha256: str = LEGACY_ENGINE_SHA256,
+    policy: MemoryPolicy = DEFAULT_POLICY, artifacts: DeviceArtifacts | None = None,
+) -> str | None:
+    """None if the selected runtime configuration is the one ``profile`` measured, else the first difference.
+
+    Startup checks, in order: the memory policy (D58: THP and model-file release); the server flags; the scene
+    interval; the request fingerprint; the llama-server binary and every build library up to
+    STARTUP_HASH_LIMIT_BYTES by SHA-256; larger libraries (libggml-cuda) and the
+    model files by name, size and modification time only; the detector engine's
+    pin. Large files are not hashed here: that would fill the page cache just
+    before the MemFree precheck (U18). Metadata checks do not detect a same-size
+    replacement that keeps its modification time (STARTUP_IDENTITY_LIMITATION);
+    the step-4 identity snapshot and acceptance rehashing cover the measured run.
+
+    ``artifacts`` (session 116, part 41; validation runs only, see assemble): the configuration checks are the same,
+    and the files are compared with the device's own record instead of the profile's (device_scene_problem). The
+    profile then names the configuration that is run; it did not measure those files, and the detector engine is
+    the record's, checked by assemble.
+    """
+    if profile.memory_policy != policy:
+        return (f"resource profile {profile.profile_id} measured memory policy ({profile.memory_policy.describe()}), "
+                f"not the runtime's ({policy.describe()})")
+    expected = PROFILED_FLAGS + PROMPT_CACHE_FLAGS + scene_model_set(scene.model_set).server_flags  # the set's own
+    if tuple(profile.llama_flags) != expected:
+        return (f"resource profile {profile.profile_id} measured llama-server flags {' '.join(profile.llama_flags)}, "
+                f"not the runtime's {' '.join(expected)}")
+    if profile.scene_interval_s != config.scene.interval_s:
+        return (f"resource profile {profile.profile_id} measured a {profile.scene_interval_s:g} s scene interval, "
+                f"not the configured {config.scene.interval_s:g} s")
+    # The request the runtime sends names the selected set's model (session 115); for the accepted profile's own set
+    # this is SCENE_REQUEST_SHA256, the request that profile measured.
+    if profile.scene_request_sha256 != scene_model_set(scene.model_set).scene_request_sha256:
+        return f"resource profile {profile.profile_id} measured another scene request than the runtime sends"
+    if profile.llama_server is None:
+        return f"resource profile {profile.profile_id} lacks the llama-server identity"
+    if artifacts is not None:  # part 41: the device's own files by its record; the profile's engine pin as below
+        return device_scene_problem(profile, scene, artifacts) or _engine_pin_problem(profile, engine_sha256)
+    problem = _identity_problem("llama-server", scene.binary, profile.llama_server)
+    if problem is not None:
+        return problem
+    for library in profile.llama_libraries:
+        problem = _identity_problem("llama.cpp library", Path(scene.binary).parent / library.name, library)
+        if problem is not None:
+            return problem
+    for label, path, recorded in (("scene model", scene.model, profile.llm),
+                                  ("scene projector", scene.mmproj, profile.mmproj)):
+        actual = file_facts(path)
+        if actual is None:
+            return f"{label} {Path(path).name} is missing"
+        if (actual.name, actual.bytes, actual.mtime_utc) != (recorded.name, recorded.bytes, recorded.mtime_utc):
+            return (f"{label} {actual.name} ({actual.bytes} B, {actual.mtime_utc}) is not the profiled "
+                    f"{recorded.name} ({recorded.bytes} B, {recorded.mtime_utc})")
+    return _engine_pin_problem(profile, engine_sha256)
+
+
+def _engine_pin_problem(profile: ResourceProfile, engine_sha256: str) -> str | None:
+    if profile.engine_sha256 != engine_sha256:
+        return f"resource profile {profile.profile_id} measured another detector engine than the pinned one"
+    return None
+
+
+def scene_admission(
+    config: SentinelConfig,
+    scene: SceneOptions,
+    *,
+    profiles: Mapping[str, ResourceProfile] = RESOURCE_PROFILES,
+    policy: MemoryPolicy = DEFAULT_POLICY,
+    artifacts: DeviceArtifacts | None = None,
+) -> tuple[str | None, str | None]:
+    """(problem, producer revision) for ``--scene``: an enabled scene adapter whose resource
+    profile is ACCEPTED (step-4 evidence, D46) and matches the selected configuration, memory policy included.
+
+    Session 115: a declared model_revision must be the selected scene model set's (it is every scene evidence
+    record's producer revision), and a set that no accepted profile measured is refused here, before the profile
+    check, with the reason (D46, kept unchanged: there is no way around it).
+
+    ``artifacts`` (session 116, part 41): every rule above applies unchanged; only the files' identity is taken from
+    the device's own record (profile_mismatch). That is not an admission of those files by a measured profile:
+    assemble passes a record only in a --face-validation run, and the starting line says resource validation is
+    pending."""
+    statuses = [s for s in resolve(config.adapters, profiles=profiles) if s.manifest.adapter_id == SCENE_ADAPTER_ID]
+    if not statuses:
+        return f"no {SCENE_ADAPTER_ID} adapter in the configuration", None
+    status = statuses[0]
+    if status.state is not AdapterState.ENABLED:
+        return f"{SCENE_ADAPTER_ID} {status.state.value}: {status.reason}", None
+    try:
+        chosen = scene_model_set(scene.model_set)
+    except ValueError as exc:
+        return f"{SCENE_ADAPTER_ID}: {exc}", None
+    if status.manifest.model_revision is not None and status.manifest.model_revision != chosen.model_revision:
+        return (f"{SCENE_ADAPTER_ID}: the manifest declares model_revision {status.manifest.model_revision}, not "
+                f"{chosen.model_revision} (scene model set {chosen.key})"), None
+    if not chosen.profiled:
+        return (f"{SCENE_ADAPTER_ID}: scene model set {chosen.key} has no accepted resource profile (D46): it needs a "
+                f"step-4 profile run that measures it and the maintainer's acceptance; no other set is substituted "
+                f"(--scene-model-set {FALLBACK_SCENE_MODEL_SET} selects the explicit fallback, "
+                f"{ROLLBACK_SCENE_MODEL_SET} the rollback, each admitted only by its own accepted profile)"), None
+    profile = profiles[status.manifest.resource_profile_id]  # type: ignore[index]  # resolve() checked it
+    problem = profile_mismatch(profile, config, scene, policy=policy, artifacts=artifacts)
+    if problem is not None:
+        return f"{SCENE_ADAPTER_ID}: {problem}", None
+    return None, status.manifest.producer_revision
+
+
+def face_admission(
+    config: SentinelConfig,
+    face: FaceOptions,
+    *,
+    profiles: Mapping[str, ResourceProfile] = RESOURCE_PROFILES,
+    admissions: Mapping[str, FaceAdmission] = FACE_ADMISSIONS,
+    policy: MemoryPolicy = DEFAULT_POLICY,
+    weights_dir: Path,
+    artifacts: DeviceArtifacts | None = None,
+) -> str | None:
+    """None if ``--face`` may run: an enabled face adapter whose face admission record allows this run (PENDING_VALIDATION
+    only with --face-validation), on the memory policy its profile measured, at the measured cadence, with the
+    measured weights (SHA-256 up to STARTUP_HASH_LIMIT_BYTES, else name, size and modification time).
+
+    ``artifacts`` (session 116, part 41): the same rules; the weights must be the pinned ones by SHA-256 in the
+    device's own record, and the files are compared with that record (its modification times are this device's)."""
+    statuses = [s for s in resolve(config.adapters, profiles=profiles, face_admissions=admissions)
+                if s.manifest.adapter_id == FACE_ADAPTER_ID]
+    if not statuses:
+        return f"no {FACE_ADAPTER_ID} adapter in the configuration"
+    status = statuses[0]
+    if status.state is not AdapterState.ENABLED:
+        return f"{FACE_ADAPTER_ID} {status.state.value}: {status.reason}"
+    profile_id = status.manifest.resource_profile_id
+    problem = face_admission_problem(profile_id, validation_run=face.validation_run, profiles=profiles,
+                                     admissions=admissions)
+    if problem is not None:
+        return f"{FACE_ADAPTER_ID}: {problem}"
+    profile, admission = profiles[profile_id], admissions[profile_id]  # type: ignore[index]  # checked above
+    if profile.memory_policy != policy:
+        return (f"{FACE_ADAPTER_ID}: resource profile {profile_id} measured memory policy "
+                f"({profile.memory_policy.describe()}), not the runtime's ({policy.describe()})")
+    if abs(config.identity.face_interval_s * admission.face_hz - 1.0) > 1e-9:
+        return (f"{FACE_ADAPTER_ID}: the face admission measured {admission.face_hz:g} Hz, not the configured "
+                f"{config.identity.face_interval_s:g} s interval")
+    for label, recorded, role in (("face model weights", admission.model_weights, "face_model_weights"),
+                                  ("face detector weights", admission.detector_weights, "face_detector_weights")):
+        source = "profiled"
+        if artifacts is not None:
+            problem = pinned_problem(artifacts, role, recorded, label)
+            if problem is not None:
+                return f"{FACE_ADAPTER_ID}: device artifacts: {problem}"
+            recorded, source = artifacts.files[role], "recorded"
+        problem = _identity_problem(label, Path(weights_dir) / recorded.name, recorded, source)
+        if problem is not None:
+            return f"{FACE_ADAPTER_ID}: {problem}"
+    return None
+
+
+def _weights_dir(backend: Any, requested: Path | None) -> Path:
+    files = getattr(backend, "weight_files", None)
+    if files:
+        return Path(next(iter(files.values()))).parent
+    from .identity.legacy_deepface import default_weights_dir
+
+    return default_weights_dir() if requested is None else Path(requested)
+
+
+def _experiment_options(face: FaceOptions, route_b: bool = False) -> None:
+    """D91's refusals that need nothing opened: one experiment at a time, only in a validation run (on the substream
+    with the full-scale detection candidate; on route B with its own head-window stage, the candidate refused there,
+    and only the shadow comparison and the raw capture), never in the original gallery's directory, and a capture's
+    consent date. A raw capture runs on route B only, the gallery capture on the substream only."""
+    if face.capture_raw and face.capture_dir is None:
+        raise StartupRefused("face_capture_raw_needs_directory: a raw capture needs its directory")
+    if face.shadow_dir is None and face.capture_dir is None:
+        return
+    if face.shadow_dir is not None and face.capture_dir is not None:
+        raise StartupRefused("face_experiment_one_kind: a capture and a shadow comparison are separate runs")
+    if route_b:
+        if not face.validation_run:
+            raise StartupRefused("face_experiment_needs_validation: the enrollment experiment runs only in validation "
+                                 "runs")
+        if face.capture_dir is not None and not face.capture_raw:  # the multi-pose comparison needs only these two
+            raise StartupRefused("face_capture_gallery_substream_only: on main_single only the raw capture and the "
+                                 "shadow comparison run; the gallery capture runs with the full-scale candidate on the "
+                                 "substream")
+    else:
+        if face.capture_raw:
+            raise StartupRefused("face_capture_raw_route_b_only: the raw capture is for main_single validation runs")
+        if not face.validation_run or face.detection != DETECTION_FULL_SCALE:
+            raise StartupRefused("face_experiment_needs_candidate: the enrollment experiment runs only in validation "
+                                 "runs with --face-full-scale-detection")
+    directory = face.shadow_dir if face.shadow_dir is not None else face.capture_dir
+    if same_directory(directory, face.identity_dir):
+        raise StartupRefused("face_experiment_same_gallery: the working gallery is never the original's directory")
+    if face.capture_dir is not None:
+        try:
+            check_consent_date(face.capture_consent_date)  # the gallery's own form, before the capture collects
+        except ValueError:
+            raise StartupRefused("face_capture_consent_date: the enrolled person's consent date (YYYY-MM-DD) is "
+                                 "needed for a capture") from None
+
+
+def _experiment(face: FaceOptions | None, gallery: GalleryDocument | None, devices: Devices,
+                match_threshold: float) -> tuple[Shadow | None, ExperimentCapture | RawCapture | None]:
+    """D91: the working gallery opened read only (shadow), or the capture prepared; refused, with nothing written,
+    when the original has no identity or the working gallery does not fit (identity.experiment)."""
+    if face is None or (face.shadow_dir is None and face.capture_dir is None):
+        return None, None
+    if gallery is None:
+        raise StartupRefused("face_experiment_needs_enrollment: no usable original gallery to compare with")
+    try:
+        if face.shadow_dir is not None:
+            return open_shadow(devices.identity_store(face.shadow_dir), face.secret, gallery), None
+        if face.capture_raw:  # the multi-pose comparison's raw capture (route B; _experiment_options checked)
+            return None, RawCapture(devices.identity_store(face.capture_dir), face.secret, gallery,
+                                    str(face.capture_consent_date))
+        return None, ExperimentCapture(devices.identity_store(face.capture_dir), face.secret, gallery,
+                                       str(face.capture_consent_date), match_threshold)
+    except ExperimentRefused as exc:
+        raise StartupRefused(exc.label) from None
+
+
+def open_gallery(store: Any, secret: Secret) -> tuple[GalleryDocument | None, str | None]:
+    """(document, face problem): a missing or empty gallery or a pinned-field mismatch leaves face recognition
+    unavailable (nothing to load). A sealing error (wrong passphrase, tampering, permissions) raises StartupRefused."""
+    if not store.exists():
+        return None, "no_identities_enrolled"
+    try:
+        document = store.load(secret)
+    except VaultError as exc:
+        raise StartupRefused(f"identity_gallery: {exc.label}") from None
+    if not document.identities:
+        return None, "no_identities_enrolled"
+    field_name = static_difference(document.compatibility)
+    if field_name is not None:
+        return None, f"gallery_incompatible:{field_name}"
+    return document, None
+
+
+def assemble(
+    config: SentinelConfig,
+    options: RunOptions,
+    devices: Devices,
+    clock: Clock,
+    *,
+    profiles: Mapping[str, ResourceProfile] = RESOURCE_PROFILES,
+    face_admissions: Mapping[str, FaceAdmission] = FACE_ADMISSIONS,
+) -> Assembly:
+    """Check, open and load everything ``sentinel run`` needs, then build the runtime (not started).
+
+    Refusals (StartupRefused) happen before any model is loaded: a missing or
+    invalid stream URL, a scene request without an accepted, matching combined
+    profile (D46; checked before the database opens or llama-server starts), a
+    database another process owns. ``profiles`` is the static registry; tests
+    pass synthetic fixtures, and ``sentinel run`` has no option to change it. Model failures do not refuse: that component
+    is unavailable, with its reason, and core monitoring runs without it. The one exception (session 80): a
+    ``--tracking-diagnostic`` run refuses (``tracking_diagnostic_not_ready:<reason>``) when its detector cannot load
+    with the diagnostic's hooks or the tracker's settings are not complete, since such a run exists for the diagnostic
+    alone; the refusal is cleaned up like every other.
+
+    Memory policies (D58, ``options.memory_policy``; the default does none of this), in the profiler's order:
+
+    - THP ``workload_disabled``: this process's own THP_enabled must read 1 before anything starts (refused before
+      the database opens). The scene server is spawned first and must keep the system setting; THP_enabled must
+      read 1 in both processes once it is ready. Then, before the detector's load (its D27 cuInit and any model
+      library), this process disables THP for itself (sentinel.memory_policy, verified three ways), and
+      THP_enabled must read 0 here and 1 in the scene server.
+    - Model-file release ``post_load``: each loaded component's files are released after RELEASE_SETTLE_S, the
+      scene's before the THP disable and the detector's after its load, every call returning 0.
+
+    A policy that cannot be established refuses startup, after its models were loaded; the scene server is then
+    stopped and the database closed (nothing it started keeps running).
+    """
+    from .media.capture import CaptureWorker
+    from .media.frames import FrameStamper
+
+    policy = options.memory_policy
+    thp_off = policy.thp == THP_WORKLOAD_DISABLED
+    releasing = policy.model_file_release == RELEASE_POST_LOAD
+    ops = devices.memory
+    try:
+        source = devices.capture_source(config.capture)  # the URL is checked before any model loads
+    except SourceError as exc:
+        raise StartupRefused(exc.reason) from None
+    # Session 116, part 41: a device-artifacts record is for experimental validation runs alone, and its engine must
+    # be the package's own export and the file given; refused here, before anything opens or loads.
+    artifacts = options.device_artifacts
+    if artifacts is not None:
+        if options.face is None or not options.face.validation_run:
+            raise StartupRefused("device_artifacts_needs_validation: a device-artifacts record identifies this "
+                                 "device's own files for --face --face-validation runs only; it admits nothing")
+        problem = device_engine_problem(options.engine, artifacts)
+        if problem is not None:
+            raise StartupRefused(f"device_artifacts_refused: {problem}")
+    revision = None
+    if options.scene is not None:
+        if artifacts is None:  # the default path's own call, as it has always been made
+            problem, revision = scene_admission(config, options.scene, profiles=profiles, policy=policy)
+        else:
+            problem, revision = scene_admission(config, options.scene, profiles=profiles, policy=policy,
+                                                artifacts=artifacts)
+        if problem is not None:
+            raise StartupRefused(f"scene_not_admitted: {problem}")
+    gallery: GalleryDocument | None = None
+    face_problem: str | None = None
+    face_backend = None
+    face_weights: Path | None = None
+    # Route B (session 116, part 15): PROPOSED, so only in face validation runs until one passes on it
+    route_b = config.capture.stream_profile == STREAM_MAIN_SINGLE
+    if route_b and (options.face is None or not options.face.validation_run):
+        raise StartupRefused("stream_profile_needs_validation: main_single is for --face --face-validation runs until a "
+                             "validation run passes on it; the substream profile (sub) is the default and the rollback")
+    if route_b and config.identity.min_face_inside < MIN_FACE_INSIDE_FOR_WINDOWS:
+        raise StartupRefused("stream_profile_geometry: main_single's head-window margin covers every candidate face only "
+                             f"for identity.min_face_inside >= {MIN_FACE_INSIDE_FOR_WINDOWS} (identity.window_stage)")
+    if options.face is not None:
+        if devices.face_backend is None or devices.identity_store is None:
+            raise StartupRefused("face_not_admitted: no face backend on this runtime")
+        if options.face.comparison and not options.face.validation_run:
+            raise StartupRefused("face_comparison_needs_validation: --face-comparison is for --face-validation runs")
+        candidate = options.face.detection == DETECTION_FULL_SCALE
+        if options.face.detection not in (DETECTION_DEEPFACE, DETECTION_FULL_SCALE):
+            raise StartupRefused(f"face_detection_unknown: {options.face.detection!r}")
+        if candidate and not options.face.validation_run:
+            raise StartupRefused("face_detection_needs_validation: the full-scale detection candidate is for "
+                                 "--face-validation runs")
+        if candidate and options.face.comparison:
+            raise StartupRefused("face_detection_excludes_comparison: the full-scale detection candidate replaces the "
+                                 "detection the comparison compares with")
+        if options.face.continuity and not options.face.validation_run:  # D97: PROPOSED; never in another run
+            raise StartupRefused("face_continuity_needs_validation: the continuity rule is for --face-validation runs")
+        if options.face.continuity and (candidate or options.face.comparison or options.face.shadow_dir is not None
+                                        or options.face.capture_dir is not None):
+            raise StartupRefused("face_continuity_production_only: the continuity rule runs with production detection "
+                                 "and no comparison or experiment")
+        if options.face.tracking_diagnostic and not options.face.validation_run:
+            raise StartupRefused("tracking_diagnostic_needs_validation: the tracking diagnostic is for "
+                                 "--face-validation runs")
+        if options.face.tracking_diagnostic and (candidate or options.face.comparison or options.face.continuity
+                                                 or options.face.shadow_dir is not None
+                                                 or options.face.capture_dir is not None):
+            raise StartupRefused("tracking_diagnostic_plain_only: the tracking diagnostic runs with production "
+                                 "detection and the plain identity rules: no candidate, comparison, experiment or "
+                                 "continuity rule")
+        if options.face.landmark_diagnostic and not options.face.validation_run:
+            raise StartupRefused("landmark_diagnostic_needs_validation: the landmark diagnostic is for "
+                                 "--face-validation runs")
+        if options.face.landmark_diagnostic and (candidate or options.face.comparison or options.face.continuity
+                                                 or options.face.tracking_diagnostic
+                                                 or options.face.shadow_dir is not None
+                                                 or options.face.capture_dir is not None):
+            raise StartupRefused("landmark_diagnostic_plain_only: the landmark diagnostic runs with production "
+                                 "detection and the plain identity rules: no candidate, comparison, experiment, "
+                                 "continuity rule or tracking diagnostic")
+        if options.face.retention and not options.face.validation_run:  # part 28: PROPOSED; never in another run
+            raise StartupRefused("identity_retention_needs_validation: track retention is for --face-validation runs")
+        if options.face.retention and (candidate or options.face.comparison or options.face.continuity
+                                       or options.face.tracking_diagnostic or options.face.landmark_diagnostic
+                                       or options.face.shadow_dir is not None or options.face.capture_dir is not None):
+            raise StartupRefused("identity_retention_plain_only: track retention runs with the plain identity rules and "
+                                 "no candidate, comparison, experiment, continuity rule or diagnostic")
+        _experiment_options(options.face, route_b)  # D91: before anything loads
+        if route_b and (candidate or options.face.comparison or options.face.continuity
+                        or options.face.tracking_diagnostic or options.face.landmark_diagnostic):
+            # D91's capture and shadow comparison run here on the head-window stage's own faces (validation runs).
+            # Track retention (part 28) is not refused here: it is exactly the mode a validation run on the head-window
+            # path asks for, and it changes no detection, threshold or confirmation (its continuity breaks drop votes as
+            # D97's do); it is refused above with everything else that would change them.
+            raise StartupRefused("stream_profile_plain_only: main_single runs its head-window face stage with the plain "
+                                 "identity rules: no candidate, comparison, continuity rule or diagnostic")
+        face_backend = devices.face_backend(options.face.weights_dir)
+        if route_b and not hasattr(face_backend, "select_window_detection"):
+            raise StartupRefused("stream_profile_unavailable: this face backend has no head-window face stage")
+        if options.face.comparison and not hasattr(face_backend, "enable_comparison"):
+            raise StartupRefused("face_comparison_unavailable: this face backend has no full-scale comparison")
+        if candidate and not hasattr(face_backend, "select_full_scale_detection"):
+            raise StartupRefused("face_detection_unavailable: this face backend has no full-scale detection candidate")
+        if options.face.landmark_diagnostic and not (hasattr(face_backend, "enable_full_scale")
+                                                     and hasattr(face_backend, "enable_landmarks")):
+            raise StartupRefused("landmark_diagnostic_unavailable: this face backend has no native-scale landmark pass")
+        face_weights = _weights_dir(face_backend, options.face.weights_dir)
+        if artifacts is None:  # the default path's own call, as it has always been made
+            problem = face_admission(config, options.face, profiles=profiles, admissions=face_admissions,
+                                     policy=policy, weights_dir=face_weights)
+        else:
+            problem = face_admission(config, options.face, profiles=profiles, admissions=face_admissions,
+                                     policy=policy, weights_dir=face_weights, artifacts=artifacts)
+        if problem is not None:
+            raise StartupRefused(f"face_not_admitted: {problem}")
+        gallery, face_problem = open_gallery(devices.identity_store(options.face.identity_dir), options.face.secret)
+        shadow, experiment_capture = _experiment(options.face, gallery, devices, config.identity.match_threshold)
+    startup: dict[str, Any] = {"memory_policy": policy.labels()}
+    if artifacts is not None:  # part 41: said in the run's own first line: files identified, nothing validated
+        startup["device_artifacts"] = artifacts.startup_entry(scene=options.scene is not None)
+    if thp_off:
+        before_launch = {"runtime": ops.thp_enabled("self")}
+        startup["thp_scope"] = {"before_launch": before_launch}
+        if before_launch["runtime"] != 1:  # a scene server would inherit it, and it would not be this policy's state
+            raise StartupRefused("thp_enabled_not_1_before_launch")
+    try:
+        database = Database.open(options.data_dir / DATABASE_NAME)
+    except DatabaseError as exc:
+        raise StartupRefused(f"database: {exc}") from None
+    server = None
+    store = None
+    try:
+        snapshots = None
+        if options.snapshots is not None:  # D70: checked before any model loads
+            store = SnapshotStore(database, options.data_dir / SNAPSHOT_DIR, clock, options.snapshots,
+                                  encode=devices.encode)
+            try:
+                startup["snapshots"] = {**store.open(), "policy": options.snapshots.describe()}
+            except SnapshotDirectoryError as exc:
+                raise StartupRefused(f"snapshots: {exc.label}") from None
+            snapshots = SnapshotWriter(store, clock)
+        notifiers, notifier_problems = devices.notifiers(config.notifications)
+        incidents = IncidentService(database, clock, incidents=config.incidents, notifications=config.notifications)
+        outbox = OutboxLoop(OutboxWorker(database, clock, notifiers, config.notifications))
+
+        scene = None
+        scene_problem = None
+        # Session 115: the set scene_admission checked; scene and chat requests carry its model's name. Which model a
+        # run used reaches its evidence through the manifest's model_revision (the producer revision), not this line.
+        scene_set = None if options.scene is None else scene_model_set(options.scene.model_set)
+        if options.scene is not None and scene_set is not None:
+            scene_problem, memory = memfree_problem(devices.meminfo, options.scene.min_free_bytes)
+            startup["scene_memory_before"] = memory
+            if scene_problem is None:
+                scene_options = dataclasses.replace(options.scene, require_system_thp=True) if thp_off else options.scene
+                server = devices.scene_server(scene_options, config.scene_server.port)
+                status = server.start(options.scene.ready_timeout_s)
+                startup["scene_server"] = {"state": status.state.value, "problem": status.problem,
+                                           "layers": status.layers, "vision_on_gpu": status.vision_on_gpu}
+                if status.state.value == "ready":
+                    if thp_off:
+                        ready = {"runtime": ops.thp_enabled("self"),
+                                 "scene_server": ops.thp_enabled(getattr(server, "pid", None))}
+                        startup["thp_scope"]["llama_ready"] = ready
+                        if ready != {"runtime": 1, "scene_server": 1}:
+                            raise StartupRefused("thp_scope_not_verified:llama_ready")
+                    if releasing:  # D58: after the server's load and settle, before the THP disable
+                        startup["releases"] = {"scene": post_load_release(
+                            ops, "scene", {"llm": options.scene.model, "mmproj": options.scene.mmproj})}
+                    images = RecentImages()
+                    run_job = devices.scene_request(config.scene_server.port, config.scene_server.request_timeout_s,
+                                                    scene_set)  # its request name and template arguments
+                    # The lane's interval gives chat's questions their windows before the next periodic job (session 114).
+                    analyzer = ThreadedSceneAnalyzer(run_job, images, revision=revision or "unknown",
+                                                     periodic_interval_s=config.scene.interval_s)
+                    scene = SceneRuntime(analyzer, images, server)
+                else:
+                    scene_problem = f"server_{status.state.value}:{status.problem}"
+                    server = None
+
+        if thp_off:  # D58: after any scene server was spawned; before cuInit and any model library (backend.load)
+            record = ops.disable_thp()
+            startup["thp_disable"] = {key: record.get(key) for key in (
+                "t_mono", "model_modules_loaded", "set_rc", "set_errno", "get_value", "thp_enabled",
+                "anon_huge_pages_bytes", "verified", "reason")}
+            if record.get("verified") is not True:
+                raise StartupRefused(f"thp_disable_not_verified:{record.get('reason')}")
+            verified = {"runtime": ops.thp_enabled("self"),
+                        **({"scene_server": ops.thp_enabled(getattr(server, "pid", None))} if server is not None else {})}
+            startup["thp_scope"]["workload_verified"] = verified
+            if verified["runtime"] != 0 or verified.get("scene_server", 1) != 1:
+                raise StartupRefused("thp_scope_not_verified:workload_verified")
+
+        tracker = None
+        detector_problem, memory = memfree_problem(devices.meminfo, options.min_free_bytes)
+        startup["detector_memory_before"] = memory
+        tracking = DiagnosticBounds() if options.face is not None and options.face.tracking_diagnostic else None
+        tracking_settings = None
+        if tracking is not None and detector_problem is not None:  # session 80: no detector, no diagnostic, no run
+            raise StartupRefused(f"tracking_diagnostic_not_ready:{detector_problem}")
+        if detector_problem is None:
+            if artifacts is None:
+                backend = devices.tracker_backend(options.engine)
+            else:  # part 41: the detector's own pin is then the recorded engine's SHA-256, checked again at its load
+                backend = devices.tracker_backend(options.engine,
+                                                  expected_sha256=artifacts.files["detector_engine"].sha256)
+            if tracking is not None:  # before load(): the backend verifies what it reads while loading
+                if not callable(getattr(backend, "enable_diagnostic", None)):
+                    raise StartupRefused("tracking_diagnostic_unavailable: this detector backend has no diagnostic")
+                backend.enable_diagnostic(tracking.shadow_conf)
+            try:
+                backend.load()  # the D27 guard and the engine pin run first
+            except TrackerError as exc:
+                detector_problem = exc.label + (f" ({exc.error_type})" if exc.error_type else "")
+                if tracking is not None:  # session 80: a diagnostic run never starts without its detector and hooks
+                    raise StartupRefused(f"tracking_diagnostic_not_ready:{detector_problem}") from None
+            else:
+                if tracking is not None:  # the marker must carry the tracker's settings, complete, before T0
+                    tracking_settings = backend.diagnostic_settings()
+                    problem = settings_problem(tracking_settings)
+                    if problem is not None:
+                        raise StartupRefused(f"tracking_diagnostic_not_ready:{problem}")
+                tracker = PersonTracker(backend, diagnostics=tracking is not None)
+                if releasing:  # D58: after the detector's load and settle
+                    startup.setdefault("releases", {})["detector"] = post_load_release(
+                        ops, "detector", {"engine": options.engine})
+        startup["detector_problem"] = detector_problem
+        startup["scene_problem"] = scene_problem
+        startup["notifier_problems"] = notifier_problems
+
+        face = None
+        if options.face is not None:
+            startup["face"] = {"validation_run": options.face.validation_run,
+                               "identities_enrolled": 0 if gallery is None else len(gallery.identities),
+                               **({"comparison": True} if options.face.comparison else {}),
+                               **({"detection": DETECTION_FULL_SCALE}
+                                  if options.face.detection == DETECTION_FULL_SCALE else {}),
+                               # route B: the head-window stage and its settings (a reader of the substream's runs
+                               # refuses it, never reads it as that path's evidence)
+                               **({"detection": DETECTION_WINDOWS,
+                                   "stage": WindowSettings(head_fraction=config.identity.head_fraction).numbers()}
+                                  if route_b else {}),
+                               **({"shadow": True} if options.face.shadow_dir is not None else {}),
+                               # route B: which working gallery is compared (a digest of its prototypes, never a value),
+                               # so the multi-pose reading can tie the run to the frozen candidate
+                               **({"shadow_digest": shadow.digest, "lives": True}
+                                  if route_b and shadow is not None else {}),
+                               **({"capture": True} if options.face.capture_dir is not None else {}),
+                               **({"capture_raw": True} if options.face.capture_raw else {}),
+                               **({"continuity": config.identity.continuity_policy().numbers()}
+                                  if options.face.continuity else {}),
+                               # session 79: the marker that keeps such a run out of F2's reading, with the bounds
+                               # and the tracker's settings as the loaded objects hold them
+                               **({"tracking_diagnostic": {**tracking.numbers(), "tracker": tracking_settings}}
+                                  if tracking is not None else {}),
+                               # session 90: the marker that keeps such a run out of F2's reading, with its pinned values
+                               **({"landmark_diagnostic": landmark_marker()}
+                                  if options.face.landmark_diagnostic else {})}
+            if options.face.retention:  # part 28: at the top level, so the guard's exact comparisons of the face entry
+                # (FACE_CHAT_FACE, WINDOWS_FACE) still hold; every reading that must refuse a non-plain run reads this
+                # marker in the runtime's own starting line (benchmarks/runner/face_check.read_records)
+                startup["identity_retention"] = reported_numbers(config.identity.retention_policy(),
+                                                                 config.identity.continuity_policy())
+            if face_problem is None and gallery is not None:
+                face_problem, memory = memfree_problem(devices.meminfo, options.face.min_free_bytes)
+                startup["face_memory_before"] = memory
+            if face_problem is None and gallery is not None:
+                if options.face.detection == DETECTION_FULL_SCALE:  # D88: assemble() refuses it outside validation
+                    face_backend.select_full_scale_detection()  # replaces the detection; no D86 pass repeats it
+                elif route_b:  # the head windows replace the whole-picture path; D86's whole-frame pass never runs
+                    face_backend.select_window_detection()
+                elif options.face.validation_run and hasattr(face_backend, "enable_full_scale"):
+                    face_backend.enable_full_scale()  # D86: the diagnostic full-scale pass, validation runs only
+                    if options.face.landmark_diagnostic:  # session 90: assemble() refused it anywhere else
+                        face_backend.enable_landmarks()
+                if options.face.comparison:  # D87: assemble() refuses it outside a validation run
+                    face_backend.enable_comparison()
+                try:
+                    face_backend.load()  # the weights' SHA-256, the CPU pin and the DeepFace version first
+                except FaceBackendError as exc:
+                    face_problem = exc.label + (f" ({exc.error_type})" if exc.error_type else "")
+                else:
+                    difference = face_backend.compatibility().first_difference(gallery.compatibility)
+                    if difference is not None:
+                        face_problem = f"gallery_incompatible:{difference}"
+                    elif releasing:  # D58: after the face model's load and settle, as the profile released it
+                        startup.setdefault("releases", {})["face"] = post_load_release(
+                            ops, "face", face_backend.weight_files)
+            if face_problem is None and gallery is not None:
+                backend = face_backend
+                comparator = None
+                if options.face.comparison:
+                    comparator = FullScaleComparator(
+                        lambda frame, image, row: backend.embed_full_scale(frame.native_width, frame.native_height,
+                                                                           image, row),
+                        AssociationGeometry(config.identity.head_fraction, config.identity.min_face_inside),
+                        ComparisonPolicy(max_frame_age_ns=config.identity.face_result_max_age_ns))
+                windows = (WindowSettings(head_fraction=config.identity.head_fraction) if route_b else None)
+                if windows is None:
+                    worker = FaceWorker(
+                        lambda frame, image: backend.faces(frame.key, frame.native_width, frame.native_height, image),
+                        clock, interval_ns=config.identity.face_interval_ns,
+                        pending_max_age_ns=config.identity.face_pending_max_age_ns, comparator=comparator)
+                else:  # route B: the offer copies the frame's head windows only; the worker analyses those
+                    resize, settings = devices.resize, windows
+                    worker = FaceWorker(
+                        lambda frame, images: backend.window_faces(frame.key, images),
+                        clock, interval_ns=config.identity.face_interval_ns,
+                        pending_max_age_ns=config.identity.face_pending_max_age_ns,
+                        prepare=lambda frame, persons, image: prepare_windows(frame, persons, image, resize=resize,
+                                                                               settings=settings))
+                face = FaceRuntime(worker, len(gallery.identities), options.face.validation_run,
+                                   comparator is not None, options.face.detection, shadow, experiment_capture,
+                                   config.identity.continuity_policy() if options.face.continuity else None,
+                                   options.face.landmark_diagnostic, windows,
+                                   lives=route_b and shadow is not None,
+                                   retention=config.identity.retention_policy() if options.face.retention else None)
+            startup["face_problem"] = face_problem
+
+        slot = LatestFrame()
+        capture = CaptureWorker(source, FrameStamper(config.camera.id, clock), slot, config.capture,
+                                working=WorkingCopy(*WORKING_SIZE, devices.resize) if route_b else None)
+        if route_b:  # only then, as every new output key (evidence profiles are strict)
+            startup["stream"] = {
+                "profile": config.capture.stream_profile, "decode_threads": config.capture.stream_decode_threads,
+                "working": list(WORKING_SIZE), "resize": "area",
+                # unchanged tracker settings that count processed frames: at a processed rate above the substream's
+                # 15 fps they last proportionally less (the measured rate and durations: the status, capture.stream)
+                "tracker_frame_counted": frame_counted_settings(tracker.confirm_detections, None)
+                if tracker is not None else None}
+        runtime = DemoRuntime(
+            config, clock, capture=capture, slot=slot, incidents=incidents, outbox=outbox,
+            tracker=tracker, detector_problem=detector_problem, scene=scene, scene_problem=scene_problem,
+            face=face, face_problem=face_problem, enrollment=None if gallery is None else gallery.enrollment(),
+            notifier_problems=notifier_problems, live_preview=options.live_preview, encode=devices.encode,
+            snapshots=snapshots, chat=options.chat, chat_validation=options.chat_validation,
+            feature_controls=options.feature_controls,
+            chat_run=(devices.chat_request(config.scene_server.port, config.scene_server.request_timeout_s,
+                                           scene_set)  # the scene requests' set: one model for both
+                      if options.chat and scene is not None and scene_set is not None
+                      and devices.chat_request is not None else None),
+            tracking_diagnostic=tracking,
+        )
+        if runtime.preview is not None:  # only when enabled, as every new output key (evidence profiles are strict)
+            startup["live_preview"] = runtime.preview.bounds()
+        if runtime.chat is not None:
+            startup["chat"] = runtime.chat.availability()
+        if runtime.controls is not None:  # D99: which features this run can pause and resume (never the key)
+            startup["feature_controls"] = {name: runtime.controls.switchable(name) for name in FEATURES}
+    except BaseException:
+        if server is not None:
+            server.stop(10.0)
+        if store is not None:
+            store.close()
+        database.close()
+        raise
+    return Assembly(runtime, database, startup)

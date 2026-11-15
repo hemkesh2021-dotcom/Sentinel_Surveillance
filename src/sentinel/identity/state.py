@@ -1,0 +1,300 @@
+"""Per-track identity state (guide chapters 9 and 11; audit findings 1 and 2).
+
+A track's identity is derived, every time it is read, from that track's own
+recent face votes: faces associated to it one-to-one, of sufficient quality,
+matched against a non-empty enrollment. There is no stored label to go stale.
+
+- KNOWN: the last ``confirmations`` votes all matched the same identity.
+- UNKNOWN: the last ``confirmations`` votes all matched nobody enrolled. It
+  says only that; it is not a "stranger" verdict and grants or denies nothing.
+- UNCERTAIN: recent votes contradict each other.
+- UNRESOLVED: not enough evidence, which is where every track starts and
+  stays when no face is visible, ownership is ambiguous, quality is low or
+  nobody is enrolled.
+
+Votes expire after ``vote_ttl_ns`` and are scoped to their TrackKey, so a
+track in a new stream epoch inherits nothing. Identity is context for rules,
+never an access decision by itself.
+
+Retention (V2-25 demo form): a face sample without a usable face (turned
+away, too small, ambiguous) adds no vote and clears nothing, so KNOWN or
+UNKNOWN is retained on the same track until the older of its confirming
+votes is ``vote_ttl_ns`` old; a contradicting vote makes it UNCERTAIN at
+once; a track that is no longer current loses its votes (``retain_only``),
+even if the tracker later reuses its ID. A track's votes belong to its current
+life (TrackTable.since): a face result for a frame from before that life began
+(a late result for a track that has since expired and come back with the same
+number) is not counted for it (``BEFORE_EXPIRY``), and nothing noted before it
+began (a reason, a break) is shown for it. ``basis`` tells a fresh
+decision (its newest vote at most ``fresh_window_ns`` old) from a retained one.
+
+Continuity (D97; opt-in, ``continuity_retention_ns``; identity.continuity):
+a break in a track's continuity (a detection gap, a jump, an overlapping
+detection) drops its votes at once, and a face result for a frame from before
+the break is not counted for it; between breaks, votes live
+``continuity_retention_ns`` instead of ``vote_ttl_ns``. Without it (the
+default) every rule above is exactly as it was.
+"""
+
+from __future__ import annotations
+
+from collections import Counter, deque
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from enum import Enum
+
+from ..contracts import TrackKey, TrackObservation
+from ..media.clock import MonoInstant
+from .association import Association, FaceObservation, Ownership
+from .continuity import NOT_CARRIED, Cause
+from .matching import Enrollment, best_match
+
+VOTES_KEPT = 5
+UNKNOWN_VOTE = ""  # a good face that matched nobody enrolled
+BEFORE_BREAK = "before_break"  # D97: a face on a frame from before its track's latest break; it is not counted
+BEFORE_EXPIRY = "before_expiry"  # a face on a frame from before its track's current life began; it is not counted
+NOT_ANALYSED_NOTE = "not analysed on that frame"  # route B: outside the face stage's windows that tick; never "no face visible"
+
+
+class IdentityState(str, Enum):
+    UNRESOLVED = "unresolved"
+    UNKNOWN = "unknown"
+    KNOWN = "known"
+    UNCERTAIN = "uncertain"
+
+
+@dataclass(frozen=True)
+class IdentityPolicy:
+    """Starting values only: thresholds need calibration on held-out identities (V2-25)."""
+
+    match_threshold: float = 0.5  # cosine similarity, not a probability
+    margin: float = 0.05  # over the runner-up identity
+    min_quality: float = 0.6
+    confirmations: int = 2
+    vote_ttl_ns: int = 30_000_000_000
+    fresh_window_ns: int = 3_000_000_000  # a decision whose newest vote is at most this old is "fresh"
+    # D97: with a continuity monitor, votes live this long while their track stays unbroken (breaks drop them); None
+    # (the default): votes expire after vote_ttl_ns, exactly as before
+    continuity_retention_ns: int | None = None
+
+
+class Basis(str, Enum):
+    FRESH = "fresh"  # the newest confirming vote is at most fresh_window_ns old
+    RETAINED = "retained"  # no newer usable face; kept until the older confirming vote expires
+
+
+@dataclass(frozen=True)
+class TrackIdentity:
+    state: IdentityState
+    identity_id: str | None  # only when KNOWN
+    reason: str
+    basis: Basis | None = None  # KNOWN and UNKNOWN only
+    last_vote_age_ns: int | None = None  # the newest current vote's age, when there is one
+
+
+@dataclass(frozen=True)
+class VoteRecord:
+    """One person's outcome from one face result: numbers, fixed labels and an opaque identity ID only."""
+
+    key: TrackKey
+    ownership: Ownership
+    vote: str | None  # an enrolled identity ID, UNKNOWN_VOTE, or None (no vote)
+    label: str  # match, unknown, margin, low_quality, incompatible, no_enrollment, no_face, ambiguous, not_analysed
+    similarity: float | None = None  # the best cosine similarity, when one was computed (match, unknown, margin)
+    prototype: int | None = None  # D90: that similarity's prototype position (an opaque index; validation records)
+
+
+@dataclass(frozen=True)
+class _Vote:
+    at_ns: int
+    identity: str  # identity ID, or UNKNOWN_VOTE
+
+
+class IdentityResolver:
+    def __init__(self, enrollment: Enrollment | None, policy: IdentityPolicy = IdentityPolicy()) -> None:
+        if policy.confirmations < 1:
+            raise ValueError("confirmations must be at least 1")
+        self._enrollment = enrollment
+        self._policy = policy
+        self._votes: dict[TrackKey, deque[_Vote]] = {}
+        self._last_note: dict[TrackKey, tuple[int, str]] = {}  # each track's latest note and its frame time
+        self._broken: dict[TrackKey, tuple[int, Cause]] = {}  # D97: each track's latest break (frame time, cause)
+        self._lives: dict[TrackKey, int] = {}  # each current track's life began at this frame time (retain_only)
+        self.counters: Counter[str] = Counter()  # ownership and vote outcomes, numbers only
+
+    @property
+    def policy(self) -> IdentityPolicy:
+        """The rules this resolver decides with (read only): D91's shadow comparison decides with the same ones."""
+        return self._policy
+
+    def observe(
+        self,
+        persons: Sequence[TrackObservation],
+        faces: Sequence[FaceObservation],
+        association: Association,
+    ) -> list[VoteRecord]:
+        """Record one frame's face evidence for its people; returns each person's outcome."""
+        records = []
+        for person in persons:
+            key = person.key
+            ownership = association.person_ownership.get(key, Ownership.NO_FACE)
+            self.counters[f"persons_{ownership.value}"] += 1
+            began = self._lives.get(key)
+            if began is not None and person.observed_mono_ns < began:  # from the track's earlier life
+                self.counters["persons_before_expiry"] += 1
+                records.append(VoteRecord(key, ownership, None, BEFORE_EXPIRY))
+                continue
+            broken = self._broken.get(key)
+            if broken is not None and person.observed_mono_ns < broken[0]:  # D97: from before the track's break
+                self.counters["persons_before_break"] += 1
+                records.append(VoteRecord(key, ownership, None, BEFORE_BREAK))
+                continue
+            if ownership is not Ownership.ASSIGNED:
+                self._last_note[key] = (person.observed_mono_ns, {
+                    Ownership.NO_FACE: "no face visible",
+                    Ownership.AMBIGUOUS: "face ownership ambiguous",
+                    Ownership.NOT_ANALYSED: NOT_ANALYSED_NOTE,
+                }.get(ownership, ownership.value))
+                records.append(VoteRecord(key, ownership, None, ownership.value))
+                continue
+            vote, note, similarity, prototype = self._vote(faces[association.face_of[key]])
+            self.counters[_NOTE_COUNTERS[note]] += 1
+            self._last_note[key] = (person.observed_mono_ns, note)
+            records.append(VoteRecord(key, ownership, vote, _NOTE_LABELS[note], similarity, prototype))
+            if vote is not None:
+                votes = self._votes.setdefault(key, deque(maxlen=VOTES_KEPT))
+                votes.append(_Vote(person.observed_mono_ns, vote))
+        return records
+
+    def identity(self, key: TrackKey, now: MonoInstant) -> TrackIdentity:
+        note = self._last_note.get(key, (0, "no face observed yet"))[1]
+        if self._enrollment is None or self._enrollment.is_empty:
+            return TrackIdentity(IdentityState.UNRESOLVED, None, "no identities enrolled")
+        votes = self._current_votes(key, now)
+        broken = self._broken.get(key)
+        if broken is not None and not votes:  # D97: dropped at a break and not earned again since
+            note = NOT_CARRIED[broken[1]]
+        needed = self._policy.confirmations
+        age = now.ns - votes[-1].at_ns if votes else None
+        if len(votes) >= needed:
+            recent = {vote.identity for vote in votes[-needed:]}
+            if len(recent) == 1:
+                (value,) = recent
+                basis = Basis.FRESH if age is not None and age <= self._policy.fresh_window_ns else Basis.RETAINED
+                if value == UNKNOWN_VOTE:
+                    return TrackIdentity(IdentityState.UNKNOWN, None, "consistent faces matched nobody", basis, age)
+                return TrackIdentity(IdentityState.KNOWN, value, f"{needed} consistent matches", basis, age)
+        if len({vote.identity for vote in votes}) > 1:
+            return TrackIdentity(IdentityState.UNCERTAIN, None, "contradictory face evidence", None, age)
+        return TrackIdentity(IdentityState.UNRESOLVED, None, note, None, age)
+
+    def confirming_votes(self, key: TrackKey, now: MonoInstant) -> tuple[int, ...]:
+        """The frame times of the last ``confirmations`` current votes behind a KNOWN or UNKNOWN decision, oldest first
+        (identity.retention reads them: read only, nothing changes); () when there are fewer."""
+        votes = self._current_votes(key, now)
+        needed = self._policy.confirmations
+        return tuple(vote.at_ns for vote in votes[-needed:]) if len(votes) >= needed else ()
+
+    @property
+    def tracked(self) -> int:
+        """Tracks with identity bookkeeping; bounded by the current tracks."""
+        return len(self._votes.keys() | self._last_note.keys())
+
+    def retain_only(self, lives: Mapping[TrackKey, int]) -> None:
+        """Forget tracks that are no longer current. ``lives``: each current track with the frame time its current
+        life began (TrackTable.since). A track whose life began again (it expired and came back with its number before
+        a step saw it go) keeps no vote, note or break from its earlier life, and later results count for it only from
+        that time. What this life noted already (its first frame's face result, its first frame's break) stays."""
+        for table in (self._votes, self._last_note, self._broken, self._lives):
+            for key in [k for k in table if k not in lives]:
+                del table[key]
+        for key, began in lives.items():
+            if self._lives.get(key) == began:
+                continue
+            self._lives[key] = began
+            votes = self._votes.get(key)
+            if votes and votes[0].at_ns < began:
+                self._votes[key] = deque((vote for vote in votes if vote.at_ns >= began), maxlen=VOTES_KEPT)
+            for table in (self._last_note, self._broken):  # (frame time, ...): drop what is from the earlier life
+                earlier = table.get(key)
+                if earlier is not None and earlier[0] < began:
+                    del table[key]
+
+    def break_track(self, key: TrackKey, at_ns: int, cause: Cause) -> None:
+        """D97: the track's continuity broke on the frame at ``at_ns``: its votes are dropped, and a face result for an
+        earlier frame is not counted for it. Its identity must be earned again from new matches."""
+        self._votes.pop(key, None)
+        self._last_note.pop(key, None)
+        previous = self._broken.get(key)
+        self._broken[key] = (at_ns if previous is None else max(previous[0], at_ns), cause)
+        self.counters[f"breaks_{cause.value}"] += 1
+
+    def forget_all(self) -> None:
+        """Drop every vote, note and break (face recognition turned off at runtime, D99): nothing earlier may be
+        presented as current, and a later start begins unresolved."""
+        for table in (self._votes, self._last_note, self._broken):
+            table.clear()  # the tracks' lives stay: they are the tracker's facts, not face evidence
+
+    def diagnostic_similarity(self, embedding: Sequence[float]) -> float | None:
+        """D87: the best cosine similarity of an embedding to the enrollment, exactly as a vote computes it
+        (``best_match``), for a diagnostic comparison. Read only: no vote, note, counter or state changes. None when
+        nothing is enrolled or the embedding's dimension differs."""
+        enrollment = self._enrollment
+        if enrollment is None or enrollment.is_empty or len(embedding) != enrollment.dimension:
+            return None
+        return best_match(embedding, enrollment).similarity
+
+    def _vote(self, face: FaceObservation) -> tuple[str | None, str, float | None, int | None]:
+        """The face's vote (an identity ID or UNKNOWN_VOTE), or None, why, and the best similarity and its prototype's
+        position if computed (``decide``, with this resolver's enrollment and policy)."""
+        return decide(face, self._enrollment, self._policy)
+
+    def _current_votes(self, key: TrackKey, now: MonoInstant) -> list[_Vote]:
+        if key.boot_id != now.boot_id:
+            return []
+        votes = self._votes.get(key, ())
+        ttl = self._policy.continuity_retention_ns or self._policy.vote_ttl_ns
+        return [v for v in votes if 0 <= now.ns - v.at_ns < ttl]
+
+
+def decide(face: FaceObservation, enrollment: Enrollment | None,
+           policy: IdentityPolicy) -> tuple[str | None, str, float | None, int | None]:
+    """The production vote decision for one assigned face, at full precision: (the vote, an identity ID or
+    UNKNOWN_VOTE, or None; why; the best similarity and its prototype's position, when computed). The resolver votes
+    with it; D91's shadow comparison (identity.experiment) decides with it too, against a working gallery that never
+    votes, so the two decisions differ only in the gallery."""
+    if enrollment is None or enrollment.is_empty:
+        return None, "no identities enrolled", None, None
+    if face.quality < policy.min_quality or face.embedding is None:
+        return None, "face quality too low", None, None
+    if len(face.embedding) != enrollment.dimension:
+        return None, "embedding from an incompatible model", None, None
+    match = best_match(face.embedding, enrollment)
+    if match.similarity < policy.match_threshold:
+        return UNKNOWN_VOTE, "face matched nobody", match.similarity, match.prototype
+    if match.runner_up is not None and match.similarity - match.runner_up < policy.margin:
+        return None, "face matches more than one identity", match.similarity, match.prototype
+    return match.identity_id, "face matched", match.similarity, match.prototype
+
+
+def decision_label(note: str) -> str:
+    """A decision's fixed record label (match, unknown, margin, low_quality, incompatible, no_enrollment)."""
+    return _NOTE_LABELS[note]
+
+
+_NOTE_COUNTERS = {
+    "face matched": "votes_match",
+    "face matched nobody": "votes_unknown",
+    "face matches more than one identity": "no_vote_margin",
+    "face quality too low": "no_vote_low_quality",
+    "embedding from an incompatible model": "no_vote_incompatible",
+    "no identities enrolled": "no_vote_no_enrollment",
+}
+_NOTE_LABELS = {
+    "face matched": "match",
+    "face matched nobody": "unknown",
+    "face matches more than one identity": "margin",
+    "face quality too low": "low_quality",
+    "embedding from an incompatible model": "incompatible",
+    "no identities enrolled": "no_enrollment",
+}

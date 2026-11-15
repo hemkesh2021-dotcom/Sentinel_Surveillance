@@ -1,0 +1,15 @@
+{"event": "timeline", "name": "r3-late-scene-result", "description": "A scene job requested for incident A answers after its deadline and TTL, while incident B is open (audit finding 3; guide ch. 2 row 4 and ch. 21). Synthetic; no footage."}
+{"at_ms": 0, "event": "connect"}
+{"at_ms": 0, "event": "frame", "repeat": 16, "every_ms": 66, "persons": [{"track": 1, "box": [0.4, 0.2, 0.6, 0.95]}], "note": "periodic job 1 starts on the first frame"}
+{"at_ms": 1000, "event": "incident", "incident_id": "inc-A", "note": "a zone rule opens A; enrichment of the 990 ms frame is requested"}
+{"at_ms": 1056, "event": "frame", "repeat": 15, "every_ms": 66, "persons": [{"track": 1, "box": [0.4, 0.2, 0.6, 0.95]}]}
+{"at_ms": 2000, "event": "result", "job": 1, "text": "{\"persons_visible\": 1, \"fire_or_smoke\": false, \"threat\": \"none\", \"observations\": [\"person standing near the door\"], \"uncertainty\": \"low\", \"summary\": \"one person standing\"}", "note": "job 1 answers on time; enrichment job 2 starts on the next frame"}
+{"at_ms": 2046, "event": "frame", "repeat": 106, "every_ms": 66, "persons": [{"track": 1, "box": [0.4, 0.2, 0.6, 0.95]}]}
+{"at_ms": 9000, "event": "tick", "note": "job 2's deadline (990 + 8000 ms) has passed"}
+{"at_ms": 9042, "event": "frame", "repeat": 7, "every_ms": 66, "persons": [{"track": 1, "box": [0.4, 0.2, 0.6, 0.95]}], "note": "periodic job 3 starts"}
+{"at_ms": 9500, "event": "incident", "incident_id": "inc-B"}
+{"at_ms": 9504, "event": "frame", "repeat": 15, "every_ms": 66, "persons": [{"track": 1, "box": [0.4, 0.2, 0.6, 0.95]}]}
+{"at_ms": 10500, "event": "result", "job": 3, "text": "{\"persons_visible\": 1, \"fire_or_smoke\": false, \"threat\": \"none\", \"observations\": [\"person standing near the door\"], \"uncertainty\": \"low\", \"summary\": \"one person standing\"}"}
+{"at_ms": 10560, "event": "frame", "repeat": 15, "every_ms": 66, "persons": [{"track": 1, "box": [0.4, 0.2, 0.6, 0.95]}], "note": "enrichment job 4 for B starts"}
+{"at_ms": 11500, "event": "result", "job": 2, "text": "{\"persons_visible\": 1, \"fire_or_smoke\": true, \"threat\": \"high\", \"observations\": [\"smoke near the ceiling\"], \"uncertainty\": \"medium\", \"summary\": \"possible smoke\"}", "note": "job 2 finally answers: fire, high threat, about the 990 ms frame"}
+{"at_ms": 11550, "event": "frame", "repeat": 8, "every_ms": 66, "persons": [{"track": 1, "box": [0.4, 0.2, 0.6, 0.95]}]}

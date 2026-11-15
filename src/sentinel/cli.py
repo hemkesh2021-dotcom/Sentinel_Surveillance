@@ -1,0 +1,1070 @@
+"""``sentinel`` command line (guide chapter 18). Only implemented commands exist."""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import ctypes
+import json
+import os
+import re
+import signal
+import sqlite3
+import sys
+import threading
+import time
+from collections.abc import Callable, Iterator, Sequence
+from pathlib import Path
+from typing import Any, TextIO
+
+from . import __version__
+from .adapters import resolve
+from .config import (
+    STREAM_MAIN_SINGLE,
+    CaptureConfig,
+    ConfigError,
+    IncidentsConfig,
+    NotificationsConfig,
+    SentinelConfig,
+    load_config,
+)
+from .demo_runtime import DATABASE_NAME, Devices, FaceOptions, RunOptions, SceneOptions, StartupRefused, assemble
+from .device_artifacts import DeviceArtifactsError
+from .device_artifacts import load as load_device_artifacts
+from .identity.gallery import DEFAULT_IDENTITY_DIR
+from .identity.legacy_deepface import DETECTION_DEEPFACE, DETECTION_FULL_SCALE
+from .incidents.snapshots import SnapshotPolicy
+from .identity.vault import (
+    MIN_NEW_SECRET_CHARS,
+    SECRET_ENV,
+    Secret,
+    VaultError,
+    prompt_secret,
+    take_secret_from_environment,
+)
+from .media.capture import CaptureWorker, LatestFrame, SourceError, VideoSource
+from .media.clock import Clock, SystemClock
+from .media.frames import FrameStamper
+from .memory_policy import policy_from_flags
+from .media.probe import run_probe
+from .scene.models import (
+    DEFAULT_SCENE_MODEL_SET,
+    FALLBACK_SCENE_MODEL_SET,
+    ROLLBACK_SCENE_MODEL_SET,
+    SCENE_MODEL_SETS,
+    scene_model_set,
+)
+from .tracking.probe import TrackProbe, read_meminfo
+from .tracking.tracker import PersonTracker, TrackerError
+
+PROBE_MAX_S = 300.0
+GB = 1_000_000_000
+PREVIEW_STOP_TIMEOUT_S = 3.0
+HOME = Path.home()
+
+
+def _seconds(text: str) -> float:
+    value = float(text)
+    if not 1.0 <= value <= PROBE_MAX_S:
+        raise argparse.ArgumentTypeError(f"must be between 1 and {PROBE_MAX_S:g}")
+    return value
+
+
+def _min_free_gb(text: str) -> float:
+    value = float(text)
+    if not 0.5 <= value <= 7.0:
+        raise argparse.ArgumentTypeError("must be between 0.5 and 7")
+    return value
+
+
+def _live_source(config: CaptureConfig) -> VideoSource:
+    from .media.opencv_source import OpenCvSource
+
+    return OpenCvSource.from_environment(config)
+
+
+def _legacy_tracker(engine: Path, expected_sha256: str | None = None) -> Any:
+    """The detector on ``engine``: the pinned engine, or (--device-artifacts) the one the device's record names."""
+    from .inference.legacy_ultralytics import LegacyUltralyticsTracker
+
+    if expected_sha256 is None:
+        return LegacyUltralyticsTracker(engine)
+    return LegacyUltralyticsTracker(engine, expected_sha256=expected_sha256)
+
+
+def _scene_server(options: SceneOptions, port: int) -> Any:
+    from .scene.server import LlamaServerProcess
+
+    return LlamaServerProcess(options.binary, options.model, options.mmproj, port,
+                              require_system_thp=options.require_system_thp,
+                              extra_flags=scene_model_set(options.model_set).server_flags)
+
+
+def _face_backend(weights_dir: Path | None) -> Any:
+    from .identity.legacy_deepface import LegacyDeepFaceBackend
+
+    return LegacyDeepFaceBackend(weights_dir)
+
+
+def _identity_store(directory: Path) -> Any:
+    from .identity.gallery import IdentityStore
+    from .identity.vault import Sealer
+
+    return IdentityStore(directory, Sealer())
+
+
+def _scene_request(port: int, timeout_s: float, chosen: Any) -> Any:
+    """The scene requests of the selected scene model set (its request name and template arguments)."""
+    from .scene.llama_server import LlamaSceneRequest, LoopbackTransport
+
+    return LlamaSceneRequest(LoopbackTransport(port, timeout_s), model=chosen.request_model,
+                             chat_template_kwargs=chosen.chat_template_kwargs)
+
+
+def _chat_request(port: int, timeout_s: float, chosen: Any) -> Any:
+    from .scene.chat import LlamaChatRequest
+    from .scene.llama_server import LoopbackTransport
+
+    return LlamaChatRequest(LoopbackTransport(port, timeout_s), model=chosen.request_model,
+                            chat_template_kwargs=chosen.chat_template_kwargs)
+
+
+def _status_port(text: str) -> int:
+    value = int(text)
+    if value != 0 and not 1024 <= value <= 65535:
+        raise argparse.ArgumentTypeError("must be 0 (no status page) or between 1024 and 65535")
+    return value
+
+
+def _positive_seconds(text: str) -> float:
+    value = float(text)
+    if not 1.0 <= value <= 3600.0:
+        raise argparse.ArgumentTypeError("must be between 1 and 3600")
+    return value
+
+
+ACK_NOTE = "acknowledged with sentinel incident ack while monitoring was stopped"
+_ACTOR = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}")
+_INCIDENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")  # the contracts' Identifier
+
+
+def _actor(text: str) -> str:
+    if not _ACTOR.fullmatch(text):
+        raise argparse.ArgumentTypeError("1-32 letters, digits, '.', '_' or '-', starting with a letter or digit")
+    return text
+
+
+def _note(text: str) -> str:
+    if not 1 <= len(text) <= 200 or not text.isprintable():
+        raise argparse.ArgumentTypeError("1-200 printable characters")
+    return text
+
+
+def _incident_ack(args: argparse.Namespace, clock: Clock, out: TextIO) -> int:
+    """``sentinel incident ack``: one acknowledgment, while no runtime owns the database (D68).
+
+    Every refusal is a fixed label on stderr with exit 1, and changes nothing: an invalid ID is refused before the
+    database is touched; an absent database is never created; the writer lock (``Database.open``) refuses while a
+    runtime owns it, and the runtime refuses to start while this holds it.
+    """
+    from .incidents.service import IncidentService, InvalidTransition, UnknownIncident
+    from .storage.database import Database, DatabaseError, MissingDatabase, WriterBusy
+
+    def refuse(label: str) -> int:
+        print(f"incident ack: {label}", file=sys.stderr)
+        return 1
+
+    if not _INCIDENT_ID.fullmatch(args.incident_id):
+        return refuse("invalid_incident_id (expected the ID shown on the status page, such as inc-...)")
+    path = args.data_dir.expanduser() / DATABASE_NAME
+    try:
+        database = Database.open(path, create=False)
+    except MissingDatabase:
+        return refuse(f"no_database (no {DATABASE_NAME} in {args.data_dir}; nothing was created)")
+    except WriterBusy:
+        return refuse("database_busy (a Sentinel runtime or another command owns the database; stop monitoring "
+                      "first, then acknowledge, then start it again)")
+    except (DatabaseError, sqlite3.Error) as exc:
+        return refuse(f"database_unusable:{type(exc).__name__}")
+    try:
+        # Acknowledging reads no policy: the default sections only satisfy the constructor.
+        service = IncidentService(database, clock, incidents=IncidentsConfig(), notifications=NotificationsConfig())
+        result = service.acknowledge(args.incident_id, actor=f"operator:{args.actor}", reason=args.note)
+    except UnknownIncident:
+        return refuse(f"unknown_incident (no incident {args.incident_id} in this database; nothing changed)")
+    except InvalidTransition as exc:
+        return refuse(f"not_acknowledgeable ({exc}; nothing changed)")
+    except (DatabaseError, sqlite3.Error) as exc:
+        return refuse(f"database_unusable:{type(exc).__name__}")
+    finally:
+        database.close()
+    seen = result.acknowledgment
+    print(json.dumps({
+        "incident": "ack", "outcome": result.outcome.value, "incident_id": result.incident_id,
+        "status": "acknowledged", "revision": result.revision,
+        "acknowledged_utc": seen.at_utc if seen else None, "actor": seen.actor if seen else None,
+        "note": seen.reason if seen else None,
+    }), file=out, flush=True)
+    return 0
+
+
+def _flush_streams(*streams: TextIO) -> None:
+    """Flush Python's streams and libc's stdio buffers; a failing flush never stops the caller's restore."""
+    for stream in (*streams, sys.stdout, sys.stderr):
+        with contextlib.suppress(AttributeError, OSError, ValueError):
+            stream.flush()
+    with contextlib.suppress(AttributeError, OSError):
+        ctypes.CDLL(None).fflush(None)  # native writers such as TensorRT's logger buffer in libc
+
+
+@contextlib.contextmanager
+def _json_stdout() -> Iterator[TextIO]:
+    """Keep stdout for this command's JSON; whatever else is written to it goes to stderr meanwhile.
+
+    Loading the legacy model writes diagnostics to stdout: Ultralytics' logger (a
+    handler bound to sys.stdout at import) and TensorRT's logger, possibly from
+    native code. That made the track probe's stdout invalid JSON on the device
+    (checklist step 3, session 21). While the command runs, descriptor 1 points
+    at stderr for the whole process (every thread, library, handler and child
+    that inherits it), and the command writes its JSON to a private duplicate of
+    the original stdout. Buffers are flushed before the switch and before the
+    restore; the restore and descriptor cleanup run in finally blocks, so an
+    exception or Ctrl-C leaves stdout as it was. Logging handlers are not touched.
+    Without real descriptors 1 and 2 behind sys.stdout and sys.stderr (in-process
+    tests), nothing is redirected.
+    """
+    try:
+        redirect = sys.stdout.fileno() == 1 and sys.stderr.fileno() == 2
+    except (AttributeError, OSError, ValueError):
+        redirect = False
+    if not redirect:
+        yield sys.stdout
+        return
+    _flush_streams()
+    saved = os.dup(1)
+    try:
+        out = open(saved, "w", encoding="utf-8", closefd=False)
+        try:
+            os.dup2(2, 1)
+            try:
+                yield out
+            finally:
+                _flush_streams(out)
+                os.dup2(saved, 1)
+        finally:
+            with contextlib.suppress(OSError, ValueError):
+                out.close()
+    finally:
+        os.close(saved)
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    capture_source: Callable[[CaptureConfig], VideoSource] = _live_source,
+    tracker_backend: Callable[[Path], Any] = _legacy_tracker,
+    meminfo: Callable[[], dict[str, int] | None] = read_meminfo,
+    devices: Devices | None = None,
+    face_backend: Callable[[Path | None], Any] = _face_backend,
+    identity_store: Callable[[Path], Any] = _identity_store,
+    preview_port: int | None = None,
+    preview_render: Callable[[Any], bytes] | None = None,
+    clock: Clock | None = None,
+) -> int:
+    parser = argparse.ArgumentParser(prog="sentinel")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    commands = parser.add_subparsers(dest="command", required=True)
+    config_parser = commands.add_parser("config", help="configuration tools")
+    config_commands = config_parser.add_subparsers(dest="config_command", required=True)
+    validate = config_commands.add_parser("validate", help="validate a configuration file")
+    validate.add_argument("path", help="YAML configuration file")
+    capture_parser = commands.add_parser("capture", help="camera ingest tools")
+    capture_commands = capture_parser.add_subparsers(dest="capture_command", required=True)
+    probe = capture_commands.add_parser(
+        "probe",
+        help="read the camera (SENTINEL_RTSP_URL) for a while and print a numbers-only JSON summary",
+    )
+    probe.add_argument("path", help="YAML configuration file")
+    probe.add_argument("--seconds", type=_seconds, default=30.0, help="1-300, default 30")
+    track_parser = commands.add_parser("track", help="person detection and tracking tools")
+    track_commands = track_parser.add_subparsers(dest="track_command", required=True)
+    track_probe = track_commands.add_parser(
+        "probe",
+        help="run the legacy detector + ByteTrack on the camera (SENTINEL_RTSP_URL) for a while and "
+        "print a numbers-only JSON summary; needs the GPU with L4T's libcuda preloaded (D27)",
+    )
+    track_probe.add_argument("path", help="YAML configuration file")
+    track_probe.add_argument("--engine", type=Path, required=True, help="the profiled yolov8n.engine")
+    track_probe.add_argument("--seconds", type=_seconds, default=30.0, help="1-300, default 30")
+    track_probe.add_argument(
+        "--min-free-gb", type=_min_free_gb, default=1.5,
+        help="refuse to load the model below this MemFree (decimal GB; default 1.5; see U18)",
+    )
+    track_probe.add_argument(
+        "--preview", action="store_true",
+        help="operator-only live preview on 127.0.0.1:18091 (P1): the counted boxes on their frames with track ID, "
+        "confidence and C/T, at most 5 frames/s; path token from SENTINEL_PREVIEW_TOKEN; saves nothing. "
+        "Reach it over SSH: ssh -L 18091:127.0.0.1:18091 <device>",
+    )
+    track_probe.add_argument(
+        "--box-summary", action="store_true",
+        help="add track_boxes to the JSON: numbers-only box statistics per track, at most 64 tracks",
+    )
+    track_probe.add_argument(
+        "--multi-person-frames", action="store_true",
+        help="add multi_person_frames to the JSON: numbers-only records of frames with two or more persons "
+        "(frame identity, times, track IDs, boxes, confidences, pairwise overlap), at most 64 records",
+    )
+    identity_parser = commands.add_parser(
+        "identity", help="the sealed identity gallery (V2-25 demo form): consented enrollment, list, revoke, purge")
+    identity_commands = identity_parser.add_subparsers(dest="identity_command", required=True)
+    enroll_parser = identity_commands.add_parser(
+        "enroll",
+        help="enroll one consenting person from 2-8 photos in a folder inside <identity dir>/inbox/ (one face each); "
+        f"the gallery passphrase comes from {SECRET_ENV} or a hidden prompt; the photos are deleted afterwards",
+    )
+    enroll_parser.add_argument("path", help="YAML configuration file (its identity section)")
+    enroll_parser.add_argument("photos", type=Path, help="the photo folder, inside <identity dir>/inbox/")
+    enroll_parser.add_argument("--consent-confirmed", action="store_true",
+                               help="the person explicitly consented to this enrollment (required)")
+    enroll_parser.add_argument("--consent-date", required=True, help="the date of that consent, YYYY-MM-DD")
+    enroll_parser.add_argument("--dry-run", action="store_true", help="report each photo; write and delete nothing")
+    list_parser = identity_commands.add_parser("list", help="opaque IDs, prototype counts and dates (no names)")
+    list_parser.add_argument("path", help="YAML configuration file")
+    revoke_parser = identity_commands.add_parser("revoke", help="remove one identity from the gallery")
+    revoke_parser.add_argument("path", help="YAML configuration file")
+    revoke_parser.add_argument("identity_id", help="the opaque ID (idn-...)")
+    purge_parser = identity_commands.add_parser("purge", help="delete the gallery and the inbox")
+    purge_parser.add_argument("path", help="YAML configuration file")
+    purge_parser.add_argument("--yes", action="store_true", help="required: confirms the deletion")
+    for sub_parser in (enroll_parser, list_parser, revoke_parser, purge_parser):
+        sub_parser.add_argument("--identity-dir", type=Path, default=DEFAULT_IDENTITY_DIR,
+                                help=f"the private (0700) identity directory (default {DEFAULT_IDENTITY_DIR})")
+    run = commands.add_parser(
+        "run",
+        help="run the demo runtime (D-1): camera (SENTINEL_RTSP_URL) -> detector/tracker -> rules -> "
+        "incidents -> outbox; needs the GPU with L4T's libcuda preloaded (D27). Stop with Ctrl-C or SIGTERM",
+    )
+    run.add_argument("path", help="YAML configuration file")
+    run.add_argument("--data-dir", type=Path, required=True, help="directory for the incident database")
+    run.add_argument("--engine", type=Path, required=True, help="the profiled yolov8n.engine")
+    run.add_argument(
+        "--min-free-gb", type=_min_free_gb, default=1.5,
+        help="do not load the detector below this MemFree (decimal GB; default 1.5; provisional, see U18)",
+    )
+    run.add_argument(
+        "--scene", action="store_true",
+        help="also start the scene server and scene analysis; off by default, and refused unless the "
+        "configuration lists an enabled, admitted llama-lfm2-vl-scene adapter",
+    )
+    run.add_argument("--llama-server", type=Path, default=None,
+                     help="the llama-server binary (default: the selected scene model set's own pinned build)")
+    run.add_argument(
+        "--scene-model-set", choices=sorted(SCENE_MODEL_SETS), default=DEFAULT_SCENE_MODEL_SET,
+        help=f"the model scene analysis and chat both use, with its own projector and its own llama.cpp build "
+        f"(default {DEFAULT_SCENE_MODEL_SET}, LFM3-VL-2B, which no accepted profile has measured yet, so --scene "
+        f"refuses it (D46); {FALLBACK_SCENE_MODEL_SET} is the explicit fallback and {ROLLBACK_SCENE_MODEL_SET} the "
+        "rollback; no set is ever substituted for another). A model_revision in the adapter manifest must be the "
+        "set's",
+    )
+    run.add_argument("--scene-model", type=Path, default=None,
+                     help="the set's model file (default: in ~/models/, as the set names it)")
+    run.add_argument("--scene-mmproj", type=Path, default=None,
+                     help="the set's own projector (default: beside its model, as the set names it)")
+    run.add_argument("--scene-ready-timeout-s", type=_positive_seconds, default=180.0)
+    run.add_argument(
+        "--scene-min-free-gb", type=_min_free_gb, default=3.0,
+        help="do not start the scene server below this MemFree (decimal GB; default 3.0, as check 8)",
+    )
+    run.add_argument(
+        "--workload-thp-disable", action="store_true",
+        help="D58 memory policy (off by default): after any scene server has started and before the detector "
+        "loads, disable transparent huge pages for this process alone (prctl), verified; the scene server keeps the "
+        "system setting; startup is refused if it cannot be verified. With --scene, the profile must have measured it",
+    )
+    run.add_argument(
+        "--post-load-release", action="store_true",
+        help="D58 memory policy (off by default): after each model loads and settles (15 s), release its model files "
+        "from the page cache (posix_fadvise DONTNEED); startup is refused unless every call returns 0. With --scene, "
+        "the profile must have measured it",
+    )
+    run.add_argument(
+        "--face", action="store_true",
+        help="V2-25 demo form (off by default): 1 Hz face recognition against the sealed gallery in --identity-dir, "
+        f"opened with the passphrase in {SECRET_ENV} (typed silently beforehand; removed from this process's "
+        "environment at once). Needs an enabled, admitted legacy-deepface-facenet512-yunet adapter",
+    )
+    run.add_argument(
+        "--face-validation", action="store_true",
+        help="with --face: allow a face admission that is PENDING_VALIDATION, for the guarded device validation only",
+    )
+    run.add_argument(
+        "--face-comparison", action="store_true",
+        help="with --face-validation (D87, diagnostic): within a fixed budget, embed faces found only by the full-scale "
+        "pass and record their similarity to the enrollment (never a vote); identity records become schema 4",
+    )
+    run.add_argument(
+        "--face-full-scale-detection", action="store_true",
+        help="with --face-validation (D88, a candidate, not enabled otherwise): replace DeepFace's half-scale face "
+        "detection with the same pinned YuNet at native scale, then DeepFace's own alignment and the same Facenet512, "
+        "taken from the loaded models; thresholds and identity rules unchanged; identity records become schema 6 "
+        "(D90: with each face's geometry and prototype position). "
+        "Not with --face-comparison",
+    )
+    run.add_argument(
+        "--face-capture-gallery", type=Path, metavar="DIR",
+        help="with --face-validation --face-full-scale-detection (D91, the camera-side enrollment experiment): keep, in "
+        "memory, the one person's compared faces and at the stop write a separate working gallery into DIR (a new "
+        "private directory, never the original's) from faces chosen at fixed times, sealed with the same passphrase; "
+        "nothing votes differently and the original is never written",
+    )
+    run.add_argument(
+        "--face-capture-raw", type=Path, metavar="DIR",
+        help="with --face-validation on the main_single profile (route B; the multi-pose comparison): keep the one "
+        "person's compared faces with their frame numbers and at the stop seal them, with the same passphrase, into "
+        "DIR/raw-capture.sealed (a new private directory) for the offline builder; no gallery is written, nothing votes "
+        "differently and the original is never written",
+    )
+    run.add_argument("--face-capture-consent-date", metavar="YYYY-MM-DD",
+                     help="with --face-capture-gallery or --face-capture-raw: the enrolled person's consent date")
+    run.add_argument(
+        "--face-shadow-gallery", type=Path, metavar="DIR",
+        help="with --face-validation --face-full-scale-detection, or --face-validation on the main_single profile (D91): "
+        "open the working gallery in DIR read only and record, for each compared face, its similarity to it and the "
+        "production decision against it (schema 6 or 8 \"shadow\"); only the original votes",
+    )
+    run.add_argument(
+        "--face-continuity", action="store_true",
+        help="with --face-validation (D97, PROPOSED, production detection only): keep an identity only while its track "
+        "is followed without a break (no detection gap over identity.continuity_max_gap_s, no jump, no overlapping "
+        "detection), for at most identity.continuity_retention_s after its matches; a break drops it at once",
+    )
+    run.add_argument(
+        "--identity-retention", action="store_true",
+        help="with --face-validation (session 116, part 28, PROPOSED and experimental): keep an established known "
+        "identity on its track while the track is followed without a break, for at most "
+        "identity.retention_max_since_match_s after its last successful match (not the whole track), as an association "
+        "shown apart from the raw face evidence; a break, ambiguous ownership, a new track life, the video no longer "
+        "being live (a stall or a stream reconnect), sustained contradiction or a different enrolled identity ends it. "
+        "Thresholds and confirmations unchanged; no "
+        "continuity rule, candidate, comparison, experiment or diagnostic with it",
+    )
+    run.add_argument(
+        "--tracking-diagnostic", action="store_true",
+        help="with --face-validation (session 79, a diagnostic; production detection only): record, per processed "
+        "frame, the person detections handed to the tracker, its published rows and unpublished detections, its lost "
+        "tracks, its own association costs, a separate shadow NMS at a lower confidence on the same forward pass, and "
+        "the tracks this runtime held current; numbers only, bounded; detection, tracking and identity unchanged. "
+        "Such a run is never an F2 attempt (its startup marker makes the F2 reading refuse it)",
+    )
+    run.add_argument(
+        "--face-landmark-diagnostic", action="store_true",
+        help="with --face-validation (session 90, a diagnostic; production detection and the plain identity rules "
+        "only): the native-scale face pass also keeps YuNet's five landmarks, and each result person's record carries "
+        "derived landmark numbers (proxies, never head angles) with an explicit association status; no image, crop, "
+        "embedding or coordinate is kept, and detection, embeddings and votes are unchanged. Such a run is never an F2 "
+        "attempt (its startup marker makes the F2 reading refuse it)",
+    )
+    run.add_argument("--identity-dir", type=Path, default=DEFAULT_IDENTITY_DIR,
+                     help=f"the private (0700) identity directory (default {DEFAULT_IDENTITY_DIR})")
+    run.add_argument(
+        "--status-port", type=_status_port, default=18090,
+        help="read-only status page on 127.0.0.1:PORT (D-2; default 18090; 0 = none). Reach it over SSH: "
+        "ssh -L 18090:127.0.0.1:18090 <device>",
+    )
+    run.add_argument(
+        "--live-preview", action="store_true",
+        help="D69 (off by default): show the newest frame the runtime already reads on the status page, with its "
+        "age and live/stale/offline state; a picture only while that frame is live, at most 640x480 and 2 encoded "
+        "per second for all viewers, encoded only while someone views the page; nothing is saved. Needs the status page",
+    )
+    run.add_argument(
+        "--snapshots", action="store_true",
+        help="D70 (off by default): save one JPEG per new incident, of the frame its opening observation came from "
+        "(never another; recorded as missing if that frame is gone), in DATA_DIR/snapshots (0700; files 0600), shown "
+        "on its incident page. Kept 7 days, oldest deleted first beyond 200 MB or 2000 files, none saved below a "
+        "free-space reserve of max(1 GB, 10%% of the volume)",
+    )
+    run.add_argument(
+        "--chat", action="store_true",
+        help="D74 (off by default): offer advisory questions about the live frame on the status page, answered by the "
+        "admitted scene model on its own worker, monitoring first. It needs --scene and a chat admission, which this "
+        "build does not have, so chat stays unavailable and says why. Needs the status page",
+    )
+    run.add_argument(
+        "--chat-validation", action="store_true",
+        help="D77: a guarded validation run only: chat may ask the scene model although it is not admitted, so that "
+        "its resource and interference checks can be made; the page and the status say so. Needs --chat",
+    )
+    run.add_argument(
+        "--device-artifacts", type=Path, default=None, metavar="FILE",
+        help="session 116, part 41 (off by default; experimental validation runs only: needs --face "
+        "--face-validation): identify the detector engine, the llama.cpp build and the model files by FILE, a record "
+        "of this device's own files written by the personal-beta package's download and build steps, instead of by "
+        "the reference device's records. It admits nothing and measures nothing: every other rule applies unchanged, "
+        "a changed, missing or incompatible file is refused, no accepted measurement is of this device, and the "
+        "starting line says that resource validation is pending",
+    )
+    run.add_argument(
+        "--feature-controls", action="store_true",
+        help="D99 (off by default): let the status page pause and resume what this run started (face recognition, "
+        "scene analysis, chat, the live view, incident snapshots); never starts, loads or admits anything. Each change "
+        "needs the operator's control key, written to DATA_DIR/control-key (0600) at startup and removed at the stop; "
+        "it is never printed or logged. Needs the status page",
+    )
+    run.add_argument("--status-interval-s", type=_positive_seconds, default=30.0,
+                     help="print a numbers-only status line this often (default 30)")
+    incident_parser = commands.add_parser(
+        "incident", help="operator actions on stored incidents; only while monitoring is stopped")
+    incident_commands = incident_parser.add_subparsers(dest="incident_command", required=True)
+    ack = incident_commands.add_parser(
+        "ack",
+        help="acknowledge an open incident (it stays unresolved; no alert is sent or withdrawn). Monitoring must be "
+        "stopped: while `sentinel run` owns the database this is refused, and a runtime started meanwhile is refused",
+    )
+    ack.add_argument("--data-dir", type=Path, required=True, help="the --data-dir of the runs that recorded it")
+    ack.add_argument("incident_id", help="the incident ID, as on the status page (inc-...)")
+    ack.add_argument("--actor", type=_actor, default="local",
+                     help="who acknowledges, recorded as operator:NAME (letters, digits, . _ -; default local)")
+    ack.add_argument("--note", type=_note, default=ACK_NOTE, help="why, at most 200 printable characters")
+    args = parser.parse_args(argv)
+
+    if args.command == "incident":  # reads no configuration: the database holds everything it needs
+        with _json_stdout() as out:
+            return _incident_ack(args, clock or SystemClock(), out)
+    try:
+        config = load_config(args.path)
+    except ConfigError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    if args.command == "capture":
+        return _capture_probe(config, args.seconds, capture_source)
+    if args.command == "track":
+        with _json_stdout() as out:
+            return _track_probe(
+                config, args.seconds, args.engine, round(args.min_free_gb * GB), capture_source, tracker_backend,
+                meminfo, out, preview=args.preview, box_summary=args.box_summary,
+                multi_person_frames=args.multi_person_frames, preview_port=preview_port, preview_render=preview_render,
+            )
+    if args.command == "identity":
+        with _json_stdout() as out:
+            return _identity(config, args, face_backend, identity_store, out)
+    if args.command == "run":
+        devices = devices or Devices(
+            capture_source=capture_source,
+            tracker_backend=tracker_backend,
+            scene_server=_scene_server,
+            scene_request=_scene_request,
+            chat_request=_chat_request,
+            meminfo=meminfo,
+            face_backend=_face_backend,
+            identity_store=_identity_store,
+        )
+        with _json_stdout() as out:
+            return _run(config, args, devices, out)
+    print(
+        f"{args.path}: valid Sentinel configuration "
+        f"(version {config.config_version}, camera {config.camera.id})"
+    )
+    # Optional adapters never block startup; show why any cannot be used.
+    statuses = resolve(config.adapters)
+    if not statuses:
+        print("  no optional adapters configured: core monitoring only")
+    for status in statuses:
+        print(f"  adapter {status.manifest.adapter_id}: {status.state.value} ({status.reason})")
+    for zone in config.zones:
+        if zone.schedule is None:
+            when = "always active"
+        else:
+            windows = ", ".join(f"{w.start}-{w.end}" for w in zone.schedule.windows)
+            when = f"{windows} {zone.schedule.timezone}"
+        state = "enabled" if zone.enabled else "disabled"
+        print(f"  zone {zone.zone_id}: {zone.rule}, {state}, {zone.severity}, {when}")
+    return 0
+
+
+def _capture_probe(
+    config: SentinelConfig, seconds: float, capture_source: Callable[[CaptureConfig], VideoSource]
+) -> int:
+    capture = config.capture
+    if capture.stream_profile == STREAM_MAIN_SINGLE:  # route B: no working copy here; measure the substream path only
+        print("capture probe: stream_profile_not_supported (main_single runs only in sentinel run --face-validation)",
+              file=sys.stderr)
+        return 1
+    try:
+        source = capture_source(capture)
+    except SourceError as exc:
+        print(f"capture probe: {exc.reason}", file=sys.stderr)
+        return 1
+    clock = SystemClock()
+    slot = LatestFrame()
+    worker = CaptureWorker(source, FrameStamper(config.camera.id, clock), slot, capture)
+    summary = run_probe(
+        worker,
+        slot,
+        clock,
+        seconds,
+        endpoint=getattr(source, "endpoint", None),
+        stop_timeout_s=capture.open_timeout_s + capture.read_timeout_s + 1.0,
+    )
+    summary["settings"] = capture.model_dump()
+    print(json.dumps(summary, indent=2))
+    return 0 if summary["status"] == "frames_received" and summary["worker"]["stopped"] else 1
+
+
+def _track_probe(
+    config: SentinelConfig,
+    seconds: float,
+    engine: Path,
+    min_free_bytes: int,
+    capture_source: Callable[[CaptureConfig], VideoSource],
+    tracker_backend: Callable[[Path], Any],
+    meminfo: Callable[[], dict[str, int] | None],
+    out: TextIO,
+    *,
+    preview: bool = False,
+    box_summary: bool = False,
+    multi_person_frames: bool = False,
+    preview_port: int | None = None,
+    preview_render: Callable[[Any], bytes] | None = None,
+) -> int:
+    capture = config.capture
+    if capture.stream_profile == STREAM_MAIN_SINGLE:  # route B: the tracker would see the decoded picture, not its copy
+        print("track probe: stream_profile_not_supported (main_single runs only in sentinel run --face-validation)",
+              file=sys.stderr)
+        return 1
+    try:
+        source = capture_source(capture)  # checks the URL before any model is loaded
+    except SourceError as exc:
+        print(f"track probe: {exc.reason}", file=sys.stderr)
+        return 1
+    token = None
+    if preview:
+        from .tracking.preview import TOKEN_ENV, valid_token
+
+        token = os.environ.get(TOKEN_ENV)
+        if not valid_token(token):  # never printed: it is the preview's access secret
+            print(f"track probe: preview_token_{'invalid' if token else 'missing'}", file=sys.stderr)
+            return 1
+    # GPU allocations failed beyond MemFree on this device (U18); a provisional probe guard, not a policy.
+    before = meminfo()
+    if before is not None and before["MemFree"] < min_free_bytes:
+        refusal = {"probe": "track", "status": "refused", "reason": "memfree_below_minimum",
+                   "memory_before": before, "min_free_bytes": min_free_bytes}
+        print(json.dumps(refusal, indent=2), file=out, flush=True)
+        return 1
+    observers: list[Callable[[Any, Any], None]] = []
+    boxes = None
+    if box_summary:
+        from .tracking.box_summary import BoxSummary
+
+        boxes = BoxSummary()
+        observers.append(boxes.observe)
+    multi = None
+    if multi_person_frames:
+        from .tracking.multi_person import MultiPersonFrames
+
+        multi = MultiPersonFrames()
+        observers.append(multi.observe)
+    server = None
+    stop: threading.Event | None = None
+    handlers: dict[int, Any] = {}
+    summary: dict[str, Any] | None = None
+    try:
+        if preview:
+            # Bound before the model loads, so a busy port refuses fast; it stops in the finally below on any exit.
+            from .tracking.preview import PREVIEW_PORT, PreviewFeed, PreviewServer, render_jpeg
+
+            feed = PreviewFeed()
+            try:
+                server = PreviewServer(PREVIEW_PORT if preview_port is None else preview_port, feed, token or "",
+                                       render=preview_render or render_jpeg)
+            except OSError as exc:
+                print(f"track probe: preview_port_unavailable:{type(exc).__name__}", file=sys.stderr)
+                return 1
+            observers.append(feed.observe)
+            stop = threading.Event()
+            handlers = {sig: signal.signal(sig, lambda *_: stop.set()) for sig in (signal.SIGINT, signal.SIGTERM)}
+            server.start()
+        backend = tracker_backend(engine)
+        started = time.monotonic()
+        try:
+            backend.load()
+        except TrackerError as exc:
+            detail = f" ({exc.error_type})" if exc.error_type else ""
+            print(f"track probe: {exc.label}{detail}", file=sys.stderr)
+            return 1
+        load_s = time.monotonic() - started
+        after = meminfo()
+        if stop is None or not stop.is_set():
+            clock = SystemClock()
+            slot = LatestFrame()
+            worker = CaptureWorker(source, FrameStamper(config.camera.id, clock), slot, capture)
+            summary = run_probe(
+                worker,
+                slot,
+                clock,
+                seconds,
+                endpoint=getattr(source, "endpoint", None),
+                stop_timeout_s=capture.open_timeout_s + capture.read_timeout_s + 1.0,
+                consumer=TrackProbe(PersonTracker(backend), clock, observers),
+                stop=stop,
+            )
+    finally:
+        if server is not None:
+            server.stop(PREVIEW_STOP_TIMEOUT_S)
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+    interrupted = stop is not None and stop.is_set()
+    if summary is None:  # a signal arrived during the model load: the camera was never opened
+        stopped = {"probe": "track", "status": "interrupted", "reason": "signal_before_capture",
+                   "preview": None if server is None else {**server.summary(), "ended_by": "signal"}}
+        print(json.dumps(stopped, indent=2), file=out, flush=True)
+        return 130
+    summary["load"] = {"seconds": round(load_s, 2), "memory_before": before, "memory_after": after,
+                       "min_free_bytes": min_free_bytes}
+    summary["settings"] = capture.model_dump()
+    if boxes is not None:
+        summary.update(boxes.summary())
+    if multi is not None:
+        summary.update(multi.summary())
+    if server is not None:
+        summary["preview"] = {**server.summary(), "ended_by": "signal" if interrupted else "duration"}
+    print(json.dumps(summary, indent=2), file=out, flush=True)
+    if interrupted:
+        return 130
+    tracking = summary["tracking"]
+    return 0 if tracking["processed"] and not tracking["failed"] and summary["worker"]["stopped"] else 1
+
+
+def _identity_secret(store: Any) -> Secret:
+    """The gallery passphrase: SENTINEL_IDENTITY_PASSPHRASE (removed at once) or a hidden prompt, confirmed for a new
+    gallery, which also needs MIN_NEW_SECRET_CHARS."""
+    new = not store.exists()
+    secret = take_secret_from_environment()
+    if secret is None:
+        return prompt_secret(confirm=new)
+    if new and len(secret.reveal()) < MIN_NEW_SECRET_CHARS:
+        raise VaultError("secret_too_short")
+    return secret
+
+
+def _identity(config: SentinelConfig, args: argparse.Namespace, face_backend: Callable[[Path | None], Any],
+              identity_store: Callable[[Path], Any], out: TextIO) -> int:
+    """``sentinel identity``: JSON on stdout (opaque IDs, counts and labels); errors as one label on stderr."""
+    from .identity.enroll import EnrollmentRefused, enroll
+    from .identity.gallery import check_consent_date
+    from .identity.legacy_deepface import FaceBackendError
+
+    store = identity_store(args.identity_dir.expanduser())
+    command = args.identity_command
+    try:
+        if command == "purge":
+            if not args.yes:
+                print("identity: purge needs --yes", file=sys.stderr)
+                return 1
+            report = store.purge()  # deletes even when its audit lines cannot be written; reports both outcomes
+            print(json.dumps({"identity": "purge", **report}), file=out)
+            unwritten = [outcome for outcome in report["audit"].values() if outcome != "written"]
+            if report["deletion"] != "complete":
+                print("identity: purge_incomplete", file=sys.stderr)
+                return 1
+            if unwritten:
+                print(f"identity: purge_audit_incomplete:{unwritten[0]}", file=sys.stderr)
+                return 1
+            return 0
+        if command == "enroll":
+            if not args.consent_confirmed:
+                print("identity: consent_not_confirmed (the person must explicitly consent; pass --consent-confirmed)",
+                      file=sys.stderr)
+                return 1
+            try:
+                check_consent_date(args.consent_date)  # the gallery's own form, before any passphrase or model
+            except ValueError:
+                print("identity: consent_date_invalid (use YYYY-MM-DD)", file=sys.stderr)
+                return 1
+        if command == "list" and not store.exists():
+            print(json.dumps({"identity": "list", "identities": []}), file=out)
+            return 0
+        secret = _identity_secret(store)
+        if command == "enroll":
+            report = enroll(store, face_backend(None), args.photos, secret=secret, consent_date=args.consent_date,
+                            min_quality=config.identity.min_quality, match_threshold=config.identity.match_threshold,
+                            dry_run=args.dry_run)
+            print(json.dumps({"identity": "enroll", **report}), file=out)
+            return 0
+        if command == "list":
+            document = store.load(secret)
+            print(json.dumps({"identity": "list", "identities": [
+                {"identity_id": i.identity_id, "prototypes": len(i.prototypes), "consent_date": i.consent_date,
+                 "enrolled_utc": i.enrolled_utc.isoformat()} for i in document.identities]}), file=out)
+            return 0
+        revoked = store.revoke(args.identity_id, secret)
+        print(json.dumps({"identity": "revoke", "identity_id": args.identity_id, "revoked": revoked}), file=out)
+        return 0 if revoked else 1
+    except EnrollmentRefused as refused:
+        print(json.dumps({"identity": "enroll", "refused": refused.label, **refused.report}), file=out)
+        print(f"identity: {refused.label}", file=sys.stderr)
+        return 1
+    except FaceBackendError as exc:  # the provider's fixed label and, at most, its exception class
+        print(f"identity: {exc.label}" + (f":{exc.error_type}" if exc.error_type else ""), file=sys.stderr)
+        return 1
+    except VaultError as exc:
+        print(f"identity: {exc.label}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - anything else: its class only (a message can name a photo's path)
+        print(f"identity: failed:{type(exc).__name__}", file=sys.stderr)
+        return 1
+
+
+def _run(config: SentinelConfig, args: argparse.Namespace, devices: Devices, out: TextIO) -> int:
+    secret = take_secret_from_environment()  # always removed first: no child (llama-server) may inherit it
+    if args.face_validation and not args.face:
+        print("run: --face-validation needs --face", file=sys.stderr)
+        return 1
+    if args.face_comparison and not args.face_validation:
+        print("run: --face-comparison needs --face-validation", file=sys.stderr)
+        return 1
+    if args.face_full_scale_detection and not args.face_validation:
+        print("run: --face-full-scale-detection needs --face-validation", file=sys.stderr)
+        return 1
+    route_b = config.capture.stream_profile == STREAM_MAIN_SINGLE
+    experiment = [flag for flag, value in (("--face-capture-gallery", args.face_capture_gallery),
+                                           ("--face-capture-raw", args.face_capture_raw),
+                                           ("--face-shadow-gallery", args.face_shadow_gallery)) if value is not None]
+    for flag in experiment[:1]:
+        if route_b and flag != "--face-capture-gallery":  # route B: its own head-window faces, validation only
+            if not args.face_validation:
+                print(f"run: {flag} needs --face-validation", file=sys.stderr)
+                return 1
+        elif not (args.face_validation and args.face_full_scale_detection):  # D91's rule, on either profile
+            print(f"run: {flag} needs --face-validation and --face-full-scale-detection", file=sys.stderr)
+            return 1
+    if args.face_capture_raw is not None and not route_b:
+        print("run: --face-capture-raw is for the main_single profile (route B) only", file=sys.stderr)
+        return 1
+    if len(experiment) > 1:
+        print("run: a capture and a shadow comparison are separate runs; use one", file=sys.stderr)
+        return 1
+    capture_flag = args.face_capture_gallery is not None or args.face_capture_raw is not None
+    if (args.face_capture_consent_date is not None) != capture_flag:
+        flag = "--face-capture-raw" if args.face_capture_raw is not None else "--face-capture-gallery"
+        print(f"run: {flag} and --face-capture-consent-date go together", file=sys.stderr)
+        return 1
+    if args.face_full_scale_detection and args.face_comparison:
+        print("run: --face-full-scale-detection replaces the detection --face-comparison compares with; use one",
+              file=sys.stderr)
+        return 1
+    if args.face_continuity and not args.face_validation:
+        print("run: --face-continuity needs --face-validation", file=sys.stderr)
+        return 1
+    if args.face_continuity and (args.face_full_scale_detection or args.face_comparison or experiment):
+        print("run: --face-continuity runs with production detection and no comparison or experiment",
+              file=sys.stderr)
+        return 1
+    if args.tracking_diagnostic and not args.face_validation:
+        print("run: --tracking-diagnostic needs --face-validation", file=sys.stderr)
+        return 1
+    if args.tracking_diagnostic and (args.face_full_scale_detection or args.face_comparison or experiment
+                                     or args.face_continuity):
+        print("run: --tracking-diagnostic runs with production detection and the plain identity rules: no candidate, "
+              "comparison, experiment or continuity rule", file=sys.stderr)
+        return 1
+    if args.face_landmark_diagnostic and not args.face_validation:
+        print("run: --face-landmark-diagnostic needs --face-validation", file=sys.stderr)
+        return 1
+    if args.face_landmark_diagnostic and (args.face_full_scale_detection or args.face_comparison or experiment
+                                          or args.face_continuity or args.tracking_diagnostic):
+        print("run: --face-landmark-diagnostic runs with production detection and the plain identity rules: no "
+              "candidate, comparison, experiment, continuity rule or tracking diagnostic", file=sys.stderr)
+        return 1
+    if args.identity_retention and not args.face_validation:
+        print("run: --identity-retention needs --face-validation", file=sys.stderr)
+        return 1
+    if args.identity_retention and (args.face_full_scale_detection or args.face_comparison or experiment
+                                    or args.face_continuity or args.tracking_diagnostic
+                                    or args.face_landmark_diagnostic):
+        print("run: --identity-retention runs with the plain identity rules: no candidate, comparison, experiment, "
+              "continuity rule or diagnostic", file=sys.stderr)
+        return 1
+    if args.live_preview and not args.status_port:
+        print("run: --live-preview needs the status page (--status-port other than 0)", file=sys.stderr)
+        return 1
+    if args.chat and not args.status_port:
+        print("run: --chat needs the status page (--status-port other than 0)", file=sys.stderr)
+        return 1
+    if args.chat_validation and not args.chat:
+        print("run: --chat-validation needs --chat", file=sys.stderr)
+        return 1
+    if args.feature_controls and not args.status_port:
+        print("run: --feature-controls needs the status page (--status-port other than 0)", file=sys.stderr)
+        return 1
+    artifacts = None
+    if args.device_artifacts is not None:  # part 41: for experimental validation runs alone; read before anything opens
+        if not (args.face and args.face_validation):
+            print("run: --device-artifacts needs --face --face-validation", file=sys.stderr)
+            return 1
+        try:
+            artifacts = load_device_artifacts(args.device_artifacts.expanduser())
+        except DeviceArtifactsError as exc:
+            print(f"run: {exc.label}", file=sys.stderr)
+            return 1
+    face = None
+    if args.face:
+        if secret is None:
+            print(f"run: identity_secret_missing ({SECRET_ENV} is not set)", file=sys.stderr)
+            return 1
+        face = FaceOptions(identity_dir=args.identity_dir.expanduser(), secret=secret,
+                           validation_run=args.face_validation, comparison=args.face_comparison,
+                           detection=DETECTION_FULL_SCALE if args.face_full_scale_detection else DETECTION_DEEPFACE,
+                           shadow_dir=None if args.face_shadow_gallery is None else args.face_shadow_gallery.expanduser(),
+                           capture_dir=(args.face_capture_raw.expanduser() if args.face_capture_raw is not None
+                                        else None if args.face_capture_gallery is None
+                                        else args.face_capture_gallery.expanduser()),
+                           capture_raw=args.face_capture_raw is not None,
+                           capture_consent_date=args.face_capture_consent_date, continuity=args.face_continuity,
+                           tracking_diagnostic=args.tracking_diagnostic,
+                           landmark_diagnostic=args.face_landmark_diagnostic, retention=args.identity_retention)
+    del secret
+    scene = None
+    if args.scene:
+        chosen = scene_model_set(args.scene_model_set)
+        scene = SceneOptions(
+            binary=args.llama_server or chosen.llama_server, model=args.scene_model or chosen.model_path,
+            mmproj=args.scene_mmproj or chosen.mmproj_path,
+            ready_timeout_s=args.scene_ready_timeout_s, min_free_bytes=round(args.scene_min_free_gb * GB),
+            model_set=chosen.key,
+        )
+    options = RunOptions(
+        data_dir=args.data_dir.expanduser(), engine=args.engine, min_free_bytes=round(args.min_free_gb * GB), scene=scene,
+        face=face,
+        memory_policy=policy_from_flags(workload_thp_disable=args.workload_thp_disable,
+                                        post_load_release=args.post_load_release),
+        live_preview=args.live_preview,
+        snapshots=SnapshotPolicy() if args.snapshots else None,
+        chat=args.chat,
+        chat_validation=args.chat_validation,
+        feature_controls=args.feature_controls,
+        device_artifacts=artifacts,
+    )
+    clock = SystemClock()
+    holder: dict[str, Any] = {}
+    page = None
+    if args.status_port:
+        # Bound before any model loads: a busy port refuses fast, and the page shows "starting" meanwhile.
+        from .status_page import StatusServer
+
+        def snapshot() -> dict[str, Any]:
+            runtime = holder.get("runtime")
+            return runtime.snapshot() if runtime is not None else {
+                "runtime": {"state": "starting", "camera_id": config.camera.id}}
+
+        def page_snapshot() -> dict[str, Any]:  # a page's own read: the same status (timed in retention runs)
+            runtime = holder.get("runtime")
+            return runtime.page_snapshot() if runtime is not None else snapshot()
+
+        def preview() -> Any:
+            runtime = holder.get("runtime")
+            return None if runtime is None else runtime.preview
+
+        def chat() -> Any:
+            runtime = holder.get("runtime")
+            return None if runtime is None else runtime.chat
+
+        def evidence() -> Any:  # part 28: what chat's recorded-fact answers read (the runtime's history and tracks)
+            return holder.get("runtime")
+
+        try:
+            page = StatusServer(args.status_port, snapshot, options.data_dir / DATABASE_NAME,
+                                preview=preview if args.live_preview else None, chat=chat if args.chat else None,
+                                page_snapshot=page_snapshot, evidence=evidence if args.chat else None)
+        except OSError as exc:
+            print(f"run: status_port_unavailable:{type(exc).__name__}", file=sys.stderr)
+            return 1
+        page.start()
+    try:
+        assembly = assemble(config, options, devices, clock)
+    except (StartupRefused, KeyboardInterrupt) as exc:
+        if page is not None:
+            page.stop(2.0)
+        if isinstance(exc, KeyboardInterrupt):
+            print("run: interrupted during startup", file=sys.stderr)
+            return 130
+        print(f"run: {exc.label}", file=sys.stderr)
+        return 1
+    except BaseException:
+        if page is not None:
+            page.stop(2.0)
+        raise
+    runtime = assembly.runtime
+    holder["runtime"] = runtime
+    key_path = None
+    if page is not None and runtime.controls is not None:  # D99: the key only in its 0600 file, never on stdout
+        from .status_page import new_control_key, write_control_key
+
+        key = new_control_key()
+        try:
+            key_path = write_control_key(options.data_dir, key)
+        except OSError as exc:
+            page.stop(2.0)
+            assembly.close(runtime.shutdown())
+            print(f"run: control_key_unwritable:{type(exc).__name__}", file=sys.stderr)
+            return 1
+        page.enable_controls(lambda: runtime.controls, key)
+        del key
+    startup = {**assembly.startup, "status_page": None if page is None else "http://%s:%d/" % page.address}
+    print(json.dumps({"run": "starting", "startup": startup}), file=out, flush=True)
+    handlers = {sig: signal.signal(sig, lambda *_: runtime.request_stop()) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        runtime.start()
+        next_line = time.monotonic()
+        while not runtime.stop_requested:
+            runtime.step()
+            for record in runtime.drain_identity_records():  # opaque IDs, numbers and fixed labels only
+                print(json.dumps(record), file=out, flush=True)
+            for record in runtime.drain_control_records():  # D99: features and fixed labels only, never the key
+                print(json.dumps(record), file=out, flush=True)
+            if time.monotonic() >= next_line:
+                print(json.dumps(status_line(runtime.snapshot())), file=out, flush=True)
+                next_line = time.monotonic() + args.status_interval_s
+    finally:
+        shutdown = runtime.shutdown()
+        if page is not None:
+            shutdown["stopped"]["status_page"] = page.stop(2.0)
+        if key_path is not None:
+            from .status_page import remove_control_key
+
+            shutdown["stopped"]["control_key_removed"] = remove_control_key(key_path)
+        if page is not None or key_path is not None:
+            shutdown["all_stopped"] = all(shutdown["stopped"].values())
+        closed = assembly.close(shutdown)
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+    for record in runtime.drain_identity_records():
+        print(json.dumps(record), file=out, flush=True)
+    for record in runtime.drain_control_records():
+        print(json.dumps(record), file=out, flush=True)
+    print(json.dumps({"run": "stopped", "shutdown": shutdown, "database_closed": closed,
+                      "status": status_line(runtime.snapshot())}), file=out, flush=True)
+    return 0 if shutdown["all_stopped"] and closed else 2
+
+
+def status_line(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """The periodic one-line summary: numbers and fixed labels only."""
+    live = snapshot.get("live") or {}
+    return {
+        "updated_utc": snapshot["runtime"]["updated_utc"],
+        "state": snapshot["runtime"]["state"],
+        "video": live.get("video"),
+        "occupancy": live.get("occupancy"),
+        "scene": live.get("scene"),
+        "identities": live.get("identity"),  # counts by state and basis; never the "identity" record key
+        "rates": snapshot["rates"],
+        "capture": {k: snapshot["components"]["capture"][k] for k in ("state", "stream_epoch", "reconnects")},
+        "pending_signals": snapshot["components"]["incidents"]["pending_signals"],
+        "degraded": snapshot["degraded"],
+    }
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

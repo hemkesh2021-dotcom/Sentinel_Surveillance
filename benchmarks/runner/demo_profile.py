@@ -1,0 +1,3403 @@
+#!/usr/bin/env python3
+"""Measure the Oct 20 demo's resource profile on the Jetson (U17 option a, D28).
+
+Runs the three demo model components together, as the demo will run them, and
+records whole-device memory, per-process memory and tegrastats while they work:
+
+- llama-server (LFM2-VL) with v1's launcher flags and L4T's libcuda preloaded
+  (decision D27); the run stops unless every layer and the vision encoder are
+  on the GPU;
+- the detector: the legacy yolov8n.engine through Ultralytics track() and
+  ByteTrack at 15 fps;
+- face: DeepFace Facenet512 with YuNet, TensorFlow on the CPU, at 1 Hz (decision
+  D34: check 8 measured p50 896 ms per run on the CPU, so 2 Hz was unreachable).
+
+The detector and face path run in one ~/onvif_env process (decision D24);
+see demo_workload.py. Components load one after another with settle periods,
+so each cold-load delta is visible, then run together for a warm-up and a
+steady period, then unload.
+
+The result is a provisional demo profile from one cold load (label
+"provisional-demo"). It is not a benchmark, a Gate B record or a beta-gate
+result. Memory follows guide ch. 12: whole-device use is MemTotal - MemAvailable
+in decimal bytes; per-process RSS/PSS and tegrastats are separate views that
+are never added together.
+
+Memory CSV timestamps are sample-start time.monotonic() seconds within the
+recorded boot. Linux meminfo kB values mean 1024 bytes; absent fields are blank
+in CSV and None when loaded. Samples stream to disk every 0.2 seconds without
+an in-memory history. Torch allocator events are a separate process-only view,
+not total GPU/device usage or proof that process exit reclaimed memory.
+
+MA1 (--memory-attribution, opt-in diagnostic, D55; only with --post-load-release)
+adds the workload's own allocator and garbage-collector counters (relayed
+``memattr_process`` events) and, every --maps-interval-s seconds, the
+workload's /proc/<pid>/smaps summed into fixed mapping categories
+(``memattr_maps`` events: numbers only, never a path or memory contents). The
+summary writes memattr.json. An MA1 run is never eligible, accepted or admitted.
+
+THP observation (--thp-observation, opt-in, D56; only with --memory-attribution)
+reads, without changing anything: AnonHugePages in the same smaps aggregates;
+meminfo AnonHugePages, /proc/vmstat's THP fault, collapse and split counters
+and khugepaged's progress counters in each 0.2 s memory.csv row (with their own
+monotonic read time and cost); and the kernel identity, page sizes and THP
+settings before and after the run. The summary writes thp.json with the
+predeclared reading (session 42). It never sets or tunes a THP setting.
+
+MA1-WTD (--workload-thp-disable, opt-in, D57; with --thp-observation, or with
+--candidate for D58) passes --thp-disable to the workload, which disables
+transparent huge pages for its own process with prctl before any model library
+and stops unless that is verified. This profiler checks THP_enabled read-only
+at four points: itself before anything starts, itself and llama-server before
+the workload starts, all three when the workload reports its check, and again
+at the steady end.
+The summary writes wtd.json: the intervention's verification, the D57 net-step
+rule, the heap's residency, khugepaged's activity, latency and throughput, and
+the predeclared reading (session 43). --net-steps RUN_DIR prints the same
+measures for any saved run without writing anything.
+
+The D58 candidate (--candidate, opt-in; with --post-load-release and
+--workload-thp-disable, without --memory-attribution or --thp-observation) is
+step 4 with the post-load release and the workload's verified THP disable, and
+none of MA1's allocator, smaps or THP-counter sampling. Its scope checks are
+cheap reads: THP_enabled at MA1-WTD's four checkpoints, the workload's
+AnonHugePages at its check and at the two steady boundaries, and the THP
+settings before and after. A release call that does not return 0 stops the
+run. The release call, its eligible files and the THP disable are
+sentinel.memory_policy's, which `sentinel run` uses for the same policies. The
+summary writes candidate.json; the run is judged by D47's rules and thresholds
+under step4_criteria.CANDIDATE_CRITERIA_ID and is never accepted.
+
+Run from a plain SSH session on the Jetson, headless (decision D29), with
+VS Code and Claude Code closed; see docs/IMPLEMENTATION_STATUS.md, check 8.
+Standard library only; run with the system Python 3. Nothing here reads camera
+credentials, and model output text is never recorded. Output goes to
+~/sentinel-runs/<run id>/ (outside the repository). Rebuild the summary from
+the raw files with --summarize RUN_DIR.
+"""
+
+from __future__ import annotations
+
+import argparse
+import bisect
+import csv
+import errno
+import functools
+import gzip
+import hashlib
+import json
+import math
+import os
+import re
+import signal
+import socket
+import statistics
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+import zlib
+from collections.abc import Callable
+from datetime import datetime, timezone
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parents[1]
+if str(HERE) not in sys.path:  # loaded by path in tests; step4_criteria lives beside this file
+    sys.path.insert(0, str(HERE))
+import step4_criteria  # noqa: E402 - standard library only
+SRC = REPO / "src"
+if str(SRC) not in sys.path:  # the memory policies shared with sentinel run (D58); standard library only, like this file
+    sys.path.insert(0, str(SRC))
+from sentinel import memory_policy  # noqa: E402
+WORKLOAD = HERE / "demo_workload.py"
+HOME = Path.home()
+L4T_LIBCUDA = "/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1"
+L4T_LIBCUDA_DIR = "/usr/lib/aarch64-linux-gnu/nvidia/"
+LLAMA_FLAGS = ["--n-gpu-layers", "999", "--ctx-size", "2048", "--parallel", "1"]  # start_sentinel.sh
+DEFAULT_SCENE_REQUEST_MODEL = "lfm2-vl"  # the profiled request's model name (sentinel.scene.llama_server.MODEL_NAME)
+# llama-server's host-RAM prompt cache (b8932 default 8192 MiB); the numbers in these lines are saved.
+PROMPT_CACHE_STARTUP = re.compile(r"prompt cache is (enabled, size limit: (?:(\d+) MiB|no limit)|disabled)")
+PROMPT_CACHE_STATE = re.compile(
+    r"cache state: (\d+) prompts, ([\d.]+) MiB \(limits: ([\d.]+) MiB, (\d+) tokens, (\d+) est\)"
+)
+PROMPT_CACHE_MARKERS = {  # fixed llama-server texts -> saved label
+    "prompt is already in the cache, skipping": "duplicate_skipped",
+    "removing oldest entry": "evicted",
+    "failed to allocate memory for prompt cache state": "allocation_failed",
+}
+TARGET_STEADY_BYTES = 5_000_000_000  # guide ch. 12: decimal target
+TARGET_PEAK_BYTES = 5_400_000_000  # guide ch. 12: decimal ceiling
+MEMORY_FLOOR_BYTES = 300_000_000  # stop the run if MemAvailable stays below this
+SAMPLE_INTERVAL_S = 0.2
+PSS_INTERVAL_S = 1.0
+LABEL = "provisional-demo"
+EVENT_PREFIX = "@@EVENT "
+BASE_MEMINFO_KEYS = (
+    "MemTotal", "MemFree", "MemAvailable", "Cached", "SwapTotal", "SwapFree",
+    "Shmem", "Unevictable", "Mlocked", "SUnreclaim", "KReclaimable", "CmaFree",
+)
+# Attribution only (session 39): anonymous vs mapped memory and the file LRU split. No guard or
+# criterion reads them; their memory.csv columns come last so the existing column positions stay.
+ATTRIBUTION_MEMINFO_KEYS = ("AnonPages", "Mapped", "Active(file)", "Inactive(file)")
+MEMINFO_KEYS = (*BASE_MEMINFO_KEYS, *ATTRIBUTION_MEMINFO_KEYS)
+DESKTOP_COMMS = frozenset({"Xorg", "Xwayland", "gnome-shell", "Xtigervnc", "Xvnc", "xfwm4", "xfce4-session"})
+V1_SCRIPTS = frozenset({"surveillance4_1.py", "dashboard.py", "dashboard_1.py"})
+DEEPFACE_WEIGHTS = memory_policy.RELEASE_FILE_ROLES["face"]  # ("facenet512_weights.h5", "face_detection_yunet_...")
+PHASES_IN_ORDER = (  # *_release: --mr1-release-check or --post-load-release; smoke: --mr1-release-check only
+    "baseline", "llama_load", "llama_settle", "scene_release", "detector_load", "detector_settle", "detector_release",
+    "face_load", "face_settle", "face_release", "smoke", "warmup", "steady", "stopping", "unload_workload",
+    "unload_llama",
+)
+# Events that carry monotonic boundaries and run-side evidence (kept in full, few per run).
+BOUNDARY_EVENTS = frozenset({"steady_boundary", "stop_boundary", "llama_cmdline", "cuda_driver"})
+LLAMA_BUILD_PREFIXES = ("libllama", "libggml", "libmtmd")
+# MR1 (opt-in): each component's model files, released after its load and settle. The table and the call are
+# sentinel.memory_policy's, which sentinel run uses for its post-load release too (D58).
+MR1_RELEASE_FILES = memory_policy.RELEASE_FILE_ROLES  # scene: llm, mmproj; detector: engine; face: DEEPFACE_WEIGHTS
+MR1_RELEASE_SETTLE_S = 5.0  # /proc/meminfo counters fold in about every second
+MR1_SMOKE_BUDGET_S = 60.0  # detector frames, one face analysis and one scene request (30 s client timeout)
+MR1_FADVISE_CALL = memory_policy.FADVISE_CALL
+MR1_BASIS = ("device-wide /proc/meminfo and per-process status before and after the release window; it includes any "
+             "other activity in the window and shows neither per-file residency nor which pages were released")
+MR1_SMOKE_KEYS = {
+    "detector": ("frames_requested", "processed", "errors", "latency_ms"),
+    "face": ("runs", "completed", "runs_with_face", "errors", "latency_ms"),
+    "scene": ("attempts", "completed", "finish_reason", "valid", "rejection", "error", "errors", "latency_ms"),
+}
+MR1_SMOKE_LABELS = frozenset({"stop", "length", "other", "missing", "http", "timeout", "truncated", "invalid_report",
+                              "incomplete_completion", "malformed_response", "server_error", "unsupported_completion",
+                              "response_too_large"})
+# Step-4 PLR (opt-in, D54): MR1's per-model release after each load and settle, then step 4's full warm-up and
+# steady phases, judged by D47's criteria under step4_criteria.PLR_CRITERIA_ID. The outcomes stay descriptive.
+PLR_LABEL = "step4plr-post-load-release"
+PLR_CANNOT_ESTABLISH = (
+    "per-file page-cache residency, or which pages or files were released: the counters are device-wide",
+    "that a returned 0 dropped any page: mapped, dirty or locked pages stay",
+    "how much of any headroom difference the releases caused: the run has no same-boot arm without them",
+    "that sentinel run would behave the same: it performs no post-load release",
+    "GPU (NvMap) allocation behaviour at low MemFree beyond this run",
+    "model accuracy or scene accuracy",
+    "other boots, other inputs or other flags",
+)
+# MA1 (opt-in diagnostic, D55): attribution of the workload process's memory; never a criterion or eligibility.
+MA1_LABEL = "ma1-memory-attribution"
+MAPS_INTERVAL_S = 5.0
+MAPS_INTERVAL_RANGE_S = (2.0, 60.0)
+MAPS_READ_LIMIT_BYTES = 32 << 20  # a larger smaps is not parsed (unavailable, too_large)
+GLIBC_HEAP_MAX_BYTES = 64 << 20  # glibc's HEAP_MAX_SIZE on 64-bit: each non-main arena heap is aligned to it
+MAPS_CATEGORIES = ("heap", "stack", "arena_like", "anon_other", "anon_noaccess", "file", "device", "shmem_like",
+                   "special")
+SMAPS_FIELDS = {"Rss": "rss_bytes", "Pss": "pss_bytes", "Private_Dirty": "private_dirty_bytes",
+                "Anonymous": "anonymous_bytes", "Swap": "swap_bytes"}
+SMAPS_HEADER = re.compile(r"([0-9a-f]+)-([0-9a-f]+) ([r-][w-][x-][ps]) [0-9a-f]+ [0-9a-f]+:[0-9a-f]+ \d+ *(.*)")
+SHMEM_PREFIXES = ("/memfd:", "/dev/shm/", "/SYSV", "/dev/zero")
+MALLINFO2_REPORTED = ("arena", "ordblks", "smblks", "hblks", "hblkhd", "fsmblks", "uordblks", "fordblks", "keepcost")
+MEMATTR_EVENTS = frozenset({"memattr_process", "memattr_config"})
+QUIET_EVENTS = frozenset({"memattr_process", "memattr_maps"})  # MA1's periodic readings: events.jsonl only
+MEMATTR_FULL_GC_PER_SAMPLE = 16  # demo_workload's bound; a longer list is cut to it
+MEMATTR_STATUSES = frozenset({"observed", "partial", "unavailable", "unsupported"})
+MA1_STEP_BYTES = 1 << 20  # a workload RSS increase between consecutive memory.csv samples listed as a step
+MA1_MAX_STEPS = 128
+MA1_MAX_FULL_GC = 512
+MA1_CANNOT_ESTABLISH = (
+    "which code or object allocated the memory: the counters are process totals and mapping categories",
+    "whether growth is a leak or bounded beyond the recorded interval",
+    "GPU (NvMap) or other driver memory: it is outside the allocator counters, and what smaps shows for device "
+    "mappings depends on the driver",
+    "the device-wide residual outside the workload process (kernel and driver allocations)",
+    "that a full collection caused a step that followed it: time proximity is not cause",
+    "that the instrumentation left timing unchanged: its own costs are recorded, and latencies can only be "
+    "compared descriptively with the uninstrumented PLR run",
+    "any step-4 or PLR result, eligibility, acceptance or admission",
+    "other boots, inputs or flags",
+)
+# THP observation (opt-in, D56; only with MA1): read-only transparent-huge-page counters and settings. The khugepaged
+# hypothesis for U26's steps (session 42) stays unconfirmed; this records what could support or contradict it.
+THP_LABEL = "ma1thp-thp-observation"
+THP_SYSFS = Path("/sys/kernel/mm/transparent_hugepage")
+SMAPS_THP_FIELDS = {**SMAPS_FIELDS, "AnonHugePages": "anon_huge_pages_bytes"}
+THP_VMSTAT_KEYS = (  # the fault, collapse and split counters this kernel family documents; each kept when present
+    "thp_fault_alloc", "thp_fault_fallback", "thp_fault_fallback_charge", "thp_collapse_alloc",
+    "thp_collapse_alloc_failed", "thp_split_page", "thp_split_page_failed", "thp_deferred_split_page", "thp_split_pmd",
+)
+THP_KHUGEPAGED_COUNTERS = ("pages_collapsed", "full_scans")  # khugepaged's progress counters (sysfs)
+THP_COUNTER_COLUMNS = (*THP_VMSTAT_KEYS, *(f"khugepaged_{name}" for name in THP_KHUGEPAGED_COUNTERS))
+# memory.csv columns added after every existing column, only with --thp-observation; thp_t_mono is the monotonic
+# time the counter reads began (after the row's meminfo and process reads), thp_read_us their duration.
+THP_COLUMNS = ("anon_huge_pages", *THP_COUNTER_COLUMNS, "thp_t_mono", "thp_read_us")
+THP_FLOAT_COLUMNS = frozenset({"thp_t_mono", "thp_read_us"})
+THP_COLLAPSE_KEYS = ("khugepaged_pages_collapsed", "thp_collapse_alloc")
+THP_SPLIT_KEYS = ("thp_split_page", "thp_split_pmd")
+THP_VMSTAT_LIMIT_BYTES = 64 << 10  # /proc/vmstat is about 5 KB on this kernel; a larger read is unavailable
+THP_SYSFS_LIMIT_BYTES = 256
+THP_CONFIG_LIMIT_BYTES = 1 << 20  # /proc/config.gz, decompressed
+THP_CHOICE_SETTINGS = ("enabled", "defrag", "shmem_enabled")
+KHUGEPAGED_SETTINGS = ("defrag", "scan_sleep_millisecs", "alloc_sleep_millisecs", "pages_to_scan", "max_ptes_none",
+                       "max_ptes_swap", "max_ptes_shared")
+THP_CONFIG_KEYS = ("HZ", "TRANSPARENT_HUGEPAGE", "TRANSPARENT_HUGEPAGE_ALWAYS", "TRANSPARENT_HUGEPAGE_MADVISE",
+                   "READ_ONLY_THP_FOR_FS")
+THP_CHOICE_LABELS = frozenset({"always", "madvise", "never", "defer", "defer+madvise", "within_size", "advise", "deny",
+                               "force"})
+THP_SETTING_KEYS = (  # compared before and after the run, flattened
+    "kernel.release", "kernel.version", "base_page_bytes", "thp_pmd_bytes", "hugetlb_default_bytes",
+    *THP_CHOICE_SETTINGS, "use_zero_page", *(f"khugepaged.{name}" for name in KHUGEPAGED_SETTINGS),
+    *(f"config.{name}" for name in THP_CONFIG_KEYS),
+)
+THP_OUTCOMES = ("supported", "unsupported", "inconclusive")
+THP_REASONS = (
+    "collapse_counters_unavailable", "process_maps_unavailable", "step_not_in_mapping_categories",
+    "collapse_counted_without_local_huge_page_rise", "split_counted_in_maps_bracket",
+    "local_huge_page_rise_without_counted_collapse", "thp_settings_changed", "no_steady_steps_not_reproduced",
+    "mixed", "only_inconclusive_steps",
+)
+THP_RSS_LABELS = ("workload_rss_rose", "llama_rss_rose", "both_rss_rose", "no_recorded_rss_rise", "unknown")
+THP_MAX_STEPS = 128
+THP_MAX_COLLAPSES = 512
+THP_MAX_FULL_SCANS = 64
+THP_RULE = (
+    "per step (a workload RSS increase of at least 1 MiB between consecutive memory.csv rows): the collapse signal "
+    "is a rise in khugepaged pages_collapsed or vmstat thp_collapse_alloc from one row before the step's first row "
+    "to one row after its second (device-wide); the local signal is the AnonHugePages change, over the smaps "
+    "readings that bracket the step, of the workload mapping category whose Rss rose most there. supported: both "
+    "rose; unsupported: both observed and neither rose; inconclusive: a signal unavailable, or only one rose. Run, "
+    "from the steady interval's steps only (warm-up steps are labelled and listed, not counted; U26 concerns steady "
+    "growth): supported with at least one supported and no unsupported step; unsupported with the reverse; otherwise "
+    "inconclusive (mixed, only inconclusive steps, no steady steps, or THP settings changed during the run). No "
+    "count of collapses per pass or per bracket is a rule"
+)
+THP_SEMANTICS = (
+    "counter meanings are the kernel's documented ones (admin-guide/mm/transhuge), not verified against the installed "
+    "kernel's source: thp_collapse_alloc counts huge pages khugepaged allocated for a collapse; khugepaged "
+    "pages_collapsed counts its collapses; thp_split_page counts huge pages split, thp_split_pmd page-table splits; "
+    "thp_fault_alloc counts huge pages allocated at a page fault; AnonHugePages is anonymous memory mapped by huge "
+    "pages (smaps per mapping, meminfo device-wide)"
+)
+THP_CANNOT_ESTABLISH = (
+    "which address range a collapse filled, or that a collapse caused a step: the readings are coincident counters, "
+    "not a trace",
+    "which process a counted collapse belongs to: the vmstat and khugepaged counters are device-wide",
+    "the counters' exact semantics or the scan rate in the installed kernel: their documented meaning is assumed",
+    "any timer or scan-cadence explanation: intervals between readings are reported descriptively",
+    "that a run without steps, or with unsupported steps, removes the growth: a non-reproduction is not a fix",
+    "any step-4 or PLR result, eligibility, acceptance or admission",
+    "other boots, inputs, flags or THP settings",
+)
+# MA1-WTD (opt-in diagnostic, D57; only with --thp-observation): MA1-THP with transparent huge pages disabled in the
+# workload process alone, by its own prctl before any model library (demo_workload --thp-disable). The profiler and
+# llama-server keep the system setting, read at four checkpoints; nothing system-wide is written. The summary writes
+# wtd.json with the predeclared reading (session 43).
+WTD_LABEL = "ma1wtd-workload-thp-disable"
+WTD_STATUS_LIMIT_BYTES = memory_policy.PROC_READ_LIMIT_BYTES  # /proc/<pid>/status is about 1.5 KB
+WTD_MODEL_MODULES = memory_policy.MODEL_MODULES  # demo_workload's (and sentinel run's)
+WTD_CHECKPOINTS = ("before_launch", "llama_ready", "workload_verified", "steady_end")
+WTD_EXPECTED = {  # THP_enabled each process must show at each checkpoint (a process not listed is not read there)
+    "before_launch": {"profiler": 1},
+    "llama_ready": {"profiler": 1, "llama": 1},
+    "workload_verified": {"profiler": 1, "llama": 1, "workload": 0},
+    "steady_end": {"profiler": 1, "llama": 1, "workload": 0},
+}
+WTD_STARTUP_REASONS = memory_policy.THP_DISABLE_REASONS
+NET_STEP_WINDOW_ROWS = 5  # 1.0 s of 0.2 s rows on each side of a rise
+NET_STEP_LOOP_WINDOW_S = 1.0  # a net step this close to a recorded clip reopen is loop-coincident
+NET_STEP_CLASSES = ("net_step", "rebound", "transient", "unresolved")
+NET_STEP_RULE = (
+    "a candidate is a workload RSS rise of at least 1 MiB between consecutive memory.csv rows (MA1's step), both rows "
+    "inside the window; its net change is the lowest workload RSS in the 5 rows (1.0 s) starting at its second row "
+    "minus the highest in the 5 rows ending at its first row. net_step: a net change of at least 1 MiB, which is its "
+    "size; rebound: less, with a single-row fall of at least 1 MiB between two of those 5 earlier rows; transient: "
+    "less otherwise; unresolved: one of the 10 rows missing or without a workload RSS value. A net step whose second "
+    "row lies within 1.0 s of a recorded clip reopen (MA1-WTD records them) is loop-coincident: reported, never growth. "
+    "Descriptive; it replaces no earlier classification or reading"
+)
+WTD_ANON_CATEGORIES = ("heap", "stack", "arena_like", "anon_other")  # the workload's anonymous mapping categories
+WTD_BASELINE = {  # the MA1-THP run (ma1thp-20261006T182619Z, session 43 record): comparison constants only
+    "run": "ma1thp-20261006T182619Z",
+    "steady_heap_rss_rise_bytes": 115_912_704,  # heap Rss, first to last steady smaps reading
+    "first_steady_heap_nonresident_bytes": 117_481_472,  # heap size minus Rss at the first steady smaps reading
+}
+WTD_OUTCOMES = ("supported", "contrary", "inconclusive")
+WTD_REASONS = (
+    "thp_settings_changed", "intervention_not_verified", "process_maps_unavailable", "clip_loops_unrecorded",
+    "net_growth_without_workload_huge_pages", "net_step_category_unavailable", "net_steps_unresolved",
+    "no_comparable_opportunity",
+)
+WTD_RULE = (
+    "over the steady interval, the first that applies: inconclusive (thp_settings_changed) when a THP setting read "
+    "before and after the run differs; inconclusive (intervention_not_verified) unless the workload's own check, all "
+    "four scope checkpoints and the effect check passed; inconclusive (process_maps_unavailable) without an observed "
+    "steady smaps reading; inconclusive (clip_loops_unrecorded) with a net step in an anonymous workload mapping "
+    "category (heap, stack, arena_like, anon_other) when the clip reopen times were not all recorded; contrary "
+    "(net_growth_without_workload_huge_pages) with such a net step that is not loop-coincident; inconclusive "
+    "(net_step_category_unavailable) with a net step, not loop-coincident, whose category could not be read; "
+    "inconclusive (net_steps_unresolved) with an unresolved candidate; inconclusive (no_comparable_opportunity) unless "
+    "the heap's non-resident bytes at the first steady smaps reading were at least the baseline's steady heap Rss rise "
+    "(115,912,704 B) and khugepaged was active in steady (a counted collapse or a full-scan increment); supported "
+    "otherwise. Rebounds, transients, loop-coincident net steps and file or device steps are reported, never counted "
+    "as growth"
+)
+WTD_CANNOT_ESTABLISH = (
+    "that khugepaged's scan reached the workload's address space in this run: it skips a process with THP disabled, so "
+    "its position there is unobservable; the opportunity measures are preconditions, not that event",
+    "that collapse caused the baseline's steps: the intervention also removes fault-time huge pages, and a supported "
+    "reading is consistency with the khugepaged hypothesis, not a trace",
+    "that a run without net growth removes the growth elsewhere or later: a non-reproduction is not a fix",
+    "that latency, throughput or memory differences come from khugepaged: fault-time huge pages change too, and the "
+    "comparison with earlier runs is across runs, times and conditions (confounded)",
+    "which pages a net step wrote or which code wrote them",
+    "any THP policy for the runtime, step 4 or PLR result, eligibility, acceptance or admission",
+    "other boots, inputs, flags or THP settings",
+)
+# D58 candidate (opt-in; --candidate, with --post-load-release and --workload-thp-disable): step 4 with the post-load
+# release (D54) and the workload's verified THP disable (D57's call), without MA1's allocator, smaps or THP-counter
+# sampling. Its scope checks are cheap reads: THP_enabled at MA1-WTD's four checkpoints, the workload's AnonHugePages
+# (smaps_rollup) at its check and at the two steady boundaries, and the THP settings before and after. A release call
+# that does not return 0 stops the run. Judged by D47's rules and thresholds under CANDIDATE_CRITERIA_ID; never
+# accepted, and not admissible while D46 is unchanged.
+CANDIDATE_LABEL = "step4cand-wtd-plr-candidate"
+CANDIDATE_EFFECT_POINTS = ("workload_verified", "steady_start", "steady_end")
+CANDIDATE_CANNOT_ESTABLISH = (
+    "that sentinel run behaves the same: it applies the same two policies through the same code, but runs no face "
+    "model, adds its own components (camera capture, rules, incidents, outbox, status page) and is not measured here",
+    "acceptance or scene admission: D46 accepts only step4-combined-cache-off-v2; this identity needs a separate "
+    "maintainer decision and acceptance commit",
+    "that the THP disable or the releases caused any memory or latency difference: one run, no same-boot arm without "
+    "them",
+    "per-file page-cache residency, or that a returned 0 dropped any page: mapped, dirty or locked pages stay",
+    "behaviour beyond the steady interval, other boots, inputs, flags or THP settings",
+)
+COMPONENTS = (  # (key, load phase, settle phase, event carrying the load time)
+    ("scene", "llama_load", "llama_settle", "llama_ready"),
+    ("detector", "detector_load", "detector_settle", "detector_loaded"),
+    ("face", "face_load", "face_settle", "face_loaded"),
+)
+
+
+class RunAborted(Exception):
+    """The run cannot produce a valid profile; the message says why."""
+
+
+class Interrupted(Exception):
+    """SIGTERM or SIGHUP; cleanup still runs."""
+
+
+# ---------------------------------------------------------------- /proc readers
+
+
+def read_meminfo(path: Path = Path("/proc/meminfo"), keys: tuple[str, ...] = MEMINFO_KEYS) -> dict[str, int]:
+    """Convert Linux kB (1024 bytes) to bytes; omit missing/invalid fields."""
+    values = {}
+    with open(path) as handle:
+        for line in handle:
+            key, _, rest = line.partition(":")
+            if key in keys:
+                fields = rest.split()
+                if len(fields) == 2 and fields[0].isdigit() and fields[1] == "kB":
+                    values[key] = int(fields[0]) * 1024
+    return values
+
+
+def read_process_memory(pid: int) -> tuple[int | None, int | None]:
+    """VmRSS and VmHWM in bytes, or None once the process is gone."""
+    try:
+        text = Path(f"/proc/{pid}/status").read_text()
+    except OSError:
+        return None, None
+    rss = re.search(r"^VmRSS:\s+(\d+) kB", text, re.M)
+    hwm = re.search(r"^VmHWM:\s+(\d+) kB", text, re.M)
+    return (int(rss.group(1)) * 1024 if rss else None, int(hwm.group(1)) * 1024 if hwm else None)
+
+
+def read_pss(pid: int) -> int | None:
+    try:
+        text = Path(f"/proc/{pid}/smaps_rollup").read_text()
+    except OSError:
+        return None
+    match = re.search(r"^Pss:\s+(\d+) kB", text, re.M)
+    return int(match.group(1)) * 1024 if match else None
+
+
+def read_swap_counters() -> dict[str, int]:
+    counters = {}
+    with open("/proc/vmstat") as handle:
+        for line in handle:
+            key, value = line.split()
+            if key in ("pswpin", "pswpout"):
+                counters[key] = int(value)
+    return counters
+
+
+def _mapping_category(vmas: list[dict[str, object]], index: int) -> str:
+    """One mapping's category from its path, permissions and layout; the path is used here and never kept.
+
+    ``arena_like`` is a heuristic for glibc's non-main arena heaps, each reserved as one 64 MiB-aligned block
+    whose used part is rw-p and whose remainder stays no-access (---p): an anonymous rw-p mapping that is
+    followed directly by an anonymous ---p mapping ending on a 64 MiB boundary, with that block's start inside
+    it, or (a fully grown heap) one at least 64 MiB long that ends on a boundary. The kernel can merge a heap's
+    used part with an anonymous neighbour just below it (seen on this device): that neighbour's pages are then
+    counted here too. A large mmapped chunk that ends on a boundary can match by chance, and a heap whose
+    remainder merged with another no-access mapping does not match.
+    """
+    vma = vmas[index]
+    path = vma["path"]
+    if path == "[heap]":
+        return "heap"
+    if path == "[stack]":
+        return "stack"
+    if path.startswith("["):
+        return "special"
+    if path.startswith(SHMEM_PREFIXES):
+        return "shmem_like"
+    if path.startswith("/dev/"):
+        return "device"
+    if path:
+        return "file"
+    if vma["perms"][:3] == "---":
+        return "anon_noaccess"
+    if vma["perms"] == "rw-p":
+        start, end = vma["start"], vma["end"]
+        if end % GLIBC_HEAP_MAX_BYTES == 0 and end - start >= GLIBC_HEAP_MAX_BYTES:
+            return "arena_like"
+        following = vmas[index + 1] if index + 1 < len(vmas) else None
+        if (following is not None and not following["path"] and following["perms"] == "---p"
+                and following["start"] == end and following["end"] % GLIBC_HEAP_MAX_BYTES == 0
+                and start <= following["end"] - GLIBC_HEAP_MAX_BYTES < end):
+            return "arena_like"
+    return "anon_other"
+
+
+def parse_smaps(text: str, fields: dict[str, str] = SMAPS_FIELDS) -> dict[str, object]:
+    """/proc/<pid>/smaps summed by category: mapping count, virtual size and ``fields`` (default SMAPS_FIELDS;
+    SMAPS_THP_FIELDS adds AnonHugePages), in bytes.
+
+    A category's field is None (unavailable, never zero) when any of its mappings lacks that line or has an
+    unparseable value. Raises ValueError when the text holds no mapping (a zombie or an empty read).
+    """
+    vmas: list[dict[str, object]] = []
+    for line in text.splitlines():
+        if line and line[0] in "0123456789abcdef":  # field lines start with an upper-case name
+            header = SMAPS_HEADER.fullmatch(line)
+            if header is None:
+                raise ValueError("unparsed mapping line")
+            vmas.append({"start": int(header[1], 16), "end": int(header[2], 16), "perms": header[3],
+                         "path": header[4], "fields": {}})
+        elif vmas:
+            name, _, rest = line.partition(":")
+            key = fields.get(name)
+            if key is not None:
+                parts = rest.split()
+                vmas[-1]["fields"][key] = (int(parts[0]) * 1024 if len(parts) == 2 and parts[1] == "kB"
+                                           and parts[0].isdigit() else None)
+    if not vmas:
+        raise ValueError("no mappings")
+    categories = {name: {"vmas": 0, "size_bytes": 0, **dict.fromkeys(fields.values(), 0)}
+                  for name in MAPS_CATEGORIES}
+    for index, vma in enumerate(vmas):
+        total = categories[_mapping_category(vmas, index)]
+        total["vmas"] += 1
+        total["size_bytes"] += vma["end"] - vma["start"]
+        for key in fields.values():
+            value = vma["fields"].get(key)
+            total[key] = None if value is None or total[key] is None else total[key] + value
+    return {"vmas": len(vmas), "categories": categories}
+
+
+def read_maps_aggregate(pid: int, *, opener=open, clock=time.perf_counter,
+                        fields: dict[str, str] = SMAPS_FIELDS) -> dict[str, object]:
+    """MA1: one bounded read of /proc/<pid>/smaps, aggregated; status, reason and its own cost, numbers only."""
+    started = clock()
+    try:
+        with opener(f"/proc/{pid}/smaps", "rb") as handle:
+            data = handle.read(MAPS_READ_LIMIT_BYTES + 1)
+    except OSError as exc:
+        return {"status": "unavailable", "reason": "read_failed",
+                "error": errno.errorcode.get(exc.errno or 0, type(exc).__name__),
+                "read_ms": round((clock() - started) * 1000, 3)}
+    read_ms = round((clock() - started) * 1000, 3)
+    if len(data) > MAPS_READ_LIMIT_BYTES:
+        return {"status": "unavailable", "reason": "too_large", "bytes_read": len(data), "read_ms": read_ms}
+    parsing = clock()
+    try:
+        aggregate = parse_smaps(data.decode("utf-8", "replace"), fields)
+    except ValueError:
+        return {"status": "unavailable", "reason": "unparsed" if data.strip() else "no_mappings",
+                "bytes_read": len(data), "read_ms": read_ms}
+    return {"status": "observed", "bytes_read": len(data), "read_ms": read_ms,
+            "parse_ms": round((clock() - parsing) * 1000, 3), **aggregate}
+
+
+def _read_bounded(path: Path, limit: int, opener=open) -> bytes | None:
+    """At most ``limit`` bytes of a file, or None when it cannot be read or is longer."""
+    try:
+        with opener(path, "rb") as handle:
+            data = handle.read(limit + 1)
+    except OSError:
+        return None
+    return data if len(data) <= limit else None
+
+
+def _plain_count(text: str | None) -> int | None:
+    text = (text or "").strip()
+    return int(text) if text.isascii() and text.isdigit() else None
+
+
+def read_thp_counters(*, vmstat: Path = Path("/proc/vmstat"), sysfs: Path = THP_SYSFS, opener=open,
+                      clock=time.monotonic, timer=time.perf_counter) -> dict[str, object]:
+    """THP observation: /proc/vmstat's THP_VMSTAT_KEYS and khugepaged's progress counters, read-only.
+
+    Each counter is None (unavailable, never zero) when absent, unreadable, over its read bound or not a plain
+    non-negative integer. ``thp_t_mono`` is when the reads began and ``thp_read_us`` how long they took."""
+    t_mono = clock()
+    started = timer()
+    values: dict[str, object] = dict.fromkeys(THP_COUNTER_COLUMNS)
+    data = _read_bounded(vmstat, THP_VMSTAT_LIMIT_BYTES, opener)
+    for line in (data.decode("ascii", "replace").splitlines() if data is not None else ()):
+        parts = line.split()
+        if len(parts) == 2 and parts[0] in THP_VMSTAT_KEYS:
+            values[parts[0]] = _plain_count(parts[1])
+    for name in THP_KHUGEPAGED_COUNTERS:
+        raw = _read_bounded(Path(sysfs) / "khugepaged" / name, THP_SYSFS_LIMIT_BYTES, opener)
+        values[f"khugepaged_{name}"] = _plain_count(raw.decode("ascii", "replace")) if raw is not None else None
+    return {"thp_t_mono": round(t_mono, 3), "thp_read_us": round((timer() - started) * 1e6, 1), **values}
+
+
+def _selected_choice(text: str | None) -> str | None:
+    """The bracketed choice of a sysfs setting such as "[always] madvise never"; None when absent or unrecognised."""
+    match = re.fullmatch(r"(?:[a-z+_]{1,24} )*\[([a-z+_]{1,24})\](?: [a-z+_]{1,24})*", (text or "").strip())
+    return match[1] if match else None
+
+
+def read_kernel_config(path: Path = Path("/proc/config.gz"), *, opener=gzip.open) -> dict[str, object] | None:
+    """THP_CONFIG_KEYS from the running kernel's config ("y", "m" or "n"; HZ as a number), or None when unavailable.
+
+    Bounded: at most THP_CONFIG_LIMIT_BYTES are decompressed; a longer config is unavailable."""
+    try:
+        with opener(path, "rb") as handle:
+            data = handle.read(THP_CONFIG_LIMIT_BYTES + 1)
+    except (OSError, EOFError, zlib.error):
+        return None
+    if len(data) > THP_CONFIG_LIMIT_BYTES:
+        return None
+    values: dict[str, object] = dict.fromkeys(THP_CONFIG_KEYS)
+    for line in data.decode("ascii", "replace").splitlines():
+        if unset := re.fullmatch(r"# CONFIG_([A-Z0-9_]+) is not set", line):
+            if unset[1] in values:
+                values[unset[1]] = "n"
+        elif (setting := re.fullmatch(r"CONFIG_([A-Z0-9_]+)=(.*)", line)) and setting[1] in values:
+            values[setting[1]] = (_plain_count(setting[2]) if setting[1] == "HZ"
+                                  else setting[2] if setting[2] in ("y", "m", "n") else None)
+    return values
+
+
+def thp_settings_snapshot(*, sysfs: Path = THP_SYSFS, config: Path = Path("/proc/config.gz"),
+                          meminfo: Path = Path("/proc/meminfo"), opener=open, config_opener=gzip.open,
+                          page_size=None, uname=os.uname, clock=time.monotonic,
+                          timer=time.perf_counter) -> dict[str, object]:
+    """THP observation: the kernel identity, the base and huge-page sizes and the THP settings, read-only.
+
+    Every value is None when it cannot be read or parsed (never a default). ``thp_pmd_bytes`` is THP's PMD size
+    (hpage_pmd_size); ``hugetlb_default_bytes`` is meminfo's Hugepagesize, which belongs to hugetlbfs, not THP."""
+    t_mono = clock()
+    started = timer()
+
+    def text(relative: str) -> str | None:
+        raw = _read_bounded(Path(sysfs) / relative, THP_SYSFS_LIMIT_BYTES, opener)
+        return raw.decode("ascii", "replace") if raw is not None else None
+
+    try:
+        base = (page_size or (lambda: os.sysconf("SC_PAGE_SIZE")))()
+        base = base if type(base) is int and base > 0 else None
+    except (OSError, ValueError):
+        base = None
+    try:
+        name = uname()
+        kernel = {"release": name.release, "version": name.version}
+    except OSError:
+        kernel = {"release": None, "version": None}
+    try:
+        hugetlb = read_meminfo(meminfo, keys=("Hugepagesize",)).get("Hugepagesize")
+    except (OSError, ValueError):
+        hugetlb = None
+    return {
+        "t_mono": round(t_mono, 3),
+        "kernel": kernel,
+        "base_page_bytes": base,
+        "thp_pmd_bytes": _plain_count(text("hpage_pmd_size")),
+        "hugetlb_default_bytes": hugetlb,
+        **{setting: _selected_choice(text(setting)) for setting in THP_CHOICE_SETTINGS},
+        "use_zero_page": _plain_count(text("use_zero_page")),
+        "khugepaged": {setting: _plain_count(text(f"khugepaged/{setting}")) for setting in KHUGEPAGED_SETTINGS},
+        "config": read_kernel_config(config, opener=config_opener),
+        "read_ms": round((timer() - started) * 1000, 3),
+    }
+
+
+def _flat_settings(snapshot: object) -> dict[str, object]:
+    """THP_SETTING_KEYS of one snapshot; every key None when the snapshot is missing."""
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    out = {}
+    for key in THP_SETTING_KEYS:
+        group, _, name = key.partition(".")
+        value = snapshot.get(group)
+        if name:
+            value = value.get(name) if isinstance(value, dict) else None
+        out[key] = value
+    return out
+
+
+def thp_settings_changes(before: object, after: object) -> tuple[list[str], list[str]]:
+    """(keys whose before and after values were both read and differ, keys missing on either side)."""
+    first, last = _flat_settings(before), _flat_settings(after)
+    changed = [key for key in THP_SETTING_KEYS
+               if first[key] is not None and last[key] is not None and first[key] != last[key]]
+    unverified = [key for key in THP_SETTING_KEYS if first[key] is None or last[key] is None]
+    return changed, unverified
+
+
+# D57: THP_enabled from /proc/<pid>/status, read-only; None when unreadable or unparsed, never 1. D58: the workload's
+# AnonHugePages from /proc/<pid>/smaps_rollup. Both are sentinel.memory_policy's, which sentinel run reads with too.
+read_thp_enabled = memory_policy.read_thp_enabled
+read_anon_huge_pages = memory_policy.read_anon_huge_pages
+
+
+def wtd_scope(checkpoint: str, pids: dict[str, int | None], *, read=None, clock=time.monotonic) -> dict:
+    """D57: the THP_enabled of each process WTD_EXPECTED lists for ``checkpoint``; ``ok`` only when every one was read
+    and matches. A process without a pid or an unreadable status is None, never as expected."""
+    read = read or read_thp_enabled
+    expected = WTD_EXPECTED[checkpoint]
+    values = {name: read(pids[name]) if pids.get(name) else None for name in expected}
+    return {"checkpoint": checkpoint, "t_mono": round(clock(), 3), "thp_enabled": values, "expected": dict(expected),
+            "ok": all(values[name] == want for name, want in expected.items())}
+
+
+def scan_processes() -> list[tuple[int, str, str, list[str]]]:
+    """(pid, comm, exe, argv) of visible processes. argv is matched, never printed."""
+    found = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            comm = Path(f"/proc/{entry}/comm").read_text().strip()
+            argv = [part.decode(errors="replace") for part in Path(f"/proc/{entry}/cmdline").read_bytes().split(b"\0") if part]
+        except OSError:
+            continue
+        try:
+            exe = os.readlink(f"/proc/{entry}/exe")
+        except OSError:
+            exe = ""
+        found.append((int(entry), comm, exe, argv))
+    return found
+
+
+def top_memory_holders(count: int = 8) -> list[dict[str, object]]:
+    rows = []
+    for pid, comm, _exe, _argv in scan_processes():
+        rss, _ = read_process_memory(pid)
+        if rss:
+            rows.append((rss, comm))
+    rows.sort(reverse=True)
+    return [{"comm": comm, "rss_bytes": rss} for rss, comm in rows[:count]]
+
+
+def port_in_use(port: int) -> bool:
+    """Something is listening on the loopback port (TIME_WAIT leftovers do not count)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(1.0)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
+def command_output(argv: list[str], env: dict[str, str] | None = None) -> str:
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=60, env=env)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"unavailable ({type(exc).__name__})"
+    return (done.stdout + done.stderr).strip()
+
+
+def sha256_of(path: Path) -> str | None:
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(block)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+# ------------------------------------------------------------- preconditions
+
+
+def deepface_weights() -> list[Path]:
+    base = Path(os.environ.get("DEEPFACE_HOME", str(HOME))) / ".deepface" / "weights"
+    return [base / name for name in DEEPFACE_WEIGHTS]
+
+
+def model_files(args: argparse.Namespace) -> dict[str, Path]:
+    if getattr(args, "scene_only", False):
+        return {"llm": args.model, "mmproj": args.mmproj}
+    files = {"engine": args.engine, "llm": args.model, "mmproj": args.mmproj}
+    for path in deepface_weights():
+        files[path.name] = path
+    return files
+
+
+def preconditions(args: argparse.Namespace) -> tuple[list[str], dict[str, object]]:
+    problems = []
+    if os.geteuid() == 0:
+        problems.append("run this as your user, not as root")
+    required = {"workload python": args.python, "llama-server": args.llama, "L4T libcuda": Path(L4T_LIBCUDA), **model_files(args)}
+    if args.clip:
+        required["clip"] = args.clip
+        if args.scene_only:
+            problems.append("--scene-only uses its own synthetic images; do not pass --clip")
+    if getattr(args, "mr1_release_check", False) and args.scene_only:
+        problems.append("--mr1-release-check needs the detector and face models; do not pass --scene-only")
+    if getattr(args, "post_load_release", False) and args.scene_only:
+        problems.append("--post-load-release needs the detector and face models; do not pass --scene-only")
+    if getattr(args, "post_load_release", False) and getattr(args, "mr1_release_check", False):
+        problems.append("--mr1-release-check and --post-load-release are separate procedures; pass one")
+    if getattr(args, "memory_attribution", False) and not getattr(args, "post_load_release", False):
+        problems.append("--memory-attribution (MA1) is defined only with --post-load-release")
+    if getattr(args, "thp_observation", False) and not getattr(args, "memory_attribution", False):
+        problems.append("--thp-observation extends MA1's readings; it is defined only with --memory-attribution")
+    candidate = getattr(args, "candidate", False)
+    if getattr(args, "workload_thp_disable", False) and not (getattr(args, "thp_observation", False) or candidate):
+        problems.append("--workload-thp-disable is defined only with --thp-observation (MA1-WTD, D57) or --candidate "
+                        "(D58), whose readings verify it")
+    if candidate and not (getattr(args, "post_load_release", False) and getattr(args, "workload_thp_disable", False)):
+        problems.append("--candidate (D58) is the post-load release with the workload's THP disable: pass "
+                        "--post-load-release and --workload-thp-disable")
+    if candidate and (getattr(args, "memory_attribution", False) or getattr(args, "thp_observation", False)):
+        problems.append("--candidate (D58) runs without MA1's sampling: do not pass --memory-attribution or "
+                        "--thp-observation")
+    for label, path in required.items():
+        if not Path(path).exists():
+            problems.append(f"missing {label}: {path}")
+    me = os.getpid()
+    processes = [p for p in scan_processes() if p[0] != me]
+    if any(comm == "llama-server" for _, comm, _, _ in processes):
+        problems.append("a llama-server is already running; stop it first")
+    if any(Path(arg).name in V1_SCRIPTS for _, _, _, argv in processes for arg in argv[:3]):
+        problems.append("v1 (surveillance4_1.py or a dashboard) is running; stop it first")
+    desktop = sorted({comm for _, comm, _, _ in processes if comm in DESKTOP_COMMS})
+    display_manager = command_output(["systemctl", "is-active", "display-manager"])
+    if (desktop or display_manager == "active") and not args.allow_desktop:
+        problems.append(
+            "desktop processes are running (" + ", ".join(desktop or ["display-manager"]) + "); the demo runs headless "
+            "(D29): stop the display manager and any remote-desktop session, or pass --allow-desktop"
+        )
+    dev_tools = sorted(
+        {"Claude Code" if comm == "claude" else "VS Code server" for _, comm, exe, _ in processes if comm == "claude" or "/.vscode-server/" in exe}
+    )
+    if dev_tools and not args.allow_dev_tools:
+        problems.append(", ".join(dev_tools) + " running; close them for this measurement, or pass --allow-dev-tools")
+    if port_in_use(args.port):
+        problems.append(f"port {args.port} on 127.0.0.1 is in use")
+    context = {"display_manager": display_manager, "desktop_processes": desktop, "dev_tools_running": dev_tools}
+    return problems, context
+
+
+def llama_flags(args: argparse.Namespace) -> list[str]:
+    """The tracked flags, plus --cache-ram only when it was given (None keeps the server default), plus
+    --log-verbosity only when it was given (session 116: a build whose default hides the placement, buffer-size and
+    prompt-cache lines this script reads; the runtime adds the same for that set), plus --image-max-tokens only when
+    it was given (session 116, part 7: the set's image-token cap, after the log level as the runtime orders them)."""
+    cache_ram = getattr(args, "llama_cache_ram", None)
+    verbosity = getattr(args, "llama_log_verbosity", None)
+    image_tokens = getattr(args, "llama_image_max_tokens", None)
+    return (LLAMA_FLAGS + ([] if cache_ram is None else ["--cache-ram", str(cache_ram)])
+            + ([] if verbosity is None else ["--log-verbosity", str(verbosity)])
+            + ([] if image_tokens is None else ["--image-max-tokens", str(image_tokens)]))
+
+
+def provenance(args: argparse.Namespace, context: dict[str, object], run_id: str) -> dict[str, object]:
+    def file_facts(path: Path) -> dict[str, object] | None:
+        try:
+            stat = Path(path).stat()
+        except OSError:
+            return None
+        mtime = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds")
+        return {"name": Path(path).name, "bytes": stat.st_size, "mtime_utc": mtime}
+
+    preload_env = dict(os.environ, LD_PRELOAD=L4T_LIBCUDA)
+    llama_version = [line for line in command_output([str(args.llama), "--version"], preload_env).splitlines() if line.startswith(("version", "built"))]
+    git_commit = command_output(["git", "-C", str(REPO), "rev-parse", "HEAD"])
+    git_dirty = bool(command_output(["git", "-C", str(REPO), "status", "--porcelain", "--untracked-files=no"]))
+    return {
+        "label": LABEL,
+        "note": "One cold load and one combined run; not a benchmark, Gate B record or beta-gate result (U17 option a, D28).",
+        "run_id": run_id,
+        "started_utc": utc_now(),
+        "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+        "kernel": os.uname().release,
+        "l4t": command_output(["head", "-1", "/etc/nv_tegra_release"]).lstrip("# "),
+        "power_mode": " ".join(command_output(["nvpmodel", "-q"]).split()),
+        **context,
+        "top_memory_holders": None if args.sanitized_logs else top_memory_holders(),
+        "meminfo_at_start": read_meminfo(),
+        "repository": {"commit": git_commit, "tracked_changes": git_dirty},
+        "scripts_sha256": {path.name: sha256_of(path) for path in (Path(__file__).resolve(), WORKLOAD)},
+        "llama_server": {"version": llama_version, "flags": llama_flags(args), "unified_memory": True,
+                         "preload": L4T_LIBCUDA, "cache_ram_mib": args.llama_cache_ram,
+                         "build_files": {label: file_facts(path) for label, path in llama_build_files(args.llama).items()},
+                         "build_has_cache_ram_option": build_has_option(llama_build_files(args.llama))},
+        "files": {label: file_facts(path) for label, path in model_files(args).items()},
+        "input": {"clip": file_facts(args.clip) if args.clip else None, "synthetic": not args.clip, "fps": args.fps},
+        "parameters": {
+            "face_hz": args.face_hz, "scene_interval_s": args.scene_interval_s, "baseline_s": args.baseline_s,
+            "settle_s": args.settle_s, "warmup_s": args.warmup_s, "steady_s": args.steady_s, "evict_model_cache": args.evict,
+            "min_free_gb": args.min_free_gb, "scene_only": args.scene_only,
+            "port": args.port, "sample_interval_s": SAMPLE_INTERVAL_S, "pss_interval_s": PSS_INTERVAL_S,
+            **({"mr1_release_check": True, "mr1_release_settle_s": args.mr1_release_settle_s}
+               if getattr(args, "mr1_release_check", False) else {}),
+            **({"post_load_release": True, "release_settle_s": args.mr1_release_settle_s}
+               if getattr(args, "post_load_release", False) else {}),
+            **({"memory_attribution": True, "maps_interval_s": args.maps_interval_s}
+               if getattr(args, "memory_attribution", False) else {}),
+            **({"thp_observation": True} if getattr(args, "thp_observation", False) else {}),
+            **({"workload_thp_disable": True} if getattr(args, "workload_thp_disable", False) else {}),
+            **({"candidate": True} if getattr(args, "candidate", False) else {}),
+        },
+        # D58: the memory policy this run measures, in sentinel run's terms (recorded for every run).
+        "memory_policy": memory_policy.policy_from_flags(
+            workload_thp_disable=bool(getattr(args, "workload_thp_disable", False)),
+            post_load_release=bool(getattr(args, "post_load_release", False))).labels(),
+        **({"mr1_note": "MR1 release check: loads and settles, each model's file cache released after its settle, "
+                        "bounded smoke checks and unload. Not a resource profile, step-4 evidence or a sustained-memory test."}
+           if getattr(args, "mr1_release_check", False) else {}),
+        **({"plr_note": "Step-4 PLR (D54): step 4's procedure with each model's file cache released after its load and "
+                        "settle, then the full warm-up and steady phases. Judged by D47's criteria under "
+                        f"{step4_criteria.PLR_CRITERIA_ID}; never D47's step-4 result, accepted or admissible."}
+           if getattr(args, "post_load_release", False) and not getattr(args, "candidate", False) else {}),
+        **({"ma1_note": "MA1 (D55): an instrumented diagnostic run of the PLR procedure with the workload's own "
+                        "allocator and garbage-collector counters and its mapping categories. Never eligible, accepted "
+                        "or admissible."}
+           if getattr(args, "memory_attribution", False) else {}),
+        **({"thp_note": "THP observation (D56): MA1 with read-only transparent-huge-page counters and settings; "
+                        "nothing is set or tuned. Never eligible, accepted or admissible."}
+           if getattr(args, "thp_observation", False) else {}),
+        **({"thp_settings": {"before": thp_settings_snapshot()}}  # D56 and the D58 candidate: read-only, before
+           if getattr(args, "thp_observation", False) or getattr(args, "candidate", False) else {}),
+        **({"wtd_note": "MA1-WTD (D57): MA1-THP with transparent huge pages disabled in the workload process alone, by "
+                        "its own prctl before any model library; the profiler and llama-server keep the system "
+                        "setting. Never eligible, accepted or admissible."}
+           if getattr(args, "workload_thp_disable", False) and not getattr(args, "candidate", False) else {}),
+        **({"candidate_note": "D58 candidate: step 4 with each model's file cache released after its load and settle "
+                              "and transparent huge pages disabled in the workload process alone (verified), without "
+                              "MA1's sampling; the profiler and llama-server keep the system setting. Judged by D47's "
+                              f"rules and thresholds under {step4_criteria.CANDIDATE_CRITERIA_ID}; never accepted; "
+                              "not admissible while D46 is unchanged."}
+           if getattr(args, "candidate", False) else {}),
+    }
+
+
+def llama_build_files(binary: Path) -> dict[str, Path]:
+    """The llama-server binary and the llama/ggml/mtmd shared libraries beside it (real files, not links)."""
+    files = {"llama-server": Path(binary)}
+    try:
+        for path in sorted(Path(binary).parent.iterdir()):
+            if (path.name.startswith(LLAMA_BUILD_PREFIXES) and ".so" in path.name
+                    and path.is_file() and not path.is_symlink()):
+                files[path.name] = path
+    except OSError:
+        pass
+    return files
+
+
+def build_has_option(files: dict[str, Path], option: bytes = b"--cache-ram") -> bool | None:
+    """Whether the installed build's files contain the option's text; None if they could not be read."""
+    readable = False
+    for name, path in files.items():
+        if not (name == "llama-server" or name.startswith("libllama-common")):
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        readable = True
+        if option in data:
+            return True
+    return False if readable else None
+
+
+def cmdline_evidence(pid: int, read=lambda pid: Path(f"/proc/{pid}/cmdline").read_bytes()) -> dict[str, object]:
+    """The running server's own flags (no paths) and its --cache-ram value, from /proc/<pid>/cmdline."""
+    try:
+        argv = read(pid).decode(errors="replace").split("\0")
+    except OSError:
+        return {"seen": False, "cache_ram": None, "flags": None}
+    argv = [arg for arg in argv[1:] if arg]
+    flags, skip = [], False
+    for index, arg in enumerate(argv):
+        if skip:
+            skip = False
+            continue
+        if arg in ("--model", "--mmproj"):
+            skip = True
+            continue
+        flags.append(arg)
+    values = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--cache-ram"]
+    return {"seen": True, "cache_ram": values[-1] if values else None, "flags": flags}
+
+
+def evict_page_cache(paths: list[Path]) -> int:
+    """Drop cached pages of these files so the load is cold. Needs no root; files are unchanged."""
+    count = 0
+    for path in paths:
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except OSError:
+            continue
+        try:
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            count += 1
+        finally:
+            os.close(fd)
+    return count
+
+
+# MR1: the evict_page_cache call on one whole file, with its exact outcome (returned_0, returned_error, open_failed or
+# unsupported). It is sentinel.memory_policy's, which sentinel run's post-load release calls too (D58).
+release_file_cache = memory_policy.release_file_cache
+
+
+def mr1_snapshot(pids: dict[str, int | None], *, meminfo=None, process_memory=None, pss=None,
+                 clock=time.monotonic) -> dict[str, object]:
+    """Every MEMINFO_KEYS field (None when missing) and each process's RSS, HWM and PSS (None when unavailable)."""
+    meminfo, process_memory, pss = meminfo or read_meminfo, process_memory or read_process_memory, pss or read_pss
+    try:
+        mem = meminfo()
+    except (OSError, ValueError):
+        mem = {}
+    values = {key: mem.get(key) if type(mem.get(key)) is int and mem[key] >= 0 else None for key in MEMINFO_KEYS}
+    total, available = values["MemTotal"], values["MemAvailable"]
+    processes = {}
+    for name, pid in pids.items():
+        rss, hwm = process_memory(pid) if pid else (None, None)
+        processes[name] = {"rss_bytes": rss, "hwm_bytes": hwm, "pss_bytes": pss(pid) if pid else None}
+    return {"t_mono": round(clock(), 3), "meminfo": values,
+            "pressure_bytes": total - available if total is not None and available is not None else None,
+            "processes": processes}
+
+
+def snapshot_deltas(before: dict[str, object], after: dict[str, object]) -> dict[str, object]:
+    """after - before for each field present in both; None otherwise (never zero)."""
+    def delta(a, b):
+        return b - a if type(a) is int and type(b) is int else None
+
+    deltas: dict[str, object] = {key: delta(before["meminfo"].get(key), after["meminfo"].get(key)) for key in MEMINFO_KEYS}
+    deltas["pressure_bytes"] = delta(before.get("pressure_bytes"), after.get("pressure_bytes"))
+    deltas["processes"] = {
+        name: {key: delta((before["processes"].get(name) or {}).get(key), value) for key, value in fields.items()}
+        for name, fields in after["processes"].items()
+    }
+    return deltas
+
+
+def release_outcome(files: dict[str, dict[str, object]], deltas: dict[str, object]) -> str:
+    """A descriptive label from the calls' results and the directions of MemFree and Cached; no magnitude threshold.
+
+    call_failed: a call did not return 0 (or the file could not be opened); telemetry_unavailable: MemFree or
+    Cached is missing before or after; ineffective: every call returned 0 but MemFree did not rise and Cached
+    did not fall; partial: only one of the two moved that way; memfree_rose_cached_fell: both did.
+    """
+    if not files or any(item.get("result") != "returned_0" for item in files.values()):
+        return "call_failed"
+    free, cached = deltas.get("MemFree"), deltas.get("Cached")
+    if free is None or cached is None:
+        return "telemetry_unavailable"
+    rose, fell = free > 0, cached < 0
+    return "memfree_rose_cached_fell" if rose and fell else "partial" if rose or fell else "ineffective"
+
+
+def release_component(component: str, files: dict[str, Path], pids: dict[str, int | None], settle_s: float, *,
+                      snapshot=None, release=None, sleep=time.sleep, clock=time.monotonic) -> dict[str, object]:
+    """MR1: sample, release each of this component's model files, wait settle_s, sample again."""
+    snapshot, release = snapshot or (lambda: mr1_snapshot(pids)), release or release_file_cache
+    before = snapshot()
+    started = clock()
+    results = {label: release(path) for label, path in files.items()}
+    calls_elapsed = round(clock() - started, 6)
+    sleep(settle_s)
+    after = snapshot()
+    deltas = snapshot_deltas(before, after)
+    sizes = [item.get("bytes") for item in results.values()]
+    return {
+        "component": component, "files": results,
+        "files_total_bytes": sum(sizes) if sizes and all(type(size) is int for size in sizes) else None,
+        "files_total_bytes_note": "the most these files' cache can occupy; not how much of it was cached or released",
+        "calls_elapsed_s": calls_elapsed, "settle_s": settle_s, "before": before, "after": after, "deltas": deltas,
+        "outcome": release_outcome(results, deltas), "basis": MR1_BASIS,
+    }
+
+
+def mr1_files(args: argparse.Namespace) -> dict[str, dict[str, Path]]:
+    files = model_files(args)
+    return {component: {label: files[label] for label in labels} for component, labels in MR1_RELEASE_FILES.items()}
+
+
+def mr1_checkpoint_handler(procs: dict, events, set_phase, files: dict[str, dict[str, Path]], settle_s: float, *,
+                           release=release_component, snapshot=mr1_snapshot, require_returned_0: bool = False):
+    """MR1: the orchestrator's side of each checkpoint, run while the workload waits.
+
+    "scene", "detector" and "face" release that component's files with samples around them; "after_smoke"
+    samples only. Then ``ack <stage>`` goes to the workload. An unexpected error is recorded by class and
+    sends no acknowledgement, so the workload stops itself after its bounded wait.
+
+    ``require_returned_0`` (the D58 candidate) applies sentinel.memory_policy.release_problem, as sentinel run
+    does: a release whose files are not exactly the component's eligible ones, or with a call that did not return
+    0, is recorded as ``release_failed`` and listed in ``handle.failures``; no acknowledgement is sent and a waiting
+    workload is terminated, so the run stops.
+    """
+    def pids() -> dict[str, int | None]:
+        return {name: proc.pid if proc is not None else None for name, proc in procs.items()}
+
+    def fail(stage: str, problem: str) -> None:
+        handle.failures.append(stage)
+        events.add("orchestrator", "release_failed", component=stage, problem=problem)
+        if stage != "scene" and procs.get("work") is not None:
+            procs["work"].terminate()  # it waits for an acknowledgement that will not come
+
+    def handle(stage: str) -> None:
+        try:
+            if stage == "after_smoke":
+                events.add("orchestrator", "mr1_snapshot", stage=stage, **snapshot(pids()))
+            else:
+                set_phase(f"{stage}_release")
+                record = release(stage, files[stage], pids(), settle_s)
+                events.add("orchestrator", "mr1_release", **record)
+                problem = memory_policy.release_problem(stage, record.get("files")) if require_returned_0 else None
+                if problem is not None:
+                    fail(stage, problem)
+                    return
+        except Exception as exc:  # noqa: BLE001 - by class only
+            events.add("orchestrator", "mr1_error", stage=stage, error=type(exc).__name__)
+            if require_returned_0 and stage != "after_smoke":
+                fail(stage, f"error:{type(exc).__name__}")
+            return
+        if stage == "scene":
+            return  # before the workload starts: nothing waits for it
+        try:
+            procs["work"].stdin.write(f"ack {stage}\n")
+            procs["work"].stdin.flush()
+        except (AttributeError, OSError, ValueError):
+            pass  # the workload is gone; it stops itself without the acknowledgement
+
+    handle.failures = []
+    return handle
+
+
+def sanitize_mr1_smoke(record: object) -> dict[str, object]:
+    """Fixed keys, numbers, booleans, fixed labels and exception class names only."""
+    def label(value):
+        if value is None or type(value) is bool:
+            return value
+        if isinstance(value, str) and (value in MR1_SMOKE_LABELS or re.fullmatch(r"[A-Za-z]{1,40}(?:Error|Exception)", value)):
+            return value
+        return None
+
+    def number(value):
+        if type(value) is int:
+            return value if value.bit_length() <= 63 else None
+        return value if type(value) is float and math.isfinite(value) else None
+
+    out: dict[str, object] = {}
+    record = record if isinstance(record, dict) else {}
+    for part, keys in MR1_SMOKE_KEYS.items():
+        source = record.get(part) if isinstance(record.get(part), dict) else {}
+        clean: dict[str, object] = {}
+        for key in keys:
+            value = source.get(key)
+            if key == "errors":
+                clean[key] = {name: count for name, count in list(value.items())[:16]
+                              if (label(name) is not None or re.fullmatch(r"HTTP [1-5]\d\d", str(name)))
+                              and type(count) is int} if isinstance(value, dict) else None
+            elif key == "latency_ms" and isinstance(value, dict):
+                clean[key] = {k: number(v) for k, v in value.items() if k in ("n", "p50", "p95", "p99", "max")}
+            elif key in ("finish_reason", "rejection", "error"):
+                clean[key] = label(value)
+            elif key == "valid":
+                clean[key] = value if type(value) is bool else None
+            else:
+                clean[key] = number(value)
+        out[part] = clean
+    return out
+
+
+def functional_smoke(smoke: dict[str, object] | None) -> str:
+    """pass: every detector frame processed without error, one face analysis completed without error and one
+    scene request completed with finish reason stop and a strict-valid report; fail: any of those not met;
+    unavailable: no smoke record."""
+    if not smoke:
+        return "unavailable"
+    detector, face, scene = (smoke.get(key) or {} for key in ("detector", "face", "scene"))
+    ok = (type(detector.get("processed")) is int and detector.get("processed") == detector.get("frames_requested")
+          and not detector.get("errors")
+          and face.get("completed") == 1 and not face.get("errors")
+          and scene.get("completed") == 1 and scene.get("finish_reason") == "stop" and scene.get("valid") is True
+          and scene.get("error") is None)
+    return "pass" if ok else "fail"
+
+
+# ------------------------------------------------------------------ recording
+
+
+class Events:
+    def __init__(self, path: Path, started: float) -> None:
+        self._handle = open(path, "a")
+        self._lock = threading.Lock()
+        self._started = started
+
+    def add(self, source: str, name: str, /, **fields: object) -> None:
+        record = {"t_mono": round(time.monotonic(), 3), "utc": utc_now(), "source": source, "event": name, **fields}
+        with self._lock:
+            self._handle.write(json.dumps(record) + "\n")
+            self._handle.flush()
+        if name in QUIET_EVENTS:  # recorded above; not echoed, so the console (and a caller's capture) stays small
+            return
+        detail = " ".join(f"{k}={v}" for k, v in fields.items() if k not in ("libcuda", "buffers"))
+        print(f"[{time.monotonic() - self._started:7.1f} s] {source}: {name} {detail}"[:220], flush=True)
+
+    def close(self) -> None:
+        self._handle.close()
+
+
+class Sampler(threading.Thread):
+    """Whole-device and per-process memory every SAMPLE_INTERVAL_S seconds."""
+
+    COLUMNS = [
+        "t_mono", "phase", "mem_total", "mem_free", "mem_available", "cached", "swap_total", "swap_free",
+        "shmem", "unevictable", "mlocked", "s_unreclaim", "k_reclaimable", "cma_free",
+        "llama_rss", "llama_hwm", "llama_pss", "work_rss", "work_hwm", "work_pss", "pswpin", "pswpout",
+        "anon_pages", "mapped", "active_file", "inactive_file",  # ATTRIBUTION_MEMINFO_KEYS, in order
+    ]
+
+    def __init__(self, path: Path, on_floor, *, thp: bool = False, read_thp=None) -> None:
+        super().__init__(name="sampler", daemon=True)
+        self.path = path
+        self.on_floor = on_floor
+        self.thp = thp  # THP observation: THP_COLUMNS after every existing column, read in the same sample
+        self.columns = [*self.COLUMNS, *(THP_COLUMNS if thp else ())]
+        self._read_thp = read_thp or read_thp_counters
+        self.phase = "start"
+        self.pids: dict[str, int] = {}
+        self.floor_hit = False
+        self._low = 0
+        self._halt = threading.Event()
+
+    def run(self) -> None:
+        next_slow = 0.0
+        with open(self.path, "w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(self.columns)
+            while not self._halt.is_set():
+                now = time.monotonic()
+                mem = read_meminfo(keys=(*MEMINFO_KEYS, "AnonHugePages")) if self.thp else read_meminfo()
+                slow = now >= next_slow
+                row: list[object] = [f"{now:.3f}", self.phase] + [mem.get(key, "") for key in BASE_MEMINFO_KEYS]
+                for key in ("llama", "work"):
+                    pid = self.pids.get(key)
+                    rss, hwm = read_process_memory(pid) if pid else (None, None)
+                    pss = read_pss(pid) if pid and slow else None
+                    row += ["" if value is None else value for value in (rss, hwm, pss)]
+                swap = read_swap_counters() if slow else {}
+                row += [swap.get("pswpin", ""), swap.get("pswpout", "")]
+                row += [mem.get(key, "") for key in ATTRIBUTION_MEMINFO_KEYS]
+                if self.thp:  # after the meminfo and process reads; the counters carry their own read time
+                    thp = self._read_thp()
+                    row += [mem.get("AnonHugePages", "")]
+                    row += ["" if thp.get(key) is None else thp[key] for key in THP_COLUMNS[1:]]
+                if slow:
+                    next_slow = now + PSS_INTERVAL_S
+                writer.writerow(row)
+                handle.flush()
+                self._check_floor(mem.get("MemAvailable"))
+                self._halt.wait(max(0.0, SAMPLE_INTERVAL_S - (time.monotonic() - now)))
+
+    def _check_floor(self, available: int | None) -> None:
+        if available is None:
+            return
+        self._low = self._low + 1 if available < MEMORY_FLOOR_BYTES else 0
+        if self._low >= 3 and not self.floor_hit:
+            self.floor_hit = True
+            self.on_floor()
+
+    def stop(self) -> None:
+        self._halt.set()
+        self.join(timeout=5)
+
+
+class Tegrastats(threading.Thread):
+    """tegrastats at 1 s, each line prefixed with its receipt time and phase."""
+
+    def __init__(self, path: Path, sampler: Sampler) -> None:
+        super().__init__(name="tegrastats", daemon=True)
+        self.path = path
+        self.sampler = sampler
+        self.proc: subprocess.Popen | None = None
+
+    def run(self) -> None:
+        with open(self.path, "w") as handle:
+            try:
+                self.proc = subprocess.Popen(
+                    ["stdbuf", "-oL", "tegrastats", "--interval", "1000"],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                )
+            except OSError as exc:
+                handle.write(f"unavailable: {type(exc).__name__}\n")
+                return
+            for line in self.proc.stdout:
+                handle.write(f"{time.monotonic():.3f}\t{self.sampler.phase}\t{line}")
+                handle.flush()
+
+    def stop(self) -> None:
+        if self.proc is not None and self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+        self.join(timeout=5)
+
+
+class MapsSampler(threading.Thread):
+    """MA1 (opt-in): the workload's mappings by category every ``interval_s``, as ``memattr_maps`` events.
+
+    Each read walks the workload's page tables under its mmap lock (as the 1 Hz smaps_rollup read does), so
+    the interval bounds the added cost; each event records its own read and parse time. No history is kept.
+    """
+
+    def __init__(self, pid: Callable[[], int | None], phase: Callable[[], str], emit, *,
+                 interval_s: float = MAPS_INTERVAL_S, read=read_maps_aggregate, clock=time.monotonic) -> None:
+        super().__init__(name="memattr-maps", daemon=True)
+        self._pid, self._phase, self._emit, self._read, self._clock = pid, phase, emit, read, clock
+        self.interval_s = interval_s
+        self._next_sample = 0.0
+        self._halt = threading.Event()
+
+    def sample(self) -> bool:
+        now = self._clock()
+        if self._halt.is_set() or now < self._next_sample:
+            return False
+        self._next_sample = now + self.interval_s
+        pid = self._pid()
+        record = self._read(pid) if pid else {"status": "unavailable", "reason": "no_process"}
+        self._emit("orchestrator", "memattr_maps", t_mono=round(now, 3), phase=self._phase(), **record)
+        return True
+
+    def run(self) -> None:
+        while not self._halt.is_set():
+            self.sample()
+            self._halt.wait(max(0.0, self._next_sample - self._clock()))
+
+    def stop(self) -> None:
+        self._halt.set()
+        if self.ident is not None:
+            self.join(timeout=5)
+
+
+# ------------------------------------------------------------------ components
+
+
+def start_llama(args: argparse.Namespace, run_dir: Path):
+    env = dict(os.environ, LD_PRELOAD=L4T_LIBCUDA, GGML_CUDA_ENABLE_UNIFIED_MEMORY="1")
+    log = open(run_dir / "llama-server.log", "wb")
+    argv = [str(args.llama), "--model", str(args.model), "--mmproj", str(args.mmproj),
+            "--host", "127.0.0.1", "--port", str(args.port), *llama_flags(args)]
+    if not getattr(args, "sanitized_logs", False):
+        return subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, env=env), log
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+    proc.log_pump = threading.Thread(target=pump_llama_diagnostics, args=(proc, log), daemon=True)
+    proc.log_pump.start()
+    return proc, log
+
+
+def pump_llama_diagnostics(proc, log, clock=time.monotonic) -> None:
+    """Save only fixed GPU-placement markers, numeric buffer sizes, the vision warm-up's numeric image size
+    (session 116, part 7: the evidence that --image-max-tokens took effect) and numeric prompt-cache lines.
+
+    Prompt-cache lines get the receipt time.monotonic() so they can be aligned with memory.csv.
+    """
+    try:
+        while line := proc.stdout.readline(65_536):
+            text = line.decode(errors="replace")
+            offload = re.search(r"offloaded (\d+)/(\d+) layers to GPU", text)
+            buffer = re.search(r"buffer size =\s*([\d.]+) MiB", text)
+            warmup = re.search(r"warmup with image size = (\d{1,5}) x (\d{1,5})", text)
+            startup = PROMPT_CACHE_STARTUP.search(text)
+            state = PROMPT_CACHE_STATE.search(text)
+            marker = next((label for key, label in PROMPT_CACHE_MARKERS.items() if key in text), None)
+            if offload:
+                log.write(f"offloaded {offload[1]}/{offload[2]} layers to GPU\n".encode())
+            if "CLIP using CUDA0" in text:
+                log.write(b"CLIP using CUDA0\n")
+            if buffer:
+                log.write(f"diagnostic: buffer size = {buffer[1]} MiB\n".encode())
+            if warmup:
+                log.write(f"diagnostic: vision warmup image size = {warmup[1]} x {warmup[2]}\n".encode())
+            stamp = f"t_mono={clock():.3f}"
+            if startup:
+                limit = "disabled" if startup[1] == "disabled" else (
+                    f"enabled, size limit: {startup[2]} MiB" if startup[2] else "enabled, size limit: no limit")
+                log.write(f"{stamp} prompt cache is {limit}\n".encode())
+            if state:
+                log.write((f"{stamp} prompt cache state: {state[1]} prompts, {state[2]} MiB "
+                           f"(limits: {state[3]} MiB, {state[4]} tokens, {state[5]} est)\n").encode())
+            if marker:
+                log.write(f"{stamp} prompt cache event: {marker}\n".encode())
+            log.flush()
+    except (OSError, ValueError):
+        return
+
+
+def wait_ready(port: int, proc: subprocess.Popen, timeout_s: float) -> bool:
+    """HTTP 200 from /health; llama-server answers 503 while it is still loading."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return False
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as response:
+                if response.status == 200:
+                    return True
+        except (urllib.error.URLError, OSError):
+            pass
+        time.sleep(0.25)
+    return False
+
+
+def llama_gpu_check(proc: subprocess.Popen, log_path: Path) -> dict[str, object]:
+    """Decision D27: every layer and the vision encoder on the GPU, with L4T's libcuda only."""
+    text = log_path.read_text(errors="replace")
+    offload = re.search(r"offloaded (\d+)/(\d+) layers to GPU", text)
+    try:
+        maps = Path(f"/proc/{proc.pid}/maps").read_text()
+    except OSError:
+        maps = ""
+    libcuda = sorted({line.split()[-1] for line in maps.splitlines() if "libcuda.so" in line})
+    result: dict[str, object] = {
+        "layers": offload.group(0) if offload else None,
+        "all_layers_on_gpu": bool(offload) and offload.group(1) == offload.group(2),
+        "vision_encoder_on_gpu": "CLIP using CUDA0" in text,
+        "libcuda": libcuda,
+        "l4t_libcuda_only": bool(libcuda) and all(path.startswith(L4T_LIBCUDA_DIR) for path in libcuda),
+        "buffers": [line.split(":", 1)[1].strip() for line in text.splitlines()
+                    if re.search(r"buffer size =\s+[\d.]+ MiB|^load_hparams: model size:", line)],
+    }
+    result["ok"] = bool(result["all_layers_on_gpu"] and result["vision_encoder_on_gpu"] and result["l4t_libcuda_only"])
+    return result
+
+
+def start_workload(args: argparse.Namespace, run_dir: Path) -> subprocess.Popen:
+    env = dict(
+        os.environ, LD_PRELOAD=L4T_LIBCUDA, PYTHONDONTWRITEBYTECODE="1", PYTHONUNBUFFERED="1",
+        PYTHONPATH=str(REPO / "src"), TF_CPP_MIN_LOG_LEVEL="3",
+    )
+    argv = [
+        str(args.python), str(WORKLOAD), "--engine", str(args.engine), "--port", str(args.port),
+        "--fps", str(args.fps), "--face-hz", str(args.face_hz), "--scene-interval-s", str(args.scene_interval_s),
+        "--settle-s", str(args.settle_s), "--warmup-s", str(args.warmup_s), "--steady-s", str(args.steady_s),
+    ]
+    if args.clip:
+        argv += ["--clip", str(args.clip)]
+    if args.scene_only:
+        argv.append("--scene-only")
+    request_model = getattr(args, "scene_request_model", DEFAULT_SCENE_REQUEST_MODEL)
+    if request_model != DEFAULT_SCENE_REQUEST_MODEL:  # the default's command line is unchanged (session 115)
+        argv += ["--scene-request-model", request_model]
+    template_kwargs = getattr(args, "scene_template_kwargs", None)
+    if template_kwargs is not None:  # the set's chat-template arguments, as the runtime sends them (session 116)
+        argv += ["--scene-template-kwargs", template_kwargs]
+    releasing = [flag for flag, on in (("--mr1-release-check", getattr(args, "mr1_release_check", False)),
+                                       ("--post-load-release", getattr(args, "post_load_release", False))) if on]
+    attribution = ["--memory-attribution"] if getattr(args, "memory_attribution", False) else []  # MA1: counters only
+    if getattr(args, "workload_thp_disable", False):  # MA1-WTD (D57): the workload's own prctl, that process only
+        attribution.append("--thp-disable")
+    if releasing:  # MR1 or PLR: the workload waits on stdin at each checkpoint
+        argv += releasing + attribution
+        return subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                bufsize=1, env=env, cwd=run_dir)
+    argv += attribution
+    # cwd is the run directory so no library can leave files in the repository.
+    return subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env, cwd=run_dir)
+
+
+def sanitize_diagnostic(value, depth: int = 0):
+    """Bound trusted workload telemetry; never save arbitrary text/unknown fields."""
+    keys = {
+        "name", "event", "t_mono", "phase", "cuinit", "libcuda", "ok", "seconds",
+        "torch", "tensorflow", "tf_visible_gpus", "clock", "units", "device", "peak_scope",
+        "status", "error", "allocated_bytes", "allocated_peak_bytes", "reserved_bytes",
+        "reserved_peak_bytes", "detector", "face", "scene", "source_frames", "processed_frames",
+        "processed_fps", "latency_ms", "frames_with_person", "max_persons", "runs", "achieved_hz",
+        "runs_with_face", "errors", "completed", "over_d16_timeout", "valid_reports",
+        "invalid_reports", "unchecked_reports", "rejected_reports_by_reason", "finish_reasons",
+        "valid_summaries_at_limit", "valid_observations_at_limit", "accuracy",
+        "prompt_tokens_mean", "completion_tokens_mean", "input", "clip_loops",
+        "n", "p50", "p95", "p99", "max", "stop", "length", "other", "missing",
+        "truncated", "invalid_report", "incomplete_completion", "malformed_response", "timeout",
+        "server_error", "unsupported_completion", "requests", "http", "prompt_tokens", "completion_tokens",
+        "synthetic_images_issued", "edge", "boundary_t_mono", "unique_fps", "windows", "window_s", "count",
+        "min_fps", "max_fps", "schedule_age_ms", "decode_to_result_age_ms", "attempts", "client_timeouts",
+        "http_errors", "transport_errors", "request_sha256", "error_count", "clip_loop_t_mono",
+        # session 115, part 20: an HTTP error's category (llama_errors' fixed labels), counted and per outcome
+        "http_error_categories", "error_category", "sampler_init_failed", "json_schema_conversion_failed",
+        "json_schema_and_grammar", "exceeds_context_size", "image_processing_failed", "unparsable", "unreadable",
+    }
+    strings = {
+        *PHASES_IN_ORDER, "phase", "cuda_driver", "detector_loaded", "face_loaded",
+        "sampler_init_failed", "json_schema_conversion_failed", "json_schema_and_grammar", "exceeds_context_size",
+        "image_processing_failed", "unparsable", "unreadable",
+        "torch_allocator", "workload_stats", "scene_progress", "time.monotonic", "bytes", "allocator_lifetime",
+        "observed", "unavailable", "synthetic noise", "synthetic noise, distinct per request",
+        "not evaluated; structural validity is not scene accuracy", "steady_boundary", "start", "end",
+    }
+    if depth > 6:
+        return None
+    if isinstance(value, dict):
+        return {key: sanitize_diagnostic(item, depth + 1) for key, item in list(value.items())[:64]
+                if key in keys or re.fullmatch(r"[A-Za-z]{1,40}(?:Error|Exception)|HTTP [1-5]\d\d", key)}
+    if isinstance(value, list):
+        return [sanitize_diagnostic(item, depth + 1) for item in value[:16]]
+    if type(value) is int:
+        return value if value.bit_length() <= 63 else None
+    if type(value) is float:
+        return value if math.isfinite(value) else None
+    if value is None or type(value) is bool:
+        return value
+    if isinstance(value, str):
+        if value in strings or re.fullmatch(r"\d+(?:\.\d+){1,3}(?:[A-Za-z0-9.+-]{0,24})", value):
+            return value
+        if re.fullmatch(r"[0-9a-f]{64}", value):  # a SHA-256 fingerprint
+            return value
+        if re.fullmatch(r"[A-Za-z]{1,40}(?:Error|Exception)", value):
+            return value
+        if value.startswith(L4T_LIBCUDA_DIR) and re.fullmatch(r"libcuda\.so(?:\.\d+)*", Path(value).name):
+            return value
+    return None
+
+
+def _count(value) -> int | None:
+    return value if type(value) is int and 0 <= value < 1 << 63 else None
+
+
+def _measure(value) -> float | None:
+    return float(value) if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
+
+
+def _triple(value, item) -> list | None:
+    return [item(v) for v in value] if isinstance(value, list) and len(value) == 3 else None
+
+
+def sanitize_memattr(record: dict) -> dict | None:
+    """MA1's workload events reduced to fixed keys, bounded non-negative numbers and fixed labels; else None."""
+    name = record.get("event")
+    phase = record.get("phase")
+    if name == "memattr_config":
+        version = record.get("glibc_version")
+        python = record.get("python")
+        thresholds = _triple(record.get("gc_thresholds"), _count)
+        return {"interval_s": _measure(record.get("interval_s")),
+                "full_gc_per_sample": _count(record.get("full_gc_per_sample")),
+                "mallinfo2": record.get("mallinfo2") if type(record.get("mallinfo2")) is bool else None,
+                "glibc_version": version if isinstance(version, str) and re.fullmatch(r"\d+\.\d+(?:\.\d+)?", version)
+                else None,
+                "python": python if isinstance(python, str) and re.fullmatch(r"\d+\.\d+\.\d+", python) else None,
+                "gc_thresholds": thresholds, "gc_enabled": record.get("gc_enabled")
+                if type(record.get("gc_enabled")) is bool else None, "gc_frozen": _count(record.get("gc_frozen"))}
+    if name != "memattr_process":
+        return None
+    malloc = record.get("malloc")
+    full = record.get("gc_full")
+    error = record.get("malloc_error")
+    return {
+        "t_mono": _measure(record.get("t_mono")),
+        "phase": phase if phase in PHASES_IN_ORDER else None,
+        **{key: record.get(key) if record.get(key) in MEMATTR_STATUSES else "unavailable"
+           for key in ("status", "malloc_status")},
+        "malloc_error": error if isinstance(error, str) and re.fullmatch(r"[A-Za-z]{1,40}(?:Error|Exception)", error)
+        else None,
+        "malloc": {key: _count(malloc.get(key)) for key in MALLINFO2_REPORTED} if isinstance(malloc, dict) else None,
+        "malloc_call_us": _measure(record.get("malloc_call_us")),
+        "pymalloc_blocks": _count(record.get("pymalloc_blocks")),
+        "gc_enabled": record.get("gc_enabled") if type(record.get("gc_enabled")) is bool else None,
+        **{key: _triple(record.get(key), _count)
+           for key in ("gc_counts", "gc_collections", "gc_collected", "gc_uncollectable")},
+        "gc_seconds": _triple(record.get("gc_seconds"), _measure),
+        "gc_full": [[_measure(item[0]), _measure(item[1]), _count(item[2]), _count(item[3])]
+                    for item in full[:MEMATTR_FULL_GC_PER_SAMPLE] if isinstance(item, list) and len(item) == 4]
+        if isinstance(full, list) else None,
+        "gc_full_dropped": _count(record.get("gc_full_dropped")),
+        "sample_us": _measure(record.get("sample_us")),
+    }
+
+
+def sanitize_thp_disable(record: dict) -> dict:
+    """D57's ``thp_disable`` event reduced to fixed keys, bounded numbers and fixed labels; anything else is None."""
+    loaded = record.get("model_modules_loaded")
+    error, reason = record.get("set_errno"), record.get("reason")
+
+    def small(value):
+        return value if type(value) is int and -(1 << 31) <= value < 1 << 31 else None
+
+    return {
+        "t_mono": _measure(record.get("t_mono")),
+        "requested": record.get("requested") is True,
+        "model_modules_loaded": [name for name in loaded if name in WTD_MODEL_MODULES][:len(WTD_MODEL_MODULES)]
+        if isinstance(loaded, list) else None,
+        "set_rc": small(record.get("set_rc")),
+        "set_errno": error if isinstance(error, str) and re.fullmatch(r"E[A-Z0-9]{1,15}", error) else None,
+        "get_value": small(record.get("get_value")),
+        "thp_enabled": record.get("thp_enabled") if record.get("thp_enabled") in (0, 1) else None,
+        "anon_huge_pages_bytes": _count(record.get("anon_huge_pages_bytes")),
+        "verified": record.get("verified") is True,
+        "reason": reason if reason in WTD_STARTUP_REASONS else None,
+    }
+
+
+def pump_workload(proc: subprocess.Popen, run_dir: Path, events: Events, set_phase, *, sanitized: bool = False,
+                  on_checkpoint=None, on_wtd=None, on_steady_start=None) -> None:
+    """Relay the workload's events. ``on_checkpoint`` (MR1 only) handles ``mr1_checkpoint`` and ``mr1_smoke``;
+    ``on_wtd`` (MA1-WTD and the D58 candidate) is called after the ``thp_disable`` event and after the steady end
+    boundary; ``on_steady_start`` (the candidate) after the steady start boundary."""
+    mr1 = on_checkpoint is not None
+    with open(run_dir / "workload.log", "w") as log:
+        while line := proc.stdout.readline(65_536):
+            if line.startswith(EVENT_PREFIX):
+                try:
+                    record = json.loads(line[len(EVENT_PREFIX):])
+                except json.JSONDecodeError:
+                    if not sanitized:
+                        log.write(line)
+                    continue
+                if mr1 and isinstance(record, dict) and record.get("event") == "mr1_checkpoint":
+                    stage = record.get("stage")
+                    if isinstance(stage, str) and stage in ("detector", "face", "after_smoke"):
+                        on_checkpoint(stage)
+                    continue
+                if mr1 and isinstance(record, dict) and record.get("event") == "mr1_smoke":
+                    events.add("workload", "mr1_smoke", **sanitize_mr1_smoke(record))
+                    continue
+                if isinstance(record, dict) and record.get("event") in MEMATTR_EVENTS:  # MA1, in either mode
+                    events.add("workload", record["event"], **sanitize_memattr(record))
+                    continue
+                if isinstance(record, dict) and record.get("event") == "thp_disable":  # MA1-WTD, in either mode
+                    clean = sanitize_thp_disable(record)
+                    events.add("workload", "thp_disable", **clean)
+                    if on_wtd is not None:
+                        on_wtd("workload_verified")
+                    continue
+                if sanitized:
+                    if not isinstance(record, dict) or record.get("event") not in {
+                        "phase", "cuda_driver", "detector_loaded", "face_loaded", "torch_allocator", "workload_stats",
+                        "scene_progress", "steady_boundary",
+                    }:
+                        continue
+                    record = sanitize_diagnostic(record)
+                name = record.pop("event", "unknown")
+                if name == "phase":
+                    if sanitized and record.get("name") not in PHASES_IN_ORDER:
+                        continue
+                    set_phase(str(record.get("name")), source="workload")
+                else:
+                    events.add("workload", name, **record)
+                    if on_steady_start is not None and name == "steady_boundary" and record.get("edge") == "start":
+                        on_steady_start("steady_start")
+                    if on_wtd is not None and name == "steady_boundary" and record.get("edge") == "end":
+                        on_wtd("steady_end")  # the workload is still running: it emits workload_stats next
+            else:
+                if not sanitized:
+                    log.write(line)
+                    log.flush()
+
+
+def stop_process(proc: subprocess.Popen | None, name: str, events: Events) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=10)
+    events.add("orchestrator", "stopped", component=name, returncode=proc.returncode)
+
+
+# ------------------------------------------------------------------------ run
+
+
+def workload_budget(args: argparse.Namespace) -> float:
+    """Seconds the workload may take from its start to its exit before the run aborts."""
+    if args.mr1_release_check:  # loads, two releases with their checkpoints, the smoke checks, no warm-up/steady
+        return args.load_timeout_s + 2 * args.settle_s + 3 * (args.mr1_release_settle_s + 10) + MR1_SMOKE_BUDGET_S + 60
+    if args.post_load_release:  # step 4's budget plus the two releases the workload waits for
+        return (args.load_timeout_s + 2 * args.settle_s + 2 * (args.mr1_release_settle_s + 10)
+                + args.warmup_s + args.steady_s + 60)
+    return args.load_timeout_s + 2 * args.settle_s + args.warmup_s + args.steady_s + 60
+
+
+def run(args: argparse.Namespace) -> int:
+    problems, context = preconditions(args)
+    if problems:
+        print("Not starting:")
+        for problem in problems:
+            print(f"  - {problem}")
+        return 2
+    run_id = "demo-profile-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_dir = Path(args.out).expanduser() / run_id
+    run_dir.mkdir(parents=True, mode=0o700)
+    manifest = provenance(args, context, run_id)
+    (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    print(f"Run {run_id}: writing to {run_dir}")
+
+    events = Events(run_dir / "events.jsonl", time.monotonic())
+    procs: dict[str, subprocess.Popen | None] = {"llama": None, "work": None}
+    maps: MapsSampler | None = None  # MA1 only
+
+    def on_floor() -> None:
+        events.add("orchestrator", "memory_floor", floor_bytes=MEMORY_FLOOR_BYTES)
+        events.add("orchestrator", "stop_boundary", reason="memory_floor", boundary_t_mono=round(time.monotonic(), 3))
+        for proc in procs.values():
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+
+    thp = bool(getattr(args, "thp_observation", False))
+    wtd = bool(getattr(args, "workload_thp_disable", False))  # MA1-WTD (D57) or the D58 candidate
+    cand = bool(getattr(args, "candidate", False))  # D58: no MA1 sampling; cheap scope checks only
+    sampler = Sampler(run_dir / "memory.csv", on_floor, thp=thp)
+    tegrastats = Tegrastats(run_dir / "tegrastats.log", sampler)
+
+    def set_phase(name: str, source: str = "orchestrator") -> None:
+        sampler.phase = name
+        events.add(source, "phase", name=name)
+
+    def wtd_checkpoint(checkpoint: str) -> dict:
+        """D57: read and record THP_enabled for the processes this checkpoint expects (read-only)."""
+        record = wtd_scope(checkpoint, {"profiler": os.getpid(), "llama": sampler.pids.get("llama"),
+                                        "workload": sampler.pids.get("work")})
+        events.add("orchestrator", "wtd_scope", **record)
+        return record
+
+    def candidate_checkpoint(checkpoint: str) -> None:
+        """D58: MA1-WTD's THP_enabled checkpoint (where it has one), then the workload's AnonHugePages, read-only."""
+        if checkpoint in WTD_EXPECTED:
+            wtd_checkpoint(checkpoint)
+        pid = sampler.pids.get("work")
+        events.add("orchestrator", "cand_effect", checkpoint=checkpoint,
+                   anon_huge_pages_bytes=read_anon_huge_pages(pid) if pid else None)
+
+    stop_mark: dict[str, float] = {}
+
+    def interrupted(signum, _frame) -> None:
+        stop_mark.setdefault("t", time.monotonic())  # no lock here; the event is written in the handler below
+        raise Interrupted(signal.Signals(signum).name)
+
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGHUP, interrupted)
+    status = "incomplete"
+    llama_log = None
+    sampler.start()
+    tegrastats.start()
+    try:
+        if wtd and not wtd_checkpoint("before_launch")["ok"]:  # inherited by llama-server and the workload if not 1
+            raise RunAborted("this profiler's own THP_enabled is not 1 (D57): llama-server would inherit it; stop "
+                             "before starting any component")
+        set_phase("baseline")
+        time.sleep(args.baseline_s)
+        if args.evict:
+            before = read_meminfo()
+            count = evict_page_cache(list(model_files(args).values()))
+            after = read_meminfo()
+            events.add("orchestrator", "evict_model_cache", files=count,
+                       mem_free_before=before["MemFree"], mem_free_after=after["MemFree"])
+        free = read_meminfo()["MemFree"]
+        if free < args.min_free_gb * 1e9:
+            # V2-01: GPU (NvMap) allocations here failed beyond MemFree even with GBs
+            # of reclaimable cache; llama-server's own free-memory check misses it.
+            raise RunAborted(
+                f"MemFree is {free / 1e9:.2f} GB, below --min-free-gb {args.min_free_gb}: GPU allocations on "
+                "this device need free, not merely reclaimable, memory. Reboot and run again, or drop caches first"
+            )
+
+        set_phase("llama_load")
+        started = time.monotonic()
+        procs["llama"], llama_log = start_llama(args, run_dir)
+        sampler.pids["llama"] = procs["llama"].pid
+        ready = wait_ready(args.port, procs["llama"], args.llama_timeout_s)
+        events.add("orchestrator", "llama_ready", ready=ready, seconds=round(time.monotonic() - started, 2))
+        if not ready:
+            raise RunAborted("llama-server did not become ready; see llama-server.log")
+        check = llama_gpu_check(procs["llama"], run_dir / "llama-server.log")
+        events.add("orchestrator", "llama_gpu_check", **check)
+        events.add("orchestrator", "llama_cmdline", **cmdline_evidence(procs["llama"].pid))
+        if not check["ok"]:
+            raise RunAborted("llama-server is not fully on the GPU with L4T's libcuda (decision D27)")
+        if wtd and not wtd_checkpoint("llama_ready")["ok"]:
+            raise RunAborted("llama-server's or this profiler's THP_enabled is not 1 (D57); the workload was not started")
+        set_phase("llama_settle")
+        time.sleep(args.settle_s)
+        on_checkpoint = None
+        if args.mr1_release_check or args.post_load_release:
+            on_checkpoint = mr1_checkpoint_handler(procs, events, set_phase, mr1_files(args), args.mr1_release_settle_s,
+                                                   require_returned_0=cand)
+            on_checkpoint("scene")  # llama-server has settled; the workload has not started
+            if on_checkpoint.failures:  # D58: the policy was not applied; nothing more starts
+                raise RunAborted("the scene model files' post-load release did not return 0 (D58); the workload was "
+                                 "not started")
+
+        procs["work"] = start_workload(args, run_dir)
+        sampler.pids["work"] = procs["work"].pid
+        if getattr(args, "memory_attribution", False):  # MA1: the workload's mappings, read-only, numbers only
+            maps = MapsSampler(lambda: sampler.pids.get("work"), lambda: sampler.phase, events.add,
+                               interval_s=args.maps_interval_s,  # THP: the same reads, plus AnonHugePages
+                               read=functools.partial(read_maps_aggregate, fields=SMAPS_THP_FIELDS) if thp
+                               else read_maps_aggregate)
+            maps.start()
+        pump = threading.Thread(
+            target=pump_workload, args=(procs["work"], run_dir, events, set_phase),
+            kwargs={"sanitized": args.sanitized_logs, **({"on_checkpoint": on_checkpoint} if on_checkpoint else {}),
+                    **({"on_wtd": candidate_checkpoint if cand else wtd_checkpoint} if wtd else {}),
+                    **({"on_steady_start": candidate_checkpoint} if cand else {})},
+            daemon=True,
+        )
+        pump.start()
+        try:
+            returncode = procs["work"].wait(timeout=workload_budget(args))
+        except subprocess.TimeoutExpired:
+            raise RunAborted("the workload exceeded its time budget") from None
+        if maps is not None:  # never read a pid after its process has exited
+            maps.stop()
+        pump.join(timeout=10)
+        events.add("orchestrator", "workload_exit", returncode=returncode)
+        if on_checkpoint is not None and on_checkpoint.failures:  # D58: the policy was not applied
+            raise RunAborted(f"the {on_checkpoint.failures[0]} model files' post-load release did not return 0 (D58)")
+        if sampler.floor_hit:
+            raise RunAborted("MemAvailable stayed below the safety floor")
+        if returncode != 0:
+            raise RunAborted(f"the workload exited with status {returncode}; see workload.log")
+
+        set_phase("unload_workload")
+        time.sleep(args.settle_s)
+        stop_process(procs["llama"], "llama-server", events)
+        set_phase("unload_llama")
+        time.sleep(args.settle_s)
+        status = "complete"
+    except RunAborted as exc:
+        status = f"aborted: {exc}"
+        events.add("orchestrator", "stop_boundary", reason="aborted", boundary_t_mono=round(time.monotonic(), 3))
+    except (Interrupted, KeyboardInterrupt) as exc:
+        status = f"interrupted ({exc or 'SIGINT'})"
+        events.add("orchestrator", "stop_boundary", reason="interrupted",
+                   boundary_t_mono=round(stop_mark.get("t", time.monotonic()), 3))
+    finally:
+        if maps is not None:
+            maps.stop()
+        stop_process(procs["work"], "workload", events)
+        stop_process(procs["llama"], "llama-server", events)
+        if llama_log is not None:
+            log_pump = getattr(procs["llama"], "log_pump", None)
+            if log_pump is not None:
+                log_pump.join(timeout=1)
+            llama_log.close()
+        set_phase("end")
+        tegrastats.stop()
+        sampler.stop()
+        leftovers = [pid for pid, comm, _, _ in scan_processes() if comm == "llama-server"]
+        events.add("orchestrator", "cleanup", llama_server_running=bool(leftovers), port_in_use=port_in_use(args.port))
+        events.add("orchestrator", "run_end", status=status)
+        events.close()
+    if thp or cand:  # after cleanup: the same readings as before the run
+        manifest["thp_settings"]["after"] = thp_settings_snapshot()
+    manifest["finished_utc"] = utc_now()
+    manifest["status"] = status
+    manifest["sha256"] = {label: sha256_of(path) for label, path in model_files(args).items()}
+    manifest["sha256_build"] = {label: sha256_of(path) for label, path in llama_build_files(args.llama).items()}
+    manifest["sha256_clip"] = sha256_of(args.clip) if args.clip else None  # local run record only
+    (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    print(summarize(run_dir))
+    return 0 if status == "complete" else 1
+
+
+# ------------------------------------------------------------------ summary
+
+
+def _int(value: str | None) -> int | None:
+    return int(value) if value not in ("", None) else None
+
+
+def load_samples(path: Path) -> list[dict[str, object]]:
+    samples = []
+    with open(path, newline="") as handle:
+        reader = csv.DictReader(handle)
+        thp = [key for key in THP_COLUMNS if key in (reader.fieldnames or ())]  # THP observation runs only
+        for row in reader:
+            sample: dict[str, object] = {"t": float(row["t_mono"]), "phase": row["phase"]}
+            for key in Sampler.COLUMNS[2:]:
+                sample[key] = _int(row.get(key))
+            for key in thp:
+                value = row.get(key)
+                sample[key] = ((None if value in ("", None) else float(value)) if key in THP_FLOAT_COLUMNS
+                               else _int(value))
+            sample["used"] = sample["mem_total"] - sample["mem_available"]
+            sample["swap_used"] = sample["swap_total"] - sample["swap_free"]
+            samples.append(sample)
+    return samples
+
+
+TEGRA_RAM = re.compile(r"RAM (\d+)/(\d+)MB")
+TEGRA_SWAP = re.compile(r"SWAP (\d+)/(\d+)MB")
+TEGRA_CPU = re.compile(r"CPU \[([^\]]*)\]")
+TEGRA_GR3D = re.compile(r"GR3D_FREQ (\d+)%")
+TEGRA_TEMP = re.compile(r"(\b[a-z][a-z0-9]*)@(-?\d+(?:\.\d+)?)C\b")
+TEGRA_POWER = re.compile(r"(VDD_\w+) (\d+)mW/(\d+)mW")
+
+
+def parse_tegrastats_line(line: str) -> dict[str, object]:
+    """One tegrastats line; its "MB" are MiB (the total matches MemTotal in MiB)."""
+    parsed: dict[str, object] = {}
+    if match := TEGRA_RAM.search(line):
+        parsed["ram_used_bytes"] = int(match.group(1)) * 1_048_576
+    if match := TEGRA_SWAP.search(line):
+        parsed["swap_used_bytes"] = int(match.group(1)) * 1_048_576
+    if match := TEGRA_CPU.search(line):
+        cores = [int(item.split("%")[0]) for item in match.group(1).split(",") if "%" in item]
+        if cores:
+            parsed["cpu_cores"] = cores
+    if match := TEGRA_GR3D.search(line):
+        parsed["gr3d_percent"] = int(match.group(1))
+    parsed["temps"] = {name: float(value) for name, value in TEGRA_TEMP.findall(line)}
+    parsed["power_mw"] = {name: int(now) for name, now, _average in TEGRA_POWER.findall(line)}
+    return parsed
+
+
+def load_tegrastats(path: Path) -> list[dict[str, object]]:
+    rows = []
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return rows
+    for line in lines:
+        parts = line.split("\t", 2)
+        if len(parts) == 3:
+            row = parse_tegrastats_line(parts[2])
+            row["phase"] = parts[1]
+            try:
+                row["t"] = float(parts[0])
+            except ValueError:
+                pass
+            rows.append(row)
+    return rows
+
+
+def nearest_rank(values: list[int], p: float) -> int | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    return ordered[max(1, math.ceil(p * len(ordered))) - 1]
+
+
+def gb(value: int | None, signed: bool = False) -> str:
+    if value is None:
+        return "n/a"
+    sign = "+" if signed and value >= 0 else ""
+    return f"{sign}{value:,} B ({sign}{value / 1e9:.3f} GB)"
+
+
+def load_boundary_events(path: Path) -> list[dict[str, object]]:
+    """Every boundary/evidence event (BOUNDARY_EVENTS), in order; a few per run."""
+    found = []
+    try:
+        with open(path) as handle:
+            for line in handle:
+                if line.strip():
+                    record = json.loads(line)
+                    if record.get("event") in BOUNDARY_EVENTS:
+                        found.append(record)
+    except OSError:
+        pass
+    return found
+
+
+def load_latest_events(path: Path) -> dict[str, dict[str, object]]:
+    """Retain at most seven summary events; allocator and per-request history stays on disk."""
+    names = {"run_end", "llama_ready", "detector_loaded", "face_loaded", "workload_stats", "llama_gpu_check",
+             "scene_progress", "cuda_driver", "llama_cmdline"}
+    latest = {}
+    with open(path) as handle:
+        for line in handle:
+            if line.strip():
+                record = json.loads(line)
+                if record["event"] in names:
+                    latest[record["event"]] = record
+    return latest
+
+
+MR1_CANNOT_ESTABLISH = (
+    "per-file page-cache residency, or which pages or files were released: the counters are device-wide",
+    "that a returned 0 dropped any page: mapped, dirty or locked pages stay",
+    "behaviour under sustained load: the smoke checks are single, bounded runs",
+    "whether the released headroom is enough for step 4, or any step-4 criterion",
+    "GPU (NvMap) allocation behaviour at low MemFree beyond this run",
+    "model accuracy or scene accuracy",
+    "other boots, other inputs or other flags",
+)
+
+
+def load_mr1_events(path: Path) -> list[dict[str, object]]:
+    found = []
+    try:
+        with open(path) as handle:
+            for line in handle:
+                if line.strip():
+                    record = json.loads(line)
+                    if record.get("event") in ("mr1_release", "mr1_snapshot", "mr1_smoke"):
+                        found.append(record)
+    except OSError:
+        pass
+    return found
+
+
+def release_records(records: list[dict[str, object]]) -> dict[str, dict[str, object]]:
+    """Each component's release record (MR1 or PLR), keyed by component."""
+    return {r["component"]: {k: r.get(k) for k in ("files", "files_total_bytes", "calls_elapsed_s", "settle_s",
+                                                      "before", "after", "deltas", "outcome")}
+            for r in records if r["event"] == "mr1_release" and r.get("component") in MR1_RELEASE_FILES}
+
+
+def _status_label(status: str) -> str:
+    return next((name for name in ("complete", "aborted", "interrupted", "incomplete") if status.startswith(name)), "unknown")
+
+
+def mr1_report(run_dir: Path, status: str) -> dict[str, object]:
+    """MR1's record: each release, the after-smoke sample, the smoke checks; descriptive, never acceptance."""
+    records = load_mr1_events(Path(run_dir) / "events.jsonl")
+    releases = release_records(records)
+    after_smoke = next((r for r in records if r["event"] == "mr1_snapshot"), None)
+    after_smoke = {k: after_smoke.get(k) for k in ("t_mono", "meminfo", "pressure_bytes", "processes")} if after_smoke else None
+    smoke = next(({k: r.get(k) for k in MR1_SMOKE_KEYS} for r in records if r["event"] == "mr1_smoke"), None)
+    face = releases.get("face")
+    label = _status_label(status)
+    return {
+        "label": "mr1-release-check",
+        "scope": "loads and settles, each model's file cache released after its settle, bounded smoke checks; "
+                 "not step-4 acceptance, a resource profile or a sustained-memory test",
+        "profile_status": label,
+        "releases": releases,
+        "after_smoke": after_smoke,
+        "after_smoke_vs_face_release": snapshot_deltas(face["after"], after_smoke) if face and after_smoke else None,
+        "smoke": smoke,
+        "functional_smoke": functional_smoke(smoke),
+        "basis": MR1_BASIS,
+        "cannot_establish": list(MR1_CANNOT_ESTABLISH),
+    }
+
+
+def release_lines(releases: dict[str, dict[str, object]]) -> list[str]:
+    lines = []
+    for component in MR1_RELEASE_FILES:
+        item = releases.get(component)
+        if item is None:
+            lines.append(f"  {component}: not reached")
+            continue
+        d = item["deltas"]
+        calls = ", ".join(f"{label} {f.get('result')}" + (f" ({f.get('error')})" if f.get("error") else "")
+                          for label, f in item["files"].items())
+        lines.append(f"  {component}: {item['outcome']}; calls: {calls}; files total {gb(item['files_total_bytes'])}")
+        lines.append(f"    deltas over {item['settle_s']} s: MemFree {gb(d.get('MemFree'), True)}, Cached {gb(d.get('Cached'), True)}, "
+                     f"Mapped {gb(d.get('Mapped'), True)}, AnonPages {gb(d.get('AnonPages'), True)}, "
+                     f"Inactive(file) {gb(d.get('Inactive(file)'), True)}, pressure {gb(d.get('pressure_bytes'), True)}")
+    return lines
+
+
+def mr1_lines(report: dict[str, object]) -> list[str]:
+    lines = ["", "MR1 release check (descriptive; not step-4 evidence, never acceptance):", f"  basis: {MR1_BASIS}"]
+    lines += release_lines(report["releases"])
+    after = report.get("after_smoke_vs_face_release")
+    if after:
+        lines.append(f"  after the smoke checks vs after the face release: MemFree {gb(after.get('MemFree'), True)}, "
+                     f"Cached {gb(after.get('Cached'), True)}, pressure {gb(after.get('pressure_bytes'), True)}")
+    lines.append(f"  smoke checks: {report['functional_smoke']} {report['smoke']}")
+    lines.append("  Cannot establish: " + "; ".join(report["cannot_establish"]) + ".")
+    return lines
+
+
+def _memory_window(rows: list[dict[str, object]]) -> dict[str, object] | None:
+    """MemFree's minimum and Cached at the first and last sample of a window; None without rows."""
+    if not rows:
+        return None
+    free = [r["mem_free"] for r in rows if r.get("mem_free") is not None]
+    cached = [r["cached"] for r in rows if r.get("cached") is not None]
+    return {"samples": len(rows), "mem_free_min_bytes": min(free) if free else None,
+            "cached_first_bytes": cached[0] if cached else None, "cached_last_bytes": cached[-1] if cached else None}
+
+
+def plr_report(run_dir: Path, status: str, warmup: list[dict[str, object]],
+               steady: list[dict[str, object]]) -> dict[str, object]:
+    """Step-4 PLR's release record: each release, then MemFree and Cached over warm-up and the steady interval.
+
+    Descriptive only; the step-4 criteria judge the run. ``steady`` holds the samples inside the monotonic steady
+    interval (empty when it is unavailable)."""
+    releases = release_records(load_mr1_events(Path(run_dir) / "events.jsonl"))
+    face = releases.get("face")
+    last = ((face or {}).get("after") or {}).get("meminfo") or {}
+    return {
+        "label": PLR_LABEL,
+        "criteria_id": step4_criteria.PLR_CRITERIA_ID,
+        "scope": "each model's file cache released after its load and settle, then step 4's warm-up and steady "
+                 "phases; release outcomes are descriptive, never a criterion",
+        "profile_status": _status_label(status),
+        "releases": releases,
+        "release_outcomes": {c: (releases.get(c) or {}).get("outcome", "not_reached") for c in MR1_RELEASE_FILES},
+        "after_last_release": {"MemFree": last.get("MemFree"), "Cached": last.get("Cached")} if face else None,
+        "warmup": _memory_window(warmup),
+        "steady": _memory_window(steady),
+        "basis": MR1_BASIS,
+        "cannot_establish": list(PLR_CANNOT_ESTABLISH),
+    }
+
+
+def plr_lines(report: dict[str, object]) -> list[str]:
+    lines = ["", "Post-load release (step-4 PLR, D54; release outcomes descriptive, never a criterion):",
+             f"  basis: {MR1_BASIS}"]
+    lines += release_lines(report["releases"])
+    after = report.get("after_last_release")
+    if after:
+        lines.append(f"  after the last release: MemFree {gb(after.get('MemFree'))}, Cached {gb(after.get('Cached'))}")
+    for key, name in (("warmup", "warm-up"), ("steady", "steady interval")):
+        window = report.get(key)
+        lines.append(f"  {name}: not reached" if not window else
+                     f"  {name}: MemFree min {gb(window['mem_free_min_bytes'])}; Cached first "
+                     f"{gb(window['cached_first_bytes'])}, last {gb(window['cached_last_bytes'])}")
+    lines.append("  Cannot establish: " + "; ".join(report["cannot_establish"]) + ".")
+    return lines
+
+
+def load_memattr_events(path: Path) -> list[dict[str, object]]:
+    found = []
+    try:
+        with open(path) as handle:
+            for line in handle:
+                if line.strip():
+                    record = json.loads(line)
+                    if record.get("event") in ("memattr_process", "memattr_config", "memattr_maps"):
+                        found.append(record)
+    except OSError:
+        pass
+    return found
+
+
+def _first_last(values: list) -> dict[str, object]:
+    """First, last, change, minimum and maximum of the available values; all None when there are none."""
+    present = [v for v in values if v is not None]
+    if not present:
+        return {"n": 0, "first": None, "last": None, "delta": None, "min": None, "max": None}
+    return {"n": len(present), "first": present[0], "last": present[-1], "delta": present[-1] - present[0],
+            "min": min(present), "max": max(present)}
+
+
+def _between(records: list[dict[str, object]], window: tuple[float, float]) -> list[dict[str, object]]:
+    return [r for r in records if type(r.get("t_mono")) in (int, float) and window[0] <= r["t_mono"] <= window[1]]
+
+
+def _bracket(records: list[dict[str, object]], before: float, after: float):
+    """The last record at or before ``before`` and the first at or after ``after``, or None."""
+    earlier = [r for r in records if r["t_mono"] <= before]
+    later = [r for r in records if r["t_mono"] >= after]
+    return (earlier[-1], later[0]) if earlier and later else None
+
+
+def _memattr_window(rows, process, maps, window) -> dict[str, object]:
+    rows = [r for r in rows if window[0] <= r["t"] <= window[1]]
+    process = _between(process, window)
+    maps = _between(maps, window)
+    malloc = [p for p in process if p.get("malloc_status") == "observed" and isinstance(p.get("malloc"), dict)]
+    collections = [p["gc_collections"] for p in process if isinstance(p.get("gc_collections"), list)
+                   and None not in p["gc_collections"]]
+    observed_maps = [m for m in maps if m.get("status") == "observed" and isinstance(m.get("categories"), dict)]
+    return {
+        "seconds": round(window[1] - window[0], 3),
+        "process_memory_csv": {key: _first_last([r.get(key) for r in rows])
+                               for key in ("work_rss", "work_pss", "anon_pages", "llama_rss")},
+        "process_events": len(process),
+        "malloc_observed": len(malloc),
+        "malloc": {key: _first_last([p["malloc"].get(key) for p in malloc]) for key in MALLINFO2_REPORTED},
+        "pymalloc_blocks": _first_last([p.get("pymalloc_blocks") for p in process]),
+        "gc_collections_by_generation": {f"gen{g}": collections[-1][g] - collections[0][g] for g in range(3)}
+        if collections else None,
+        "full_gc_listed": sum(1 for p in process for item in (p.get("gc_full") or [])
+                              if item[0] is not None and window[0] <= item[0] <= window[1]),
+        "maps_events": len(maps),
+        "maps_observed": len(observed_maps),
+        "maps": {name: {key: _first_last([(m["categories"].get(name) or {}).get(key) for m in observed_maps])
+                        for key in ("rss_bytes", "private_dirty_bytes", "anonymous_bytes")}
+                 for name in MAPS_CATEGORIES},
+    }
+
+
+def memattr_report(run_dir: Path, status: str, samples: list[dict[str, object]],
+                   warmup: tuple[float, float] | None, steady: tuple[float, float] | None) -> dict[str, object]:
+    """MA1's record: per-window changes in each source, the workload's RSS steps with their nearest full
+    collection and the bracketing readings, the instrumentation's own cost and what it cannot establish.
+
+    Descriptive only; it judges nothing. ``steady`` is the monotonic steady interval (None when unavailable)."""
+    events = load_memattr_events(Path(run_dir) / "events.jsonl")
+    config = next((e for e in events if e["event"] == "memattr_config"), None)
+    process = [e for e in events if e["event"] == "memattr_process" and type(e.get("t_mono")) in (int, float)]
+    maps = [e for e in events if e["event"] == "memattr_maps" and type(e.get("t_mono")) in (int, float)]
+    observed_maps = [m for m in maps if m.get("status") == "observed" and isinstance(m.get("categories"), dict)]
+    malloc = [p for p in process if p.get("malloc_status") == "observed" and isinstance(p.get("malloc"), dict)]
+    full = sorted(item[:2] for p in process for item in (p.get("gc_full") or []) if item[0] is not None)
+    reasons: dict[str, int] = {}
+    for m in maps:
+        if m.get("status") != "observed":
+            reasons[str(m.get("reason"))] = reasons.get(str(m.get("reason")), 0) + 1
+    windows = {name: _memattr_window(samples, process, maps, window)
+               for name, window in (("warmup", warmup), ("steady", steady)) if window}
+    span = (warmup or steady or (0.0, 0.0))[0], (steady or warmup or (0.0, 0.0))[1]
+    rows = [r for r in samples if span[0] <= r["t"] <= span[1] and r.get("work_rss") is not None]
+    steps = []
+    for a, b in zip(rows, rows[1:]):
+        if b["work_rss"] - a["work_rss"] < MA1_STEP_BYTES:
+            continue
+        nearest = min((b["t"] - start for start, _ in full), key=abs, default=None)
+        bracket_maps = _bracket(observed_maps, a["t"], b["t"])
+        bracket_malloc = _bracket(malloc, a["t"], b["t"])
+        steps.append({
+            "t_mono": b["t"], "rss_delta_bytes": b["work_rss"] - a["work_rss"],
+            "anon_pages_delta_bytes": (b["anon_pages"] - a["anon_pages"]
+                                       if a.get("anon_pages") is not None and b.get("anon_pages") is not None else None),
+            "nearest_full_gc_offset_s": round(nearest, 3) if nearest is not None else None,
+            "maps_bracket": None if bracket_maps is None else {
+                "t0": bracket_maps[0]["t_mono"], "t1": bracket_maps[1]["t_mono"],
+                "rss_delta_bytes": {name: _delta((bracket_maps[0]["categories"].get(name) or {}).get("rss_bytes"),
+                                                 (bracket_maps[1]["categories"].get(name) or {}).get("rss_bytes"))
+                                    for name in MAPS_CATEGORIES}},
+            "malloc_bracket": None if bracket_malloc is None else {
+                "t0": bracket_malloc[0]["t_mono"], "t1": bracket_malloc[1]["t_mono"],
+                "delta": {key: _delta(bracket_malloc[0]["malloc"].get(key), bracket_malloc[1]["malloc"].get(key))
+                          for key in MALLINFO2_REPORTED},
+                "pymalloc_blocks_delta": _delta(bracket_malloc[0].get("pymalloc_blocks"),
+                                                bracket_malloc[1].get("pymalloc_blocks"))},
+        })
+
+    def cost(values: list) -> dict[str, object]:
+        present = [v for v in values if v is not None]
+        return {"n": len(present), "p50": nearest_rank(present, 0.5), "max": max(present, default=None)}
+
+    return {
+        "label": MA1_LABEL,
+        "scope": "instrumented diagnostic of the PLR procedure: the workload process's allocator and collector "
+                 "counters and its mapping categories; descriptive only, never a criterion, eligibility, "
+                 "acceptance or admission",
+        "profile_status": _status_label(status),
+        "config": {k: v for k, v in (config or {}).items() if k not in ("event", "source", "utc", "t_mono")} or None,
+        "sources": {
+            "process": {"events": len(process), "malloc_observed": len(malloc),
+                        "malloc_unsupported": sum(1 for p in process if p.get("malloc_status") == "unsupported"),
+                        "pymalloc_observed": sum(1 for p in process if p.get("pymalloc_blocks") is not None),
+                        "full_gc_dropped": _present_max(p.get("gc_full_dropped") for p in process)},
+            "maps": {"events": len(maps), "observed": len(observed_maps), "unavailable_by_reason": reasons},
+        },
+        "windows": windows,
+        "steps": {"threshold_bytes": MA1_STEP_BYTES, "count": len(steps), "listed": steps[:MA1_MAX_STEPS]},
+        "full_gc": {"count": len(full), "listed": full[:MA1_MAX_FULL_GC]},
+        "cost": {"malloc_call_us": cost([p.get("malloc_call_us") for p in process]),
+                 "process_sample_us": cost([p.get("sample_us") for p in process]),
+                 "maps_read_ms": cost([m.get("read_ms") for m in maps]),
+                 "maps_parse_ms": cost([m.get("parse_ms") for m in maps]),
+                 "maps_bytes_read_max": _present_max(m.get("bytes_read") for m in maps),
+                 "maps_vmas_max": _present_max(m.get("vmas") for m in observed_maps)},
+        "basis": "process counters from the workload itself (glibc mallinfo2, CPython pymalloc blocks, gc.callbacks); "
+                 "mapping categories from its /proc/<pid>/smaps read by the profiler; RSS steps from memory.csv",
+        "cannot_establish": list(MA1_CANNOT_ESTABLISH),
+    }
+
+
+def _delta(first, last):
+    return last - first if first is not None and last is not None else None
+
+
+def _present_max(values) -> int | float | None:
+    return max((v for v in values if v is not None), default=None)  # None when nothing was recorded, never 0
+
+
+def memattr_lines(report: dict[str, object]) -> list[str]:
+    sources = report["sources"]
+    lines = ["", "MA1 memory attribution (instrumented diagnostic, D55; descriptive, never a criterion or eligibility):",
+             f"  sources: process events {sources['process']['events']} (mallinfo2 observed "
+             f"{sources['process']['malloc_observed']}, unsupported {sources['process']['malloc_unsupported']}; "
+             f"pymalloc observed {sources['process']['pymalloc_observed']}); maps reads {sources['maps']['events']} "
+             f"(observed {sources['maps']['observed']}, unavailable {sources['maps']['unavailable_by_reason'] or 0})"]
+    for name, window in report["windows"].items():
+        malloc, csv_side = window["malloc"], window["process_memory_csv"]
+        lines.append(f"  {name} ({window['seconds']} s): workload RSS {gb(csv_side['work_rss']['delta'], True)}, "
+                     f"AnonPages {gb(csv_side['anon_pages']['delta'], True)}; mallinfo2 arena "
+                     f"{gb(malloc['arena']['delta'], True)}, in use {gb(malloc['uordblks']['delta'], True)}, free "
+                     f"{gb(malloc['fordblks']['delta'], True)}, mmapped {gb(malloc['hblkhd']['delta'], True)}; "
+                     f"pymalloc blocks {window['pymalloc_blocks']['delta']}; collections by generation "
+                     f"{window['gc_collections_by_generation']}")
+        moved = {category: values["rss_bytes"]["delta"] for category, values in window["maps"].items()
+                 if values["rss_bytes"]["delta"]}
+        lines.append("    mapping RSS changes: " + (", ".join(f"{k} {gb(v, True)}" for k, v in moved.items())
+                                                    if moved else "none recorded"))
+    cost = report["cost"]
+    lines += [f"  RSS steps of at least {report['steps']['threshold_bytes']:,} B: {report['steps']['count']}; "
+              f"full collections recorded: {report['full_gc']['count']} (each step's nearest one and bracketing "
+              "readings are in memattr.json)",
+              f"  instrumentation cost: mallinfo2 call p50/max {cost['malloc_call_us']['p50']}/"
+              f"{cost['malloc_call_us']['max']} us; smaps read p50/max {cost['maps_read_ms']['p50']}/"
+              f"{cost['maps_read_ms']['max']} ms, parse p50/max {cost['maps_parse_ms']['p50']}/"
+              f"{cost['maps_parse_ms']['max']} ms; largest read {cost['maps_bytes_read_max']} B, "
+              f"{cost['maps_vmas_max']} mappings",
+              "  Cannot establish: " + "; ".join(report["cannot_establish"]) + "."]
+    return lines
+
+
+def _timed_first_last(records: list[dict[str, object]], value, t_key: str) -> dict[str, object]:
+    """_first_last of the available values, with the times of the first and last of them (None without any)."""
+    present = [(r[t_key], value(r)) for r in records if value(r) is not None]
+    summary = _first_last([v for _, v in present])
+    return {**summary, "t_first": present[0][0] if present else None, "t_last": present[-1][0] if present else None}
+
+
+def _collapse_signal(deltas: dict[str, object]) -> bool | None:
+    """True when a collapse counter rose, False when at least one was read at both ends and none rose, else None."""
+    seen = [deltas.get(key) for key in THP_COLLAPSE_KEYS if deltas.get(key) is not None]
+    return any(value > 0 for value in seen) if seen else None
+
+
+def _rss_label(first: dict[str, object], last: dict[str, object]) -> str:
+    """Which recorded process's RSS rose between two memory.csv rows (a collapse of a fully resident range moves none)."""
+    work, llama = _delta(first.get("work_rss"), last.get("work_rss")), _delta(first.get("llama_rss"), last.get("llama_rss"))
+    if work is None and llama is None:
+        return "unknown"
+    rose = ((work or 0) > 0, (llama or 0) > 0)
+    return {(True, True): "both_rss_rose", (True, False): "workload_rss_rose", (False, True): "llama_rss_rose",
+            (False, False): "no_recorded_rss_rise"}[rose]
+
+
+def _thp_step_outcome(collapse: bool | None, local: int | None, local_reason: str | None,
+                      split: bool | None) -> tuple[str, list[str]]:
+    """THP_RULE for one step; the reasons say why a step is inconclusive."""
+    if collapse is None:
+        return "inconclusive", ["collapse_counters_unavailable"]
+    if local is None:
+        return "inconclusive", [local_reason or "process_maps_unavailable"]
+    if collapse and local > 0:
+        return "supported", []
+    if not collapse and local <= 0:
+        return "unsupported", []
+    if collapse:
+        return "inconclusive", ["collapse_counted_without_local_huge_page_rise",
+                                *(["split_counted_in_maps_bracket"] if split else [])]
+    return "inconclusive", ["local_huge_page_rise_without_counted_collapse"]
+
+
+def _maps_step_evidence(maps: list[dict[str, object]], rows: list[dict[str, object]], times: list[float],
+                        before: float, after: float) -> dict[str, object]:
+    """The smaps readings bracketing one step: each category's Rss and AnonHugePages changes, the category whose Rss
+    rose most (the step's category), its AnonHugePages change, and the split counters over the same bracket."""
+    bracket = _bracket(maps, before, after)
+    if bracket is None:
+        return {"t0": None, "t1": None, "step_category": None, "local_ahp_delta": None,
+                "local_reason": "process_maps_unavailable", "categories": None, "split_deltas": None}
+    first, last = bracket
+    categories = {}
+    for name in MAPS_CATEGORIES:
+        a, b = first["categories"].get(name) or {}, last["categories"].get(name) or {}
+        categories[name] = {"rss_delta": _delta(a.get("rss_bytes"), b.get("rss_bytes")),
+                            "ahp_delta": _delta(a.get("anon_huge_pages_bytes"), b.get("anon_huge_pages_bytes"))}
+    rising = [(item["rss_delta"], name) for name, item in categories.items()
+              if item["rss_delta"] is not None and item["rss_delta"] > 0]
+    category = max(rising)[1] if rising else None
+    local = categories[category]["ahp_delta"] if category else None
+    reason = None if local is not None else (
+        "step_not_in_mapping_categories" if category is None else "process_maps_unavailable")
+    low = bisect.bisect_right(times, first["t_mono"]) - 1  # counter rows at or before / at or after the readings
+    high = bisect.bisect_left(times, last["t_mono"])
+    split = ({key: _delta(rows[low].get(key), rows[high].get(key)) for key in THP_SPLIT_KEYS}
+             if low >= 0 and high < len(rows) else dict.fromkeys(THP_SPLIT_KEYS))
+    return {"t0": first["t_mono"], "t1": last["t_mono"], "step_category": category, "local_ahp_delta": local,
+            "local_reason": reason, "categories": categories, "split_deltas": split}
+
+
+def _thp_window(rows: list[dict[str, object]], maps: list[dict[str, object]], window: tuple[float, float]) -> dict:
+    rows = [r for r in rows if window[0] <= r["t"] <= window[1]]
+    maps = _between(maps, window)
+    return {
+        "seconds": round(window[1] - window[0], 3),
+        "counter_readings": sum(1 for r in rows if r.get("thp_t_mono") is not None),
+        "counters": {key: _timed_first_last(rows, lambda r, key=key: r.get(key), "t")
+                     for key in ("anon_huge_pages", *THP_COUNTER_COLUMNS)},
+        "maps_readings": len(maps),
+        "maps": {name: {field: _timed_first_last(maps, lambda m, name=name, field=field:
+                                                 (m["categories"].get(name) or {}).get(field), "t_mono")
+                        for field in ("rss_bytes", "anon_huge_pages_bytes")}
+                 for name in MAPS_CATEGORIES},
+    }
+
+
+def thp_report(run_dir: Path, status: str, samples: list[dict[str, object]], manifest: dict[str, object],
+               warmup: tuple[float, float] | None, steady: tuple[float, float] | None) -> dict[str, object]:
+    """THP observation's record (D56): the settings before and after, per-window counter and mapping changes, each
+    workload RSS step with its device-wide counter bracket and process-local smaps bracket, the collapse readings
+    with whichever recorded RSS rose beside them, and the predeclared reading (THP_RULE). Descriptive only."""
+    events = load_memattr_events(Path(run_dir) / "events.jsonl")
+    maps = [m for m in events if m["event"] == "memattr_maps" and m.get("status") == "observed"
+            and isinstance(m.get("categories"), dict) and type(m.get("t_mono")) in (int, float)]
+    settings = manifest.get("thp_settings") if isinstance(manifest.get("thp_settings"), dict) else {}
+    before, after = settings.get("before"), settings.get("after")
+    changed, unverified = thp_settings_changes(before, after)
+    rows = list(samples)
+    times = [r["t"] for r in rows]
+    span = ((warmup or steady)[0], (steady or warmup)[1]) if (warmup or steady) else None
+    steps = []
+    for index in range(1, len(rows)):
+        first, second = rows[index - 1], rows[index]
+        rise = _delta(first.get("work_rss"), second.get("work_rss"))
+        inside = span is not None and span[0] <= first["t"] and second["t"] <= span[1]  # MA1's steps: both rows
+        if not inside or rise is None or rise < MA1_STEP_BYTES:
+            continue
+        low, high = rows[max(index - 2, 0)], rows[min(index + 1, len(rows) - 1)]  # one row of tolerance each side
+        counters = {key: _delta(low.get(key), high.get(key)) for key in ("anon_huge_pages", *THP_COUNTER_COLUMNS)}
+        collapse = _collapse_signal(counters)
+        local = _maps_step_evidence(maps, rows, times, first["t"], second["t"])
+        split = local["split_deltas"]
+        split_rose = None if split is None or all(v is None for v in split.values()) else any(
+            (v or 0) > 0 for v in split.values())
+        outcome, reasons = _thp_step_outcome(collapse, local["local_ahp_delta"], local["local_reason"], split_rose)
+        window = "steady" if steady and first["t"] >= steady[0] else "warmup"
+        steps.append({"t_mono": second["t"], "phase": second["phase"], "window": window, "rss_delta_bytes": rise,
+                      "anon_pages_delta_bytes": _delta(first.get("anon_pages"), second.get("anon_pages")),
+                      "counter_bracket": {"t0": low["t"], "t1": high["t"], "deltas": counters,
+                                          "rss": _rss_label(low, high),
+                                          "llama_rss_delta_bytes": _delta(low.get("llama_rss"), high.get("llama_rss"))},
+                      "collapse_counted": collapse,
+                      "maps_bracket": {k: v for k, v in local.items() if k != "local_reason"},
+                      "outcome": outcome, "reasons": reasons})
+    for step in steps:  # steps sharing one smaps bracket cannot be told apart in it
+        bracket = (step["maps_bracket"]["t0"], step["maps_bracket"]["t1"])
+        step["steps_in_maps_bracket"] = sum(1 for other in steps
+                                            if (other["maps_bracket"]["t0"], other["maps_bracket"]["t1"]) == bracket)
+    counted = [s for s in steps if s["window"] == "steady"]  # the run reading: steady steps only
+    by_outcome = {name: sum(1 for s in counted if s["outcome"] == name) for name in THP_OUTCOMES}
+    if changed:
+        outcome, reason = "inconclusive", "thp_settings_changed"
+    elif not counted:
+        outcome, reason = "inconclusive", "no_steady_steps_not_reproduced"
+    elif by_outcome["supported"] and not by_outcome["unsupported"]:
+        outcome, reason = "supported", None
+    elif by_outcome["unsupported"] and not by_outcome["supported"]:
+        outcome, reason = "unsupported", None
+    else:
+        outcome, reason = "inconclusive", "mixed" if by_outcome["supported"] else "only_inconclusive_steps"
+
+    collapses = []
+    for first, second in zip(rows, rows[1:]):
+        deltas = {key: _delta(first.get(key), second.get(key)) for key in THP_COLLAPSE_KEYS}
+        if any((value or 0) > 0 for value in deltas.values()):
+            collapses.append({"t_mono": second["t"], "phase": second["phase"], **deltas, "rss": _rss_label(first, second),
+                              "work_rss_delta_bytes": _delta(first.get("work_rss"), second.get("work_rss")),
+                              "llama_rss_delta_bytes": _delta(first.get("llama_rss"), second.get("llama_rss"))})
+    gaps = sorted(round(b["t_mono"] - a["t_mono"], 3) for a, b in zip(collapses, collapses[1:]))
+    scans = [second["t"] for first, second in zip(rows, rows[1:])
+             if (_delta(first.get("khugepaged_full_scans"), second.get("khugepaged_full_scans")) or 0) > 0]
+    costs = [r["thp_read_us"] for r in rows if r.get("thp_read_us") is not None]
+    in_steady = [r for r in rows if steady and steady[0] <= r["t"] <= steady[1]]
+    steady_maps = _between(maps, steady) if steady else []
+    return {
+        "label": THP_LABEL,
+        "scope": "read-only transparent-huge-page counters and settings beside MA1's readings; descriptive only, never "
+                 "a criterion, eligibility, acceptance or admission; the khugepaged hypothesis stays unconfirmed",
+        "profile_status": _status_label(status),
+        "settings": {"before": before, "after": after, "before_recorded": isinstance(before, dict)
+                     and before.get("enabled") is not None, "after_recorded": isinstance(after, dict)
+                     and after.get("enabled") is not None, "changed": changed, "unverified": unverified},
+        "sources": {
+            "counter_rows": sum(1 for r in rows if r.get("thp_t_mono") is not None),
+            "counter_observed": {key: sum(1 for r in rows if r.get(key) is not None)
+                                 for key in ("anon_huge_pages", *THP_COUNTER_COLUMNS)},
+            "steady_counter_readings": sum(1 for r in in_steady if any(r.get(k) is not None for k in THP_COLLAPSE_KEYS)),
+            "maps_observed": len(maps),
+            "steady_maps_heap_ahp_observed": sum(1 for m in steady_maps
+                                                 if (m["categories"].get("heap") or {}).get("anon_huge_pages_bytes")
+                                                 is not None),
+        },
+        "windows": {name: _thp_window(rows, maps, window)
+                    for name, window in (("warmup", warmup), ("steady", steady)) if window},
+        "steps": {"threshold_bytes": MA1_STEP_BYTES, "count": len(steps), "steady_count": len(counted),
+                  "by_outcome": by_outcome,  # steady steps: the run reading's basis
+                  "bytes_by_outcome": {name: sum(s["rss_delta_bytes"] for s in counted if s["outcome"] == name)
+                                       for name in THP_OUTCOMES},
+                  "warmup_by_outcome": {name: sum(1 for s in steps if s["window"] == "warmup" and s["outcome"] == name)
+                                        for name in THP_OUTCOMES},
+                  "listed": steps[:THP_MAX_STEPS]},
+        "collapses": {"readings": len(collapses),
+                      "by_rss": {label: sum(1 for c in collapses if c["rss"] == label) for label in THP_RSS_LABELS},
+                      "gaps_s": {"n": len(gaps), "min": gaps[0] if gaps else None, "p50": nearest_rank(gaps, 0.5),
+                                 "max": gaps[-1] if gaps else None},
+                      "listed": collapses[:THP_MAX_COLLAPSES]},
+        "full_scans": {"increments": len(scans), "listed": scans[:THP_MAX_FULL_SCANS]},
+        "outcome": {"label": outcome, "reason": reason, "rule": THP_RULE},
+        "cost": {"counter_read_us": {"n": len(costs), "p50": nearest_rank(costs, 0.5), "max": max(costs, default=None)},
+                 "settings_read_ms": {"before": (before or {}).get("read_ms") if isinstance(before, dict) else None,
+                                      "after": (after or {}).get("read_ms") if isinstance(after, dict) else None}},
+        "semantics": THP_SEMANTICS,
+        "cannot_establish": list(THP_CANNOT_ESTABLISH),
+    }
+
+
+def thp_lines(report: dict[str, object]) -> list[str]:
+    settings = report["settings"]
+    first = settings["before"] if isinstance(settings["before"], dict) else {}
+    khugepaged = first.get("khugepaged") or {}
+    lines = ["", "THP observation (D56; read-only; descriptive, never a criterion or eligibility):",
+             f"  settings before: enabled {first.get('enabled')}, defrag {first.get('defrag')}, khugepaged "
+             f"pages_to_scan {khugepaged.get('pages_to_scan')}, scan_sleep_millisecs {khugepaged.get('scan_sleep_millisecs')}, "
+             f"max_ptes_none {khugepaged.get('max_ptes_none')}; base page {first.get('base_page_bytes')} B, THP PMD "
+             f"{first.get('thp_pmd_bytes')} B; kernel {(first.get('kernel') or {}).get('release')}",
+             f"  settings after: recorded {settings['after_recorded']}; changed {settings['changed'] or 'none'}; "
+             f"not comparable {len(settings['unverified'])} of {len(THP_SETTING_KEYS)}",
+             f"  sources: counter rows {report['sources']['counter_rows']} (steady {report['sources']['steady_counter_readings']}); "
+             f"smaps readings {report['sources']['maps_observed']} (steady with heap AnonHugePages "
+             f"{report['sources']['steady_maps_heap_ahp_observed']})"]
+    for name, window in report["windows"].items():
+        counters, heap = window["counters"], window["maps"]["heap"]["anon_huge_pages_bytes"]
+        lines.append(f"  {name}: pages_collapsed {counters['khugepaged_pages_collapsed']['delta']}, thp_collapse_alloc "
+                     f"{counters['thp_collapse_alloc']['delta']}, full_scans {counters['khugepaged_full_scans']['delta']}, "
+                     f"thp_fault_alloc {counters['thp_fault_alloc']['delta']}, splits page/pmd "
+                     f"{counters['thp_split_page']['delta']}/{counters['thp_split_pmd']['delta']}; meminfo AnonHugePages "
+                     f"{gb(counters['anon_huge_pages']['delta'], True)}; workload heap AnonHugePages {gb(heap['delta'], True)}")
+    steps = report["steps"]
+    lines += [f"  RSS steps of at least {steps['threshold_bytes']:,} B: {steps['count']} ({steps['steady_count']} steady); "
+              f"steady by outcome {steps['by_outcome']}; steady bytes by outcome {steps['bytes_by_outcome']}; "
+              f"warm-up by outcome {steps['warmup_by_outcome']} (listed, not counted)",
+              f"  collapse readings {report['collapses']['readings']}, beside RSS rises {report['collapses']['by_rss']}; "
+              f"gaps between them {report['collapses']['gaps_s']} s (descriptive)",
+              f"  reading: {report['outcome']['label']}" + (f" ({report['outcome']['reason']})"
+                                                            if report["outcome"]["reason"] else ""),
+              f"  counter read cost p50/max {report['cost']['counter_read_us']['p50']}/"
+              f"{report['cost']['counter_read_us']['max']} us",
+              "  Cannot establish: " + "; ".join(report["cannot_establish"]) + "."]
+    return lines
+
+
+def net_steps(rows: list[dict[str, object]], window: tuple[float, float], *, key: str = "work_rss",
+              threshold: int = MA1_STEP_BYTES, k: int = NET_STEP_WINDOW_ROWS) -> list[dict[str, object]]:
+    """NET_STEP_RULE (D57) over consecutive memory.csv rows: each candidate rise inside ``window`` with its levels
+    before and after, its net change and its class. The windows may reach past ``window``. Descriptive only."""
+    found = []
+    for index in range(1, len(rows)):
+        first, second = rows[index - 1], rows[index]
+        rise = _delta(first.get(key), second.get(key))
+        if rise is None or rise < threshold or not (window[0] <= first["t"] and second["t"] <= window[1]):
+            continue
+        before = [r.get(key) for r in rows[index - k:index]] if index >= k else []
+        after = [r.get(key) for r in rows[index:index + k]] if index + k <= len(rows) else []
+        item: dict[str, object] = {"t_mono": second["t"], "t_first": first["t"], "rise_bytes": rise, "pre_level": None,
+                                   "post_level": None, "net_bytes": None}
+        if len(before) < k or len(after) < k or None in before or None in after:
+            item["class"] = "unresolved"
+        else:
+            item.update(pre_level=max(before), post_level=min(after))
+            item["net_bytes"] = item["post_level"] - item["pre_level"]
+            fell = any(b - a <= -threshold for a, b in zip(before, before[1:]))
+            item["class"] = "net_step" if item["net_bytes"] >= threshold else "rebound" if fell else "transient"
+        found.append(item)
+    return found
+
+
+def growth_evidence(rows: list[dict[str, object]], maps: list[dict[str, object]], steady: tuple[float, float],
+                    loops: list[float] | None = None) -> dict[str, object]:
+    """D57's growth and opportunity measures over the steady interval: NET_STEP_RULE's candidates with each one's
+    mapping category, collapse coincidence and closeness to a clip reopen (``loops``; None when not recorded), the
+    heap's residency, and khugepaged's activity (device-wide)."""
+    times = [r["t"] for r in rows]
+    steady_rows = [r for r in rows if steady[0] <= r["t"] <= steady[1]]
+    steady_maps = _between(maps, steady)
+    listed = []
+    for item in net_steps(rows, steady):
+        index = bisect.bisect_left(times, item["t_mono"])
+        low, high = rows[max(index - 2, 0)], rows[min(index + 1, len(rows) - 1)]  # D56's counter bracket
+        evidence = _maps_step_evidence(maps, rows, times, item["t_first"], item["t_mono"])
+        category = evidence["step_category"]
+        listed.append({**item, "category": category,
+                       "anonymous": None if category is None else category in WTD_ANON_CATEGORIES,
+                       "loop_coincident": None if loops is None else any(
+                           abs(item["t_mono"] - t) <= NET_STEP_LOOP_WINDOW_S for t in loops),
+                       "maps_bracket": None if evidence["t0"] is None else {"t0": evidence["t0"], "t1": evidence["t1"]},
+                       "collapse_counted": _collapse_signal({key: _delta(low.get(key), high.get(key))
+                                                            for key in THP_COLLAPSE_KEYS})})
+    stepped = [s for s in listed if s["class"] == "net_step"]
+    growth = [s for s in stepped if s["loop_coincident"] is not True]  # what the reading counts
+
+    def heap(reading: dict[str, object] | None, field: str):
+        return ((((reading or {}).get("categories") or {}).get("heap")) or {}).get(field)
+
+    first_map = steady_maps[0] if steady_maps else None
+    size, rss = heap(first_map, "size_bytes"), heap(first_map, "rss_bytes")
+    headroom = size - rss if size is not None and rss is not None else None
+    collapse = {key: _timed_first_last(steady_rows, lambda r, key=key: r.get(key), "t")["delta"]
+                for key in (*THP_COLLAPSE_KEYS, "khugepaged_full_scans")}
+    scans = [b["t"] for a, b in zip(steady_rows, steady_rows[1:])
+             if (_delta(a.get("khugepaged_full_scans"), b.get("khugepaged_full_scans")) or 0) > 0]
+    collapsed = None if all(collapse[key] is None for key in THP_COLLAPSE_KEYS) else any(
+        (collapse[key] or 0) > 0 for key in THP_COLLAPSE_KEYS)
+    active = None if collapsed is None and collapse["khugepaged_full_scans"] is None else bool(
+        collapsed or (collapse["khugepaged_full_scans"] or 0) > 0)
+    required = WTD_BASELINE["steady_heap_rss_rise_bytes"]
+    return {
+        "window": {"start": steady[0], "end": steady[1]},
+        "net_steps": {
+            "rule": NET_STEP_RULE, "threshold_bytes": MA1_STEP_BYTES, "window_rows": NET_STEP_WINDOW_ROWS,
+            "loop_window_s": NET_STEP_LOOP_WINDOW_S, "loops_recorded": None if loops is None else len(loops),
+            "candidates": len(listed), "by_class": {name: sum(1 for s in listed if s["class"] == name)
+                                                    for name in NET_STEP_CLASSES},
+            "net_bytes": sum(s["net_bytes"] for s in stepped),
+            "rise_bytes_by_class": {name: sum(s["rise_bytes"] for s in listed if s["class"] == name)
+                                    for name in NET_STEP_CLASSES},
+            "loop_coincident": sum(1 for s in stepped if s["loop_coincident"] is True),
+            "loop_coincident_bytes": sum(s["net_bytes"] for s in stepped if s["loop_coincident"] is True),
+            "by_category": {name: sum(1 for s in growth if s["category"] == name) for name in MAPS_CATEGORIES},
+            "anonymous": sum(1 for s in growth if s["anonymous"] is True),
+            "anonymous_bytes": sum(s["net_bytes"] for s in growth if s["anonymous"] is True),
+            "category_unavailable": sum(1 for s in growth if s["category"] is None),
+            "with_counted_collapse": sum(1 for s in growth if s["collapse_counted"] is True),
+            "listed": listed[:THP_MAX_STEPS],
+        },
+        "residency": {
+            "workload_rss": _timed_first_last(steady_rows, lambda r: r.get("work_rss"), "t"),
+            "heap_rss": _timed_first_last(steady_maps, lambda m: heap(m, "rss_bytes"), "t_mono"),
+            "heap_size": _timed_first_last(steady_maps, lambda m: heap(m, "size_bytes"), "t_mono"),
+            "heap_anon_huge_pages": _timed_first_last(steady_maps, lambda m: heap(m, "anon_huge_pages_bytes"), "t_mono"),
+        },
+        "opportunity": {
+            "heap_nonresident_at_first_steady_reading_bytes": headroom,
+            "first_steady_reading_t_mono": first_map["t_mono"] if first_map else None,
+            "required_headroom_bytes": required,
+            "headroom_met": None if headroom is None else headroom >= required,
+            "steady_collapse_deltas": collapse,
+            "full_scan_increments": scans[:THP_MAX_FULL_SCANS],
+            "khugepaged_active": active,
+            "scan_coverage": "complete_pass_in_steady" if len(scans) >= 2 else "not_observed",
+            "comparable": bool(headroom is not None and headroom >= required and active),
+        },
+        "maps_observed": len(steady_maps),
+    }
+
+
+def _workload_huge_pages(reading: dict[str, object]) -> int | None:
+    """The workload's AnonHugePages over all categories of one smaps reading; None when any category lacks it."""
+    values = [(reading["categories"].get(name) or {}).get("anon_huge_pages_bytes") for name in MAPS_CATEGORIES]
+    return None if None in values else sum(values)
+
+
+def wtd_report(run_dir: Path, status: str, samples: list[dict[str, object]], manifest: dict[str, object],
+               steady: tuple[float, float] | None, stats: dict[str, object] | None) -> dict[str, object]:
+    """MA1-WTD's record (D57): the intervention's verification (the workload's own check, the scope checkpoints and
+    the effect on its huge pages), the growth and opportunity measures, latency and throughput, and the predeclared
+    reading (WTD_RULE). Descriptive only."""
+    events = []
+    try:
+        with open(Path(run_dir) / "events.jsonl") as handle:
+            for line in handle:
+                if line.strip():
+                    record = json.loads(line)
+                    if record.get("event") in ("thp_disable", "wtd_scope", "memattr_maps", "phase"):
+                        events.append(record)
+    except OSError:
+        pass
+    maps = [m for m in events if m["event"] == "memattr_maps" and m.get("status") == "observed"
+            and isinstance(m.get("categories"), dict) and type(m.get("t_mono")) in (int, float)]
+    startup = next((e for e in events if e["event"] == "thp_disable"), None)
+    loads = [e["t_mono"] for e in events if e["event"] == "phase" and e.get("name") == "detector_load"]
+    scope = {name: next((e for e in events if e["event"] == "wtd_scope" and e.get("checkpoint") == name), None)
+             for name in WTD_CHECKPOINTS}
+    started = startup.get("t_mono") if startup else None
+    effect_maps = [m for m in maps if started is not None and m["t_mono"] > started]
+    totals = [(m["t_mono"], _workload_huge_pages(m)) for m in effect_maps]
+    reference = startup.get("anon_huge_pages_bytes") if startup else None
+    in_steady = [value for t, value in totals if steady and steady[0] <= t <= steady[1]]
+    effect_ok = bool(reference is not None and in_steady and all(value is not None for _, value in totals)
+                     and all(value <= reference for _, value in totals))
+    before_load = None if started is None or not loads else started < loads[0]
+    startup_ok = bool(startup and startup.get("verified") is True and before_load is True)
+    scope_ok = all(item is not None and item.get("ok") is True for item in scope.values())
+    verified = startup_ok and scope_ok and effect_ok
+    settings = manifest.get("thp_settings") if isinstance(manifest.get("thp_settings"), dict) else {}
+    changed, _ = thp_settings_changes(settings.get("before"), settings.get("after"))
+    loop_times = (stats or {}).get("clip_loop_t_mono")
+    loop_times = ([t for t in loop_times if type(t) in (int, float)] if isinstance(loop_times, list) else None)
+    loops_complete = loop_times is not None and (stats or {}).get("clip_loops") == len(loop_times)
+    growth = growth_evidence(list(samples), maps, steady, loop_times) if steady else None
+    counts = growth["net_steps"] if growth else {}
+    if changed:
+        outcome, reason = "inconclusive", "thp_settings_changed"
+    elif not verified:
+        outcome, reason = "inconclusive", "intervention_not_verified"
+    elif growth is None or not growth["maps_observed"]:
+        outcome, reason = "inconclusive", "process_maps_unavailable"
+    elif counts["anonymous"] and not loops_complete:
+        outcome, reason = "inconclusive", "clip_loops_unrecorded"
+    elif counts["anonymous"]:
+        outcome, reason = "contrary", "net_growth_without_workload_huge_pages"
+    elif counts["category_unavailable"]:
+        outcome, reason = "inconclusive", "net_step_category_unavailable"
+    elif counts["by_class"]["unresolved"]:
+        outcome, reason = "inconclusive", "net_steps_unresolved"
+    elif not growth["opportunity"]["comparable"]:
+        outcome, reason = "inconclusive", "no_comparable_opportunity"
+    else:
+        outcome, reason = "supported", None
+    detector, face, scene = ((stats or {}).get(key) or {} for key in ("detector", "face", "scene"))
+    return {
+        "label": WTD_LABEL,
+        "scope": "MA1-THP with transparent huge pages disabled in the workload process alone (its own prctl before any "
+                 "model library); descriptive only, never a criterion, eligibility, acceptance or admission; the "
+                 "khugepaged hypothesis stays unconfirmed whatever it reads",
+        "profile_status": _status_label(status),
+        "intervention": {
+            "startup": {**{k: v for k, v in (startup or {}).items() if k not in ("event", "source", "utc")},
+                        "before_model_load": before_load} if startup else None,
+            "startup_verified": startup_ok,
+            "scope": scope,
+            "scope_verified": scope_ok,
+            "effect": {"reference_bytes": reference, "readings": len(totals), "steady_readings": len(in_steady),
+                       "max_bytes": _present_max(value for _, value in totals),
+                       "last_bytes": totals[-1][1] if totals else None, "verified": effect_ok},
+            "verified": verified,
+        },
+        "clip_loops": {"count": (stats or {}).get("clip_loops"), "times_recorded": None if loop_times is None
+                       else len(loop_times), "complete": loops_complete},
+        "growth": growth,
+        "performance": {  # the intervention also changes fault-time huge pages: reported, compared descriptively only
+            "detector": {key: detector.get(key) for key in ("processed_fps", "unique_fps", "windows", "latency_ms",
+                                                            "schedule_age_ms")},
+            "face": {key: face.get(key) for key in ("runs", "achieved_hz", "latency_ms", "error_count")},
+            "scene": {key: scene.get(key) for key in ("completed", "latency_ms", "over_d16_timeout")},
+        },
+        "baseline": dict(WTD_BASELINE),
+        "outcome": {"label": outcome, "reason": reason, "rule": WTD_RULE},
+        "cannot_establish": list(WTD_CANNOT_ESTABLISH),
+    }
+
+
+def wtd_lines(report: dict[str, object]) -> list[str]:
+    intervention, growth = report["intervention"], report["growth"]
+    startup = intervention["startup"] or {}
+    effect = intervention["effect"]
+    lines = ["", "Workload THP disable (MA1-WTD, D57; the workload process alone; descriptive, never a criterion or "
+                 "eligibility):",
+             f"  workload check: verified {startup.get('verified')} (set rc {startup.get('set_rc')}, "
+             f"PR_GET_THP_DISABLE {startup.get('get_value')}, THP_enabled {startup.get('thp_enabled')}, model modules "
+             f"loaded {startup.get('model_modules_loaded')}, before the detector load {startup.get('before_model_load')}, "
+             f"AnonHugePages then {startup.get('anon_huge_pages_bytes')} B" + (f", reason {startup.get('reason')}"
+                                                                            if startup.get("reason") else "") + ")",
+             "  scope (THP_enabled; profiler and llama-server expected 1, workload 0): " + "; ".join(
+                 f"{name} {'ok' if (item or {}).get('ok') else 'NOT VERIFIED'} {(item or {}).get('thp_enabled')}"
+                 for name, item in intervention["scope"].items()),
+             f"  effect: workload AnonHugePages after the check, {effect['readings']} readings ({effect['steady_readings']}"
+             f" steady), max {effect['max_bytes']} B against {effect['reference_bytes']} B at the check: verified "
+             f"{effect['verified']}",
+             f"  intervention verified: {intervention['verified']}"]
+    if growth:
+        steps, opportunity, residency = growth["net_steps"], growth["opportunity"], growth["residency"]
+        loops = report["clip_loops"]
+        lines += [
+            f"  net-step rule (D57): {steps['candidates']} candidates in steady, by class {steps['by_class']}; net steps "
+            f"{steps['by_class']['net_step']} ({steps['net_bytes']:,} B), of which loop-coincident "
+            f"{steps['loop_coincident']} ({steps['loop_coincident_bytes']:,} B); counted: anonymous {steps['anonymous']} "
+            f"({steps['anonymous_bytes']:,} B), category unavailable {steps['category_unavailable']}, with a counted "
+            f"collapse {steps['with_counted_collapse']}; clip reopens {loops['count']} (times recorded "
+            f"{loops['times_recorded']}, complete {loops['complete']})",
+            f"  heap Rss first/last {residency['heap_rss']['first']}/{residency['heap_rss']['last']} B; heap "
+            f"AnonHugePages first/max {residency['heap_anon_huge_pages']['first']}/"
+            f"{residency['heap_anon_huge_pages']['max']} B",
+            f"  opportunity: heap non-resident at the first steady reading "
+            f"{opportunity['heap_nonresident_at_first_steady_reading_bytes']} B (needs at least "
+            f"{opportunity['required_headroom_bytes']:,} B); khugepaged active {opportunity['khugepaged_active']} "
+            f"(collapse deltas {opportunity['steady_collapse_deltas']}); scan coverage {opportunity['scan_coverage']}; "
+            f"comparable {opportunity['comparable']}",
+        ]
+    perf = report["performance"]
+    lines += [f"  latency and throughput (descriptive): detector {perf['detector']['unique_fps']} fps, latency ms "
+              f"{perf['detector']['latency_ms']}; face {perf['face']['achieved_hz']} Hz, latency ms "
+              f"{perf['face']['latency_ms']}; scene {perf['scene']['completed']} completed, latency ms "
+              f"{perf['scene']['latency_ms']}",
+              f"  reading: {report['outcome']['label']}" + (f" ({report['outcome']['reason']})"
+                                                            if report["outcome"]["reason"] else ""),
+              "  Cannot establish: " + "; ".join(report["cannot_establish"]) + "."]
+    return lines
+
+
+def candidate_report(run_dir: Path, status: str, manifest: dict[str, object],
+                     stats: dict[str, object] | None) -> dict[str, object]:
+    """The D58 candidate's record: the memory policy, the THP disable's verification from cheap reads, the releases'
+    problems by sentinel.memory_policy's rule, and the four R inputs (step4_criteria.CANDIDATE_RUN_INPUTS).
+
+    - thp_disable_verified: the workload's own check verified, before the detector load;
+    - thp_scope_verified: THP_enabled as expected at all four of MA1-WTD's checkpoints;
+    - thp_effect_verified: the workload's AnonHugePages read at its check and at both steady boundaries, each at
+      most its value at the check (huge pages made before the call may stay, never grow);
+    - thp_settings_unchanged: the THP settings read before and after, every key read both times and none changed.
+
+    Missing is never met. Latency and throughput are reported descriptively."""
+    events: list[dict[str, object]] = []
+    try:
+        with open(Path(run_dir) / "events.jsonl") as handle:
+            for line in handle:
+                if line.strip():
+                    record = json.loads(line)
+                    if record.get("event") in ("thp_disable", "wtd_scope", "cand_effect", "phase", "release_failed"):
+                        events.append(record)
+    except OSError:
+        pass
+    startup = next((e for e in events if e["event"] == "thp_disable"), None)
+    loads = [e["t_mono"] for e in events if e["event"] == "phase" and e.get("name") == "detector_load"]
+    started = (startup or {}).get("t_mono")
+    before_load = None if type(started) not in (int, float) or not loads else started < loads[0]
+    startup_ok = bool(startup and startup.get("verified") is True and before_load is True)
+    scope = {name: next((e for e in events if e["event"] == "wtd_scope" and e.get("checkpoint") == name), None)
+             for name in WTD_CHECKPOINTS}
+    scope_ok = all(item is not None and item.get("ok") is True for item in scope.values())
+    reference = (startup or {}).get("anon_huge_pages_bytes")
+    readings = {name: next((e.get("anon_huge_pages_bytes") for e in events
+                            if e["event"] == "cand_effect" and e.get("checkpoint") == name), None)
+                for name in CANDIDATE_EFFECT_POINTS}
+    effect_ok = (type(reference) is int and all(type(value) is int for value in readings.values())
+                 and all(value <= reference for value in readings.values()))
+    settings = manifest.get("thp_settings") if isinstance(manifest.get("thp_settings"), dict) else {}
+    changed, unverified = thp_settings_changes(settings.get("before"), settings.get("after"))
+    recorded = {side: isinstance(settings.get(side), dict) for side in ("before", "after")}
+    settings_ok = all(recorded.values()) and not changed and not unverified
+    releases = release_records(load_mr1_events(Path(run_dir) / "events.jsonl"))
+    problems = {component: memory_policy.release_problem(component, releases[component].get("files"))
+                if component in releases else "not_reached" for component in MR1_RELEASE_FILES}
+    detector, face, scene = ((stats or {}).get(key) or {} for key in ("detector", "face", "scene"))
+    loop_times = (stats or {}).get("clip_loop_t_mono")
+    return {
+        "label": CANDIDATE_LABEL,
+        "criteria_id": step4_criteria.CANDIDATE_CRITERIA_ID,
+        "memory_policy": manifest.get("memory_policy"),
+        "scope": "step 4 with the post-load release and the workload's verified THP disable, without MA1's sampling "
+                 "(D58); judged by D47's rules and thresholds under its own identity; never accepted",
+        "profile_status": _status_label(status),
+        "intervention": {
+            "startup": {**{k: v for k, v in (startup or {}).items() if k not in ("event", "source", "utc")},
+                        "before_model_load": before_load} if startup else None,
+            "scope": scope,
+            "effect": {"reference_bytes": reference, "readings": readings},
+            "settings": {**{f"{side}_recorded": value for side, value in recorded.items()},
+                         "changed": changed, "unverified": unverified},
+        },
+        "run_inputs": {"thp_disable_verified": startup_ok, "thp_scope_verified": scope_ok,
+                       "thp_effect_verified": effect_ok, "thp_settings_unchanged": settings_ok},
+        "release_problems": problems,
+        "release_failed": [e.get("component") for e in events if e["event"] == "release_failed"],
+        "clip_loops": {"count": (stats or {}).get("clip_loops"),
+                       "times_recorded": len(loop_times) if isinstance(loop_times, list) else None},
+        "performance": {  # descriptive only; the criteria judge throughput and latency
+            "detector": {key: detector.get(key) for key in ("processed_fps", "unique_fps", "windows", "latency_ms",
+                                                            "schedule_age_ms")},
+            "face": {key: face.get(key) for key in ("runs", "achieved_hz", "latency_ms", "error_count")},
+            "scene": {key: scene.get(key) for key in ("completed", "latency_ms", "over_d16_timeout")},
+        },
+        "cannot_establish": list(CANDIDATE_CANNOT_ESTABLISH),
+    }
+
+
+def candidate_lines(report: dict[str, object]) -> list[str]:
+    intervention, inputs = report["intervention"], report["run_inputs"]
+    startup = intervention["startup"] or {}
+    scope = "; ".join(f"{name} {'ok' if (item or {}).get('ok') else 'NOT VERIFIED'} {(item or {}).get('thp_enabled')}"
+                      for name, item in intervention["scope"].items())
+    effect = intervention["effect"]
+    return ["", "D58 candidate (post-load release and the workload's THP disable, without MA1's sampling; never "
+                "accepted):",
+            f"  memory policy {report['memory_policy']}",
+            f"  workload check: verified {startup.get('verified')} (set rc {startup.get('set_rc')}, PR_GET_THP_DISABLE "
+            f"{startup.get('get_value')}, THP_enabled {startup.get('thp_enabled')}, before the detector load "
+            f"{startup.get('before_model_load')}, AnonHugePages then {startup.get('anon_huge_pages_bytes')} B)",
+            f"  scope (THP_enabled; profiler and llama-server expected 1, workload 0): {scope}",
+            f"  effect: workload AnonHugePages {effect['readings']} against {effect['reference_bytes']} B at the check",
+            f"  THP settings before/after recorded {intervention['settings']['before_recorded']}/"
+            f"{intervention['settings']['after_recorded']}; changed {intervention['settings']['changed'] or 'none'}; "
+            f"not comparable {len(intervention['settings']['unverified'])}",
+            f"  release problems {report['release_problems']}; stopped on {report['release_failed'] or 'none'}",
+            f"  R inputs {inputs}",
+            "  Cannot establish: " + "; ".join(report["cannot_establish"]) + "."]
+
+
+def net_step_report(run_dir: Path) -> dict[str, object]:
+    """D57's growth and opportunity measures for any saved profile run, read-only (nothing is written): the
+    net-step rule applied beside, never instead of, the run's own classifications and reading."""
+    run_dir = Path(run_dir)
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    samples = load_samples(run_dir / "memory.csv")
+    steady_s = float((manifest.get("parameters") or {}).get("steady_s") or step4_criteria.STEADY_S)
+    interval, _ = step4_criteria.steady_interval(load_boundary_events(run_dir / "events.jsonl"), samples, steady_s)
+    if interval["status"] == step4_criteria.UNAVAILABLE:
+        return {"run_id": manifest.get("run_id"), "steady_interval": interval, "growth": None}
+    maps = [m for m in load_memattr_events(run_dir / "events.jsonl") if m["event"] == "memattr_maps"
+            and m.get("status") == "observed" and isinstance(m.get("categories"), dict)
+            and type(m.get("t_mono")) in (int, float)]
+    loops = (load_latest_events(run_dir / "events.jsonl").get("workload_stats") or {}).get("clip_loop_t_mono")
+    loops = [t for t in loops if type(t) in (int, float)] if isinstance(loops, list) else None  # MA1-WTD runs only
+    return {"run_id": manifest.get("run_id"), "steady_interval": interval,
+            "growth": growth_evidence(samples, maps, (interval["start_t_mono"], interval["end_t_mono"]), loops),
+            "baseline": dict(WTD_BASELINE)}
+
+
+def prompt_cache_summary(log_path: Path, steady: tuple[float, float] | None) -> dict[str, object] | None:
+    """Numbers from llama-server's prompt-cache lines; None when the log has none (older runs)."""
+    try:
+        lines = log_path.read_text(errors="replace").splitlines()
+    except OSError:
+        return None
+    result: dict[str, object] = {"startup": None, "state_updates": 0, "steady_state_updates": None,
+                                 "first": None, "last": None, "steady_first": None, "steady_last": None,
+                                 "max_size_mib": None, **dict.fromkeys(PROMPT_CACHE_MARKERS.values(), 0)}
+    for line in lines:
+        stamp = re.match(r"t_mono=([\d.]+) ", line)
+        t = float(stamp[1]) if stamp else None
+        if startup := PROMPT_CACHE_STARTUP.search(line):
+            result["startup"] = {"enabled": startup[1] != "disabled",
+                                 "limit_mib": int(startup[2]) if startup[2] else None, "t_mono": t}
+        elif state := PROMPT_CACHE_STATE.search(line):
+            entry = {"t_mono": t, "prompts": int(state[1]), "size_mib": float(state[2]),
+                     "limit_mib": float(state[3]), "limit_tokens": int(state[4]), "estimated_tokens": int(state[5])}
+            result["state_updates"] += 1
+            result["first"] = result["first"] or entry
+            result["last"] = entry
+            result["max_size_mib"] = max(result["max_size_mib"] or 0.0, entry["size_mib"])
+            if steady and t is not None and steady[0] <= t <= steady[1]:
+                result["steady_state_updates"] = (result["steady_state_updates"] or 0) + 1
+                result["steady_first"] = result["steady_first"] or entry
+                result["steady_last"] = entry
+        else:
+            for key, label in PROMPT_CACHE_MARKERS.items():
+                result[label] += int(key in line or line.endswith("prompt cache event: " + label))
+    if result["startup"] is None and not result["state_updates"]:
+        return None
+    return result
+
+
+def steady_trend(rows: list[dict[str, object]]) -> dict[str, object]:
+    """First/last values and least-squares slopes (bytes per minute) over the steady rows, per column.
+
+    The steady label persists until the orchestrator changes it, so rows taken
+    while the workload exits are included: compare arms under equal conditions only.
+    """
+    def fit(key: str) -> dict[str, object]:
+        points = [(r["t"], r[key]) for r in rows if r.get(key) is not None]
+        if len(points) < 2:
+            return {"first": points[0][1] if points else None, "last": points[-1][1] if points else None,
+                    "slope_bytes_per_min": None, "n": len(points)}
+        mean_t = sum(t for t, _ in points) / len(points)
+        mean_v = sum(v for _, v in points) / len(points)
+        spread = sum((t - mean_t) ** 2 for t, _ in points)
+        slope = sum((t - mean_t) * (v - mean_v) for t, v in points) / spread * 60 if spread else None
+        return {"first": points[0][1], "last": points[-1][1],
+                "slope_bytes_per_min": int(slope) if slope is not None else None, "n": len(points)}
+
+    if not rows:
+        return {}
+    return {"seconds": round(rows[-1]["t"] - rows[0]["t"], 1),
+            **{key: fit(key) for key in ("used", "mem_free", "cached", "llama_pss", "work_pss")}}
+
+
+def summarize(run_dir: Path) -> str:
+    run_dir = Path(run_dir)
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    events = load_latest_events(run_dir / "events.jsonl")
+    samples = load_samples(run_dir / "memory.csv")
+    tegra = load_tegrastats(run_dir / "tegrastats.log")
+
+    def in_phases(*names: str) -> list[dict[str, object]]:
+        return [s for s in samples if s["phase"] in names]
+
+    def before_phase(name: str) -> dict[str, object] | None:
+        previous = None
+        for sample in samples:
+            if sample["phase"] == name:
+                return previous
+            previous = sample
+        return None
+
+    def last_event(name: str) -> dict[str, object] | None:
+        return events.get(name)
+
+    def column_max(rows: list[dict[str, object]], key: str) -> int | None:
+        values = [r[key] for r in rows if r.get(key) is not None]
+        return max(values) if values else None
+
+    end = last_event("run_end")
+    status = end["status"] if end else "unknown (no run_end event)"
+    cache_ram = (manifest.get("llama_server") or {}).get("cache_ram_mib")
+    cache_flag = "not passed (server default)" if cache_ram is None else f"{cache_ram} MiB"
+    lines = [
+        f"{LABEL.upper()} RESOURCE PROFILE: {manifest['run_id']}",
+        "One cold load and one combined run. Not a benchmark, Gate B record or beta-gate result.",
+        f"Status: {status}",
+        f"Device: {manifest.get('l4t')} | kernel {manifest.get('kernel')} | power mode {manifest.get('power_mode')}",
+        f"Host state: display-manager {manifest.get('display_manager')}; desktop processes {manifest.get('desktop_processes') or 'none'}; "
+        f"dev tools {manifest.get('dev_tools_running') or 'none'}",
+        (f"Input: scene-only, one distinct synthetic noise image per request; scene every "
+         f"{manifest['parameters']['scene_interval_s']} s; llama-server --cache-ram {cache_flag}"
+         if manifest["parameters"].get("scene_only") else
+         f"Input: {'synthetic noise frames' if manifest['input']['synthetic'] else 'replay clip'} at {manifest['input']['fps']} fps; "
+         f"face {manifest['parameters']['face_hz']} Hz; scene every {manifest['parameters']['scene_interval_s']} s"),
+        f"Repository: {manifest['repository']['commit']} (tracked changes: {manifest['repository']['tracked_changes']})",
+        "",
+        "Whole-device memory = MemTotal - MemAvailable (decimal bytes).",
+        "Torch allocator events, when present, are process-only bytes; they do not measure total GPU/device usage or prove unload.",
+        "",
+        f"{'phase':<16}{'seconds':>8}  {'used at start':>14}  {'used max':>14}  {'used at end':>14}  {'MemFree min':>14}  {'swap max':>12}",
+    ]
+    phases = [p for p in PHASES_IN_ORDER if in_phases(p)]
+    for phase in phases:
+        rows = in_phases(phase)
+        lines.append(
+            f"{phase:<16}{rows[-1]['t'] - rows[0]['t']:>8.1f}  {rows[0]['used']:>14,}  {column_max(rows, 'used'):>14,}  "
+            f"{rows[-1]['used']:>14,}  {min(r['mem_free'] for r in rows):>14,}  {column_max(rows, 'swap_used'):>12,}"
+        )
+
+    baseline_rows = in_phases("baseline")
+    baseline_used = int(statistics.median(r["used"] for r in baseline_rows)) if baseline_rows else None
+    lines += ["", f"Baseline (median of baseline phase): {gb(baseline_used)}", "", "Cold loads, one after another:"]
+    profile_components: dict[str, dict[str, object]] = {}
+    scene_only = bool(manifest.get("parameters", {}).get("scene_only"))
+    for key, load_phase, settle_phase, load_event in COMPONENTS:
+        if scene_only and key != "scene":
+            lines.append(f"  {key}: not run (scene-only)")
+            continue
+        reference = before_phase(load_phase)
+        window = in_phases(load_phase, settle_phase)
+        loaded = last_event(load_event)
+        if reference is None or not window:
+            lines.append(f"  {key}: not reached")
+            continue
+        peak = column_max(window, "used") - reference["used"]
+        settled = window[-1]["used"] - reference["used"]
+        seconds = loaded.get("seconds") if loaded else None
+        profile_components[key] = {
+            "cold_load_seconds": seconds,
+            "baseline_delta_bytes": settled,
+            "cold_load_peak_delta_bytes": peak,
+            "mem_free_min_during_load_bytes": min(r["mem_free"] for r in window),
+        }
+        lines.append(f"  {key:<9} load {seconds if seconds is not None else 'n/a'} s; peak delta {gb(peak, True)}; settled delta {gb(settled, True)}")
+
+    boundary_events = load_boundary_events(run_dir / "events.jsonl")
+    steady_s = float(manifest.get("parameters", {}).get("steady_s") or step4_criteria.STEADY_S)
+    interval, interval_rows = step4_criteria.steady_interval(boundary_events, samples, steady_s)
+    if interval["status"] != step4_criteria.UNAVAILABLE:
+        steady = list(interval_rows)  # monotonic boundaries: teardown excluded from every steady statistic
+        steady_basis = "monotonic boundaries"
+    else:
+        steady = in_phases("steady")  # legacy run: phase labels, includes rows while the workload exits
+        steady_basis = "phase labels (legacy; includes rows while the workload exits; acceptance unavailable)"
+    warm = in_phases("warmup") + steady
+    combined: dict[str, object] = {}
+    if warm:
+        steady_used = [r["used"] for r in steady]
+        run_rows = [r for r in samples if r["phase"] in PHASES_IN_ORDER]
+        combined = {
+            "baseline_bytes": baseline_used,
+            "run_peak_bytes": column_max(run_rows, "used"),
+            "warm_peak_bytes": column_max(warm, "used"),
+            "steady_median_bytes": int(statistics.median(steady_used)) if steady_used else None,
+            "steady_p95_bytes": nearest_rank(steady_used, 0.95),
+            "swap_used_max_bytes": column_max(warm, "swap_used"),
+            "llama_server_peak_rss_bytes": column_max(samples, "llama_hwm"),
+            "llama_server_peak_pss_bytes": column_max(samples, "llama_pss"),
+            "workload_peak_rss_bytes": column_max(samples, "work_hwm"),
+            "workload_peak_pss_bytes": column_max(samples, "work_pss"),
+        }
+        swapin = [r["pswpin"] for r in steady if r.get("pswpin") is not None]
+        swapout = [r["pswpout"] for r in steady if r.get("pswpout") is not None]
+        if len(swapin) > 1:
+            combined["steady_pages_swapped_in"] = swapin[-1] - swapin[0]
+            combined["steady_pages_swapped_out"] = swapout[-1] - swapout[0]
+        if baseline_used is not None:
+            combined["warm_peak_minus_baseline_bytes"] = combined["warm_peak_bytes"] - baseline_used
+        verdict_peak = combined["run_peak_bytes"] is not None and combined["run_peak_bytes"] <= TARGET_PEAK_BYTES
+        lines += [
+            "",
+            "All components together:",
+            f"  run peak (includes cold loads) {gb(combined['run_peak_bytes'])}: "
+            f"{'within' if verdict_peak else 'ABOVE'} the 5,400,000,000 B ceiling",
+            f"  warm peak {gb(combined['warm_peak_bytes'])}; minus baseline {gb(combined.get('warm_peak_minus_baseline_bytes'), True)}",
+            f"  steady basis: {steady_basis}",
+            *([f"  steady interval {interval['status']}, {interval['duration_s']} s of {interval['expected_s']:g} s, "
+               f"coverage {interval['coverage']}, largest gap {interval['max_gap_s']} s, ended by {interval['ended_by']}",
+               f"  steady max {gb(interval.get('max_bytes'))}; {interval.get('seconds_above_target')} s above the "
+               f"5,000,000,000 B target: {'within' if interval.get('seconds_above_target') == 0 else 'ABOVE'}"]
+              if interval["status"] != step4_criteria.UNAVAILABLE else
+              [f"  steady interval unavailable ({interval.get('reason')}): no steady verdict"]),
+            f"  steady median {gb(combined['steady_median_bytes'])}; steady p95 {gb(combined['steady_p95_bytes'])} (reported only)",
+            f"  swap used max {gb(combined['swap_used_max_bytes'])}; steady pages swapped in/out "
+            f"{combined.get('steady_pages_swapped_in', 'n/a')}/{combined.get('steady_pages_swapped_out', 'n/a')}",
+            f"  llama-server peak RSS {gb(combined['llama_server_peak_rss_bytes'])}, peak PSS {gb(combined['llama_server_peak_pss_bytes'])}",
+            f"  workload process peak RSS {gb(combined['workload_peak_rss_bytes'])}, peak PSS {gb(combined['workload_peak_pss_bytes'])}",
+            "  (process RSS/PSS and whole-device use have different accounting; never add them)",
+        ]
+
+    trend = steady_trend(steady)
+    if trend:
+        lines += [
+            "",
+            f"Steady trend over {trend['seconds']} s (least squares; {steady_basis}):",
+            *(f"  {key}: first {gb(trend[key]['first'])}, last {gb(trend[key]['last'])}, "
+              f"slope {trend[key]['slope_bytes_per_min'] if trend[key]['slope_bytes_per_min'] is not None else 'n/a'} B/min"
+              for key in ("used", "llama_pss", "work_pss") if trend[key]["n"]),
+        ]
+    if interval["status"] != step4_criteria.UNAVAILABLE:
+        steady_window = (interval["start_t_mono"], interval["end_t_mono"])
+    else:
+        steady_window = (steady[0]["t"], steady[-1]["t"]) if steady else None
+    cache = prompt_cache_summary(run_dir / "llama-server.log", steady_window)
+    if cache:
+        startup = cache["startup"] or {}
+        lines += [
+            "",
+            "llama-server prompt cache (its own log lines; numbers only):",
+            f"  startup: {'enabled' if startup.get('enabled') else 'disabled' if startup else 'not logged'}"
+            + (f", limit {startup['limit_mib']} MiB" if startup.get("limit_mib") is not None else ""),
+            f"  state updates {cache['state_updates']} (steady {cache['steady_state_updates']}); "
+            f"last {cache['last']['prompts'] if cache['last'] else 'n/a'} prompts, "
+            f"{cache['last']['size_mib'] if cache['last'] else 'n/a'} MiB; max {cache['max_size_mib']} MiB",
+            f"  duplicates skipped {cache['duplicate_skipped']}; evicted {cache['evicted']}; "
+            f"allocation failures {cache['allocation_failed']}",
+        ]
+    progress = last_event("scene_progress")
+    if progress:
+        lines += [
+            "",
+            f"Scene progress at the last request (cumulative since the workload started; phase {progress.get('phase')}):",
+            f"  requests {progress.get('requests')}, completed {progress.get('completed')}, "
+            f"valid/invalid {progress.get('valid_reports')}/{progress.get('invalid_reports')}, errors {progress.get('errors')}, "
+            f"finish reasons {progress.get('finish_reasons')}, synthetic images issued {progress.get('synthetic_images_issued')}",
+        ]
+
+    unload: dict[str, object] = {}
+    after_work = in_phases("unload_workload")
+    before_work = in_phases("llama_settle")
+    after_llama = in_phases("unload_llama")
+    if after_work and before_work:
+        unload["workload_residual_bytes"] = after_work[-1]["used"] - before_work[-1]["used"]
+    if after_llama and baseline_used is not None:
+        unload["residual_vs_baseline_bytes"] = after_llama[-1]["used"] - baseline_used
+    if unload:
+        lines += [
+            "",
+            "Unload:",
+            f"  after the workload exits, vs before it started: {gb(unload.get('workload_residual_bytes'), True)}",
+            f"  after llama-server stops, vs baseline: {gb(unload.get('residual_vs_baseline_bytes'), True)}",
+        ]
+
+    if interval["status"] != step4_criteria.UNAVAILABLE:
+        steady_tegra = [row for row in tegra if "t" in row and steady_window[0] <= row["t"] <= steady_window[1]]
+    else:
+        steady_tegra = [row for row in tegra if row["phase"] == "steady"]
+    tegra_summary: dict[str, object] = {}
+    if steady_tegra:
+        def mean(values: list[float]) -> float | None:
+            return round(sum(values) / len(values), 1) if values else None
+
+        cores = [row["cpu_cores"] for row in steady_tegra if "cpu_cores" in row]
+        per_core = [mean([sample[i] for sample in cores if len(sample) > i]) for i in range(max(map(len, cores), default=0))]
+        gr3d = [row["gr3d_percent"] for row in steady_tegra if "gr3d_percent" in row]
+        temps: dict[str, float] = {}
+        power: dict[str, list[int]] = {}
+        for row in steady_tegra:
+            for name, value in row["temps"].items():
+                temps[name] = max(temps.get(name, value), value)
+            for name, value in row["power_mw"].items():
+                power.setdefault(name, []).append(value)
+        tegra_summary = {
+            "samples": len(steady_tegra),
+            "ram_used_max_bytes": column_max(steady_tegra, "ram_used_bytes"),
+            "cpu_mean_percent_all_cores": mean([sum(c) / len(c) for c in cores]),
+            "cpu_mean_percent_busiest_core": max(per_core, default=None),
+            "gr3d_mean_percent": mean(gr3d),
+            "gr3d_max_percent": max(gr3d) if gr3d else None,
+            "temps_max_c": temps,
+            "power_mean_mw": {name: mean(values) for name, values in power.items()},
+        }
+        lines += [
+            "",
+            f"tegrastats, steady phase ({len(steady_tegra)} samples):",
+            f"  RAM max {gb(tegra_summary['ram_used_max_bytes'])} (tegrastats accounting)",
+            f"  CPU mean {tegra_summary['cpu_mean_percent_all_cores']} % over all cores; busiest core {tegra_summary['cpu_mean_percent_busiest_core']} %",
+            f"  GR3D mean {tegra_summary['gr3d_mean_percent']} %, max {tegra_summary['gr3d_max_percent']} %",
+            "  max temperature " + ", ".join(f"{k} {v:.1f} C" for k, v in sorted(temps.items())),
+            "  mean power " + ", ".join(f"{k} {v} mW" for k, v in sorted(tegra_summary["power_mean_mw"].items())),
+        ]
+
+    stats = last_event("workload_stats")
+    if stats:
+        detector, face, scene = stats.get("detector", {}), stats.get("face", {}), stats.get("scene", {})
+        lines += ["", f"Workload, steady phase ({stats.get('seconds')} s, {stats.get('input')}):"]
+        if scene_only:
+            lines.append("  detector and face: not run (scene-only)")
+        else:
+            lines += [
+                f"  detector: {detector.get('processed_frames')} of {detector.get('source_frames')} source frames, "
+                f"{detector.get('processed_fps')} fps; latency ms {detector.get('latency_ms')}; frames with a person {detector.get('frames_with_person')}",
+                f"  face: {face.get('runs')} runs ({face.get('achieved_hz')} Hz achieved), latency ms {face.get('latency_ms')}; "
+                f"runs with a face {face.get('runs_with_face')}; errors {face.get('errors')}",
+            ]
+        lines += [
+            f"  scene: {scene.get('completed')} completed, latency ms {scene.get('latency_ms')}; over the 8 s D16 timeout {scene.get('over_d16_timeout')}; "
+            f"errors {scene.get('errors')}; http error categories {scene.get('http_error_categories', 'unavailable')}; "
+            f"valid/invalid/unchecked reports {scene.get('valid_reports')}/{scene.get('invalid_reports')}/{scene.get('unchecked_reports')}; "
+            f"mean prompt/completion tokens {scene.get('prompt_tokens_mean')}/{scene.get('completion_tokens_mean')}",
+            f"  scene completion finish reasons {scene.get('finish_reasons', 'unavailable')}; "
+            f"rejections {scene.get('rejected_reports_by_reason', 'unavailable')}; "
+            f"valid summaries/observations at character limits "
+            f"{scene.get('valid_summaries_at_limit', 'unavailable')}/{scene.get('valid_observations_at_limit', 'unavailable')}",
+            "  Scene structural validity and exact-limit counts do not establish scene accuracy or semantic completeness.",
+        ]
+        latency = {"detector": detector.get("latency_ms"), "face": face.get("latency_ms"), "scene": scene.get("latency_ms")}
+        for key, values in latency.items():
+            if key in profile_components:
+                profile_components[key]["observed_latency_ms"] = values
+
+    llama_check = last_event("llama_gpu_check")
+    inputs = {
+        "scene": {"image": "480x360 JPEG quality 60", "ctx_size": 2048, "max_tokens": 200, "parallel": 1,
+                  "configured_timeout_ms": 8000, "gpu_check": llama_check},
+        "detector": {"engine_input": "1x3x640x640 FP32", "source": "640x480", "rate_fps": manifest["input"]["fps"]},
+        "face": {"input": "whole 640x480 frame; YuNet detector; Facenet512 embedding; TensorFlow on CPU",
+                 "rate_hz": manifest["parameters"]["face_hz"]},
+    }
+    for key, extra in inputs.items():
+        if key in profile_components:
+            profile_components[key]["input_limit"] = extra
+    profile = {
+        "label": LABEL,
+        "note": manifest.get("note"),
+        "run_id": manifest["run_id"],
+        "status": status,
+        "provenance": {k: manifest.get(k) for k in ("started_utc", "finished_utc", "boot_id", "l4t", "kernel", "power_mode",
+                                                   "display_manager", "repository", "llama_server", "files", "sha256", "input",
+                                                   "parameters")},
+        "components": profile_components,
+        "combined": combined,
+        "unload": unload,
+        "tegrastats_steady": tegra_summary,
+        "workload_steady": stats,
+        "steady_trend": trend,
+        "prompt_cache": cache,
+        "scene_progress_last": progress,
+        "targets": {"steady_bytes": TARGET_STEADY_BYTES, "peak_bytes": TARGET_PEAK_BYTES},
+        "steady_interval": interval,
+        "gpu_evidence": {"llama": last_event("llama_gpu_check"), "workload_cuda": last_event("cuda_driver")},
+        "cache_evidence": step4_criteria.cache_evidence(
+            manifest, last_event("llama_cmdline"), cache,
+            telemetry_timestamped=bool(cache and (cache.get("startup") or {}).get("t_mono") is not None)),
+        "memory_policy": manifest.get("memory_policy"),  # D58: absent in runs recorded before it
+    }
+    if (manifest.get("parameters") or {}).get("mr1_release_check"):
+        report = mr1_report(run_dir, status)
+        (run_dir / "mr1.json").write_text(json.dumps(report, indent=2) + "\n")
+        profile["step4_profile_criteria"] = None  # an MR1 run is never step-4 evidence
+        profile["mr1"] = "mr1.json"
+        lines += mr1_lines(report)
+    else:
+        profile["step4_profile_criteria"] = step4_criteria.evaluate_profile(profile)
+        if (manifest.get("parameters") or {}).get("post_load_release"):
+            report = plr_report(run_dir, status, in_phases("warmup"),
+                                list(interval_rows) if interval["status"] != step4_criteria.UNAVAILABLE else [])
+            (run_dir / "plr.json").write_text(json.dumps(report, indent=2) + "\n")
+            profile["criteria_id"] = step4_criteria.PLR_CRITERIA_ID
+            profile["post_load_release"] = "plr.json"
+            lines += plr_lines(report)
+            candidate = bool((manifest.get("parameters") or {}).get("candidate"))
+            if candidate:  # D58: its own record and identity; the same profile-side criteria
+                checked = candidate_report(run_dir, status, manifest, stats)
+                (run_dir / "candidate.json").write_text(json.dumps(checked, indent=2) + "\n")
+                profile["criteria_id"] = step4_criteria.CANDIDATE_CRITERIA_ID
+                profile["candidate"] = "candidate.json"
+                lines += candidate_lines(checked)
+            instrumented = bool((manifest.get("parameters") or {}).get("memory_attribution"))
+            if instrumented:  # MA1: the same criteria, read descriptively; an instrumented run is never eligible
+                warm_rows = in_phases("warmup")
+                attribution = memattr_report(
+                    run_dir, status, samples, (warm_rows[0]["t"], warm_rows[-1]["t"]) if warm_rows else None,
+                    (interval["start_t_mono"], interval["end_t_mono"])
+                    if interval["status"] != step4_criteria.UNAVAILABLE else None)
+                (run_dir / "memattr.json").write_text(json.dumps(attribution, indent=2) + "\n")
+                profile["memory_attribution"] = "memattr.json"
+                profile["instrumentation"] = ("MA1 memory attribution (D55): an instrumented diagnostic; its criteria "
+                                              "are descriptive only, never eligibility, acceptance or admission")
+                lines += memattr_lines(attribution)
+                if (manifest.get("parameters") or {}).get("thp_observation"):  # D56: read-only THP counters
+                    observed = thp_report(
+                        run_dir, status, samples, manifest,
+                        (warm_rows[0]["t"], warm_rows[-1]["t"]) if warm_rows else None,
+                        (interval["start_t_mono"], interval["end_t_mono"])
+                        if interval["status"] != step4_criteria.UNAVAILABLE else None)
+                    (run_dir / "thp.json").write_text(json.dumps(observed, indent=2) + "\n")
+                    profile["thp_observation"] = "thp.json"
+                    profile["instrumentation"] += "; with THP observation (D56), read-only"
+                    lines += thp_lines(observed)
+                    if (manifest.get("parameters") or {}).get("workload_thp_disable"):  # D57: its own reading
+                        disabled = wtd_report(run_dir, status, samples, manifest,
+                                              (interval["start_t_mono"], interval["end_t_mono"])
+                                              if interval["status"] != step4_criteria.UNAVAILABLE else None, stats)
+                        (run_dir / "wtd.json").write_text(json.dumps(disabled, indent=2) + "\n")
+                        profile["workload_thp_disable"] = "wtd.json"
+                        profile["instrumentation"] += ("; with THP disabled in the workload process alone (D57), so "
+                                                       "fault-time huge pages are absent there too")
+                        lines += wtd_lines(disabled)
+            if candidate:
+                lines += ["", f"Step-4 criteria decidable from this run ({step4_criteria.CANDIDATE_CRITERIA_ID}: D47's "
+                          "rules and thresholds under the D58 candidate identity; demo profile, not the 1080p beta "
+                          "gates; never acceptance or admission):"]
+            else:
+                lines += ["", f"Step-4 criteria decidable from this run ({step4_criteria.PLR_CRITERIA_ID}: D47's rules "
+                          "and thresholds under the PLR identity; demo profile, not the 1080p beta gates; never "
+                          "acceptance or admission" + ("; instrumented MA1 run: descriptive only, never eligible"
+                                                       if instrumented else "") + "):"]
+        else:
+            lines += ["", f"Step-4 criteria decidable from this run ({step4_criteria.CRITERIA_ID}; demo profile, "
+                      "not the 1080p beta gates; never acceptance):"]
+        lines += [f"  {name}: {item['status']}" for name, item in profile["step4_profile_criteria"].items()]
+    (run_dir / "profile.json").write_text(json.dumps(profile, indent=2) + "\n")
+    text = "\n".join(lines) + "\n"
+    (run_dir / "summary.txt").write_text(text)
+    return text
+
+
+# ------------------------------------------------------------------------ main
+
+
+def cache_ram_mib(text: str) -> int:
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError("use 0 (disabled) or a positive MiB limit; 'no limit' is not offered")
+    return value
+
+
+def image_max_tokens(text: str) -> int:
+    value = int(text)
+    if not 1 <= value <= 4096:
+        raise argparse.ArgumentTypeError("use an image-token cap from 1 to 4096 (the LFM3 build's own ceiling)")
+    return value
+
+
+def maps_interval(text: str) -> float:
+    value = float(text)
+    low, high = MAPS_INTERVAL_RANGE_S
+    if not (math.isfinite(value) and low <= value <= high):
+        raise argparse.ArgumentTypeError(f"use {low:g} to {high:g} seconds")
+    return value
+
+
+def parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Measure the Oct 20 demo resource profile (U17 option a).")
+    parser.add_argument("--clip", type=Path, help="replay clip to decode as the camera stand-in (recommended)")
+    parser.add_argument("--out", default=str(HOME / "sentinel-runs"), help="parent directory for run output")
+    parser.add_argument("--port", type=int, default=18081, help="loopback port for llama-server")
+    parser.add_argument("--fps", type=float, default=15.0)
+    parser.add_argument("--face-hz", type=float, default=1.0)  # D34
+    parser.add_argument("--scene-interval-s", type=float, default=4.0)
+    parser.add_argument("--baseline-s", type=float, default=30.0)
+    parser.add_argument("--settle-s", type=float, default=15.0)
+    parser.add_argument("--warmup-s", type=float, default=120.0)
+    parser.add_argument("--steady-s", type=float, default=600.0)
+    parser.add_argument("--llama-timeout-s", type=float, default=120.0)
+    parser.add_argument("--load-timeout-s", type=float, default=300.0)
+    parser.add_argument("--min-free-gb", type=float, default=3.0,
+                        help="stop unless MemFree is at least this before llama-server starts (V2-01: it loaded "
+                             "fully at 3.08 GB free and failed at 1.70 GB)")
+    parser.add_argument("--no-evict", dest="evict", action="store_false",
+                        help="keep the model files' page cache (default: evict it so the loads are cold)")
+    parser.add_argument("--scene-only", action="store_true",
+                        help="S1: llama-server and scene requests only, one distinct synthetic image per request")
+    parser.add_argument("--llama-cache-ram", type=cache_ram_mib, metavar="MIB",
+                        help="pass --cache-ram MIB to llama-server (0 disables its prompt cache); default: not passed")
+    parser.add_argument("--llama-log-verbosity", type=int, choices=range(0, 6), metavar="N",
+                        help="session 116: pass --log-verbosity N to llama-server (the selected set's, when its build "
+                             "hides the lines this script reads at its default); default: not passed")
+    parser.add_argument("--llama-image-max-tokens", type=image_max_tokens, metavar="N",
+                        help="session 116, part 7: pass --image-max-tokens N to llama-server (the selected set's "
+                             "image-token cap, when it has one); default: not passed")
+    parser.add_argument("--mr1-release-check", action="store_true",
+                        help="MR1 (opt-in): after each model's load and settle, release that model's files from the page "
+                             "cache (posix_fadvise DONTNEED, no root) with memory samples around it, then bounded smoke "
+                             "checks and unload; no warm-up or steady phase. Not a resource profile or step-4 run")
+    parser.add_argument("--post-load-release", action="store_true",
+                        help="step-4 PLR (opt-in, D54): MR1's release of each model's files after its load and settle, "
+                             "then the full warm-up and steady phases; judged by D47's criteria under its own identity")
+    parser.add_argument("--mr1-release-settle-s", "--release-settle-s", dest="mr1_release_settle_s", type=float,
+                        default=MR1_RELEASE_SETTLE_S,
+                        help="MR1 and PLR: seconds between the release calls and the after sample")
+    parser.add_argument("--memory-attribution", action="store_true",
+                        help="MA1 (opt-in diagnostic, D55; only with --post-load-release): the workload's allocator "
+                             "and garbage-collector counters at 1 Hz and its mapping categories every "
+                             "--maps-interval-s; numbers only; never eligibility, acceptance or admission")
+    parser.add_argument("--maps-interval-s", type=maps_interval, default=MAPS_INTERVAL_S,
+                        help=f"MA1: seconds between reads of the workload's smaps (default {MAPS_INTERVAL_S:g}, "
+                             f"{MAPS_INTERVAL_RANGE_S[0]:g}-{MAPS_INTERVAL_RANGE_S[1]:g})")
+    parser.add_argument("--thp-observation", action="store_true",
+                        help="THP observation (opt-in, D56; only with --memory-attribution): AnonHugePages in the smaps "
+                             "aggregates, meminfo AnonHugePages and the THP fault, collapse and split counters with "
+                             "khugepaged's progress counters in each memory.csv row, and the THP settings before and "
+                             "after the run; read-only, nothing set or tuned")
+    parser.add_argument("--workload-thp-disable", action="store_true",
+                        help="MA1-WTD (opt-in diagnostic, D57; with --thp-observation) or the D58 candidate (with "
+                             "--candidate): the workload disables transparent huge pages for its own process (prctl, "
+                             "before any model library) and stops unless verified; this profiler and llama-server keep "
+                             "the system setting, checked at four points; no system-wide THP setting is written")
+    parser.add_argument("--candidate", action="store_true",
+                        help="the D58 candidate (opt-in; with --post-load-release and --workload-thp-disable, without "
+                             "--memory-attribution or --thp-observation): step 4 with the post-load release and the "
+                             "workload's verified THP disable; cheap scope checks only (THP_enabled at four points, "
+                             "the workload's AnonHugePages at its check and the steady boundaries, the THP settings "
+                             "before and after); a release call that does not return 0 stops the run; judged by D47's "
+                             "rules and thresholds under its own identity; never accepted")
+    parser.add_argument("--net-steps", type=Path, metavar="RUN_DIR",
+                        help="only print D57's net-step, residency and opportunity measures for a saved run as JSON; "
+                             "read-only, writes nothing")
+    parser.add_argument("--sanitized-logs", action="store_true",
+                        help="discard raw server/workload output; retain fixed numeric/placement diagnostics only")
+    parser.add_argument("--allow-desktop", action="store_true", help="measure with a desktop session running")
+    parser.add_argument("--allow-dev-tools", action="store_true", help="measure with VS Code or Claude Code running")
+    parser.add_argument("--python", type=Path, default=HOME / "onvif_env/bin/python")
+    parser.add_argument("--llama", type=Path, default=HOME / "llama.cpp/build/bin/llama-server")
+    parser.add_argument("--model", type=Path, default=HOME / "models/lfm2-vl/LFM2-VL-1.6B-Q4_0.gguf")
+    parser.add_argument("--mmproj", type=Path, default=HOME / "models/lfm2-vl/mmproj-LFM2-VL-1.6B-Q8_0.gguf")
+    # Session 115: the model name the workload's scene requests carry, the scene model set's whose --model and
+    # --mmproj these are (operator_check --scene-model-set passes all three); the default is the profiled request's.
+    parser.add_argument("--scene-request-model", default=DEFAULT_SCENE_REQUEST_MODEL)
+    parser.add_argument("--scene-template-kwargs", default=None,
+                        help="session 116: the selected set's chat-template arguments, a JSON object the workload "
+                             "sends in every scene request (none by default, as the profiled sets send none)")
+    parser.add_argument("--engine", type=Path, default=HOME / "yolov8n.engine")
+    parser.add_argument("--summarize", type=Path, metavar="RUN_DIR", help="only rebuild summary.txt and profile.json")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.summarize:
+        print(summarize(args.summarize))
+        return 0
+    if args.net_steps:
+        print(json.dumps(net_step_report(args.net_steps), indent=2))
+        return 0
+    return run(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

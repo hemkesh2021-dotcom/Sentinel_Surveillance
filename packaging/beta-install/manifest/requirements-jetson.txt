@@ -1,0 +1,19 @@
+# Sentinel personal beta: the CUDA builds the detector needs, for JetPack 6 (L4T R36.4, CUDA 12.6, Python 3.10).
+#
+# Source: the Jetson AI Lab package index for JetPack 6 / CUDA 12.6 (the builds NVIDIA's Jetson team publishes for
+# Jetson; PyPI's own torch wheels for aarch64 are not CUDA builds for Jetson). The index lists these files with these
+# SHA-256 values; the reference device runs the same two versions (torch 2.9.1 reports CUDA 12.6 and links against
+# the system's CUDA 12 and cuDNN 9 libraries).
+# Installed with: pip install --no-deps --require-hashes -r requirements-jetson.txt
+--index-url https://pypi.jetson-ai-lab.io/jp6/cu126
+torch==2.9.1 \
+    --hash=sha256:02fde421eabbf62633092de30405ea4d917323c55bea22bfd10dfeb1f1023506
+torchvision==0.24.1 \
+    --hash=sha256:d5bcaaf709f11750b5bb0f6ec30f37605da2f3d5cb3cd2b0fe5fac2850e08642
+# Only build-engine.sh needs this one: Ultralytics 8.4.25 exports the detector to ONNX and simplifies it (onnx and
+# onnxslim, in requirements-pypi.txt) before TensorRT builds the engine, and asks for a package of this NAME where
+# CUDA is available. This build was compiled against NumPy 1 and does not import beside the pinned NumPy 2.2.6;
+# as on the reference device, PyPI's onnxruntime 1.23.2 (requirements-pypi.txt) is installed after it into the same
+# folder, and that is the one Python imports. setup-env.sh installs the two files in this order and checks the import.
+onnxruntime-gpu==1.23.0 \
+    --hash=sha256:4ebe6a8902dc7708434b2e1541b3fe629ebf434e16ab5537d1d6a622b42c622b

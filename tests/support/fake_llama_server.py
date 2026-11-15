@@ -1,0 +1,304 @@
+"""A loopback stand-in for llama-server's /health, /props, /slots and /v1/chat/completions (session 115, parts 11 and
+15): tests and the chat preemption check's dry run only, never the model.
+
+Its one slot follows llama-server b8932 (tools/server/server-context.cpp at 98dc1418e):
+- **Each request, chat or scene, is a new task.** When the request is launched, the slot takes the task's id and its
+  ``n_predict`` (the request's ``max_tokens``) at once.
+- **The counters stay stale through the prompt.** The slot keeps the previous task's ``n_decoded`` and ``n_remain``
+  while the new task's prompt is processed (``prompt_s`` for a chat request, ``scene_prompt_s`` for a scene request).
+- **Then they restart.** ``n_decoded`` becomes 0 when the prompt is done, and ``n_remain`` is recomputed from the first
+  decoded token on.
+- **After the task ends,** /slots keeps showing its id and its final counters.
+
+A chat request then "decodes" for the time its question is given (by a word in it), and stops as soon as its connection
+is closed, as llama-server does when a request is aborted. Otherwise it answers synthetic text with llama-server's
+timings. A scene request (``response_format`` set) decodes ``scene_tokens`` tokens over ``scene_s``, then answers a
+valid report, or the given invalid text, with ``finish_reason`` "stop" and its usage.
+
+With ``json_schema_error`` (session 115, part 19), a request carrying llama.cpp's top-level ``json_schema`` field is
+answered as b8932 answers a task whose sampler cannot be initialised: HTTP 400 with the error envelope
+``{"error": {"code": 400, "message": ..., "type": "invalid_request_error"}}`` (format_error_response in
+tools/server/server-common.cpp), the given text as its message, and nothing decoded. ``grammar_error`` does the same
+for a request carrying the top-level ``grammar`` field (part 20), and ``grammar_scene_text``, when given, is what such
+a request is answered with instead of ``scene_text``, so a test can answer the constrained and the unconstrained scene
+request differently.
+
+/slots also carries a ``generated`` text, and /props a template and a model path. A reader must drop them all (the real
+server sends slot text only with LLAMA_SERVER_SLOTS_DEBUG).
+
+With ``build=LFM3_BUILD`` (session 116, part 11) the slot follows llama-server b11938 (tools/server/server-context.cpp at
+19cce69) instead:
+- **A task's end resets the slot.** ``reset()`` runs ``stats = {}`` and ``n_predict_max = -1``, so an idle slot reads 0
+  decoded and -1 remaining, keeping its last task's id and params (``task_prev``).
+- **A new task reads 0 and its cap through its prompt** (``n_predict_max`` is set at launch; ``stats`` are still zero).
+- **The server notices a closed connection only on its poll** (``close_poll_s``; HTTP_POLLING_SECONDS, 1 s, read from
+  ``recv_with_timeout`` in server-queue.cpp): generation goes on until then, and only then does it cancel. Tests pass a
+  shorter poll.
+- **A second request waits** for the slot (``queue_tasks.defer``). The fake's one slot always did this at launch.
+- **Its log:** ``cancel task, id_task = N`` then ``task N | stop processing: n_tokens = M, truncated = 0`` for a cancelled
+  task, and the second line alone for one that ended by itself, given to ``attach_log``'s watch.
+"""
+
+from __future__ import annotations
+
+import json
+import select
+import socket
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
+
+from sentinel.scene.llama_server import SCENE_SYSTEM
+from sentinel.scene.server import ServerState, ServerStatus
+
+ANSWER = "A synthetic answer about labelled shapes."  # never to appear in a check's result
+GENERATED = "synthetic text the slots reader must drop"
+TEMPLATE = "synthetic chat template the props reader must drop"
+BUILD = "b8932-98dc1418e"  # the installed build the fake follows
+LFM3_BUILD = "b11938-19cce6919"  # LFM3-VL's own build (the slot rules above)
+REPORT = {"persons_visible": 0, "fire_or_smoke": False, "threat": "low", "observations": ["shapes on white"],
+          "uncertainty": "low", "summary": "Labelled shapes on a white background."}
+
+
+class FakeLlamaServer:
+    def __init__(self, port: int, *, decode_s: dict[str, float], tokens_per_s: float = 50.0, scene_s: float = 0.2,
+                 scene_text: str | None = None, prompt_s: float = 0.0, scene_prompt_s: float = 0.0,
+                 scene_tokens: int = 60, build: str = BUILD, slot_task_ids: bool = True,
+                 json_schema_error: str | None = None, grammar_error: str | None = None,
+                 grammar_scene_text: str | None = None, reasoning: str | None = None, close_poll_s: float = 0.0) -> None:
+        self.port, self.decode_s, self.tokens_per_s, self.scene_s = port, decode_s, tokens_per_s, scene_s
+        self.prompt_s, self.scene_prompt_s, self.scene_tokens = prompt_s, scene_prompt_s, scene_tokens
+        self.build, self.slot_task_ids, self.json_schema_error = build, slot_task_ids, json_schema_error
+        self.grammar_error = grammar_error
+        # session 116: a thinking model's reasoning_content, given with every answer unless the request's
+        # chat_template_kwargs switch enable_thinking off (as LFM3-VL's template does)
+        self.reasoning = reasoning
+        self.scene_text = json.dumps(REPORT) if scene_text is None else scene_text
+        self.grammar_scene_text = grammar_scene_text  # None: a grammar request is answered with scene_text too
+        self._lock = threading.Lock()
+        self.close_poll_s = close_poll_s  # how often a closed connection is noticed; 0: at once
+        self.log = None  # the check's ServerLogWatch (attach_log), when there is one
+        self._slot_free = threading.Lock()  # one slot: another request waits for it, as llama-server defers it
+        # one slot; "task" stays the last task's id once it ends (llama-server's task_prev)
+        self._slot: dict[str, Any] = {"processing": False, "task": None, "n_predict": None, "n_decoded": 0,
+                                      "n_remain": -1}
+        self._tasks = 0
+        self.closed_by_client = 0  # chat requests whose connection the client closed while running
+        self.completed = {"chat": 0, "scene": 0}
+        self._httpd: ThreadingHTTPServer | None = None
+
+    def _launch(self, n_predict: int) -> None:
+        """A new task in the slot: its id and n_predict now, the counters left as the previous task left them (on b11938
+        the previous end zeroed them, and n_remain reads the new cap)."""
+        with self._lock:
+            self._tasks += 1
+            self._slot.update(processing=True, task=self._tasks, n_predict=n_predict)
+            if self.build == LFM3_BUILD:
+                self._slot.update(n_decoded=0, n_remain=n_predict)
+
+    def _released(self, *, cancelled: bool) -> None:
+        """The slot's end of a task: the log's lines, and on b11938 reset() zeroing its counters."""
+        with self._lock:
+            task, decoded = self._slot["task"], self._slot["n_decoded"]
+            self._slot.update(processing=False)
+            if self.build == LFM3_BUILD:
+                self._slot.update(n_decoded=0, n_remain=-1)
+        if self.log is not None:
+            if cancelled:
+                self.log.feed(f"srv         stop: cancel task, id_task = {task}\n")
+            self.log.feed(f"slot      release: id  0 | task {task} | stop processing: n_tokens = {decoded + 325}, "
+                          "truncated = 0\n")
+
+    def _prompt_done(self) -> None:
+        with self._lock:
+            self._slot.update(n_decoded=0)  # n_remain only follows from the first token
+
+    def _decoded(self, n: int) -> None:
+        with self._lock:
+            self._slot.update(n_decoded=n, n_remain=self._slot["n_predict"] - n)
+
+    def start(self) -> None:
+        server = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args: Any) -> None:
+                pass
+
+            def _json(self, code: int, document: Any) -> None:
+                data = json.dumps(document).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self) -> None:
+                if self.path == "/health":
+                    self._json(200, {"status": "ok"})
+                elif self.path == "/props":
+                    self._json(200, {"build_info": server.build, "chat_template": TEMPLATE,
+                                     "model_path": "/synthetic/model.gguf", "total_slots": 1})
+                elif self.path == "/slots":
+                    with server._lock:
+                        slot = dict(server._slot)
+                    document: dict[str, Any] = {"id": 0, "n_ctx": 4096, "is_processing": slot["processing"]}
+                    if slot["task"] is not None:  # as llama-server: the task fields once the slot has had a task
+                        if server.slot_task_ids:
+                            document["id_task"] = slot["task"]
+                        document["params"] = {"n_predict": slot["n_predict"], "max_tokens": slot["n_predict"]}
+                        document["next_token"] = [{"has_next_token": slot["processing"], "has_new_line": False,
+                                                   "n_remain": slot["n_remain"], "n_decoded": slot["n_decoded"]}]
+                        document["generated"] = GENERATED
+                    self._json(200, [document])
+                else:
+                    self._json(404, {"error": "not found"})
+
+            @staticmethod
+            def _scene_shaped(body: dict[str, Any]) -> bool:
+                """A scene request stripped of every constraint (scene_grammar_check's control, session 116) is still
+                a scene request: the runtime's scene system prompt tells it from a chat request."""
+                messages = body.get("messages") or []
+                return bool(messages) and messages[0].get("content") == SCENE_SYSTEM
+
+            def _message(self, content: str, body: dict[str, Any]) -> dict[str, Any]:
+                message: dict[str, Any] = {"role": "assistant", "content": content}
+                thinking = (body.get("chat_template_kwargs") or {}).get("enable_thinking", True)
+                if server.reasoning is not None and thinking:
+                    message["reasoning_content"] = server.reasoning
+                return message
+
+            def do_POST(self) -> None:
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                cap = int(body["max_tokens"])
+                server._slot_free.acquire()
+                self._cancelled = False
+                self._launched = time.monotonic()
+                server._launch(cap)
+                try:
+                    if server.json_schema_error is not None and "json_schema" in body:
+                        self._json(400, {"error": {"code": 400, "message": server.json_schema_error,
+                                                   "type": "invalid_request_error"}})
+                    elif server.grammar_error is not None and "grammar" in body:
+                        self._json(400, {"error": {"code": 400, "message": server.grammar_error,
+                                                   "type": "invalid_request_error"}})
+                    elif "response_format" in body or "grammar" in body or self._scene_shaped(body):
+                        constrained = "grammar" in body and server.grammar_scene_text is not None
+                        self._scene(cap, server.grammar_scene_text if constrained else server.scene_text, body)
+                    else:
+                        self._chat(body, cap)
+                finally:
+                    server._released(cancelled=self._cancelled)
+                    server._slot_free.release()
+
+            def _wait(self, seconds: float) -> bool:
+                """Waits; False as soon as the server notices the client has closed its side of the connection."""
+                end = time.monotonic() + seconds
+                while time.monotonic() < end:
+                    if self._noticed_closed():
+                        return False
+                    time.sleep(0.01)
+                return True
+
+            def _noticed_closed(self) -> bool:
+                """Whether the server has noticed the closed connection: at once, or only on its poll's ticks."""
+                poll = server.close_poll_s
+                if poll > 0 and (time.monotonic() - self._launched) % poll > 0.02:
+                    return False
+                if self._closed():
+                    self._cancelled = True
+                    return True
+                return False
+
+            def _scene(self, cap: int, text: str, body: dict[str, Any]) -> None:
+                time.sleep(server.scene_prompt_s)
+                server._prompt_done()
+                tokens = min(cap - 1, server.scene_tokens)
+                began = time.monotonic()
+                while time.monotonic() - began < server.scene_s:
+                    server._decoded(max(1, min(tokens, int((time.monotonic() - began) / server.scene_s * tokens))))
+                    time.sleep(0.01)
+                server._decoded(tokens)
+                server.completed["scene"] += 1
+                self._json(200, {"choices": [{"finish_reason": "stop", "index": 0, "message": self._message(text, body)}],
+                                 "usage": {"completion_tokens": tokens, "prompt_tokens": 325,
+                                           "total_tokens": tokens + 325},
+                                 "timings": {"prompt_n": 325, "prompt_ms": server.scene_prompt_s * 1000.0,
+                                             "predicted_n": tokens, "predicted_ms": server.scene_s * 1000.0,
+                                             "predicted_per_token_ms": server.scene_s * 1000.0 / max(tokens, 1)}})
+
+            def _chat(self, body: dict[str, Any], cap: int) -> None:
+                text = body["messages"][-1]["content"][-1]["text"]
+                seconds = next((s for word, s in server.decode_s.items() if word in text), 0.0)
+                if not self._wait(server.prompt_s):  # the prompt and the picture: stale counters, nothing decoded
+                    server.closed_by_client += 1
+                    return
+                server._prompt_done()
+                began = time.monotonic()
+                while time.monotonic() - began < seconds:
+                    if self._noticed_closed():
+                        server.closed_by_client += 1
+                        return
+                    server._decoded(min(cap, int((time.monotonic() - began) * server.tokens_per_s) + 1))
+                    time.sleep(0.01)
+                tokens = min(cap, max(1, int(seconds * server.tokens_per_s)))
+                server._decoded(tokens)
+                server.completed["chat"] += 1
+                self._json(200, {"choices": [{"finish_reason": "length" if tokens >= cap else "stop", "index": 0,
+                                              "message": self._message(ANSWER, body)}],
+                                 "timings": {"prompt_ms": 5.0, "predicted_ms": seconds * 1000.0,
+                                             "predicted_n": tokens}})
+
+            def _closed(self) -> bool:
+                """True once the client has closed (or shut down) its side of the connection."""
+                try:
+                    readable, _, _ = select.select([self.connection], [], [], 0)
+                    return bool(readable) and self.connection.recv(1, socket.MSG_PEEK) == b""
+                except OSError:
+                    return True
+
+        self._httpd = ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
+        self._httpd.daemon_threads = True
+        threading.Thread(target=self._httpd.serve_forever, daemon=True).start()
+
+    def stop(self) -> None:
+        if self._httpd is not None:
+            self._httpd.shutdown()
+            self._httpd.server_close()
+            self._httpd = None
+
+
+class FakeServerProcess:
+    """In the place of LlamaServerProcess: start() serves the fake on the port and reports the runtime's ready state."""
+
+    def __init__(self, fake: FakeLlamaServer) -> None:
+        self.fake, self._state = fake, ServerState.NOT_STARTED
+
+    def __call__(self, binary: Any, model: Any, mmproj: Any, port: int,
+                 extra_flags: tuple[str, ...] = ()) -> "FakeServerProcess":
+        assert port == self.fake.port
+        self.extra_flags = tuple(extra_flags)  # the set's own launch flags, as LlamaServerProcess takes them
+        return self
+
+    def attach_log(self, watch: Any) -> None:
+        """As the real server's output runs through the check's watch: the two lines it looks for."""
+        self.fake.log, watch.attached = watch, True
+
+    def start(self, ready_timeout_s: float) -> ServerStatus:
+        self.fake.start()
+        self._state = ServerState.READY
+        return self.status()
+
+    def stop(self, grace_s: float) -> bool:
+        self.fake.stop()
+        self._state = ServerState.STOPPED
+        return True
+
+    def status(self) -> ServerStatus:
+        return ServerStatus(self._state, None, 0 if self._state is ServerState.STOPPED else None, "17/17", True)
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]

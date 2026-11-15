@@ -1,0 +1,770 @@
+<!doctype html>
+<html lang="en" data-theme="dark" data-motion="full">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Sentinel UI motion preview</title>
+<!--
+  Session 114: a local component preview of the requested redesign (deep black, raised charcoal controls, recessed
+  panels, ivory text, warm metallic gold), for the maintainer's review before anything changes in the dashboard.
+  Synthetic content only: nothing here talks to the runtime, and no file is fetched (inline CSS, SVG and script,
+  system fonts). Colours from the reference image's sampled pixels (session 114 log); timings from the brief.
+  Query options for review: ?theme=light, ?motion=reduce (the system's reduced-motion setting is also honoured).
+-->
+<style>
+:root {
+  /* Timings (the brief: about 120-180 ms to press, 200-350 ms for hover and release). */
+  --t-press: 140ms;     /* the control goes down, its shadow inset */
+  --t-pulse: 160ms;     /* the short gold acknowledgement */
+  --t-trace: 320ms;     /* the gold highlight's one trip around the edge */
+  --t-settle: 240ms;    /* the glow that follows the trip */
+  --t-release: 260ms;   /* the return, with a small overshoot */
+  --t-orbit: 1600ms;    /* one turn of the edge highlight while work is pending */
+  --ease-press: cubic-bezier(.2, .7, .3, 1);
+  --ease-release: cubic-bezier(.3, 1.35, .55, 1);
+  --ease-trace: cubic-bezier(.45, .05, .35, 1);
+  --r-control: 12px;
+  --r-panel: 18px;
+}
+:root, [data-theme="dark"] {
+  --page: #0e0d0b;                     /* the reference's background */
+  --well: #181714;                     /* recessed panels, tracks and inputs */
+  --rim: #090807;                      /* the dark edge around a raised control */
+  --key-top: #34322d; --key: #2a2925; --key-bottom: #23221e;   /* the raised charcoal key */
+  --ink: #efe7d6;                      /* ivory */
+  --ink-muted: #b9af9d;
+  --ink-faint: #8a8170;
+  --gold: #f2c45a;                     /* lines, labels on hover; the rim's mid tone */
+  --gold-hi: #fde58a;                  /* the rim's bright core */
+  --gold-deep: #c98a2e;                /* the rim's amber edge */
+  --gold-line: rgba(242, 196, 90, .9);
+  --gold-soft: rgba(242, 196, 90, .34);
+  --gold-glow: rgba(214, 140, 46, .30);
+  --gold-idle: rgba(242, 196, 90, .16);
+  --warn: #ff8a3d; --warn-bg: rgba(255, 138, 61, .10);
+  --crit: #ff5d61; --crit-bg: rgba(255, 93, 97, .10);
+  --ok: #7fd3a0;   --ok-bg: rgba(127, 211, 160, .09);
+  --deboss: 0 1px 0 rgba(0, 0, 0, .6);
+  --shadow-raised: inset 0 1px 0 rgba(255, 244, 222, .07), inset 0 -1px 0 rgba(0, 0, 0, .5),
+    0 1px 0 0 var(--rim), 0 0 0 1px var(--rim), 0 6px 14px rgba(0, 0, 0, .55);
+  --shadow-pressed: inset 0 2px 6px rgba(0, 0, 0, .75), inset 0 -1px 0 rgba(255, 244, 222, .04), 0 0 0 1px var(--rim);
+  --shadow-well: inset 0 2px 6px rgba(0, 0, 0, .65), inset 0 -1px 0 rgba(255, 244, 222, .04),
+    0 0 0 1px rgba(255, 244, 222, .035);
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .045 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+[data-theme="light"] {
+  --page: #f3eee2;                     /* ivory */
+  --well: #e7e0cf;
+  --rim: rgba(110, 86, 40, .16);
+  --key-top: #fdfaf3; --key: #f5f0e5; --key-bottom: #ebe4d5;
+  --ink: #1e1b16;
+  --ink-muted: #5c5446;
+  --ink-faint: #81786a;
+  --gold: #8a5d0f;                     /* deepened for contrast on ivory */
+  --gold-hi: #b07a18;
+  --gold-deep: #6e4a0b;
+  --gold-line: rgba(138, 93, 15, .9);
+  --gold-soft: rgba(138, 93, 15, .32);
+  --gold-glow: rgba(176, 120, 30, .24);
+  --gold-idle: rgba(138, 93, 15, .16);
+  --warn: #a5420c; --warn-bg: rgba(165, 66, 12, .08);
+  --crit: #b4232c; --crit-bg: rgba(180, 35, 44, .07);
+  --ok: #25683f;   --ok-bg: rgba(37, 104, 63, .08);
+  --deboss: 0 1px 0 rgba(255, 255, 255, .85);
+  --shadow-raised: inset 0 1px 0 rgba(255, 255, 255, .95), inset 0 -1px 0 rgba(110, 86, 40, .10),
+    0 0 0 1px var(--rim), 0 6px 14px rgba(110, 86, 40, .16), 0 1px 2px rgba(110, 86, 40, .18);
+  --shadow-pressed: inset 0 2px 6px rgba(110, 86, 40, .24), inset 0 -1px 0 rgba(255, 255, 255, .7), 0 0 0 1px var(--rim);
+  --shadow-well: inset 0 2px 6px rgba(110, 86, 40, .16), inset 0 -1px 0 rgba(255, 255, 255, .8),
+    0 0 0 1px rgba(110, 86, 40, .10);
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .35 0 0 0 0 .27 0 0 0 0 .12 0 0 0 .05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+* { box-sizing: border-box; }
+html { background: var(--page); color-scheme: dark; }
+[data-theme="light"] { color-scheme: light; }
+body {
+  margin: 0; color: var(--ink); background: var(--grain), var(--page);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3 { font-weight: 640; letter-spacing: .01em; margin: 0; }
+h1 { font-size: 1.15rem; }
+h2 { font-size: 1rem; margin-bottom: 14px; }
+h3 { font-size: .9rem; color: var(--ink-muted); font-weight: 600; margin: 0 0 8px; }
+p { margin: 0; }
+.muted { color: var(--ink-muted); }
+.small { font-size: .84rem; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 22px 16px 48px; display: grid; gap: 20px; }
+
+/* ---------------------------------------------------------------- surfaces */
+.top { display: flex; flex-wrap: wrap; gap: 14px 22px; align-items: center; justify-content: space-between; }
+.brand { display: flex; gap: 10px; align-items: baseline; }
+.panel {
+  background: var(--grain), var(--well); border-radius: var(--r-panel); box-shadow: var(--shadow-well);
+  padding: 18px; min-width: 0;
+}
+.grid { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); align-items: start; }
+.row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.stack { display: grid; gap: 12px; }
+
+/* ---------------------------------------------------------------- the control: raised charcoal, debossed label */
+.ctl {
+  position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 42px; padding: 0 18px; border: 0; border-radius: var(--r-control);
+  font: inherit; font-weight: 600; letter-spacing: .02em; color: var(--ink); text-shadow: var(--deboss);
+  text-decoration: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+  background: var(--grain), linear-gradient(170deg, var(--key-top), var(--key) 55%, var(--key-bottom));
+  box-shadow: var(--shadow-raised);
+  /* the return (release, hover out): smooth, with a small overshoot */
+  transition: transform var(--t-release) var(--ease-release), box-shadow var(--t-release) ease,
+    color var(--t-settle) ease;
+}
+.ctl.primary { box-shadow: var(--shadow-raised), inset 0 0 0 1px var(--gold-idle); }  /* an understated edge */
+.ctl svg.icon { width: 18px; height: 18px; flex: none; }
+/* The edge: one SVG rectangle on the control's own outline. Hover and focus send a short gold dash once around it;
+   pending work sends it round slowly until the work is over. */
+.edge { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.edge rect { fill: none; stroke: url(#gold-metal); stroke-width: 1.6; stroke-linecap: round;
+  stroke-dasharray: 16 84; stroke-dashoffset: 0; opacity: 0; }
+.ring { position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0; }
+
+/* Hover and focus: the trip around the edge, then a restrained glow (it settles as the trip ends). */
+.ctl:hover:not(:disabled):not([aria-busy="true"]),
+.ctl[data-force~="hover"], .ctl[data-force~="focus"], .ctl:focus-visible {
+  color: var(--gold);
+  box-shadow: var(--shadow-raised), 0 0 0 1px var(--gold-soft), 0 0 14px var(--gold-glow);
+  transition: transform var(--t-release) var(--ease-release),
+    box-shadow var(--t-settle) ease calc(var(--t-trace) * .6), color var(--t-settle) ease;
+}
+.ctl:hover:not(:disabled):not([aria-busy="true"]) .edge rect, .ctl:focus-visible .edge rect,
+.ctl[data-force~="hover"] .edge rect, .ctl[data-force~="focus"] .edge rect,
+.field:focus-within .edge rect, .field[data-force~="focus"] .edge rect {
+  animation: trace var(--t-trace) var(--ease-trace) 1;
+}
+@keyframes trace {
+  0% { stroke-dashoffset: 0; opacity: 0; }
+  12% { opacity: 1; }
+  80% { opacity: 1; }
+  100% { stroke-dashoffset: -100; opacity: 0; }
+}
+/* Keyboard focus: also a crisp ring off the edge, visible without any motion. */
+.ctl:focus-visible, .ctl[data-force~="focus"] { outline: 2px solid var(--gold); outline-offset: 3px; }
+.ctl:focus:not(:focus-visible) { outline: none; }
+
+/* Press: down a little, the shadow inset, a short gold pulse. */
+.ctl:active:not(:disabled):not([aria-disabled="true"]), .ctl[data-force~="pressed"] {
+  transform: translateY(1px) scale(.985);
+  box-shadow: var(--shadow-pressed), 0 0 0 1px var(--gold-soft);
+  transition: transform var(--t-press) var(--ease-press), box-shadow var(--t-press) var(--ease-press),
+    color var(--t-press) ease;
+}
+.ctl.pulse .ring { animation: pulse var(--t-pulse) ease-out 1; }
+@keyframes pulse {
+  0% { opacity: 1; box-shadow: inset 0 0 0 1px var(--gold-hi), 0 0 0 0 var(--gold-soft); }
+  100% { opacity: 0; box-shadow: inset 0 0 0 1px transparent, 0 0 0 7px transparent; }
+}
+
+/* Selected: a steady, thin gold line inside the edge; no glow, no motion. Distinct from hover's outer glow. */
+.ctl[aria-pressed="true"], .ctl[aria-current="page"], .ctl[data-force~="selected"] {
+  box-shadow: var(--shadow-raised), inset 0 0 0 1px var(--gold-line);
+}
+.ctl[aria-pressed="true"]:hover, .ctl[aria-current="page"]:hover, .ctl[aria-pressed="true"]:focus-visible,
+.ctl[aria-current="page"]:focus-visible, .ctl[data-force~="selected"][data-force~="hover"] {
+  box-shadow: var(--shadow-raised), inset 0 0 0 1px var(--gold-line), 0 0 0 1px var(--gold-soft),
+    0 0 14px var(--gold-glow);
+}
+
+/* Pending: only while the work runs (aria-busy), a slow dash around the edge; no glow, no success yet. */
+.ctl[aria-busy="true"], .ctl[data-force~="pending"] { cursor: progress; color: var(--ink-muted); }
+.ctl[aria-busy="true"] .edge rect, .ctl[data-force~="pending"] .edge rect, .field[aria-busy="true"] .edge rect {
+  animation: orbit var(--t-orbit) linear infinite; opacity: .7; stroke-dasharray: 18 82;
+}
+@keyframes orbit { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -100; } }
+
+/* Results, from the operation's own outcome: never from the click. */
+.ctl[data-result="error"] { box-shadow: var(--shadow-raised), inset 0 0 0 1px var(--crit); }
+.ctl[data-result="success"] .ok-mark { display: inline; }
+.ok-mark { display: none; color: var(--ok); }
+
+.ctl:disabled, .ctl[data-force~="disabled"] {
+  cursor: not-allowed; color: var(--ink-faint); text-shadow: none; box-shadow: var(--shadow-well);
+  background: var(--well);
+}
+
+/* ---------------------------------------------------------------- the switch: a recessed track, a raised knob */
+.setting { display: grid; grid-template-columns: 1fr auto; gap: 4px 14px; align-items: center; }
+.setting-state { grid-column: 1 / -1; font-size: .84rem; color: var(--ink-muted); min-height: 1.3em; }
+.setting-state.error { color: var(--crit); }
+.ctl.switch {
+  width: 58px; min-height: 32px; height: 32px; padding: 0; border-radius: 16px; justify-content: flex-start;
+  background: var(--grain), var(--well); box-shadow: var(--shadow-well);
+}
+.knob {
+  position: absolute; top: 4px; left: 4px; width: 24px; height: 24px; border-radius: 50%;
+  background: linear-gradient(170deg, var(--key-top), var(--key) 60%, var(--key-bottom)); box-shadow: var(--shadow-raised);
+  transition: transform var(--t-release) var(--ease-release);
+}
+.ctl.switch[aria-checked="true"] .knob, .ctl.switch[data-force~="on"] .knob { transform: translateX(26px); }
+.ctl.switch[aria-checked="true"], .ctl.switch[data-force~="selected"] {
+  box-shadow: var(--shadow-well), inset 0 0 0 1px var(--gold-line);
+}
+.ctl.switch:hover:not(:disabled):not([aria-busy="true"]), .ctl.switch[data-force~="hover"],
+.ctl.switch[data-force~="focus"], .ctl.switch:focus-visible {
+  box-shadow: var(--shadow-well), 0 0 0 1px var(--gold-soft), 0 0 14px var(--gold-glow);
+}
+.ctl.switch[aria-checked="true"]:hover, .ctl.switch[aria-checked="true"]:focus-visible {
+  box-shadow: var(--shadow-well), inset 0 0 0 1px var(--gold-line), 0 0 0 1px var(--gold-soft), 0 0 14px var(--gold-glow);
+}
+.ctl.switch:active:not(:disabled):not([aria-disabled="true"]) .knob, .ctl.switch[data-force~="pressed"] .knob {
+  box-shadow: var(--shadow-pressed);
+}
+.ctl.switch:active:not(:disabled):not([aria-disabled="true"]), .ctl.switch[data-force~="pressed"] {
+  transform: none; box-shadow: var(--shadow-well), 0 0 0 1px var(--gold-soft);
+}
+.ctl.switch[aria-busy="true"] .knob, .ctl.switch[data-force~="pending"] .knob { opacity: .7; }
+.ctl.switch[data-result="error"] { box-shadow: var(--shadow-well), inset 0 0 0 1px var(--crit); }
+
+/* ---------------------------------------------------------------- navigation */
+.nav { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.ctl.nav-item { justify-content: flex-start; width: 100%; padding: 0 14px; font-weight: 560; }
+
+/* ---------------------------------------------------------------- the chat input: a recessed field */
+label { font-weight: 600; font-size: .9rem; }
+.field {
+  position: relative; border-radius: 14px; background: var(--grain), var(--well); box-shadow: var(--shadow-well);
+  transition: box-shadow var(--t-release) ease;
+}
+.field textarea {
+  display: block; width: 100%; min-height: 76px; resize: vertical; padding: 12px 14px; border: 0; border-radius: inherit;
+  background: transparent; color: var(--ink); font: inherit; outline: none;
+}
+.field textarea::placeholder { color: var(--ink-faint); }
+.field:focus-within, .field[data-force~="focus"] {
+  box-shadow: var(--shadow-well), 0 0 0 1px var(--gold-soft), 0 0 14px var(--gold-glow);
+  outline: 2px solid var(--gold); outline-offset: 3px;
+  transition: box-shadow var(--t-settle) ease calc(var(--t-trace) * .6);
+}
+.field[data-force~="disabled"] textarea, .field textarea:disabled { color: var(--ink-faint); cursor: not-allowed; }
+.chat-log { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.chat-log:empty { display: none; }
+.exchange { padding: 10px 12px; border-radius: 12px; background: var(--page); box-shadow: var(--shadow-well);
+  display: grid; gap: 4px; border-inline-start: 3px solid transparent; }
+.exchange .q { font-weight: 640; }
+.exchange .s { font-size: .86rem; color: var(--ink-muted); }
+.exchange[data-state="answered"] { border-inline-start-color: var(--gold-soft); }
+.exchange[data-state="cancelled"] { border-inline-start-color: var(--warn); }
+.exchange[data-state="cancelled"] .s { color: var(--warn); }
+
+/* ---------------------------------------------------------------- status: distinct from gold, never a glow */
+.notice { display: flex; gap: 8px; align-items: flex-start; padding: 9px 12px; border-radius: 10px;
+  border-inline-start: 3px solid; font-size: .9rem; }
+.notice svg { width: 18px; height: 18px; flex: none; margin-top: 2px; }
+.notice.warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn); }
+.notice.crit { color: var(--crit); background: var(--crit-bg); border-color: var(--crit); }
+.notice.ok { color: var(--ok); background: var(--ok-bg); border-color: var(--ok); }
+.notice strong { font-weight: 700; }
+.notice:empty { display: none; }
+
+/* ---------------------------------------------------------------- the camera picture: never overlaid */
+.camera { position: relative; aspect-ratio: 4 / 3; border-radius: 12px; overflow: hidden; box-shadow: var(--shadow-well); }
+.camera .picture { position: absolute; inset: 8px; border-radius: 6px;
+  background: radial-gradient(120% 90% at 30% 35%, #4a4741, #23221f 60%, #151412);
+  display: grid; place-items: end start; padding: 10px; }
+.camera .picture span { font-size: .78rem; color: #d9d2c3; background: rgba(0, 0, 0, .55); padding: 2px 6px;
+  border-radius: 4px; }
+
+/* ---------------------------------------------------------------- the state sheet */
+.sheet { overflow-x: auto; }
+.sheet table { border-collapse: separate; border-spacing: 16px 12px; min-width: 760px; margin: 0 -16px; }
+.sheet th { font-size: .78rem; font-weight: 600; color: var(--ink-muted); text-align: left; vertical-align: bottom; }
+.sheet th[scope="row"] { vertical-align: middle; white-space: nowrap; }
+.sheet td { vertical-align: middle; }
+.sheet td.na { color: var(--ink-faint); font-size: .8rem; }
+.sheet .field { display: block; width: 210px; }
+.field-text { display: block; padding: 10px 14px; color: var(--ink); }
+.field[data-force~="disabled"] .field-text { color: var(--ink-faint); }
+.sheet .ctl.nav-item { width: 160px; }
+.cell-note { display: block; font-size: .72rem; color: var(--ink-faint); margin-top: 6px; }
+table.facts { border-collapse: collapse; width: 100%; font-size: .86rem; }
+table.facts th, table.facts td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--gold-idle); }
+table.facts td.pass { color: var(--ok); }
+table.facts td.fail { color: var(--crit); font-weight: 700; }
+code { font-size: .84em; color: var(--ink-muted); }
+
+/* ---------------------------------------------------------------- reduced motion: states change, nothing travels */
+[data-motion="reduce"] .ctl, [data-motion="reduce"] .ctl *, [data-motion="reduce"] .field,
+[data-motion="reduce"] .knob {
+  transition-duration: 1ms !important; transition-delay: 0s !important;
+}
+[data-motion="reduce"] .edge rect, [data-motion="reduce"] .ring { animation: none !important; opacity: 0 !important; }
+[data-motion="reduce"] .ctl:active, [data-motion="reduce"] .ctl[data-force~="pressed"] { transform: none !important; }
+[data-motion="reduce"] .ctl[aria-busy="true"] .edge rect, [data-motion="reduce"] .ctl[data-force~="pending"] .edge rect,
+[data-motion="reduce"] .field[aria-busy="true"] .edge rect {
+  opacity: .85 !important; stroke-dasharray: 2 3 !important;   /* pending: a still, dotted edge, and the text says so */
+}
+
+/* ---------------------------------------------------------------- forced colours: the system's own */
+@media (forced-colors: active) {
+  .ctl, .field { border: 1px solid ButtonText; }
+  .edge, .ring { display: none; }
+  .ctl:focus-visible, .field:focus-within { outline: 2px solid Highlight; }
+  .ctl[aria-pressed="true"], .ctl[aria-current="page"], .ctl.switch[aria-checked="true"] { outline: 2px solid Highlight; }
+}
+@media (max-width: 560px) { .wrap { padding-top: 14px; } .panel { padding: 14px; } }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <linearGradient id="gold-metal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" style="stop-color: var(--gold-hi)"/>
+      <stop offset=".55" style="stop-color: var(--gold)"/>
+      <stop offset="1" style="stop-color: var(--gold-deep)"/>
+    </linearGradient>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.2 4.2L19 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3.5L2.8 20h18.4L12 3.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.5M12 17.3v.2" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="i-crit" viewBox="0 0 24 24"><path d="M8.2 3h7.6L21 8.2v7.6L15.8 21H8.2L3 15.8V8.2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M9 9l6 6M15 9l-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-live" viewBox="0 0 24 24"><rect x="3" y="6" width="13" height="12" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M16 10.5l5-3v9l-5-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6.5h12M8 12h12M8 17.5h12M4 6.5h.2M4 12h.2M4 17.5h.2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="15" cy="7" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="17" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M4.5 5.5h15v10h-8l-4.5 3.5v-3.5h-2.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+  </defs>
+</svg>
+
+<div class="wrap">
+  <header class="top">
+    <div class="stack" style="gap:4px">
+      <div class="brand"><h1>Sentinel</h1><span class="muted">interaction preview</span></div>
+      <p class="muted small">Synthetic content only. Nothing here talks to the runtime; no camera, no model.</p>
+    </div>
+    <div class="row">
+      <div class="setting">
+        <span id="theme-name">Ivory theme</span>
+        <button class="ctl switch" id="pref-theme" role="switch" aria-checked="false" aria-labelledby="theme-name"><span class="knob" aria-hidden="true"></span></button>
+      </div>
+      <div class="setting">
+        <span id="motion-name">Reduce motion</span>
+        <button class="ctl switch" id="pref-motion" role="switch" aria-checked="false" aria-labelledby="motion-name"><span class="knob" aria-hidden="true"></span></button>
+      </div>
+    </div>
+  </header>
+
+  <section class="panel" aria-labelledby="h-try">
+    <h2 id="h-try">Try it</h2>
+    <div class="row" style="margin-bottom:16px" role="group" aria-labelledby="outcome-name">
+      <span id="outcome-name" class="muted small">Each synthetic operation's next result:</span>
+      <button class="ctl" id="outcome-ok" type="button" aria-pressed="true">Succeeds</button>
+      <button class="ctl" id="outcome-fail" type="button" aria-pressed="false">Fails</button>
+    </div>
+    <div class="grid">
+      <div class="stack">
+        <h3>Primary button</h3>
+        <div class="row">
+          <button class="ctl primary" id="save" type="button"><span class="label">Save settings</span><svg class="icon ok-mark" aria-hidden="true"><use href="#i-check"/></svg></button>
+          <button class="ctl" type="button" disabled>Disabled</button>
+        </div>
+        <p class="notice" id="save-result" role="status"></p>
+        <h3 style="margin-top:8px">Toggle</h3>
+        <div class="setting">
+          <span id="face-name">Face recognition</span>
+          <button class="ctl switch" id="face" role="switch" aria-checked="false" aria-labelledby="face-name" aria-describedby="face-state"><span class="knob" aria-hidden="true"></span></button>
+          <span class="setting-state" id="face-state" role="status">Off</span>
+        </div>
+      </div>
+      <nav class="stack" aria-label="Sections (synthetic)">
+        <h3>Navigation</h3>
+        <ul class="nav">
+          <li><a class="ctl nav-item" href="#live" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#i-live"/></svg>Live view</a></li>
+          <li><a class="ctl nav-item" href="#incidents"><svg class="icon" aria-hidden="true"><use href="#i-list"/></svg>Incidents</a></li>
+          <li><a class="ctl nav-item" href="#features"><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>Features</a></li>
+          <li><a class="ctl nav-item" href="#ask"><svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg>Ask</a></li>
+        </ul>
+      </nav>
+      <div class="stack">
+        <h3>Chat input</h3>
+        <ol class="chat-log" id="chat-log" aria-live="polite"></ol>
+        <label for="q">Your question <span class="muted small">(at most 300 characters)</span></label>
+        <div class="field" id="q-field"><textarea id="q" rows="2" maxlength="300" placeholder="For example: is the door open?"></textarea></div>
+        <div class="row"><button class="ctl primary" id="ask" type="button">Ask</button><span class="muted small" id="ask-note"></span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="h-states">
+    <div class="row" style="justify-content:space-between;margin-bottom:6px">
+      <h2 id="h-states" style="margin:0">Every state, held still</h2>
+      <button class="ctl" id="replay" type="button">Replay hover and focus</button>
+    </div>
+    <p class="muted small">Pictures of each state, not controls (they cannot be used). Hover and focus show the glow after the trip around the edge; the replay sends the trip again.</p>
+    <div class="sheet" id="sheet"></div>
+  </section>
+
+  <div class="grid">
+    <section class="panel" aria-labelledby="h-status">
+      <h2 id="h-status">Status is never gold</h2>
+      <div class="stack">
+        <p class="notice warn"><svg aria-hidden="true"><use href="#i-warn"/></svg><span><strong>Warning:</strong> video is stale; no frame for 2.4 s (synthetic).</span></p>
+        <p class="notice crit"><svg aria-hidden="true"><use href="#i-crit"/></svg><span><strong>Error:</strong> scene analysis is unavailable (synthetic).</span></p>
+        <p class="notice ok"><svg aria-hidden="true"><use href="#i-check"/></svg><span><strong>Done:</strong> the operation reported success (synthetic).</span></p>
+        <p class="muted small">Gold marks only what you can act on (hover, focus, pressed, selected, pending). Warnings, errors and results keep their own colours, icons and words.</p>
+      </div>
+    </section>
+    <section class="panel" aria-labelledby="h-camera">
+      <h2 id="h-camera">The camera picture stays clear</h2>
+      <div class="camera"><div class="picture"><span>Camera picture (placeholder)</span></div></div>
+      <p class="muted small" style="margin-top:10px">No glow, outline, trace or overlay is drawn over the picture; its recessed frame stays outside it.</p>
+    </section>
+  </div>
+
+  <section class="panel" aria-labelledby="h-facts">
+    <h2 id="h-facts">Timings and contrast (this theme, computed in the page)</h2>
+    <div class="grid">
+      <table class="facts" id="timings"><thead><tr><th>Motion</th><th>Duration</th></tr></thead><tbody></tbody></table>
+      <table class="facts" id="contrast"><thead><tr><th>Pair</th><th>Ratio</th><th>Needs</th><th></th></tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const root = document.documentElement;
+  const params = new URLSearchParams(location.search);
+  const svgNS = "http://www.w3.org/2000/svg";
+
+  // ---------------------------------------------------------------- preferences: theme and motion
+  const reduceQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const prefs = {light: params.get("theme") === "light", reduce: params.get("motion") === "reduce"};
+  const themeSwitch = document.getElementById("pref-theme");
+  const motionSwitch = document.getElementById("pref-motion");
+  const applyPrefs = () => {
+    root.dataset.theme = prefs.light ? "light" : "dark";
+    root.dataset.motion = prefs.reduce || reduceQuery.matches ? "reduce" : "full";
+    themeSwitch.setAttribute("aria-checked", String(prefs.light));
+    motionSwitch.setAttribute("aria-checked", String(prefs.reduce || reduceQuery.matches));
+    motionSwitch.disabled = reduceQuery.matches;  // the system's setting wins
+    renderContrast();
+  };
+  themeSwitch.addEventListener("click", () => { prefs.light = !prefs.light; applyPrefs(); });
+  motionSwitch.addEventListener("click", () => { prefs.reduce = !prefs.reduce; applyPrefs(); });
+  reduceQuery.addEventListener("change", applyPrefs);
+
+  // ---------------------------------------------------------------- the edge and the pulse, on every control
+  const radius = (element) => parseFloat(getComputedStyle(element).borderTopLeftRadius) || 0;
+  const dress = (element) => {
+    if (element.querySelector(":scope > .edge")) return;
+    const svg = document.createElementNS(svgNS, "svg");
+    svg.setAttribute("class", "edge");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    const rect = document.createElementNS(svgNS, "rect");
+    const r = radius(element);
+    for (const [k, v] of Object.entries({x: 0, y: 0, width: "100%", height: "100%", rx: r, ry: r, pathLength: 100})) {
+      rect.setAttribute(k, String(v));
+    }
+    svg.append(rect);
+    const ring = document.createElement("span");
+    ring.className = "ring";
+    ring.setAttribute("aria-hidden", "true");
+    element.append(svg, ring);
+  };
+  const pulse = (element) => {
+    if (element.disabled || element.getAttribute("aria-disabled") === "true") return;
+    element.classList.remove("pulse");
+    void element.offsetWidth;  // restart the animation
+    element.classList.add("pulse");
+  };
+  document.addEventListener("animationend", (event) => {
+    if (event.animationName === "pulse") event.target.closest(".ctl")?.classList.remove("pulse");
+  });
+  const live = (element) => {
+    dress(element);
+    element.addEventListener("pointerdown", () => pulse(element));
+    element.addEventListener("keydown", (event) => {
+      if ((event.key === "Enter" || event.key === " ") && !event.repeat) pulse(element);
+    });
+  };
+
+  // ---------------------------------------------------------------- synthetic operations: the result decides
+  let nextSucceeds = true;
+  const okButton = document.getElementById("outcome-ok");
+  const failButton = document.getElementById("outcome-fail");
+  const setOutcome = (succeeds) => {
+    nextSucceeds = succeeds;
+    okButton.setAttribute("aria-pressed", String(succeeds));
+    failButton.setAttribute("aria-pressed", String(!succeeds));
+  };
+  okButton.addEventListener("click", () => setOutcome(true));
+  failButton.addEventListener("click", () => setOutcome(false));
+  const operation = (ms) => new Promise((resolve, reject) => {
+    const succeeds = nextSucceeds;
+    setTimeout(() => (succeeds ? resolve() : reject(new Error("synthetic failure"))), ms);
+  });
+  const busy = (element, on) => {
+    element.setAttribute("aria-busy", String(on));
+    element.setAttribute("aria-disabled", String(on));
+  };
+
+  // The primary button: pending while the operation runs; "Saved" only when it reports success.
+  const save = document.getElementById("save");
+  const saveLabel = save.querySelector(".label");
+  const saveResult = document.getElementById("save-result");
+  let saveTimer = 0;
+  save.addEventListener("click", async () => {
+    if (save.getAttribute("aria-busy") === "true") return;
+    clearTimeout(saveTimer);
+    delete save.dataset.result;
+    saveResult.className = "notice";
+    saveResult.textContent = "";
+    busy(save, true);
+    saveLabel.textContent = "Saving…";
+    try {
+      await operation(1200);
+      save.dataset.result = "success";
+      saveLabel.textContent = "Saved";
+      saveResult.className = "notice ok";
+      saveResult.textContent = "Saved: the synthetic operation reported success.";
+    } catch {
+      save.dataset.result = "error";
+      saveLabel.textContent = "Save settings";
+      saveResult.className = "notice crit";
+      saveResult.textContent = "Not saved: the synthetic operation failed. Nothing changed.";
+    } finally {
+      busy(save, false);
+      saveTimer = setTimeout(() => {
+        delete save.dataset.result;
+        saveLabel.textContent = "Save settings";
+      }, 2400);
+    }
+  });
+
+  // The toggle: shows the requested state as pending, the actual one only from the result.
+  const face = document.getElementById("face");
+  const faceState = document.getElementById("face-state");
+  face.addEventListener("click", async () => {
+    if (face.getAttribute("aria-busy") === "true") return;
+    const wanted = face.getAttribute("aria-checked") !== "true";
+    delete face.dataset.result;
+    faceState.classList.remove("error");
+    faceState.textContent = wanted ? "Turning on…" : "Turning off…";
+    busy(face, true);
+    try {
+      await operation(900);
+      face.setAttribute("aria-checked", String(wanted));
+      faceState.textContent = wanted ? "On" : "Off";
+    } catch {
+      face.dataset.result = "error";
+      faceState.classList.add("error");
+      faceState.textContent = `${wanted ? "Still off" : "Still on"}: the synthetic request failed.`;
+    } finally {
+      busy(face, false);
+    }
+  });
+
+  // Navigation: selection moves; it is not a page change here.
+  const navItems = [...document.querySelectorAll(".nav-item")];
+  navItems.forEach((item) => item.addEventListener("click", (event) => {
+    event.preventDefault();
+    navItems.forEach((other) => other.removeAttribute("aria-current"));
+    item.setAttribute("aria-current", "page");
+  }));
+
+  // The chat input: the question comes back if it is not answered.
+  const box = document.getElementById("q");
+  const ask = document.getElementById("ask");
+  const askNote = document.getElementById("ask-note");
+  const log = document.getElementById("chat-log");
+  const refreshAsk = () => {
+    const pending = ask.getAttribute("aria-busy") === "true";
+    ask.disabled = !box.value.trim() && !pending;
+    askNote.textContent = pending ? "One question at a time." : "";
+  };
+  box.addEventListener("input", refreshAsk);
+  ask.addEventListener("click", async () => {
+    const question = box.value.trim();
+    if (!question || ask.getAttribute("aria-busy") === "true") return;
+    const item = document.createElement("li");
+    item.className = "exchange";
+    item.dataset.state = "waiting";
+    const q = document.createElement("p");
+    q.className = "q";
+    q.textContent = question;
+    const s = document.createElement("p");
+    s.className = "s";
+    s.textContent = "Waiting for the scene model; monitoring comes first…";
+    item.append(q, s);
+    log.append(item);
+    while (log.children.length > 4) log.firstElementChild.remove();
+    box.value = "";
+    busy(ask, true);
+    refreshAsk();
+    try {
+      await operation(1400);
+      item.dataset.state = "answered";
+      s.textContent = "Answered (synthetic): one chair stands by the window; nobody is in the picture.";
+    } catch {
+      item.dataset.state = "cancelled";
+      s.textContent = "Cancelled (synthetic): a scene job is waiting: monitoring comes first.";
+      if (!box.value.trim()) box.value = question;  // back in the box, to send again
+    } finally {
+      busy(ask, false);
+      refreshAsk();
+    }
+  });
+
+  // ---------------------------------------------------------------- the sheet: every state, held still
+  const STATES = [
+    ["idle", "Idle"], ["hover", "Hover"], ["focus", "Keyboard focus"], ["pressed", "Pressed"],
+    ["selected", "Selected"], ["pending", "Pending"], ["success", "Result: success"], ["error", "Result: error"],
+    ["disabled", "Disabled"],
+  ];
+  const sample = {
+    button: (state) => {
+      const b = document.createElement("span");
+      b.className = "ctl primary";
+      b.innerHTML = '<span class="label"></span><svg class="icon ok-mark" aria-hidden="true"><use href="#i-check"/></svg>';
+      b.querySelector(".label").textContent = {pending: "Saving…", success: "Saved"}[state] || "Save settings";
+      if (state === "selected") return null;
+      if (state === "success" || state === "error") b.dataset.result = state;
+      else if (state !== "idle") b.dataset.force = state;
+      return b;
+    },
+    toggle: (state) => {
+      const t = document.createElement("span");
+      t.className = "ctl switch";
+      t.innerHTML = '<span class="knob" aria-hidden="true"></span>';
+      const force = {selected: "selected on", success: "selected on", pending: "pending on"}[state];
+      if (force) t.dataset.force = force;
+      else if (state === "error") t.dataset.result = "error";
+      else if (state !== "idle") t.dataset.force = state;
+      return t;
+    },
+    nav: (state) => {
+      if (["pending", "success", "error"].includes(state)) return null;
+      const n = document.createElement("span");
+      n.className = "ctl nav-item";
+      n.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-list"/></svg>Incidents';
+      if (state !== "idle") n.dataset.force = state;
+      return n;
+    },
+    input: (state) => {
+      if (["hover", "pressed", "selected", "success", "error"].includes(state)) return null;
+      const f = document.createElement("span");
+      f.className = "field";
+      f.innerHTML = '<span class="field-text">Is the door open?</span>';
+      if (state === "focus") f.dataset.force = "focus";
+      if (state === "pending") f.setAttribute("aria-busy", "true");
+      if (state === "disabled") f.dataset.force = "disabled";
+      return f;
+    },
+  };
+  const NOTES = {button: {pending: "the highlight circles only while pending"},
+                 toggle: {pending: "the request shown; circles while pending", error: "back off; the reason beside it"},
+                 input: {pending: "circles while an answer is awaited"}};
+  const buildSheet = () => {
+    const COMPONENTS = [["button", "Primary button"], ["toggle", "Toggle"], ["nav", "Navigation item"],
+                        ["input", "Chat input"]];
+    const table = document.createElement("table");
+    const head = table.createTHead().insertRow();
+    head.append(document.createElement("th"));
+    for (const [, title] of COMPONENTS) {
+      const th = document.createElement("th");
+      th.scope = "col";
+      th.textContent = title;
+      head.append(th);
+    }
+    const body = table.createTBody();
+    for (const [state, title] of STATES) {
+      const row = body.insertRow();
+      const th = document.createElement("th");
+      th.scope = "row";
+      th.textContent = title;
+      row.append(th);
+      for (const [key] of COMPONENTS) {
+        const cell = row.insertCell();
+        const element = sample[key](state);
+        if (!element) {
+          cell.className = "na";
+          cell.textContent = "—";
+          continue;
+        }
+        element.inert = true;  // a picture of a state, not a control
+        cell.append(element);
+        dress(element);
+        const note = NOTES[key]?.[state];
+        if (note) {
+          const span = document.createElement("span");
+          span.className = "cell-note";
+          span.textContent = note;
+          cell.append(span);
+        }
+      }
+    }
+    document.getElementById("sheet").append(table);
+  };
+  document.getElementById("replay").addEventListener("click", () => {
+    document.querySelectorAll("#sheet [data-force~='hover'] .edge, #sheet [data-force~='focus'] .edge")
+      .forEach((svg) => svg.replaceWith(svg.cloneNode(true)));
+  });
+
+  // ---------------------------------------------------------------- timings and contrast, from the live styles
+  const timings = [["--t-press", "Press: down, shadow inset"], ["--t-pulse", "Press: the gold pulse"],
+                   ["--t-trace", "Hover and focus: one trip around the edge"],
+                   ["--t-settle", "Hover and focus: the glow settling"], ["--t-release", "Release and hover out"],
+                   ["--t-orbit", "Pending: one turn of the edge highlight (loops only while pending)"]];
+  const tbody = document.querySelector("#timings tbody");
+  for (const [token, label] of timings) {
+    const row = tbody.insertRow();
+    row.insertCell().textContent = label;
+    row.insertCell().textContent = getComputedStyle(root).getPropertyValue(token).trim();
+  }
+  const probe = document.createElement("span");
+  probe.style.display = "none";
+  document.body.append(probe);
+  const rgb = (token) => {
+    probe.style.color = `var(${token})`;
+    return getComputedStyle(probe).color.match(/[\d.]+/g).slice(0, 3).map(Number);
+  };
+  const luminance = ([r, g, b]) => [r, g, b].map((v) => {
+    const c = v / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  }).reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
+  const ratio = (a, b) => {
+    const [hi, lo] = [luminance(rgb(a)), luminance(rgb(b))].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  const PAIRS = [
+    ["Ivory text on the page", "--ink", "--page", 4.5], ["Ivory label on a raised control", "--ink", "--key", 4.5],
+    ["Muted text on a recessed panel", "--ink-muted", "--well", 4.5],
+    ["Gold label (hover, focus) on a control", "--gold", "--key", 4.5],
+    ["Gold focus ring and selected line on the page", "--gold", "--page", 3],
+    ["Gold focus ring on a recessed panel", "--gold", "--well", 3],
+    ["Warning text on the page", "--warn", "--page", 4.5], ["Error text on the page", "--crit", "--page", 4.5],
+    ["Success text on the page", "--ok", "--page", 4.5],
+  ];
+  function renderContrast() {
+    const body = document.querySelector("#contrast tbody");
+    body.replaceChildren();
+    for (const [label, fg, bg, needs] of PAIRS) {
+      const value = ratio(fg, bg);
+      const row = body.insertRow();
+      row.dataset.pair = `${fg} on ${bg}`;
+      row.insertCell().textContent = label;
+      row.insertCell().textContent = `${value.toFixed(2)}:1`;
+      row.insertCell().textContent = `${needs}:1`;
+      const verdict = row.insertCell();
+      verdict.className = value >= needs ? "pass" : "fail";
+      verdict.textContent = value >= needs ? "passes" : "FAILS";
+    }
+  }
+
+  // ---------------------------------------------------------------- start
+  document.querySelectorAll(".ctl, .field").forEach(live);
+  buildSheet();
+  refreshAsk();
+  applyPrefs();
+})();
+</script>
+</body>
+</html>

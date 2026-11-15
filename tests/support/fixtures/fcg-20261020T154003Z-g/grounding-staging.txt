@@ -1,0 +1,6 @@
+grounding_staging_format=1
+s1_bottle_at_seat=yes
+s2_cosmetics_cleared_room_checked=yes
+s3_bottle_printed_text=unsure
+s4_seen_in_live_view_before=yes
+s5_bottle_stayed_in_place=yes

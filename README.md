@@ -9,340 +9,248 @@
 ╚══════╝╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝
 ```
 
-**AI-Powered Home Surveillance System**
-*Real-time person detection · Face recognition · Scene analysis · Instant alerts*
+**Sentinel v2: edge monitoring for one camera on an NVIDIA Jetson**
+*Person detection and tracking · zone rules · incidents and alerts · a local dashboard ·
+face recognition and scene analysis under validation*
 
----
-
+![Version](https://img.shields.io/badge/version-2.0.0--beta.1-orange?style=for-the-badge)
+![Status](https://img.shields.io/badge/status-experimental_pre--release-red?style=for-the-badge)
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![OpenCV](https://img.shields.io/badge/OpenCV-4.5+-5C3EE8?style=for-the-badge&logo=opencv&logoColor=white)
-![Flask](https://img.shields.io/badge/Flask-Dashboard-000000?style=for-the-badge&logo=flask&logoColor=white)
-![YOLOv8](https://img.shields.io/badge/YOLOv8-TensorRT-FF6F00?style=for-the-badge&logo=nvidia&logoColor=white)
-![Telegram](https://img.shields.io/badge/Telegram-Alerts-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)
-![Jetson](https://img.shields.io/badge/NVIDIA-Jetson_Orin-76B900?style=for-the-badge&logo=nvidia&logoColor=white)
+![Jetson](https://img.shields.io/badge/NVIDIA-Jetson_Orin_Nano-76B900?style=for-the-badge&logo=nvidia&logoColor=white)
 
 </div>
 
 ---
 
-## What is SENTINEL?
+> **EXPERIMENTAL PRE-RELEASE: Sentinel v2.0.0-beta.1.** The beta name is a release designation, not a validation
+> result: no feature's status, threshold or admission changed for it. It adds an installation package for testers
+> with their own Jetson ([Install on your own Jetson](#install-on-your-own-jetson-tester-package-experimental)) and
+> carries the work since alpha.2. It is published so that the work can be reviewed and tried. It is **not
+> production-accepted**, and **feature admission is a separate decision**: face recognition and chat are not admitted
+> for normal use. This beta is released from `master`; the published v1 and alpha tags remain available.
+>
+> **The installation package validates nothing.** One revision of it completed a camera-free build rehearsal on the
+> reference device; its later packaging changes were checked offline only; a complete launch from the package, and
+> any other Jetson, are unverified. The [release notes](docs/RELEASE_NOTES_v2.0.0-beta.1.md) say exactly what ran.
+>
+> **The alpha's goal is not met yet.** The October alpha was set to centre on working face recognition and real local
+> chat with the vision-language model. Neither is done:
+> - face recognition's formal validation (F2) has never passed, and there is no false-acceptance data;
+> - chat is not admitted;
+> - the two have run together only in validation-only runs: two eight-minute integration checks (20 October) and a
+>   one-hour live-dashboard trial with the operator's own questions (21 October). All passed, but they judged no
+>   recognition accuracy and no answer's correctness. The second integration check asked four grounding questions,
+>   judged by the maintainer against the staged room (two consistent, one unverifiable, one cancelled and untested).
+>   None is the combined validation, which still needs a passing F2, and they admit nothing.
+>
+> Face recognition is shown only as an experimental demonstration in guarded validation runs. See the
+> [alpha notes](docs/ALPHA_CANDIDATE_NOTES.md).
+>
+> - **Known limitations:** [Status and limitations](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Status-and-limitations)
+>   (wiki) and [`docs/ALPHA_CANDIDATE_NOTES.md`](docs/ALPHA_CANDIDATE_NOTES.md)
+> - **Release:** [v2.0.0-beta.1](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-beta.1)
+>   ([release notes](docs/RELEASE_NOTES_v2.0.0-beta.1.md)); the earlier
+>   [v2.0.0-alpha.2](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.2)
+>   ([release notes](docs/RELEASE_NOTES_v2.0.0-alpha.2.md)) and
+>   [v2.0.0-alpha.1](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.1)
+>   ([release notes](docs/RELEASE_NOTES_v2.0.0-alpha.1.md))
+> - **Installation problems:** the [installation issue form](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/issues/new?template=installation-issue.md)
+>   (public: no credentials, photos, footage or whole logs)
+> - **Wiki:** [github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki)
+> - **Evidence for every claim, session by session:** [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)
+> - **Legacy v1 (the original prototype):** [`docs/LEGACY_V1.md`](docs/LEGACY_V1.md)
 
-SENTINEL is a self-hosted, edge-AI surveillance system built for **NVIDIA Jetson** hardware. It fuses classical computer vision with a modern vision-language model to give you a complete picture of your space — who is there, what they are doing, and whether anything needs your attention — all in real time, with **zero cloud dependency** for inference.
+## Overview
 
-Read the full build story: [Why cudaMalloc fails on Jetson Orin Nano Super](https://dev.to/hemkesh2021dotcom/why-cudamalloc-fails-on-nvidia-jetson-orin-nano-super-and-the-one-flag-that-fixes-it-1b0n)
+Sentinel watches one camera from an NVIDIA Jetson Orin Nano. It detects and tracks people, applies zone rules, opens
+incidents in a local SQLite database and delivers alerts through a restart-safe outbox. A dashboard on the device's
+loopback address shows the live picture, the incidents with their snapshots and, in validation runs, face recognition
+per tracked person. Face recognition (DeepFace with Facenet512 and YuNet) and scene analysis with a local
+vision-language model (LFM3-VL-2B through llama.cpp's `llama-server`) are optional lanes. They run only when the
+configuration lists their adapters as admitted, or in guarded validation runs.
 
----
+v2 is a rewrite of the v1 prototype as a tested package (`src/sentinel/`, command `sentinel`). Every observation
+carries its frame's source time, the boot and the stream epoch. Stale or mismatched results never drive a current
+decision. A face is associated with at most one person, and an unknown face is never called a stranger. Fire or smoke
+from the scene model alone is never a critical alarm. Empty, fresh, stale and offline states are published
+explicitly.
 
-## Features
+## Architecture
 
-| Capability | Technology |
+```
+camera (RTSP; URL from SENTINEL_RTSP_URL, never a file)
+  │
+  ▼
+capture: one stream, frames stamped with stream epoch, sequence and ingest time
+  │
+  ├─► person detector (YOLOv8n TensorRT engine) ─► tracker (ByteTrack) ─► zone rules
+  │                                                                          │
+  │                                                                          ▼
+  │                                       incidents (SQLite, one writer) ─► alert outbox ─► Telegram
+  │                                                                          │
+  ├─► face worker (optional, 1 Hz; sealed gallery) ──► identity state ──────┤
+  ├─► scene lane (optional; llama-server on 127.0.0.1) ─► scene reports ─────┤
+  │                                                                          ▼
+  └────────────────────────────────────────────► status page and dashboard on 127.0.0.1:18090
+                                                  (live view, snapshots, chat and feature controls opt-in)
+```
+
+| Area | Package path |
 |---|---|
-| Person detection & tracking | YOLOv8n (TensorRT) + ByteTrack |
-| Face recognition | DeepFace · Facenet512 · YuNet detector |
-| Face Re-ID across occlusions | Session-embedding cosine similarity |
-| Periodic re-verification | Stranger verdicts re-checked every 5 s; known faces stay locked until they leave frame |
-| Scene understanding | LFM2-VL 1.6B (llama.cpp, runs locally on GPU) |
-| Live web dashboard | Flask · MJPEG stream · AI chat · **HTTP Basic Auth** |
-| Instant alerts | Telegram Bot API (photo + caption, per-type cooldowns) |
-| Entry / exit counting | Horizontal trip-line counter |
-| Fire & smoke detection | LFM2-VL scene analysis flag |
-| Restricted-hours mode | Escalates alerts between 22:00 – 06:00 |
-| Headless operation | Runs without a desktop GUI (default); `--display` for a preview window |
+| Capture, frame identity, freshness | `src/sentinel/media/` |
+| Person detection and tracking | `src/sentinel/inference/`, `src/sentinel/tracking/` |
+| Zone and schedule rules, scene hazards | `src/sentinel/rules/` |
+| Incidents, snapshots, the database | `src/sentinel/incidents/`, `src/sentinel/storage/` |
+| Alert outbox and Telegram | `src/sentinel/alerts/` |
+| Face association, sealed gallery, matching | `src/sentinel/identity/` |
+| Scene analysis, llama-server, chat | `src/sentinel/scene/` |
+| Status page and dashboard | `src/sentinel/status_page.py`, `src/sentinel/web/` |
+| The runtime and the command line | `src/sentinel/demo_runtime.py`, `src/sentinel/runtime.py`, `src/sentinel/cli.py` |
+| Operator check tooling (memory guard, readings) | `benchmarks/runner/` |
 
----
+Device-only libraries (TensorRT, CUDA, DeepFace, OpenCV) are imported only when a device lane starts, so the package,
+its configuration checks and its tests run on any machine.
 
-## Why This Is Different — Edge Deployment on Shared Memory
+## Feature status
 
-The Jetson Orin Nano Super has **no dedicated VRAM** — CPU and GPU share one 8 GB pool (unified memory). A stock CUDA build of llama.cpp tries to allocate GPU tensors with `cudaMalloc` (dedicated-VRAM semantics) and **fails to load LFM2-VL even with several GB free**:
-
-```
-NvMapMemAllocInternalTagged: error 12
-cudaMalloc failed: out of memory
-```
-
-SENTINEL launches llama.cpp with **`GGML_CUDA_ENABLE_UNIFIED_MEMORY=1`**, routing allocations through `cudaMallocManaged`. This is the single change that takes LFM2-VL from *failing to load* to *fully GPU-accelerated* on the shared pool — no Ollama, no CPU fallback, no cloud.
-
-> **Because CPU and GPU share 8 GB, startup order matters:** the launcher goes **headless** (frees ~2.5 GB from the desktop), starts **llama-server first** so it claims GPU memory, and only then starts the engine (TensorFlow/PyTorch) and dashboard. `start_sentinel.sh` encodes this order.
-
-➡️ Full TensorRT export + llama.cpp unified-memory build steps: **[BUILD.md](BUILD.md)**
-
----
-
-## System Architecture
-
-<div align="center">
-  <img src="system_architecture.jpeg" alt="Smart Surveillance System using NVIDIA Jetson Nano" width="100%">
-  <p><em>Smart Surveillance System Architecture and Processing Flow</em></p>
-</div>
-
-### Component Data Flow
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                        RTSP Camera                           │
-└────────────────────────────┬─────────────────────────────────┘
-                             │
-                    ┌────────▼────────┐
-                    │   FrameReader   │  (background thread)
-                    └────────┬────────┘
-                             │
-          ┌──────────────────┼──────────────────┐
-          │                  │                  │
-   ┌──────▼──────┐  ┌────────▼───────┐  ┌──────▼──────────┐
-   │  YOLOv8n +  │  │  LFM2-VL 1.6B  │  │  Frame Writer   │
-   │  ByteTrack  │  │  (llama.cpp)   │  │ /tmp/surv_frame │
-   └──────┬──────┘  └────────┬───────┘  │  (atomic write) │
-          │                  │          └─────────────────┘
-   ┌──────▼──────┐  ┌────────▼───────┐
-   │  DeepFace   │  │ Threat / Fire  │
-   │  Facenet512 │  │   Evaluator    │
-   └──────┬──────┘  └────────┬───────┘
-          │                  │
-          └────────┬─────────┘
-                   │
-      ┌────────────▼────────────┐
-      │     Dashboard State     │  /tmp/surv_state.json
-      └────────────┬────────────┘
-                   │
-       ┌───────────┴────────────┐
-       │                        │
-┌──────▼──────┐        ┌────────▼──────┐
-│    Flask    │        │   Telegram    │
-│  Dashboard  │        │   Bot Alerts  │
-│   :5000     │        │               │
-└─────────────┘        └───────────────┘
-```
-
-> **Three processes:** `llama-server` (VLM, C++), `surveillance4_1.py` (engine, Python), `dashboard.py` (Flask). They communicate over localhost HTTP (`:8080`) and two `/tmp` files, written atomically so the dashboard never reads a torn frame.
-
----
-
-## Hardware Requirements
-
-> **Tested on:** NVIDIA Jetson Orin Nano Super — 8 GB RAM · This is the hardware this project was built and validated on.
-
-| Component | Tested Hardware | Minimum |
-|---|---|---|
-| Board | **NVIDIA Jetson Orin Nano Super** | Jetson Nano 4 GB |
-| RAM | **8 GB** | 4 GB |
-| Storage | **microSD / NVMe SSD** | 32 GB microSD |
-| GPU | **1024-core Ampere (Jetson Orin)** | Any CUDA-capable GPU |
-| Camera | **Imou Ranger S2 (ONVIF · RTSP)** | Any ONVIF-compatible IP camera |
-| JetPack | **6.x** | 5.x |
-
-> Works on standard x86 Linux too — for a non-Jetson box, use the YOLO `.pt` model (not the TensorRT `.engine`) and set `device='cpu'` in `surveillance4_1.py`, and run llama.cpp on CPU or a discrete GPU.
-
-### Compatible Cameras
-
-Any camera that supports **ONVIF** or **RTSP** streaming will work. Tested with:
-
-| Camera | Protocol | Resolution | Notes |
+| Feature | Implemented, portable-tested | On the device | Admitted for normal use |
 |---|---|---|---|
-| **Imou Ranger S2** | ONVIF · RTSP | 1080p | Pan/tilt, used in this project |
-| Dahua IPC Series | ONVIF · RTSP | Up to 4K | Reliable H.264/H.265 |
-| Hikvision DS-2CD Series | ONVIF · RTSP | Up to 4K | Industry standard |
-| Reolink RLC Series | RTSP | 1080p – 4K | Budget-friendly |
-| Any ONVIF camera | ONVIF · RTSP | 720p+ | Use `subtype=1` for the sub-stream |
+| Core monitoring: capture, detection, tracking, zone rules, incidents, alert outbox | yes | one guarded check passed within its bounded scope, with one real Telegram send | core path; no production acceptance |
+| Incident page and acknowledgment (while monitoring is stopped) | yes | checked | core path |
+| Live view and incident snapshots | yes | checked | opt-in flags |
+| Dashboard (live picture, recognition panel, incidents, appearance) | yes | checked in validation runs, including a one-hour trial with face recognition, scene analysis and chat; Safari observed by the operator | opt-in flags |
+| Face recognition | yes | described in validation runs, **not accepted**: no F2 has validated (three attempts on the normal path since alpha.1); in ordinary seated use recognition is intermittent (a single non-matching vote ends it; it lapses when no face is detected for longer than the 30 s vote lifetime) | **no** (`PENDING_VALIDATION`) |
+| Validation-only diagnostics (tracking, landmarks, a launch-memory check for operator packages) | yes | each ran in device sessions, descriptive only | not features; guarded validation runs only |
+| Identity continuity rule (proposed) | yes | ran in one session; not validated | **no** (validation runs only) |
+| Feature controls (pause and resume lanes) | yes | partly exercised; not validated | opt-in flag |
+| Chat about the live frame (local VLM) | yes | runtime checks passed in two earlier runs, and with face recognition in two validation-only integration runs and a one-hour dashboard trial (answers judged for form only, or by the operator's report) | **no**: admission, factual accuracy and combined face/VLM validation pending |
+| Scene analysis (local VLM) | yes | earlier scene checks; loaded beside face recognition in its validation runs, the integration runs and the one-hour trial, not validated together | needs an admitted adapter |
 
-**Finding your RTSP URL:**
+The [known limitations](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Status-and-limitations) list
+everything still unresolved; none of it is waived by this pre-release. The table above and the wiki were last revised
+for alpha.2. No admission status has changed since; what was added is in the
+[beta.1 release notes](docs/RELEASE_NOTES_v2.0.0-beta.1.md) and, session by session, in the status record.
 
-```
-# Imou Ranger S2
-rtsp://<user>:<pass>@<camera-ip>:554/cam/realmonitor?channel=1&subtype=1
-# Hikvision
-rtsp://<user>:<pass>@<camera-ip>:554/Streaming/Channels/101
-# Reolink
-rtsp://<user>:<pass>@<camera-ip>:554/h264Preview_01_sub
-```
+## Getting started
 
----
+### Portable development (CI runs on every push)
 
-## Quick Start
+Python 3.10 or newer. No camera, GPU or model is needed. A pre-release tag is placed only on a commit whose CI passed
+(Dashboard checks; v2 portable checks on Python 3.10 and 3.12). Locally on the device, not CI: the full offline suite
+passed once under Python 3.10 at `1fac8d6` (3,931 passed, 7 skipped); the installation package's commits after it ran
+their own focused test files only.
 
-### 1. Clone the repository
 ```bash
-git clone https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance.git
+git clone --branch v2.0.0-beta.1 https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance.git
 cd Sentinel_Surveillance
+python -m venv .venv && . .venv/bin/activate
+python -m pip install -e '.[dev]'
+python -m pytest                              # browser tests run when a Chromium-family browser is found
+sentinel config validate config/default.yaml  # checks a configuration file
+sentinel --version                            # sentinel 2.0.0b1
 ```
 
-### 2. Create and activate a virtual environment
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
+### Install on your own Jetson (tester package, experimental)
 
-### 3. Install dependencies
-> On Jetson, OpenCV / TensorFlow / PyTorch come from **JetPack / NVIDIA wheels** — do **not** pip-install them (the PyPI ARM wheels are CPU-only and shadow the CUDA builds). `requirements.txt` lists only the direct deps.
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Configure your environment
-```bash
-cp .env.example .env
-nano .env          # fill in your values (see Configuration below)
-chmod 600 .env
-```
-
-### 5. Build your face database
-Place reference photos in `known_faces/`, one subfolder per person:
-```
-known_faces/
-  Hemkesh/  photo1.jpg  photo2.jpg
-  Yogesh/   photo1.jpg
-```
-Paths are set at the top of `build_face_db.py` (`KNOWN_FACES_DIR`, `DB_PATH`), then:
-```bash
-python build_face_db.py        # → face_db.pkl (normalised embeddings)
-```
-
-### 6. Run everything (recommended — correct order, headless)
-```bash
-./start_sentinel.sh
-```
-This frees the desktop GUI, starts **llama-server first** (so it claims GPU memory), then the engine, then the dashboard — each in its own `tmux` session.
-
-<details>
-<summary>…or start each part manually</summary>
+The pre-release carries one archive, `sentinel-personal-beta-…-r8.tar.gz`, and its `.sha256` file
+([releases](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases)). It installs under your own
+account, without sudo, downloads the pinned Python packages and model files from their upstream sources, and builds
+llama.cpp and the detector engine on your device. Its guide is
+[`packaging/beta-install/QUICKSTART.md`](packaging/beta-install/QUICKSTART.md) (also inside the archive, with a
+`README.md`); the archive is built from this repository by `packaging/build_archive.py`.
 
 ```bash
-# 1) AI engine (VLM) — must start FIRST
-GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 ./llama-server \
-  -m LFM2-VL-1.6B-Q4_0.gguf --mmproj mmproj-LFM2-VL-1.6B-Q8_0.gguf \
-  --host 127.0.0.1 --port 8080 --n-gpu-layers 999 --ctx-size 2048 --parallel 1
-
-# 2) surveillance engine (wait until llama is listening)
-python surveillance4_1.py
-
-# 3) web dashboard
-python dashboard.py
-```
-The `--mmproj` file is required — without it the server loads text-only and image requests fail.
-</details>
-
-### 7. Open the dashboard
-The dashboard binds to `127.0.0.1` by default. For a remote computer, open an encrypted SSH tunnel:
-
-```bash
-ssh -N -L 5000:127.0.0.1:5000 your-user@your-device
+sha256sum -c sentinel-personal-beta-*-r8.tar.gz.sha256      # then extract it and read README.md and QUICKSTART.md
 ```
 
-Then visit `http://127.0.0.1:5000` on that computer and log in with `DASH_USER` / `DASH_PASS`. The local browser connection travels through the encrypted tunnel. For phone/tablet or shared access, put an HTTPS reverse proxy in front of the loopback listener; do not expose Basic Auth over plain HTTP. `DASH_HOST` can override the bind address only for a deliberately secured deployment.
-> Use **Chrome** for the live video (Safari renders MJPEG unreliably).
+Before you start:
 
----
+- **What ran, and what did not.** Revision 5 of the package completed a camera-free build rehearsal on the reference
+  device (installation, environment, downloads, both builds, the record of the built files and its verification).
+  The packaging changes of revision 6 and the documents, licence files and version string of revisions 7 and 8
+  were checked offline only. **A complete launch from the package has never been made, and no other Jetson has run
+  it.**
+- **The default check and launch refuse on your device.** They admit only the reference device's own files. Your
+  files are used only through the opt-in `--device-artifacts` route, for experimental validation runs; it validates
+  nothing about your device's memory, speed or stability (resource validation is pending).
+- **Stock JetPack is unverified.** The reference device runs L4T R36.4.7 with an Ubuntu 24.04 userland. On stock
+  JetPack 6 the installer goes on only with `--accept-unverified-platform`.
+- **You supply your own** camera, configuration, enrollment (photos of yourself, sealed with your passphrase) and
+  device artifacts. Nobody's gallery, credentials, models, engine or recordings are in the archive.
+- **Face data and the camera.** Only `identity.sh enroll` reads your photos, and only `start.sh`, after you type
+  START, opens the camera. The guide's section 12 lists every step.
+- **Licences.** The archive holds Sentinel's own files (MIT). What it downloads keeps its own licences, among them
+  AGPL-3.0 and the LFM Open License v1.0:
+  [`THIRD_PARTY_NOTICES.md`](packaging/beta-install/THIRD_PARTY_NOTICES.md).
 
-## Configuration (`.env`)
+Problems go to the [installation issue form](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/issues/new?template=installation-issue.md).
 
-| Variable | Description | Example |
-|---|---|---|
-| `RTSP_URL` | Full RTSP stream URL with credentials | `rtsp://admin:pass@192.168.1.100:554/cam/realmonitor?channel=1&subtype=1` |
-| `BOT_TOKEN` | Telegram bot token from [@BotFather](https://t.me/BotFather) | `123456:ABC-DEF...` |
-| `CHAT_ID` | Your Telegram user/group ID | `1223049319` |
-| `DASH_USER` | Dashboard login username | `admin` |
-| `DASH_PASS` | Dashboard login password (**required**) | `choose-a-strong-one` |
+### On the device (as the recorded device checks ran it)
 
-> `YOLO_MODEL` and `FACE_DB_PATH` are set as constants at the top of `surveillance4_1.py` (not env vars). Secrets are loaded from `.env` via `python-dotenv`; `.env` is git-ignored — **never commit it**.
+**Apart from the tester package above, there is no device installation guide.** What follows is only what the
+recorded checks used on the reference device; anything not listed here is not documented.
 
----
+- **Hardware and system:** one Jetson Orin Nano with JetPack 6 (L4T 36.4.7) and one RTSP camera, reached from a
+  workstation over SSH.
+- **Python with the device libraries:** the checks ran the package from the repository with an existing Python
+  environment that already held the device libraries (TensorRT, Ultralytics, OpenCV and, for face recognition,
+  DeepFace). That environment was built for v1; how to build one for v2 is not documented.
+- **Detector engine:** a profiled `yolov8n.engine` (TensorRT). The engine used was built for v1 (see
+  [`BUILD.md`](BUILD.md), legacy); a v2 build procedure is not documented.
+- **The command shape** (core monitoring, with the dashboard's live view):
 
-## Dashboard
+  ```bash
+  read -rs SENTINEL_RTSP_URL && export SENTINEL_RTSP_URL   # typed, never stored in a file
+  LD_PRELOAD=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1 PYTHONPATH=src <device-python> -m sentinel.cli \
+    run <config>.yaml --data-dir <data-dir> --engine <path>/yolov8n.engine --live-preview --snapshots
+  ```
 
-<div align="center">
-  <img src="dashboard_demo.png" alt="SENTINEL live dashboard" width="100%">
-  <p><em>The SENTINEL dashboard — live feed with detection box, threat / room / person cards,
-  live AI scene analysis, the Neural Assistant chat, and the filterable event log.</em></p>
-</div>
+  `config/default.yaml` is the core-only starting point (`sentinel config validate` checks a file); the device checks
+  used their own configuration files, kept with their private evidence and not in the repository.
 
-```
-┌─────────────────────────────────────────┐
-│  ◉ SENTINEL              CAM-01  LIVE   │
-├─────────────────────────────────────────┤
-│          [ Live MJPEG Stream ]          │
-├──────────┬──────────┬────────┬──────────┤
-│  STATUS  │  THREAT  │  ROOM  │ PERSONS  │
-├─────────────────────────────────────────┤
-│  Detected Persons:  ● Hemkesh ✓  ● Yogesh│
-├─────────────────────────────────────────┤
-│  Live AI Analysis:  (LFM2-VL scene desc)│
-├─────────────────────────────────────────┤
-│  NEURAL ASSISTANT  [chat with camera]   │
-├─────────────────────────────────────────┤
-│  Event Log  [ ALL │ HIGH │ MED │ INFO ] │
-└─────────────────────────────────────────┘
-```
+  The checks ran under the memory guard (`benchmarks/runner/step5_guard.py`) and added
+  `--workload-thp-disable --post-load-release`. `sentinel run --help` lists every option. Face recognition, scene
+  analysis and chat need admitted adapters in the configuration; the device checks used them only through guarded
+  validation packages.
+- **Opening the dashboard:** the page listens on 127.0.0.1 only. From the workstation:
+  `ssh -N -L 18090:127.0.0.1:18090 <user>@<device>`, then open `http://127.0.0.1:18090/dashboard`.
 
-- **Live stream** — MJPEG feed with auto-reconnect
-- **Person chips** — green = known, red = stranger
-- **AI chat** — ask the LFM2-VL model anything about the live frame
-- **Event log** — filterable intruder history with timestamps
-- **Auth** — every route is behind HTTP Basic Auth
+More detail: [Getting started](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Getting-started) and
+[Dashboard and controls](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Dashboard-and-controls).
 
----
+## Data and privacy
 
-## Telegram Alerts
+- Credentials (the camera URL, the Telegram token, the gallery passphrase) come from the environment and are never
+  written to the repository or the database. Configuration files must hold none.
+- The face gallery is sealed with a passphrase, needs recorded consent to enroll, and can be revoked and purged
+  (`sentinel identity`). Face embeddings are biometric data.
+- No page, log or record shows a person's name. Face recognition is context only: it never grants or denies anything.
+- Never commit galleries, photos, footage, run evidence or credentials.
 
-| Event | Priority | Condition |
-|---|---|---|
-| 🔥 Fire / Smoke | P1 — immediate | LFM2 `fire_smoke` flag |
-| ⚠️ High / Medium Threat | P2 | LFM2 `harmful` flag |
-| 🚨 Intruder | P2 | Stranger + restricted hours (22:00 – 06:00) |
+## Repository layout
 
-All alerts include a **photo snapshot** and timestamp, with per-type cooldowns so an incident can't spam you.
+| Path | What it is |
+|---|---|
+| `src/sentinel/`, `tests/`, `config/`, `pyproject.toml` | Sentinel v2 |
+| `benchmarks/runner/` | v2 operator check tooling (memory guard, readings of saved evidence) |
+| `packaging/` | the tester installation package (`beta-install/`) and the tool that builds its archive |
+| `docs/` | v2 status record, requirements trace, alpha notes, release notes, legacy v1 README |
+| `surveillance4_1.py`, `dashboard.py`, `build_face_db.py`, `start_sentinel.sh`, `requirements.txt`, `.env.example`, `BUILD.md`, `SETUP_GUIDE.txt`, `tests/test_dashboard.py` | legacy v1, unchanged; see [`docs/LEGACY_V1.md`](docs/LEGACY_V1.md) |
 
----
+## Maintainer
 
-## Project Structure
+V2 maintainer: Hemkesh ([@hemkesh2021-dotcom](https://github.com/hemkesh2021-dotcom)).
 
-```
-Sentinel_Surveillance/
-├── surveillance4_1.py    # Main engine — capture, detection, recognition, VLM, alerts
-├── dashboard.py          # Flask web dashboard + AI chat API (Basic Auth)
-├── build_face_db.py      # Face enrollment → face_db.pkl (normalised embeddings)
-├── start_sentinel.sh     # Launcher — headless → llama → engine → dashboard (correct order)
-├── requirements.txt      # Python dependencies (direct only)
-├── .env.example          # Environment variable template
-├── .gitignore
-├── BUILD.md              # TensorRT export + llama.cpp unified-memory build
-└── README.md
-```
-
----
-
-## Authors
-
-<div align="center">
-
-| Name | Role | GitHub |
-|---|---|---|
-| Hemkesh | Lead Developer | [@hemkesh2021-dotcom](https://github.com/hemkesh2021-dotcom) |
-| V S Yogeshvar | Co-Developer | [@Yogeshvar425](https://github.com/Yogeshvar425) |
-
-</div>
-
----
+Historical v1 contributor credits are kept in [`docs/LEGACY_V1.md`](docs/LEGACY_V1.md#authors).
 
 ## License
 
-This project is for personal / educational use. Do not deploy in public spaces without complying with local privacy laws — face embeddings are **biometric data** (see DPDP / GDPR / BIPA).
+Sentinel's own code is under the MIT License: see [`LICENSE`](LICENSE). Third-party software and model files are not
+part of this repository and keep their own licences; the tester package's
+[`THIRD_PARTY_NOTICES.md`](packaging/beta-install/THIRD_PARTY_NOTICES.md) lists the ones it downloads.
 
-> Note: YOLOv8 / Ultralytics is **AGPL-3.0**. Any closed-source or commercial deployment requires either open-sourcing the derived work or an Ultralytics commercial license.
+This project is for personal / educational use. Do not deploy in public spaces without complying with local privacy
+laws — face embeddings are **biometric data** (see DPDP / GDPR / BIPA).
 
----
-
-<div align="center">
-Built on NVIDIA Jetson &nbsp;·&nbsp; Powered by YOLOv8, DeepFace & LFM2-VL &nbsp;·&nbsp; Alerts via Telegram
-</div>
-
-
-## Dashboard regression checks
-
-The dashboard can be tested without a camera or inference hardware:
-
-```bash
-python -m pip install Flask==3.0.3 requests==2.32.3 python-dotenv==1.0.1
-python -m unittest discover -s tests
-```
-
-The dashboard rejects oversized/invalid chat messages, admits one interactive AI call at a time, and throttles failed authentication attempts per socket address. Behind a proxy, clients may share that address; configure edge authentication/rate limits for a production deployment. The dashboard semaphore does not coordinate other processes using the model. Hardware throughput, alerts, and recognition still require device testing.
+> Note: YOLOv8 / Ultralytics is **AGPL-3.0**. Any closed-source or commercial deployment requires either open-sourcing
+> the derived work or an Ultralytics commercial license.

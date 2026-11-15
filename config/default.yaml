@@ -1,0 +1,109 @@
+# Sentinel v2 configuration (portable foundation slice, V2-02).
+# Check it with:  sentinel config validate config/default.yaml
+# Durations are in seconds. Never put credentials, tokens or face data here.
+config_version: 1
+
+camera:
+  # Stable identifier stored with every observation; not a URL or address.
+  id: cam-1
+
+capture:
+  # Demo ingest (D24): the runtime opens the substream itself with OpenCV/FFmpeg software
+  # decode, video only. The URL comes from SENTINEL_RTSP_URL, never this file.
+  # Proposed starting values; check them with `sentinel capture probe` on the device.
+  open_timeout_s: 10.0      # opening the stream must finish within this long
+  read_timeout_s: 5.0       # no frame for this long: close and reopen (new stream epoch)
+  reconnect_initial_s: 1.0  # wait before reopening; doubles while connections deliver nothing
+  reconnect_max_s: 15.0
+  decode_threads: 1         # FFmpeg frame threading delays frames by up to threads - 1
+  # Route B (session 116, part 15; PROPOSED): main_single reads the main stream, gives the tracker,
+  # scene and chat a 640x480 working copy and finds faces in head windows of the decoded picture.
+  # Face validation runs only until one passes; sub stays the default and the rollback.
+  stream_profile: sub
+  main_decode_threads: 2    # the main stream's under main_single: an initial candidate, not measured in the runtime
+
+freshness:
+  # Guide chapter 6 starting targets; verify them under the actual Wi-Fi conditions.
+  stale_after_s: 2.0     # video is stale after this long without a fresh frame
+  offline_after_s: 10.0  # camera is offline after this long without a fresh frame
+  track_expiry_s: 1.0    # a track expires this long after its last real detection
+
+scene:
+  # Scene lane (VLM) timing: proposed starting values, to be measured on the device.
+  interval_s: 4.0        # between periodic scene checks, with or without people
+  job_timeout_s: 8.0     # a scene job must finish within this long of its frame's arrival
+  evidence_ttl_s: 10.0   # a report stays current this long after its frame (>= job_timeout_s)
+
+scene_server:
+  # The demo scene adapter's llama-server (V2-26 demo form). It always listens on
+  # 127.0.0.1 only, and its model flags are fixed in code (the provisional demo
+  # profile's, plus --cache-ram 0: decision D41); this section cannot change either.
+  port: 18081              # 127.0.0.1:<port>; v1's launcher uses 8080
+  request_timeout_s: 20.0  # per blocking HTTP step (>= scene.job_timeout_s); a later reply only annotates history
+
+hazard:
+  # Fire/smoke from scene reports alone is a candidate (warning), never a critical alarm.
+  confirmations: 2       # consecutive positive reports, same stream epoch
+  max_gap_s: 12.0        # at most this long between their source frames
+
+identity:
+  # Starting values only; calibrate on separate identities before relying on them.
+  match_threshold: 0.70  # cosine similarity (not a probability) needed to match; DeepFace 0.0.99's
+                         # Facenet512 value (cosine distance 0.30), the code default; uncalibrated here
+  margin: 0.05           # over the next-best enrolled identity
+  min_quality: 0.6       # faces below this quality do not vote
+  confirmations: 2       # consistent votes needed for known (or unknown)
+  vote_ttl_s: 30.0       # face votes older than this no longer count
+  head_fraction: 0.4     # a face centre must lie in this top part of a person box
+  min_face_inside: 0.6   # and this much of the face box inside the person box
+
+# Zone rules (guide ch. 9): a confirmed person whose box anchor (default: bottom
+# centre, where they stand) stays in a polygon long enough. They read neither
+# identity nor scene verdicts, so a known person still triggers a restricted zone.
+# Points are fractions of the native image [x, y], x to the right, y downwards.
+# Schedules are daily local-time windows in an IANA timezone; an end not after
+# the start spans midnight. Omit the schedule for a zone that is always active.
+#   - zone_id: front-door
+#     rule: restricted              # or dwell
+#     polygon: [[0.6, 0.6], [1.0, 0.6], [1.0, 1.0], [0.6, 1.0]]
+#     anchor: bottom_center         # or center
+#     min_duration_s: 1.0           # entry persistence (dwell: the dwell threshold)
+#     gap_tolerance_s: 1.0          # unseen in the zone longer than this ends a presence
+#     severity: warning             # info, warning or critical
+#     schedule: {timezone: Asia/Kolkata, windows: [{start: "22:00", end: "06:00"}]}
+#     enabled: true
+zones: []
+
+incidents:
+  # A new observation of the same rule and zone within this long of the incident's
+  # latest one (same boot) joins that unresolved incident instead of opening another.
+  merge_window_s: 120.0
+
+notifications:
+  # External channels are off unless listed here; telegram is the only one so far.
+  # Its bot token is never stored in this file.
+  channels: []
+  min_severity: warning  # info, warning or critical
+  # Delivery is at least once (proposed starting values; they do not change the policy revision).
+  lease_s: 60.0             # a worker holding a message longer is presumed dead; it is retried
+  request_timeout_s: 10.0   # per request; at most half of lease_s
+  max_attempts: 8           # then the message is dead-lettered for an operator retry
+  max_age_s: 21600.0        # undelivered messages older than this are dead-lettered too
+  backoff_base_s: 5.0       # exponential backoff with jitter, never sooner than retry_after
+  backoff_max_s: 600.0
+  starvation_s: 300.0       # messages due this long are sent before newer urgent ones
+
+# Optional adapters (guide ch. 27): scene analysis, extra detectors, face
+# recognition, notifiers. Core monitoring runs with none enabled. Each entry is
+# a versioned manifest naming a built-in adapter; configuration never names code.
+#   - adapter_id: example-scene       # must be a built-in adapter
+#     contract_version: 1             # other versions are rejected
+#     implementation_revision: "1"
+#     enabled: false
+#     input_kinds: [frame]
+#     output_kinds: [scene.report]
+#     model_revision: null
+#     resource_profile_id: null       # model adapters need a measured profile
+#     timeout_ms: 8000
+#     priority: 50
+adapters: []

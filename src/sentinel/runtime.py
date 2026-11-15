@@ -1,0 +1,951 @@
+"""Portable core of the edge runtime (guide chapters 4, 6, 8 and 9).
+
+EdgeCore turns stamped frames with tracker output, and scene-worker outcomes,
+into published live state, evidence and rule candidates. It holds no capture,
+decoder or model library: adapters on the device (or a replay driver in tests)
+feed it. Every input produces a full LiveState, including frames with nobody
+in them and ticks while no frames arrive.
+
+Only a FRESH stream is live for decisions (see media.health). Frames are used
+once: repeated or out-of-order frames update freshness bookkeeping only.
+
+Not thread-safe: call it from one loop thread.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import math
+import time
+from collections import Counter, OrderedDict
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any
+
+from .config import SentinelConfig
+from .contracts import Evidence, FrameRef, StreamIdentity, TrackKey, TrackObservation, TrackStatus
+from .identity.association import AssociationGeometry, FaceObservation, Ownership, associate, withhold
+from .identity.comparison import ComparisonOutcome, Disposition
+from .identity.continuity import Break, Cause, ContinuityMonitor, ContinuityPolicy
+from .identity.landmarks import landmark_records
+from .identity.matching import Enrollment
+from .identity.retention import (
+    AssociationChange,
+    AssociationEnded,
+    RetentionLedger,
+    RetentionPolicy,
+    TrackAssociation,
+    reported_numbers,
+)
+from .identity.state import UNKNOWN_VOTE, IdentityPolicy, IdentityResolver, IdentityState, TrackIdentity, VoteRecord
+from .identity.yunet import YUNET_THRESHOLD
+from .jobs import WorkerOutcome
+from .live_state import Capability, LiveState, Occupancy, PersonState, SceneStatus
+from .media.clock import Clock, MonoInstant
+from .media.frames import FrameNovelty
+from .media.health import FreshnessMonitor, VideoFreshness, VideoState
+from .rules.scene_hazard import HazardCandidate, SceneHazardRule
+from .rules.zones import ZoneObservation, ZoneRules
+from .scene.lane import SceneAnalyzer, SceneLane, SceneLaneSettings
+from .scene.state import CurrentScene, Routing, SceneView, route_evidence
+from .tracking.tracks import TrackTable
+
+NS_PER_MS = 1_000_000
+
+
+@dataclass(frozen=True)
+class RoutedEvidence:
+    evidence: Evidence
+    routing: Routing
+
+
+IDENTITY_RECORD_SCHEMA = 1  # the "identity" stdout records: tick, result and transition
+# Schema 2 (D84): schema 1, plus each result person's diagnostic numbers (FaceDiagnostics).
+IDENTITY_DIAGNOSTIC_SCHEMA = 2
+# Schema 3 (D86), what face validation runs write: schema 2, plus each result's full-scale pass (full_scale_numbers).
+IDENTITY_FULL_SCALE_SCHEMA = 3
+# Schema 4 (D87), what face validation runs with --face-comparison write: schema 3, plus a "comparison" record for each
+# person eligible for the full-scale comparison (ComparisonRecord).
+IDENTITY_COMPARISON_SCHEMA = 4
+# Schema 5 (D88), what face validation runs with the full-scale detection candidate write: schema 2, plus each
+# result's own detection numbers (detection_numbers); no full-scale pass or comparison exists in those runs.
+IDENTITY_CANDIDATE_SCHEMA = 5
+# Schema 6 (D90), what face validation runs with the candidate write from D90 on: schema 5, plus on each result person
+# the position of the prototype that gave the vote's similarity, the assigned face's geometry (face_geometry_numbers)
+# and "shadow", the similarity to an experiment's separate working gallery, its prototype position and the production
+# decision against it at full precision (D91; null without one).
+IDENTITY_GEOMETRY_SCHEMA = 6
+# Schema 7 (session 90), what face validation runs with --face-landmark-diagnostic write: schema 3, plus on each result
+# person "landmarks" (identity.landmarks.landmark_records: an explicit status and, when measured, the derived landmark
+# numbers of the native-scale candidate associated with that person) and the result's "landmark_ms".
+IDENTITY_LANDMARK_SCHEMA = 7
+# Schema 8 (route B, session 116, part 15), what face validation runs under the main_single stream profile write: schema 6,
+# plus each result's "windows" (identity.window_stage.WindowNumbers: the head windows, the people not analysed and the
+# detections dropped); its persons may carry the ownership "not_analysed". Face pixels are the main stream's.
+IDENTITY_WINDOWS_SCHEMA = 8
+DIAGNOSTIC_DECIMALS = 3
+# D90: what a recorded raw detection may span, in frame widths and heights from the frame's top left corner; a value
+# outside is recorded as unavailable (null), never clipped into range.
+RAW_BOUNDS = (-1.0, 2.0)
+GEOMETRY_PX_DECIMALS = 1
+PRODUCTION_OUTCOMES_KEPT = 16  # recent face results' outcomes, by frame, for the comparison records (D87)
+# DeepFace 0.0.99's YuNet threshold for production detections (identity.yunet, its one definition): the full-scale
+# pass's faces are counted at the same score, so its counts compare like for like.
+FULL_SCALE_COUNTED = YUNET_THRESHOLD
+
+
+def _schema(schema: int) -> int:
+    if schema not in (IDENTITY_RECORD_SCHEMA, IDENTITY_DIAGNOSTIC_SCHEMA, IDENTITY_FULL_SCALE_SCHEMA,
+                      IDENTITY_COMPARISON_SCHEMA, IDENTITY_CANDIDATE_SCHEMA, IDENTITY_GEOMETRY_SCHEMA,
+                      IDENTITY_LANDMARK_SCHEMA, IDENTITY_WINDOWS_SCHEMA):
+        raise ValueError(f"unknown identity record schema {schema!r}")
+    return schema
+
+
+def identity_policy(identity: Any, continuity_retention_ns: int | None = None) -> IdentityPolicy:
+    """The identity rules the runtime decides with, from the configuration's ``identity`` section (the resolver's; the
+    multi-pose comparison's replay builds the same ones from a session's configuration)."""
+    return IdentityPolicy(
+        match_threshold=identity.match_threshold,
+        margin=identity.margin,
+        min_quality=identity.min_quality,
+        confirmations=identity.confirmations,
+        vote_ttl_ns=identity.vote_ttl_ns,
+        fresh_window_ns=identity.face_result_max_age_ns,
+        continuity_retention_ns=continuity_retention_ns,
+    )
+
+
+def tick_record(frame: FrameRef, persons: Sequence[TrackObservation], tick: str,
+                schema: int = IDENTITY_RECORD_SCHEMA) -> dict[str, object]:
+    """One 1 Hz face tick: its frame, the track IDs on that frame, and what the worker did with it."""
+    return {"identity": "tick", "schema": _schema(schema), "stream_epoch": frame.stream_epoch,
+            "frame_seq": frame.frame_seq, "frame_mono_ns": frame.ingest_mono_ns, "tick": tick,
+            "tracks": sorted(p.track_id for p in persons)}
+
+
+@dataclass(frozen=True)
+class FaceDiagnostics:
+    """One person's numbers on an applied face result, for validation runs (schema 2): where the person's box was and
+    how sure the detector was, the assigned face's size and score, and how close it came to an enrolled identity.
+    Never an image, an embedding or a name."""
+
+    box: tuple[float, float, float, float]  # the person's box, normalized (x1, y1, x2, y2)
+    confidence: float | None  # the person detector's confidence
+    face_px: tuple[int, int] | None  # the assigned face's width and height in the frame's pixels; None: no face
+    face_score: float | None  # the face detector's confidence for it
+    similarity: float | None  # the best cosine similarity to an enrolled identity, when one was computed
+    prototype: int | None = None  # D90: that similarity's prototype position in the enrollment (an opaque index)
+    geometry: dict[str, Any] | None = None  # D90: face_geometry_numbers for the assigned face (candidate runs)
+    shadow: dict[str, Any] | None = None  # D91: similarity to an experiment's working gallery and its prototype
+    landmarks: dict[str, Any] | None = None  # session 90: landmarks.landmark_records' record for this person
+
+    def fields(self, schema: int = IDENTITY_DIAGNOSTIC_SCHEMA) -> dict[str, object]:
+        def r(value: float | None) -> float | None:
+            return None if value is None else round(value, DIAGNOSTIC_DECIMALS)
+
+        out = {"box": [r(v) for v in self.box], "confidence": r(self.confidence),
+               "face": None if self.face_px is None else {"w_px": self.face_px[0], "h_px": self.face_px[1],
+                                                          "score": r(self.face_score)},
+               "similarity": r(self.similarity)}
+        if schema in (IDENTITY_GEOMETRY_SCHEMA, IDENTITY_WINDOWS_SCHEMA):
+            out.update(prototype=self.prototype, geometry=self.geometry, shadow=self.shadow)
+        elif schema == IDENTITY_LANDMARK_SCHEMA:
+            out["landmarks"] = self.landmarks
+        return out
+
+
+@dataclass(frozen=True)
+class FaceResultRecord:
+    """One face result and what became of it; votes carry the time of the frame they came from."""
+
+    stream_epoch: int
+    frame_seq: int
+    frame_mono_ns: int
+    applied_mono_ns: int
+    outcome: str  # applied, failed, rejected_not_live, rejected_boot, rejected_age, ignored_face_unavailable
+    faces: int | None
+    persons: tuple[tuple[int, str, str, str | None, str], ...]  # track ID, ownership, vote kind, identity ID, label
+    processing_ms: float | None = None
+    error: str | None = None
+    diagnostics: tuple[FaceDiagnostics, ...] = ()  # one per entry of ``persons``; written with schema 2 and later
+    full_scale: dict[str, Any] | None = None  # full_scale_numbers; written with schemas 3 and 4
+    detection: dict[str, Any] | None = None  # detection_numbers; written with schemas 5 and 6
+    landmark_ms: float | None = None  # session 90: the landmark records' time on an applied result; schema 7
+    windows: dict[str, Any] | None = None  # route B: window_stage.WindowNumbers.numbers(); schema 8
+
+    def record(self, schema: int = IDENTITY_RECORD_SCHEMA) -> dict[str, object]:
+        persons = [{"track_id": track, "ownership": ownership, "vote": vote, "identity_id": identity, "label": label}
+                   for track, ownership, vote, identity, label in self.persons]
+        if _schema(schema) >= IDENTITY_DIAGNOSTIC_SCHEMA:
+            if len(self.diagnostics) != len(persons):
+                raise ValueError("every person on a schema 2 or later result needs its diagnostics")
+            persons = [person | numbers.fields(schema) for person, numbers in zip(persons, self.diagnostics)]
+        record = {"identity": "result", "schema": schema, "stream_epoch": self.stream_epoch,
+                  "frame_seq": self.frame_seq, "frame_mono_ns": self.frame_mono_ns,
+                  "applied_mono_ns": self.applied_mono_ns, "outcome": self.outcome, "faces": self.faces,
+                  "processing_ms": None if self.processing_ms is None else round(self.processing_ms, 1),
+                  "error": self.error, "persons": persons}
+        if schema in (IDENTITY_FULL_SCALE_SCHEMA, IDENTITY_COMPARISON_SCHEMA, IDENTITY_LANDMARK_SCHEMA):
+            record["full_scale"] = self.full_scale
+        elif schema in (IDENTITY_CANDIDATE_SCHEMA, IDENTITY_GEOMETRY_SCHEMA, IDENTITY_WINDOWS_SCHEMA):
+            record["detection"] = self.detection
+        if schema == IDENTITY_WINDOWS_SCHEMA:
+            record["windows"] = self.windows
+        if schema == IDENTITY_LANDMARK_SCHEMA:
+            record["landmark_ms"] = None if self.landmark_ms is None else round(self.landmark_ms, 3)
+        return record
+
+
+@dataclass(frozen=True)
+class ComparisonRecord:
+    """D87: one person eligible for the full-scale comparison on one analysed frame, as numbers and fixed labels: the
+    kind (``full_scale_only`` or the ``both`` control), its disposition, the full-scale candidate's score and width, and,
+    when completed, the best cosine similarity of its embedding to the enrollment (never a vote, an identity ID, an
+    embedding or an image); ``ms`` when it was attempted; ``error`` (a fixed label) when it failed."""
+
+    stream_epoch: int
+    frame_seq: int
+    frame_mono_ns: int
+    track_id: int
+    kind: str
+    disposition: str
+    score: float
+    w_px: int
+    similarity: float | None
+    ms: float | None
+    error: str | None
+
+    def record(self, schema: int = IDENTITY_COMPARISON_SCHEMA) -> dict[str, object]:
+        if _schema(schema) != IDENTITY_COMPARISON_SCHEMA:
+            raise ValueError("comparison records are schema 4 only")
+        return {"identity": "comparison", "schema": schema, "stream_epoch": self.stream_epoch,
+                "frame_seq": self.frame_seq, "frame_mono_ns": self.frame_mono_ns, "track_id": self.track_id,
+                "kind": self.kind, "disposition": self.disposition, "score": round(self.score, DIAGNOSTIC_DECIMALS),
+                "w_px": self.w_px,
+                "similarity": None if self.similarity is None else round(self.similarity, DIAGNOSTIC_DECIMALS),
+                "ms": None if self.ms is None else round(self.ms, 1), "error": self.error}
+
+
+@dataclass(frozen=True)
+class IdentityTransition:
+    """A change of one track's identity state, identity ID or basis: opaque IDs and numbers only."""
+
+    stream_epoch: int
+    track_id: int
+    from_state: str
+    to_state: str  # an IdentityState value, or "cleared" when the track is no longer current
+    identity_id: str | None  # the opaque gallery ID, only for KNOWN
+    basis: str | None
+    last_vote_age_ms: int | None
+    reason: str
+    mono_ns: int
+
+    def record(self, schema: int = IDENTITY_RECORD_SCHEMA) -> dict[str, object]:
+        return {"identity": "transition", "schema": _schema(schema), "stream_epoch": self.stream_epoch,
+                "track_id": self.track_id,
+                "from": self.from_state, "to": self.to_state, "identity_id": self.identity_id, "basis": self.basis,
+                "last_vote_age_ms": self.last_vote_age_ms, "reason": self.reason, "mono_ns": self.mono_ns}
+
+
+@dataclass(frozen=True)
+class TrackLife:
+    """A track life's start or end as the track table saw it at one step (validation runs only, route B's shadow
+    comparison): numbers only, no identity. ``since_mono_ns`` is the life's first measurement; ``mono_ns`` the step at
+    which the runtime found the life begun or ended (a life also ends when its track number starts a new life)."""
+
+    stream_epoch: int
+    track_id: int
+    event: str  # "began" or "ended"
+    since_mono_ns: int
+    mono_ns: int
+
+    def record(self, schema: int = IDENTITY_RECORD_SCHEMA) -> dict[str, object]:
+        return {"identity": "life", "schema": _schema(schema), "stream_epoch": self.stream_epoch,
+                "track_id": self.track_id, "event": self.event, "since_mono_ns": self.since_mono_ns,
+                "mono_ns": self.mono_ns}
+
+
+def break_record(item: Break, schema: int = IDENTITY_RECORD_SCHEMA) -> dict[str, object]:
+    """D97: one break in a track's continuity (identity.continuity): the track, the cause and its frame's time; numbers
+    and fixed labels only. Written only by runs with a continuity monitor: one per break in --face-continuity runs, and
+    in track-retention runs one for the first frame of each continuous same-cause stretch of a track (part 28, EdgeCore
+    .on_frame; the counters ``breaks_*`` still count every frame's)."""
+    return {"identity": "break", "schema": _schema(schema), "stream_epoch": item.key.stream_epoch,
+            "track_id": item.key.track_id, "cause": item.cause.value, "mono_ns": item.at_ns}
+
+
+def association_record(item: AssociationChange, schema: int = IDENTITY_RECORD_SCHEMA) -> dict[str, object]:
+    """Track retention (session 116, part 28; PROPOSED, --identity-retention runs only): one change of a track's
+    established association, as numbers, fixed labels and the opaque identity ID (identity.retention.AssociationChange).
+    Existing transition records keep their meaning."""
+    return {"identity": "association", "schema": _schema(schema), "stream_epoch": item.stream_epoch,
+            "track_id": item.track_id, "from": item.from_state, "to": item.to_state, "identity_id": item.identity_id,
+            "reason": item.reason, "last_match_age_ms": item.last_match_age_ms, "contradictions": item.contradictions,
+            "mono_ns": item.mono_ns}
+
+
+@dataclass(frozen=True)
+class CoreOutput:
+    state: LiveState
+    evidence: tuple[RoutedEvidence, ...] = ()  # new evidence, with where it may go
+    candidates: tuple[HazardCandidate, ...] = ()
+    zones: tuple[ZoneObservation, ...] = ()  # zone rule observations from this step
+    identity_transitions: tuple[IdentityTransition, ...] = ()
+    face_result: FaceResultRecord | None = None  # set by on_face_outcome
+    identity_breaks: tuple[Break, ...] = ()  # D97: breaks in track continuity found by this step (those to record)
+    track_lives: tuple[TrackLife, ...] = ()  # validation runs with record_lives: lives begun or ended at this step
+    identity_associations: tuple[AssociationChange, ...] = ()  # track retention: changes of established associations
+
+
+class EdgeCore:
+    def __init__(
+        self,
+        config: SentinelConfig,
+        clock: Clock,
+        analyzer: SceneAnalyzer | None,
+        *,
+        detector: Capability = Capability.AVAILABLE,
+        face_recognition: Capability = Capability.DISABLED,
+        enrollment: Enrollment | None = None,
+        scene_id_prefix: str | None = None,
+        scene_problem: str | None = None,
+        shadow: Any = None,
+        capture: Any = None,
+        continuity: ContinuityPolicy | None = None,
+        record_lives: bool = False,
+        retention: RetentionPolicy | None = None,
+    ) -> None:
+        if continuity is not None and retention is not None:
+            raise ValueError("the continuity rule and track retention are separate rules; use one (D97, part 28)")
+        self._config = config
+        # Validation runs (route B's shadow comparison; retention runs, so later readers have life boundaries): each
+        # track life's start and end as records, read from the track table this step already consults; it decides
+        # nothing and changes no state
+        self._record_lives = record_lives or retention is not None
+        self._lives: dict[TrackKey, int] = {}
+        # D91, the enrollment experiment (validation runs with the candidate only; assemble() decides): a working
+        # gallery compared read only (identity.experiment.Shadow), or a capture collecting the one person's faces for
+        # a working gallery written at shutdown (identity.experiment.Capture). Neither ever votes.
+        self._shadow = shadow
+        self._capture = capture
+        self._clock = clock
+        self._freshness = FreshnessMonitor(config.freshness, clock)
+        self._tracks = TrackTable(config.freshness.track_expiry_ns)
+        # No analyzer: scene analysis is disabled and core monitoring runs without it.
+        # With ``scene_problem`` it was requested but is unavailable (failed to start or not admitted).
+        self._lane = (
+            None
+            if analyzer is None
+            else SceneLane(
+                analyzer, clock, SceneLaneSettings.from_config(config.scene), id_prefix=scene_id_prefix
+            )
+        )
+        self._scene = CurrentScene()
+        self._hazard = SceneHazardRule(
+            confirmations=config.hazard.confirmations, max_gap_ns=config.hazard.max_gap_ns
+        )
+        self._zones = ZoneRules(config.zones)
+        self._scene_problem = None if analyzer is not None else scene_problem
+        self._detector = detector
+        self._face_recognition = face_recognition
+        identity = config.identity
+        self._geometry = AssociationGeometry(identity.head_fraction, identity.min_face_inside)
+        self._identities = IdentityResolver(
+            enrollment,
+            identity_policy(identity, None if continuity is None else continuity.retention_ns),
+        )
+        # D97 (opt-in): each track's continuity, watched on every processed frame; None: the rules as they were. Track
+        # retention (session 116, part 28; opt-in) runs the same monitor with the existing continuity values and applies
+        # its breaks the same way, but the raw votes keep the plain expiry (identity_policy above; not --face-continuity):
+        # what it adds is the established association above the votes (identity.retention).
+        monitored = continuity if continuity is not None else (None if retention is None else identity.continuity_policy())
+        self._continuity = None if monitored is None else ContinuityMonitor(monitored)
+        self._retention = None if retention is None else RetentionLedger(retention)
+        self._new_breaks: list[Break] = []
+        # Part 28: which tracks broke on the previous processed frame, and why. A sustained overlap breaks on every
+        # processed frame; in a track-retention run only the first frame of a track's same-cause stretch becomes a record,
+        # so that one overlap cannot use up the run's record budget (MAX_IDENTITY_RECORDS), which would drop later result
+        # and association records. Votes and the ledger still take every break, and --face-continuity's records stay one
+        # per break (its readers count them).
+        self._broke_last_frame: dict[TrackKey, Cause] = {}
+        self._scene_on = True  # D99: scene analysis turned off at runtime (the lane paused, nothing held)
+        self._queued_evidence: list[Evidence] = []  # D99: skipped by turning scene analysis off; routed next step
+        self._face_on_since_ns = 0  # D99: face recognition last turned on at runtime (0: on since the start, if at all)
+        self._face_result_max_age_ns = identity.face_result_max_age_ns
+        self.face_counters: Counter[str] = Counter()  # face results: applied or rejected, and why
+        self._reported: dict[TrackKey, tuple[str, str | None, str | None]] = {}
+        self._last_detected: FrameRef | None = None
+        self._sequence = 0
+        # D87: recent face results' outcomes by frame (epoch, sequence), so that a comparison is completed only for a
+        # frame whose production result was applied; and the comparisons' final dispositions (never identity counters).
+        self._production_outcomes: OrderedDict[tuple[int, int], str] = OrderedDict()
+        self.comparison_counters: Counter[str] = Counter()
+
+    @property
+    def lane(self) -> SceneLane | None:
+        return self._lane
+
+    def diagnostics(self) -> dict[str, int]:
+        """Sizes of bounded internal state, for health reporting and tests."""
+        return {
+            "tracks": self._tracks.size,
+            "identity_tracks": self._identities.tracked,
+            "scene_jobs_in_flight": int(self._lane is not None and self._lane.in_flight is not None),
+            "zone_episodes": self._zones.active_episodes,
+            "identity_reported": len(self._reported),
+            **({} if self._retention is None else {"identity_associations": self._retention.tracked}),
+        }
+
+    @property
+    def identity_counters(self) -> dict[str, int]:
+        counters = self.face_counters + self._identities.counters
+        if self._retention is not None:  # track retention: associations established and ended, by fixed reason
+            counters += self._retention.counters
+        return dict(sorted(counters.items()))
+
+    @property
+    def continuity(self) -> ContinuityPolicy | None:
+        """D97: the continuity rule this core applies (also the monitor track retention runs, part 28), or None."""
+        return None if self._continuity is None else self._continuity.policy
+
+    @property
+    def retention_numbers(self) -> dict[str, float] | None:
+        """Part 28: the track-retention rule this core applies, with its monitor's values, as the status reports them
+        (identity.retention.reported_numbers); None without one."""
+        if self._retention is None or self._continuity is None:
+            return None
+        return reported_numbers(self._retention.policy, self._continuity.policy)
+
+    def set_detector(self, capability: Capability) -> None:
+        self._detector = capability
+
+    def set_face_recognition(self, capability: Capability) -> None:
+        """D99: face recognition turned off at runtime (DISABLED) or on again (AVAILABLE). Either way every vote, note and
+        break is forgotten: nothing from before is presented as current, the identities that were reported end at the
+        next step (to unresolved, "face recognition disabled"), and on again every track starts unresolved. A result
+        for a frame from before it was last turned on is ignored (``ignored_face_unavailable``), whenever it arrives:
+        an analysis that was running when it was turned off cannot be interrupted, and may finish after it is on."""
+        if capability is self._face_recognition:
+            return
+        self._face_recognition = capability
+        self._identities.forget_all()
+        if self._retention is not None:  # track retention: nothing earlier stays established or explained
+            self._retention.forget_all(self._clock.mono().ns)
+        if capability is Capability.AVAILABLE:
+            self._face_on_since_ns = self._clock.mono().ns
+
+    def set_scene_analysis(self, on: bool) -> None:
+        """D99: scene analysis turned off at runtime, or on again. Off: no new scene job (one in flight ends by its
+        deadline and may only annotate its own incident), the held report is dropped, so no scene state is current, and
+        the fire or smoke confirmation starts over; the scene model stays loaded (chat may still use it). On: the next
+        live frame is checked, from nothing. An enrichment request still waiting is skipped for its incident, saying
+        why, at the next step."""
+        if self._lane is None or on == self._scene_on:
+            return
+        self._scene_on = on
+        self._scene = CurrentScene()
+        self._hazard = SceneHazardRule(confirmations=self._config.hazard.confirmations,
+                                       max_gap_ns=self._config.hazard.max_gap_ns)
+        self._queued_evidence += self._lane.set_paused(not on)
+
+    @property
+    def scene_on(self) -> bool:
+        return self._lane is not None and self._scene_on
+
+    def on_frame(
+        self,
+        frame: FrameRef,
+        persons: Sequence[TrackObservation],
+        connected: StreamIdentity | None,
+        faces: Sequence[FaceObservation] | None = None,
+    ) -> CoreOutput:
+        """A decoded frame and the tracker's output for it (empty when nobody is there).
+
+        ``faces`` is the face stage's output for this frame, or None when it did
+        not run on this frame (it need not run on every frame).
+        """
+        self._freshness.on_frame(frame)
+        freshness = self._freshness.assess(connected)
+        new: list[Evidence] = []
+        novelty = self._tracks.update(frame, persons, freshness.live)
+        if novelty in (FrameNovelty.NEW, FrameNovelty.NEW_EPOCH):
+            if self._continuity is not None:  # D97: before this frame's faces, so they count after its breaks
+                if novelty is FrameNovelty.NEW_EPOCH:
+                    self._continuity.retain_only(())
+                found = self._continuity.observe(frame, persons)
+                for item in found:
+                    self._identities.break_track(item.key, item.at_ns, item.cause)
+                    if self._retention is not None:  # part 28: a break ends the association at once
+                        self._retention.on_break(item.key, item.at_ns, item.cause, self._clock.mono().ns)
+                    if self._retention is None or self._broke_last_frame.get(item.key) is not item.cause:
+                        self._new_breaks.append(item)  # part 28: a retention run records a stretch's first frame only
+                self._broke_last_frame = {item.key: item.cause for item in found}
+            if self._detector is Capability.AVAILABLE:
+                self._last_detected = frame
+            if faces is not None and self._face_recognition is Capability.AVAILABLE:
+                association = associate(persons, faces, self._geometry)
+                votes = self._identities.observe(persons, faces, association)
+                self._note_retention_evidence(persons, faces, association.face_of, votes)
+            if self._lane is not None:
+                new += self._lane.on_frame(frame, freshness.live)
+        elif self._lane is not None:
+            new += self._lane.poll(freshness.live)
+        return self._finish(freshness, new)
+
+    def on_face_outcome(
+        self,
+        frame: FrameRef,
+        persons: Sequence[TrackObservation],
+        faces: Sequence[FaceObservation] | None,
+        connected: StreamIdentity | None,
+        *,
+        processing_ms: float | None = None,
+        error: str | None = None,
+        full_scale: Any = None,
+        detection: Any = None,
+        geometry: Sequence[Any] = (),
+        landmarks: bool = False,
+        windows: Any = None,
+    ) -> CoreOutput:
+        """A face result for an earlier sampled frame, with the tracker's people on that same frame.
+
+        Its faces are associated with those people only, and its votes carry that frame's time. It is
+        rejected, and counted, when face recognition is not available, the analysis failed, the frame's
+        stream (camera, boot, run, epoch) is not the live one, the frame is from before face recognition
+        was last turned on (D99), or the frame is older than ``identity.face_result_max_age_s``. Votes for
+        tracks that are no longer current are dropped by the next ``_finish``; a person whose track has
+        expired and come back since that frame gets no vote (identity.state.BEFORE_EXPIRY). With ``landmarks``
+        (session 90, the landmark diagnostic) each person on an applied result also gets its landmark record from
+        the native pass (``full_scale``), associated by the same rule. With ``windows`` (route B: the result's
+        identity.window_stage.WindowNumbers) the people it lists as not analysed stay in the association, decided over
+        everyone, and get NOT_ANALYSED and no vote (association.withhold).
+        """
+        freshness = self._freshness.assess(connected)
+        now = self._clock.mono()
+        votes: list = []
+        diagnostics: tuple[FaceDiagnostics, ...] = ()
+        landmark_ms = None
+        if self._face_recognition is not Capability.AVAILABLE:
+            outcome = "ignored_face_unavailable"
+        elif faces is None:
+            outcome = "failed"
+        elif connected is None or frame.stream != connected:
+            outcome = "rejected_not_live"
+        elif frame.boot_id != now.boot_id:
+            outcome = "rejected_boot"
+        elif frame.ingest_mono_ns < self._face_on_since_ns:  # D99: its frame is from before face was on again
+            outcome = "ignored_face_unavailable"
+        elif now.ns - frame.ingest_mono_ns > self._face_result_max_age_ns:
+            outcome = "rejected_age"
+        else:
+            outcome = "applied"
+            association = associate(persons, faces, self._geometry)
+            ambiguous_withheld: frozenset[TrackKey] = frozenset()
+            if windows is not None:  # route B: decided over everyone first, then the people not analysed withheld
+                # Part 28: withholding rewrites a person's ambiguous ownership, and track retention must still see it
+                ambiguous_withheld = frozenset(key for key in windows.not_analysed
+                                               if association.person_ownership.get(key) is Ownership.AMBIGUOUS)
+                association = withhold(association, windows.not_analysed)
+            for ownership in association.face_ownership:
+                self.face_counters[f"faces_{ownership.value}"] += 1
+            votes = self._identities.observe(persons, faces, association)
+            self._note_retention_evidence(persons, faces, association.face_of, votes, ambiguous_withheld)
+            diagnostics = _diagnostics(frame, persons, faces, association.face_of, votes, geometry, self._shadow,
+                                       self._identities.policy)
+            if landmarks:  # session 90: diagnostic numbers only; nothing above changes
+                started = time.perf_counter()
+                records = landmark_records(frame, persons, faces, association.face_of, full_scale, self._geometry)
+                diagnostics = tuple(dataclasses.replace(d, landmarks=records[v.key])
+                                    for d, v in zip(diagnostics, votes, strict=True))
+                landmark_ms = (time.perf_counter() - started) * 1000
+            if self._capture is not None and len(persons) == 1 and len(votes) == 1 \
+                    and votes[0].similarity is not None:  # D91: the only person's face, as the vote compared it
+                self._capture.offer(frame.ingest_mono_ns, faces[association.face_of[votes[0].key]].embedding,
+                                    frame_seq=frame.frame_seq, stream_epoch=frame.stream_epoch,
+                                    track_id=votes[0].key.track_id, boot_id=frame.boot_id)
+        self.face_counters[f"results_{outcome}"] += 1
+        self._production_outcomes[(frame.stream_epoch, frame.frame_seq)] = outcome
+        while len(self._production_outcomes) > PRODUCTION_OUTCOMES_KEPT:
+            self._production_outcomes.popitem(last=False)
+        record = FaceResultRecord(
+            frame.stream_epoch, frame.frame_seq, frame.ingest_mono_ns, now.ns, outcome,
+            None if faces is None else len(faces),
+            tuple((v.key.track_id, v.ownership.value,
+                   "none" if v.vote is None else "unknown" if v.vote == UNKNOWN_VOTE else "match",
+                   v.vote if v.vote else None, v.label) for v in votes),
+            processing_ms, error, diagnostics, full_scale_numbers(full_scale, frame, persons, self._geometry),
+            detection_numbers(detection, frame), landmark_ms, None if windows is None else windows.numbers())
+        return dataclasses.replace(self._finish(freshness, []), face_result=record)
+
+    def _note_retention_evidence(self, persons: Sequence[TrackObservation], faces: Sequence[FaceObservation],
+                                 face_of: dict[TrackKey, int], votes: Sequence[VoteRecord],
+                                 ambiguous_withheld: frozenset[TrackKey] = frozenset()) -> None:
+        """Part 28: one face result's outcome for each person (its frame time and its assigned face's width as a fraction
+        of the frame's), for the track-retention ledger; nothing here changes a vote. ``votes`` is in ``persons``' order.
+        ``ambiguous_withheld``: people the association decided over everyone found ambiguous, then withheld (route B)."""
+        if self._retention is None:
+            return
+        now_ns = self._clock.mono().ns
+        for person, vote in zip(persons, votes, strict=True):
+            index = face_of.get(vote.key)
+            box = None if index is None else faces[index].box
+            self._retention.observe(vote, person.observed_mono_ns, None if box is None else box.x2 - box.x1, now_ns,
+                                    ambiguous=vote.key in ambiguous_withheld)
+
+    def on_face_comparison(self, outcome: ComparisonOutcome) -> ComparisonRecord:
+        """D87: one comparison outcome as a record. A completed comparison gets its best similarity to the enrollment
+        (``IdentityResolver.diagnostic_similarity``, read only) when that frame's production result was applied and face
+        recognition is available; otherwise it is ``production_not_applied`` and its embedding is discarded. Nothing
+        here votes or changes identity state, tracks, counters or live state; the embedding is never kept."""
+        disposition, similarity, error = outcome.disposition, None, outcome.error
+        if disposition is Disposition.COMPLETED:
+            applied = self._production_outcomes.get((outcome.frame.stream_epoch, outcome.frame.frame_seq)) == "applied"
+            if not applied or self._face_recognition is not Capability.AVAILABLE or outcome.embedding is None:
+                disposition = Disposition.PRODUCTION_NOT_APPLIED
+            else:
+                similarity = self._identities.diagnostic_similarity(outcome.embedding)
+                if similarity is None:
+                    disposition, error = Disposition.FAILED, "no_comparable_enrollment"
+        self.comparison_counters[f"{outcome.kind.value}:{disposition.value}"] += 1
+        frame = outcome.frame
+        return ComparisonRecord(frame.stream_epoch, frame.frame_seq, frame.ingest_mono_ns, outcome.track_id,
+                                outcome.kind.value, disposition.value, outcome.score, outcome.width_px, similarity,
+                                outcome.ms, error)
+
+    def on_scene_outcome(
+        self, job_id: str, outcome: WorkerOutcome, connected: StreamIdentity | None
+    ) -> CoreOutput:
+        freshness = self._freshness.assess(connected)
+        new: list[Evidence] = []
+        if self._lane is not None:
+            completed = self._lane.complete(job_id, outcome)
+            new = [completed] if completed is not None else []
+            new += self._lane.poll(freshness.live)
+        return self._finish(freshness, new)
+
+    def request_enrichment(
+        self, frame: FrameRef, incident_id: str, connected: StreamIdentity | None
+    ) -> CoreOutput:
+        freshness = self._freshness.assess(connected)
+        new: list[Evidence] = []
+        if self._lane is not None:
+            new = self._lane.request_enrichment(frame, incident_id)
+            new += self._lane.poll(freshness.live)
+        return self._finish(freshness, new)
+
+    def tick(self, connected: StreamIdentity | None) -> CoreOutput:
+        """Call regularly (e.g. every 250 ms) so staleness and deadlines show without frames."""
+        freshness = self._freshness.assess(connected)
+        new = self._lane.poll(freshness.live) if self._lane is not None else []
+        return self._finish(freshness, new)
+
+    def _finish(self, freshness: VideoFreshness, new: list[Evidence]) -> CoreOutput:
+        if self._queued_evidence:
+            new, self._queued_evidence = [*self._queued_evidence, *new], []
+        now = self._clock.mono()
+        live = freshness.live
+        # D99: while scene analysis is off nothing becomes current scene state; evidence still annotates its incident
+        routed = tuple(RoutedEvidence(e, self._scene.offer(e, live, now) if self._scene_on
+                                      else dataclasses.replace(route_evidence(e, live, now), updates_current=False))
+                       for e in new)
+        view = self._scene.view(live, now)
+        tracks = self._tracks.current(live, now)
+        lives = {t.key: self._tracks.since(t.key) for t in tracks}
+        self._identities.retain_only(lives)
+        track_lives = self._track_lives(lives, now) if self._record_lives else ()
+        if self._continuity is not None:
+            self._continuity.retain_only(t.key for t in tracks)
+        breaks, self._new_breaks = tuple(self._new_breaks), []
+        identities = {t.key: self._identity(t, now) for t in tracks}
+        transitions = self._transitions(tracks, identities, now)
+        # Part 28: the established associations for this publication, apart from the raw identities (identity.retention)
+        associations, ended, association_changes = (
+            ({}, {}, ()) if self._retention is None
+            else self._retention.step(lives, identities, self._identities, live, now))
+        occupancy, reason = self._occupancy(freshness, tracks, now)
+        people_count = None if occupancy is Occupancy.UNKNOWN else _confirmed(tracks)
+        candidate = self._hazard.evaluate(view, people_count=people_count)
+        # Zone rules read tracks only: no identity, no scene verdict (guide ch. 9).
+        zones = self._zones.evaluate(tracks, live, now)
+        state = self._publish(freshness, tracks, identities, occupancy, reason, view, now, associations, ended)
+        return CoreOutput(
+            state=state,
+            evidence=routed,
+            candidates=(candidate,) if candidate is not None else (),
+            zones=tuple(zones),
+            identity_transitions=transitions,
+            identity_breaks=breaks,
+            track_lives=track_lives,
+            identity_associations=association_changes,
+        )
+
+    def _track_lives(self, lives: dict[TrackKey, int], now: MonoInstant) -> tuple[TrackLife, ...]:
+        """Lives ended since the last step (gone, or their number began again), then lives begun (new, or again)."""
+        ended = [TrackLife(key.stream_epoch, key.track_id, "ended", since, now.ns)
+                 for key, since in sorted(self._lives.items(), key=lambda item: (item[0].stream_epoch, item[0].track_id))
+                 if lives.get(key) != since]
+        began = [TrackLife(key.stream_epoch, key.track_id, "began", since, now.ns)
+                 for key, since in sorted(lives.items(), key=lambda item: (item[0].stream_epoch, item[0].track_id))
+                 if self._lives.get(key) != since]
+        self._lives = dict(lives)
+        return tuple(ended + began)
+
+    def _transitions(
+        self, tracks: tuple[TrackObservation, ...], identities: dict[TrackKey, TrackIdentity], now: MonoInstant
+    ) -> tuple[IdentityTransition, ...]:
+        """Changes since the last step; only while face recognition is available (otherwise all is unresolved)."""
+        unresolved = (IdentityState.UNRESOLVED.value, None, None)
+        if self._face_recognition is not Capability.AVAILABLE:  # D99: what was reported ends once, then nothing
+            ended = tuple(IdentityTransition(key.stream_epoch, key.track_id, before[0], unresolved[0], None, None, None,
+                                             f"face recognition {self._face_recognition.value}", now.ns)
+                          for key, before in self._reported.items() if before != unresolved)
+            self._reported = {}
+            return ended
+        changes = []
+        current: dict[TrackKey, tuple[str, str | None, str | None]] = {}
+        for track in tracks:
+            resolved = identities[track.key]
+            value = (resolved.state.value, resolved.identity_id, None if resolved.basis is None else resolved.basis.value)
+            current[track.key] = value
+            before = self._reported.get(track.key, unresolved)
+            if value != before:
+                changes.append(IdentityTransition(
+                    track.key.stream_epoch, track.key.track_id, before[0], value[0], value[1], value[2],
+                    None if resolved.last_vote_age_ns is None else resolved.last_vote_age_ns // NS_PER_MS,
+                    resolved.reason, now.ns))
+        for key, before in self._reported.items():
+            if key not in current and before[0] != IdentityState.UNRESOLVED.value:
+                changes.append(IdentityTransition(key.stream_epoch, key.track_id, before[0], "cleared", None, None,
+                                                  None, "track no longer current", now.ns))
+        self._reported = {key: value for key, value in current.items() if value != unresolved}
+        return tuple(changes)
+
+    def _occupancy(
+        self,
+        freshness: VideoFreshness,
+        tracks: tuple[TrackObservation, ...],
+        now: MonoInstant,
+    ) -> tuple[Occupancy, str]:
+        if freshness.state is not VideoState.FRESH:
+            return Occupancy.UNKNOWN, f"no fresh video ({freshness.state.value})"
+        if self._detector is not Capability.AVAILABLE:
+            return Occupancy.UNKNOWN, f"person detector {self._detector.value}"
+        # Tracks expire track_expiry after their last detection. Without a recent
+        # detector frame their absence means "not looked", not "nobody there".
+        last = self._last_detected
+        if (
+            last is None
+            or last.stream != freshness.live
+            or now.ns - last.ingest_mono_ns >= self._config.freshness.track_expiry_ns
+        ):
+            return Occupancy.UNKNOWN, "detector has not processed a recent frame"
+        count = _confirmed(tracks)
+        if count:
+            return Occupancy.OCCUPIED, f"{count} confirmed person(s) on fresh video"
+        return Occupancy.EMPTY, "nobody detected on fresh video"
+
+    def _publish(
+        self,
+        freshness: VideoFreshness,
+        tracks: tuple[TrackObservation, ...],
+        identities: dict[TrackKey, TrackIdentity],
+        occupancy: Occupancy,
+        occupancy_reason: str,
+        view: SceneView,
+        now: MonoInstant,
+        associations: Mapping[TrackKey, TrackAssociation] | None = None,
+        ended: Mapping[TrackKey, AssociationEnded] | None = None,
+    ) -> LiveState:
+        self._sequence += 1
+        if self._lane is None:
+            scene = SceneStatus.NO_CURRENT_RESULT
+            scene_reason = (
+                "scene analysis disabled"
+                if self._scene_problem is None
+                else f"scene analysis unavailable: {self._scene_problem}"
+            )
+        elif not self._scene_on:  # D99
+            scene, scene_reason = SceneStatus.NO_CURRENT_RESULT, "scene analysis turned off"
+        elif view.report is not None:
+            scene, scene_reason = SceneStatus.REPORTED, "current scene report"
+        elif view.evidence is not None:
+            scene = SceneStatus.UNKNOWN
+            scene_reason = f"last scene check {view.evidence.status.value}: {view.evidence.reason}"
+        else:
+            scene = SceneStatus.NO_CURRENT_RESULT
+            scene_reason = (
+                "no scene result yet"
+                if view.reason is None
+                else f"last scene result not current ({view.reason.value})"
+            )
+        age = freshness.last_frame_age_ns
+        return LiveState(
+            camera_id=self._config.camera.id,
+            sequence=self._sequence,
+            boot_id=now.boot_id,
+            published_mono_ns=now.ns,
+            published_utc=self._clock.utc_now(),
+            video=freshness.state,
+            last_frame_age_ms=None if age is None else age // NS_PER_MS,
+            detector=self._detector,
+            face_recognition=self._face_recognition,
+            scene_analysis=self._scene_capability(),
+            occupancy=occupancy,
+            occupancy_reason=occupancy_reason,
+            people=tuple(
+                PersonState(
+                    track_id=t.track_id,
+                    stream_epoch=t.frame.stream_epoch,
+                    box=t.box,
+                    status=t.status,
+                    predicted=t.predicted,
+                    last_measured_age_ms=(now.ns - t.last_measured_mono_ns) // NS_PER_MS,
+                    **self._identity_fields(identities[t.key]),
+                    identity_followed_ms=self._followed_ms(t, now),
+                    association=(associations or {}).get(t.key),
+                    association_ended=(ended or {}).get(t.key),
+                )
+                for t in tracks
+            ),
+            scene=scene,
+            scene_reason=scene_reason[:300],
+            scene_report=view.report,
+            scene_evidence_id=view.evidence.evidence_id if view.evidence is not None else None,
+        )
+
+    def _followed_ms(self, track: TrackObservation, now: MonoInstant) -> int | None:
+        """D97: how long the track has been followed without a break (None without a continuity monitor)."""
+        since = None if self._continuity is None else self._continuity.followed_since(track.key)
+        return None if since is None else max(0, now.ns - since) // NS_PER_MS
+
+    def _scene_capability(self) -> Capability:
+        if self._lane is not None:
+            return Capability.AVAILABLE if self._scene_on else Capability.DISABLED
+        return Capability.DISABLED if self._scene_problem is None else Capability.UNAVAILABLE
+
+    def _identity(self, track: TrackObservation, now: MonoInstant) -> TrackIdentity:
+        if self._face_recognition is not Capability.AVAILABLE:
+            return TrackIdentity(IdentityState.UNRESOLVED, None, f"face recognition {self._face_recognition.value}")
+        return self._identities.identity(track.key, now)
+
+    @staticmethod
+    def _identity_fields(resolved: TrackIdentity) -> dict[str, object]:
+        age = resolved.last_vote_age_ns
+        return {
+            "identity": resolved.state,
+            "identity_id": resolved.identity_id,
+            "identity_reason": resolved.reason,
+            "identity_basis": resolved.basis,
+            "identity_vote_age_ms": None if age is None else age // NS_PER_MS,
+        }
+
+
+def _confirmed(tracks: tuple[TrackObservation, ...]) -> int:
+    return sum(1 for t in tracks if t.status is TrackStatus.CONFIRMED)
+
+
+def _diagnostics(
+    frame: FrameRef,
+    persons: Sequence[TrackObservation],
+    faces: Sequence[FaceObservation],
+    face_of: dict[TrackKey, int],
+    votes: Sequence[VoteRecord],
+    geometry: Sequence[Any] = (),
+    shadow: Any = None,
+    policy: Any = None,
+) -> tuple[FaceDiagnostics, ...]:
+    """Each vote's person, in the votes' order: its box and confidence, its assigned face's size and score, and the
+    vote's similarity. Only numbers are taken from a face; its embedding stays where it is. D90: the similarity's
+    prototype position, and the assigned face's geometry when the face stage gave one per face (``geometry``). D91:
+    with a working gallery (``shadow``), its best similarity, prototype position and decision wherever the vote computed
+    one, decided with ``policy`` (the resolver's own)."""
+    by_key = {person.key: person for person in persons}
+    out = []
+    for vote in votes:
+        person = by_key[vote.key]
+        index = face_of.get(vote.key)
+        face = None if index is None else faces[index]
+        out.append(FaceDiagnostics(
+            (person.box.x1, person.box.y1, person.box.x2, person.box.y2), person.detector_confidence,
+            None if face is None else (round((face.box.x2 - face.box.x1) * frame.native_width),
+                                       round((face.box.y2 - face.box.y1) * frame.native_height)),
+            None if face is None else face.quality, vote.similarity, vote.prototype,
+            None if face is None else face_geometry_numbers(
+                face, geometry[index] if len(geometry) == len(faces) else None, frame.native_width,
+                frame.native_height),
+            None if shadow is None or face is None or vote.similarity is None else shadow.numbers(face, policy)))
+    return tuple(out)
+
+
+def face_geometry_numbers(face: FaceObservation, geometry: Any, width: int, height: int) -> dict[str, Any]:
+    """D90: one assigned face's geometry as numbers (validation records; never an image, embedding or name).
+
+    - ``box``: the corrected box the face was reported and associated with (normalized; clipped to the frame);
+    - ``raw_box``: the detector's own box, normalized and not clipped, so a value below 0 or above 1 reaches past
+      that edge; null when the face stage gave none, or when a value is not finite or lies outside RAW_BOUNDS (it is
+      then unavailable, never clipped into range);
+    - ``overhang_px``: how far the raw box reaches past the left, top, right and bottom edges, in frame pixels (0 when
+      it does not); null exactly when ``raw_box`` is. A raw box inside the frame does not establish that the face was:
+      a detector may fit its box to the visible part of a face;
+    - ``eyes``: the angle DeepFace's alignment computes from these landmarks, before its integer conversion
+      (degrees(atan2(left.y - right.y, left.x - right.x)), DeepFace's left eye being YuNet's columns 6-7), and the
+      distance between the eyes in frame pixels; null when either landmark is missing, not finite or out of bounds.
+    """
+    box = [round(v, DIAGNOSTIC_DECIMALS) for v in (face.box.x1, face.box.y1, face.box.x2, face.box.y2)]
+    raw = getattr(geometry, "raw_box", None)
+    raw_box = overhang = None
+    if raw is not None and _within_bounds(raw[0], raw[1], width, height) \
+            and _within_bounds(raw[0] + raw[2], raw[1] + raw[3], width, height) and raw[2] > 0 and raw[3] > 0:
+        x, y, w, h = raw
+        raw_box = [round(v, DIAGNOSTIC_DECIMALS) for v in (x / width, y / height, (x + w) / width, (y + h) / height)]
+        overhang = [round(max(0.0, v), GEOMETRY_PX_DECIMALS) for v in (-x, -y, x + w - width, y + h - height)]
+    right, left = getattr(geometry, "right_eye", None), getattr(geometry, "left_eye", None)
+    eyes = None
+    if right is not None and left is not None and _within_bounds(*right, width, height) \
+            and _within_bounds(*left, width, height):
+        eyes = {"roll_deg": round(math.degrees(math.atan2(left[1] - right[1], left[0] - right[0])),
+                                  GEOMETRY_PX_DECIMALS),
+                "spacing_px": round(math.hypot(left[0] - right[0], left[1] - right[1]), GEOMETRY_PX_DECIMALS)}
+    return {"box": box, "raw_box": raw_box, "overhang_px": overhang, "eyes": eyes}
+
+
+def _within_bounds(x: Any, y: Any, width: int, height: int) -> bool:
+    low, high = RAW_BOUNDS
+    try:
+        fx, fy = float(x), float(y)
+    except (TypeError, ValueError):
+        return False
+    return (math.isfinite(fx) and math.isfinite(fy) and low <= fx / width <= high and low <= fy / height <= high)
+
+
+def full_scale_numbers(full_scale: Any, frame: FrameRef, persons: Sequence[TrackObservation],
+                       geometry: AssociationGeometry) -> dict[str, Any] | None:
+    """D86: the diagnostic full-scale pass of one result, as numbers: how many faces scored at least
+    FULL_SCALE_COUNTED, how many of those the one-to-one association would give to a person on this frame, the best
+    candidate's score and width in frame pixels, and the pass's time. Never a vote, a box or an image."""
+    if full_scale is None:
+        return None
+    strong = [box for score, box in full_scale.candidates if score >= FULL_SCALE_COUNTED]
+    assigned = 0
+    if strong and persons:
+        faces = [FaceObservation(frame=frame.key, box=box, quality=1.0) for box in strong]
+        assigned = sum(o is Ownership.ASSIGNED for o in associate(persons, faces, geometry).face_ownership)
+    best = full_scale.candidates[0] if full_scale.candidates else None
+    return {"faces": len(strong), "assigned": assigned,
+            "best_score": None if best is None else round(best[0], DIAGNOSTIC_DECIMALS),
+            "best_w_px": None if best is None else round((best[1].x2 - best[1].x1) * frame.native_width),
+            "ms": round(full_scale.ms, 1)}
+
+
+def detection_numbers(detection: Any, frame: FrameRef) -> dict[str, Any] | None:
+    """D88: the full-scale detection candidate's own numbers for one result: the best detection under the 0.9 threshold
+    (its score and its width in frame pixels; never a face, a box or an image) and the times to detect and to embed
+    (None when no face was kept)."""
+    if detection is None:
+        return None
+    best = detection.best_below
+    return {"best_below_score": None if best is None else round(best[0], DIAGNOSTIC_DECIMALS),
+            "best_below_w_px": None if best is None else round((best[1].x2 - best[1].x1) * frame.native_width),
+            "detect_ms": round(detection.detect_ms, 1),
+            "embed_ms": None if detection.embed_ms is None else round(detection.embed_ms, 1)}
