@@ -1,5 +1,10 @@
 # Sentinel personal beta: quick start
 
+> **2026-11-15: this page describes the maintainer's own device and private launcher, as written on 2026-11-11.** For
+> installing on another Jetson, use the tester package and its guide instead:
+> [`packaging/beta-install/QUICKSTART.md`](../packaging/beta-install/QUICKSTART.md). That package is experimental and
+> validates nothing; the statements below about what cannot be reproduced refer to this private launcher.
+
 Private, local use only. This is the build the maintainer accepted for personal use on 2026-11-11: code `949da67` on
 branch `v2-ui-refresh`, run by the private launcher `live-observe-949da67`. It **validates and admits nothing**: face
 recognition, identity retention and chat run as experimental validation-run features, and their status labels are

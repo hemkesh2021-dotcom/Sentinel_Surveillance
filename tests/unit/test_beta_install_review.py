@@ -582,7 +582,12 @@ def test_a_release_with_no_usable_file_is_refused_by_the_lock_tool_ir8() -> None
 
 GUARD = "benchmarks/runner/step5_guard.py"
 ROUTE = ("src/sentinel/cli.py", "src/sentinel/demo_runtime.py", "src/sentinel/device_artifacts.py")
-NEW_PACKAGE_FILES: tuple = ("guarded-build.sh", "lib/guarded_build.py", "lib/guarded_run.py")  # since revision 5
+VERSION_FILE = "src/sentinel/__init__.py"  # the fifth changed file: the version string only
+NEW_PACKAGE_FILES: tuple = ("README.md", "THIRD_PARTY_NOTICES.md")  # since revision 6
+SINCE_REAL_EVIDENCE: tuple = (  # the package's own files that revision 5, which ran for real, did not have in this form
+    "QUICKSTART.md", "README.md", "THIRD_PARTY_NOTICES.md", "build-engine.sh", "build-llama.sh", "fetch-assets.sh",
+    "guarded-build.sh", "identity.sh", "install.sh", "lib/beta.py", "lib/common.sh", "lib/guarded_build.py",
+    "lib/guarded_run.py", "preflight.sh", "record-artifacts.sh", "setup-env.sh", "start.sh", "uninstall.sh")
 REAL_RECORD = ("src/sentinel/demo_runtime.py", "src/sentinel/device_artifacts.py")  # ran once on a real record
 
 
@@ -607,12 +612,12 @@ def test_the_package_ships_the_corrected_guard_and_names_it_as_changed() -> None
     assert b"PR_SET_CHILD_SUBREAPER" in packaged and b"llama_server_unresolved" in packaged
     assert b"backend.kill(pid, signum)" in accepted and b"backend.kill(" not in packaged  # the cleanup by name is gone
     version = members["VERSION"].decode().splitlines()
-    changed = sorted([GUARD, *ROUTE])
+    changed = sorted([GUARD, *ROUTE, VERSION_FILE])
     assert sorted(build.CHANGED_SINCE_ACCEPTED) == changed
     mark = build.modification_mark({path: sha256(members[f"app/{path}"]) for path in changed})
     assert name == f"sentinel-personal-beta-949da67-mod{mark[:7]}-r0-worktree" and version[0] == name
     assert f"accepted_code_commit={build.ACCEPTED}" in version and f"modification_mark={mark}" in version
-    assert ("application=the accepted code with 4 file(s) changed or added after acceptance (below); this is NOT the "
+    assert ("application=the accepted code with 5 file(s) changed or added after acceptance (below); this is NOT the "
             "unchanged accepted build") in version
     assert f"changed_file=app/{GUARD} accepted_sha256={sha256(accepted)} packaged_sha256={sha256(packaged)}" in version
     assert any(line.startswith(f"changed_file_reason=app/{GUARD}: process ownership") for line in version)
@@ -622,8 +627,14 @@ def test_the_package_ships_the_corrected_guard_and_names_it_as_changed() -> None
     # every other application file is the accepted commit's, by content
     application = {path[len("app/"):]: content for path, content in members.items() if path.startswith("app/")}
     assert build.differing(build.blobs(build.ACCEPTED, build.APP_TREE, *build.GUARD_FILES), application) == changed
-    assert (f"unchanged_from_accepted={len(application) - 4} application files: every other file under app/src/sentinel "
+    assert (f"unchanged_from_accepted={len(application) - 5} application files: every other file under app/src/sentinel "
             "and app/benchmarks/runner") in version
+    # the fifth: one line of one file, the version string, and the package says so
+    was, now = build.git("show", f"{build.ACCEPTED}:{VERSION_FILE}").decode(), members[f"app/{VERSION_FILE}"].decode()
+    assert now == was.replace('__version__ = "2.0.0a2"', '__version__ = "2.0.0a3"') != was
+    assert any(line.startswith(f"changed_file_reason=app/{VERSION_FILE}: the version string only") and
+               "nothing else reads it" in line for line in version)
+    assert "application_version=2.0.0a3" in version
     assert "The accepted guard itself has already stopped" not in members["start.sh"].decode()
 
 
@@ -643,7 +654,7 @@ def test_the_version_names_every_file_of_the_route_and_every_package_file_that_c
         if path in REAL_RECORD:
             # what read and judged the reference device's real record on 2026-11-15 was revision 5: the statement
             # holds only while these are the same bytes that revision 5 packaged
-            assert packaged == sha256(build.git("show", f"{build.PREVIOUS_PACKAGE_COMMIT}:{path}")), path
+            assert packaged == sha256(build.git("show", f"{build.REAL_EVIDENCE_PACKAGE_COMMIT}:{path}")), path
             run_with = next(line for line in version if line.startswith(f"changed_file_run_with=app/{path}: "))
             assert ("synthetic tests (temporary directories, synthetic files, stand-ins); and once on the reference "
                     "device, with revision 5 and these same bytes:") in run_with, path
@@ -652,11 +663,14 @@ def test_the_version_names_every_file_of_the_route_and_every_package_file_that_c
             assert (f"changed_file_run_with=app/{path}: synthetic tests on the reference device only (temporary "
                     "directories, synthetic files, stand-ins); never on another device, and no run with a camera or "
                     "a model has used it") in version, path
-    # the package's own files against revision 5's: the revision that ran for real on the reference device
-    assert build.PREVIOUS_PACKAGE_NAME == "sentinel-personal-beta-949da67-mod79c18d4-r5"
-    assert build.git("rev-parse", "--verify", f"{build.PREVIOUS_PACKAGE_COMMIT}^{{commit}}").decode().strip() == build.PREVIOUS_PACKAGE_COMMIT
-    own = {path: content for path, content in members.items()
-           if not path.startswith("app/") and path not in ("VERSION", "SHA256SUMS")}
+    # the package's own files against revision 6's (the previous one), and against revision 5's (which ran for real)
+    assert build.PREVIOUS_PACKAGE_NAME == "sentinel-personal-beta-949da67-mod79c18d4-r6"
+    assert build.REAL_EVIDENCE_PACKAGE_NAME == "sentinel-personal-beta-949da67-mod79c18d4-r5"
+    for commit in (build.PREVIOUS_PACKAGE_COMMIT, build.REAL_EVIDENCE_PACKAGE_COMMIT):
+        assert build.git("rev-parse", "--verify", f"{commit}^{{commit}}").decode().strip() == commit
+    assert build.git("merge-base", "--is-ancestor", build.REAL_EVIDENCE_PACKAGE_COMMIT, build.PREVIOUS_PACKAGE_COMMIT) == b""
+    own = {path: content for path, content in members.items()  # LICENSE is the repository's file, named apart
+           if not path.startswith("app/") and path not in ("VERSION", "SHA256SUMS", "LICENSE")}
     previous = {path[len(build.PACKAGE_SOURCE) + 1:]: blob
                 for path, blob in build.blobs(build.PREVIOUS_PACKAGE_COMMIT, build.PACKAGE_SOURCE).items()}
     differs = build.differing(previous, own)
@@ -669,10 +683,30 @@ def test_the_version_names_every_file_of_the_route_and_every_package_file_that_c
                sha256(build.git("show", f"{build.PREVIOUS_PACKAGE_COMMIT}:{build.PACKAGE_SOURCE}/{path}")))
         assert f"package_file_changed={path} previous_sha256={was} packaged_sha256={sha256(own[path])}" in version, path
         assert any(line.startswith(f"package_file_changed_reason={path}: ") and len(line) > len(path) + 40 for line in version)
+    assert differs == ["QUICKSTART.md", *NEW_PACKAGE_FILES]  # documents only: every script, helper and pin is revision 6's
     for path in ("stop.sh", "check.sh", "configure.sh", "lib/hostprep.py", "lib/features.py", "templates/live.yaml",
                  "lib/artifacts.py", "lib/admission_check.py", "manifest/assets.json", "manifest/requirements-pypi.txt",
-                 "manifest/requirements-jetson.txt"):
+                 "manifest/requirements-jetson.txt", "start.sh", "install.sh", "uninstall.sh", "setup-env.sh",
+                 "fetch-assets.sh", "build-llama.sh", "build-engine.sh", "guarded-build.sh", "record-artifacts.sh",
+                 "identity.sh", "preflight.sh", "lib/beta.py", "lib/common.sh", "lib/guarded_build.py", "lib/guarded_run.py"):
         assert path in own and not any(line.startswith(f"package_file_changed={path} ") for line in version), path
+    # computed by the builder, not declared: what revision 5, the one revision that ran for real, did not have
+    evidence = {path[len(build.PACKAGE_SOURCE) + 1:]: blob
+                for path, blob in build.blobs(build.REAL_EVIDENCE_PACKAGE_COMMIT, build.PACKAGE_SOURCE).items()}
+    assert build.differing(evidence, own) == sorted(SINCE_REAL_EVIDENCE)
+    assert (f"package_files_without_real_device_evidence={len(SINCE_REAL_EVIDENCE)} of the package's own files differ from "
+            f"{build.REAL_EVIDENCE_PACKAGE_NAME} (package_commit {build.REAL_EVIDENCE_PACKAGE_COMMIT}), the only revision "
+            f"that ran for real, or are new since: {' '.join(sorted(SINCE_REAL_EVIDENCE))}; and LICENSE, which no "
+            "earlier revision held") in version
+    # the licence travels with the package: the repository's own file, named with its checksum; nothing private is said
+    assert members["LICENSE"] == (REPO / "LICENSE").read_bytes() and members["LICENSE"].startswith(b"MIT License\n")
+    assert f"{sha256(members['LICENSE'])}  LICENSE\n" in members["SHA256SUMS"].decode()
+    licence = next(line for line in version if line.startswith("license="))
+    assert licence.startswith(f"license=MIT for the files in this package (LICENSE, sha256 {sha256(members['LICENSE'])}:")
+    assert "are not in this package and keep their own licences" in licence and "AGPL-3.0" in licence
+    assert "status=experimental tester pre-release; validates and admits nothing; not accepted for production" in version
+    for gone in ("private", "redistribution", "maintainer's testers"):
+        assert gone not in "\n".join(version), gone
     # the recipe and the record's tools are revision 5's: the pins, the manifest and the record code did not change
     for path in NEW_PACKAGE_FILES:
         assert f"package_file_changed={path} previous_sha256=absent (a new file) packaged_sha256=" in "\n".join(version)
@@ -696,10 +730,10 @@ def test_the_version_names_every_file_of_the_route_and_every_package_file_that_c
     # the guide a tester reads names this package, and says what is not the accepted build's and what is not validated
     released, _ = build.package_members(build.DEFAULT_REVISION, worktree=True)
     released = released[:-len("-worktree")]
-    assert released.endswith("-r6")
+    assert released.endswith("-r7") and build.DEFAULT_REVISION == 7
     guide = members["QUICKSTART.md"].decode()
     assert f"tar -xzf {released}.tar.gz && cd {released}\n" in guide
-    assert "**Four application files are not the accepted build's.**" in guide and "stops every `llama-server`" not in guide
+    assert "**Five application files are not the accepted build's.**" in guide and "stops every `llama-server`" not in guide
     for said_in_the_guide in ("**never been run on another device**", "**It does not validate your device.**",
                               "**The launch gates and the guard's limits are limits, not evidence**",
                               "**Only typing START opens the camera.**", "bash record-artifacts.sh",
@@ -716,9 +750,9 @@ def test_the_version_names_every_file_of_the_route_and_every_package_file_that_c
      "as changed; changed but not declared: src/sentinel/cli.py"),
     ("CHANGED_SINCE_ACCEPTED", "drop:src/sentinel/device_artifacts.py", "changed but not declared: src/sentinel/device_artifacts.py"),
     ("CHANGED_SINCE_ACCEPTED", "add:src/sentinel/config.py", "declared but identical: src/sentinel/config.py"),
-    ("PACKAGE_FILES_CHANGED", "drop:build-llama.sh",
-     "the package's own files that differ from sentinel-personal-beta-949da67-mod79c18d4-r5 are not exactly the ones "
-     "this package declares as changed; changed but not declared: build-llama.sh"),
+    ("PACKAGE_FILES_CHANGED", "drop:README.md",
+     "the package's own files that differ from sentinel-personal-beta-949da67-mod79c18d4-r6 are not exactly the ones "
+     "this package declares as changed; changed but not declared: README.md"),
     ("PACKAGE_FILES_CHANGED", "drop:QUICKSTART.md", "changed but not declared: QUICKSTART.md"),
     ("PACKAGE_FILES_CHANGED", "add:stop.sh", "declared but identical: stop.sh"),
 ])

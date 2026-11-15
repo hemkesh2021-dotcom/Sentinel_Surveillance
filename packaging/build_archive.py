@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Builds the private personal-beta installation archive from this branch. Standard library only.
+"""Builds the personal-beta installation archive from this branch: the tester package that is attached to an
+experimental pre-release. Standard library only.
 
 usage: python3 -B packaging/build_archive.py --out DIR [--revision N]
 
@@ -11,9 +12,11 @@ What goes in, and nothing else:
     so: its name carries a modification mark, and VERSION names each one with both SHA-256 values, the reason, and
     what has and has not been run with it. A package with a changed file is never named or described as the accepted
     build;
+  - LICENSE: the repository's own licence file, as committed. What the package's scripts download keeps its own
+    licences and is not packaged; packaging/beta-install/THIRD_PARTY_NOTICES.md lists it;
   - VERSION (what this package is) and SHA256SUMS (every other file in it). VERSION also names every one of the
     package's own files that differs from the previous revision's (PACKAGE_FILES_CHANGED), with both SHA-256 values
-    and the reason.
+    and the reason, and every one that differs from the revision that ran for real on the reference device.
 It refuses to build when the application files that differ from ACCEPTED, or the package's own files that differ from
 the previous revision, are not exactly the declared ones (one more, or a declared one that does not differ), or when
 anything that would be packaged has uncommitted changes. It reads no gallery, enrollment, observation, key,
@@ -37,6 +40,8 @@ from pathlib import Path
 
 ACCEPTED = "949da67e8a172e8295528fd756aea30e703d1948"  # the accepted implementation (session 116, part 35)
 PACKAGE_SOURCE = "packaging/beta-install"
+LICENSE_FILE = "LICENSE"  # the repository's licence, packaged at the top of the archive
+VERSION_FILE = "src/sentinel/__init__.py"  # holds the application's version string
 GUARD_FILES = ("benchmarks/runner/step5_guard.py", "benchmarks/runner/operator_check.py",
                "benchmarks/runner/demo_profile.py", "benchmarks/runner/step4_criteria.py")
 APP_TREE = "src/sentinel"
@@ -76,73 +81,37 @@ CHANGED_SINCE_ACCEPTED = {
         "the recorded engine's SHA-256 as its pin. Without the option the command decides as before, with one "
         "difference in how it is typed: the abbreviation --d, which used to select --data-dir, is now ambiguous",
         _ROUTE_RUN_WITH),
+    VERSION_FILE: (
+        "the version string only (session 116, part 48): 2.0.0a3, for the experimental pre-release v2.0.0-alpha.3, "
+        "where the accepted commit has 2.0.0a2. `sentinel --version` prints it and nothing else reads it; no "
+        "behaviour, threshold, guard or admission rule is changed",
+        "the package's tests only; no run on any device with a camera or a model has used it"),
 }
 # The package's own files (under PACKAGE_SOURCE) that differ from the previous revision's, or that it did not have:
 # path -> what changed. The builder refuses unless exactly these differ from PREVIOUS_PACKAGE_COMMIT.
-PREVIOUS_PACKAGE_COMMIT = "34809141654f4d7729e72cb6a5ce0eb6fadf1125"
-PREVIOUS_PACKAGE_NAME = "sentinel-personal-beta-949da67-mod79c18d4-r5"
-_LOCAL = ("PIP_CACHE_DIR, XDG_CACHE_HOME, XDG_CONFIG_HOME, XDG_DATA_HOME, HF_HOME, TORCH_HOME, YOLO_CONFIG_DIR, "
-          "DEEPFACE_HOME, CUDA_CACHE_PATH, KERAS_HOME, MPLCONFIGDIR and TMPDIR")
+PREVIOUS_PACKAGE_COMMIT = "f283632a8f85440ab279d34dcf3eeabe968a0b7c"
+PREVIOUS_PACKAGE_NAME = "sentinel-personal-beta-949da67-mod79c18d4-r6"
+# The one revision that ran for real (the camera-free rehearsal on the reference device, 2026-11-13 to 2026-11-15).
+# VERSION names every file of the package that differs from it: those files have real-device evidence from nobody.
+REAL_EVIDENCE_PACKAGE_COMMIT = "34809141654f4d7729e72cb6a5ce0eb6fadf1125"
+REAL_EVIDENCE_PACKAGE_NAME = "sentinel-personal-beta-949da67-mod79c18d4-r5"
 PACKAGE_FILES_CHANGED = {
-    "QUICKSTART.md": "rewritten as one sequence for a tester: prerequisites and the TensorRT Python binding (the "
-                     "extraction route used on the reference device, with its source, version and SHA-256); archive "
-                     "verification and installation; where the installation keeps its files; the environment and the "
-                     "downloads; manual memory preparation and the guarded builds, with the reference device's "
-                     "observations kept apart from the chosen 5 GiB preparation figure and from the unmeasured "
-                     "minimum; enrollment; settings; record and check; launch; limits; uninstall and recovery; which "
-                     "steps touch a camera or face data; what ran for real with revision 5 and what was verified "
-                     "offline only for this revision",
-    "lib/beta.py": "installation-local caches: two more names the installer owns (cache, tmp); a new command, "
-                   "local-env, which records, makes and checks <prefix>/cache/... and <prefix>/tmp and prints the "
-                   "variables lib/common.sh exports (a link, a directory the installer did not make, or a place that "
-                   "resolves outside the installation is refused); uninstall removes both in both of its forms; "
-                   "configure shows the two folders. Every other command is as it was",
-    "lib/common.sh": f"a new function, beta_local_env: {_LOCAL} are exported as directories inside the installation, "
-                     "for the script and for everything it starts, before anything is imported; a value inherited "
-                     "from the shell is replaced for that run and named once, and seven variables that would move "
-                     "such a place again are removed; HOME is not changed",
-    "setup-env.sh": "calls beta_local_env before anything is downloaded or imported, so that pip's download cache "
-                    "and the libraries' caches stay inside the installation; the environment is created, and its "
-                    "package directory read, without writing bytecode outside it. The pinned requirements, their "
-                    "order and the import check are unchanged",
-    "fetch-assets.sh": "calls beta_local_env before the downloads; what is downloaded and how it is checked is "
-                       "unchanged",
-    "build-llama.sh": "calls beta_local_env before cloning and building; states the one measured build (53 minutes "
-                      "with two jobs on the reference device) instead of an unmeasured 45 minutes; names "
-                      "guarded-build.sh. The repository, the pinned commit, the options and the note are unchanged",
-    "build-engine.sh": "calls beta_local_env before the export; its comments and two messages state what was "
-                       "observed on the reference device in three attempts (a failure with too little free memory, a "
-                       "monitor stop after 136 s, one export completed in 187 s) instead of 'a few minutes', and "
-                       "that the least the export needs was not measured; names guarded-build.sh. The export call, "
-                       "its settings from the asset manifest, the 1,500,000,000 B start check, the BUILD "
-                       "confirmation and the note are unchanged",
-    "record-artifacts.sh": "calls beta_local_env before the record is made; the record and its checks are unchanged",
-    "identity.sh": "calls beta_local_env before the enrollment command; the face weights' own place is named on the "
-                   "command as before",
-    "start.sh": "calls beta_local_env after the package check, in both modes, so that the check's temporary "
-                "directory and the caches of everything a launch starts are inside the installation; check mode "
-                "prints the places in effect (local_env lines). Every gate, limit and prompt, the guard's options "
-                "and the runtime's command are unchanged",
-    "install.sh": "its closing list of next steps names guarded-build.sh for the two builds; nothing else",
-    "preflight.sh": "the failure line for a missing TensorRT Python binding also points to the guide's extraction "
-                    "route; no check is changed",
-    "uninstall.sh": "its header says that cache and tmp are removed too and what the data directory keeps; the "
-                    "command it runs is unchanged",
-    "guarded-build.sh": "a new file: runs build-llama.sh or build-engine.sh, unchanged, under the memory monitor "
-                        "(lib/guarded_build.py, lib/guarded_run.py), with --check, --status and --stop; it uses no "
-                        "sudo, stops no service and frees no memory",
-    "lib/guarded_build.py": "a new file: the front end of guarded-build.sh, reduced from the installation "
-                            "rehearsal's runner: start conditions (for the engine step a 5 GiB MemFree preparation "
-                            "figure, chosen and not measured; no model server, runtime or other build running), a "
-                            "typed BUILD, the monitor in a session of its own, a stop relayed to the step's first "
-                            "process, the result in <data dir>/builds/. Run with stand-in scripts only",
-    "lib/guarded_run.py": "a new file: the installation rehearsal's memory monitor, byte for byte (SHA-256 "
-                          "f7f23e4ae5db944d37bcc8db26ec53c4c96a2e9929566bfe0ddc8cb1b721045b): the file that "
-                          "supervised the reference device's engine export attempts of 2026-11-14 (stopped at its "
-                          "MemFree limit) and 2026-11-15 (completed). It samples memory five times a second, stops "
-                          "the step at the limits it is given and signals only the processes that step owns",
+    "QUICKSTART.md": "the guide for the public tester pre-release: the line that restricted who may receive the "
+                     "package is replaced by its status and licence; where the archive is downloaded "
+                     "from; the fifth changed application file (the version string); which revision ran for real "
+                     "(5), which packaging changes were checked offline (6) and what this revision changes; the "
+                     "problem report now points to the public issue form and says what must stay out of it; a "
+                     "section on licences. No step, command, limit or figure of the procedure is changed",
+    "README.md": "a new file: the archive's entry point. What the package is and is not, what has and has not been "
+                 "run, what a tester supplies, which steps touch a camera or face data, the licence, how to report "
+                 "a problem",
+    "THIRD_PARTY_NOTICES.md": "a new file: the Python packages and model files the scripts download and the software "
+                              "built on the device, none of them in the archive, each with its upstream source, "
+                              "pinned revision and licence as upstream states it (AGPL-3.0 for Ultralytics and the "
+                              "detector weights, the LFM Open License v1.0, NVIDIA's agreements, MIT, BSD, Apache-2.0, "
+                              "MPL-2.0 and others)",
 }
-DEFAULT_REVISION = 6
+DEFAULT_REVISION = 7
 EXECUTABLE = (".sh",)
 REPO = Path(__file__).resolve().parents[1]
 
@@ -208,7 +177,7 @@ def package_members(revision: int, *, worktree: bool = False) -> tuple[str, dict
     else:
         app_files = tracked(APP_TREE) + list(GUARD_FILES)
         package_files = tracked(PACKAGE_SOURCE)
-        if git("status", "--porcelain", "--", APP_TREE, *GUARD_FILES, PACKAGE_SOURCE).strip():
+        if git("status", "--porcelain", "--", APP_TREE, *GUARD_FILES, PACKAGE_SOURCE, LICENSE_FILE).strip():
             raise SystemExit("STOP: uncommitted changes under the packaged paths; commit them first")
     application_files = {path: read(path, worktree) for path in app_files}
     own_files = {path[len(PACKAGE_SOURCE) + 1:]: read(path, worktree) for path in package_files}
@@ -220,7 +189,15 @@ def package_members(revision: int, *, worktree: bool = False) -> tuple[str, dict
     previous = {path[len(PACKAGE_SOURCE) + 1:]: blob for path, blob in blobs(PREVIOUS_PACKAGE_COMMIT, PACKAGE_SOURCE).items()}
     declared_exactly(differing(previous, own_files), PACKAGE_FILES_CHANGED,
                      f"the package's own files that differ from {PREVIOUS_PACKAGE_NAME}")
+    if LICENSE_FILE in own_files:
+        raise SystemExit(f"STOP: {PACKAGE_SOURCE}/{LICENSE_FILE} would hide the repository's own {LICENSE_FILE}")
+    licence = read(LICENSE_FILE, worktree)
+    version_line = [line for line in application_files[VERSION_FILE].decode().splitlines() if line.startswith("__version__ = ")]
+    if len(version_line) != 1:
+        raise SystemExit(f"STOP: {VERSION_FILE} does not hold exactly one __version__ line")
+    app_version = version_line[0].split('"')[1]
     members: dict[str, bytes] = dict(own_files)
+    members[LICENSE_FILE] = licence
     for path, content in application_files.items():
         members[f"app/{path}"] = content
     changed = sorted(CHANGED_SINCE_ACCEPTED)
@@ -255,13 +232,28 @@ def package_members(revision: int, *, worktree: bool = False) -> tuple[str, dict
         own += (f"package_file_changed={path} previous_sha256={was} "
                 f"packaged_sha256={hashlib.sha256(own_files[path]).hexdigest()}\n"
                 f"package_file_changed_reason={path}: {PACKAGE_FILES_CHANGED[path]}\n")
+    # computed, never declared: every file of the package that the revision with real-device evidence did not have
+    # in this form. Whatever is named here has not run for real anywhere
+    evidence = {path[len(PACKAGE_SOURCE) + 1:]: blob
+                for path, blob in blobs(REAL_EVIDENCE_PACKAGE_COMMIT, PACKAGE_SOURCE).items()}
+    unproven = differing(evidence, own_files)
+    own += (f"package_files_without_real_device_evidence={len(unproven)} of the package's own files differ from "
+            f"{REAL_EVIDENCE_PACKAGE_NAME} (package_commit {REAL_EVIDENCE_PACKAGE_COMMIT}), the only revision that "
+            f"ran for real, or are new since: {' '.join(unproven)}; and {LICENSE_FILE}, which no earlier revision "
+            "held\n")
     version = (f"{name}\n"
                f"accepted_code_commit={ACCEPTED}\n"
                f"{application}"
                f"{own}"
                f"package_commit={head}{' (working tree, not a release)' if worktree else ''}\n"
                f"package_revision={revision}\n"
-               "status=private personal beta; validates and admits nothing; not for redistribution\n"
+               f"application_version={app_version}\n"
+               "status=experimental tester pre-release; validates and admits nothing; not accepted for production\n"
+               f"license=MIT for the files in this package ({LICENSE_FILE}, sha256 {hashlib.sha256(licence).hexdigest()}: "
+               "the repository's own licence file at the package commit). The Python packages and model files that "
+               "its scripts download, and what is built on the device, are not in this package and keep their own "
+               "licences, among them AGPL-3.0, the LFM Open License v1.0 and NVIDIA's agreements "
+               "(THIRD_PARTY_NOTICES.md)\n"
                "launch=the default admission admits only the reference device's own detector engine, llama.cpp build "
                "and model-file copies, and REFUSES on another Jetson. The opt-in device-artifacts route "
                "(QUICKSTART.md, section 1) identifies a tester's own files for experimental validation runs and "
@@ -276,7 +268,10 @@ def package_members(revision: int, *, worktree: bool = False) -> tuple[str, dict
                "and one monitor stop), the record and its verification. One device, one completed export: the least "
                "memory and the time an export needs are not known\n"
                "this_revision_verified=offline only: the package's tests, with temporary directories, synthetic "
-               "files and stand-ins. No file of this revision that differs from revision 5 (above) has run a "
+               "files and stand-ins. That holds for revision 6's packaging changes (the installation's own cache "
+               "locations, guarded-build.sh) and for this revision's (documentation, licence and notice files, the "
+               "version string) alike: no file of this revision that differs from revision 5 "
+               "(package_files_without_real_device_evidence above, and the application's version file) has run a "
                "download, a build, an export, a model or a camera on any device\n")
     members["VERSION"] = version.encode()
     sums = "".join(f"{hashlib.sha256(members[path]).hexdigest()}  {path}\n" for path in sorted(members))
@@ -330,12 +325,12 @@ def build(out: Path, revision: int) -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--out", type=Path, required=True, help="a private directory outside the repository")
+    parser.add_argument("--out", type=Path, required=True, help="a directory outside the repository")
     parser.add_argument("--revision", type=int, default=DEFAULT_REVISION)
     args = parser.parse_args()
     out = args.out.expanduser().resolve()
     if REPO == out or REPO in out.parents:
-        raise SystemExit("STOP: --out must be outside the repository: the archive is private and is never committed")
+        raise SystemExit("STOP: --out must be outside the repository: an archive is never committed")
     build(out, args.revision)
     return 0
 

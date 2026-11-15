@@ -8,17 +8,18 @@
 > **never been run on another device**. Section 1 says exactly what it does and does not do. Nothing in this package
 > works around admission, and you must not either (no copied private files, no changed file times, no edited record).
 
-Private, for the maintainer's testers only; not for redistribution. It validates and admits nothing: face recognition,
-identity retention and chat run as experimental validation-run features, exactly as in the build it was made from
-(code `949da67`). Snapshots and external notifications are off. Testing with more than one person is deferred.
+An experimental tester pre-release (Sentinel v2.0.0-alpha.3, application version `2.0.0a3`), under the MIT License
+(`LICENSE`; section 15). It validates and admits nothing: face recognition, identity retention and chat run as
+experimental validation-run features, exactly as in the build it was made from (code `949da67`). Snapshots and
+external notifications are off. Testing with more than one person is deferred.
 
 **Nothing private comes with it:** no gallery or enrollment, no camera address or credential, no detector engine, no
 llama.cpp build, no device-artifacts record, no observation data. You download the pinned model files, build the
 two device-specific files and record your own artifacts on your own device.
 
-**Four application files are not the accepted build's.** The package's name carries a modification mark (`-mod…`)
+**Five application files are not the accepted build's.** The package's name carries a modification mark (`-mod…`)
 for that reason, and `VERSION` names each of them with the accepted and the packaged SHA-256, and every file of the
-package itself that changed since revision 5. Everything else under `app/` equals `949da67`.
+package itself that changed since revision 6. Everything else under `app/` equals `949da67`.
 
 - The memory guard (`app/benchmarks/runner/step5_guard.py`): when a run ends it signals only the processes that run
   started, and no longer every `llama-server` of your user. Its memory limits, readiness checks and deadlines are
@@ -26,16 +27,20 @@ package itself that changed since revision 5. Everything else under `app/` equal
 - The device-artifacts route: `app/src/sentinel/device_artifacts.py` (a new file) and its wiring in
   `app/src/sentinel/demo_runtime.py` and `app/src/sentinel/cli.py`. Without `--device-artifacts` the runtime decides
   exactly as the accepted build does.
+- The version string (`app/src/sentinel/__init__.py`): `2.0.0a3`. `sentinel --version` prints it; nothing else
+  reads it.
 
 **What has run where.** Revision 5 of this package ran for real on the reference device, without a camera: the
 installation, the Python environment, the downloads, both builds, the record of the built files, its verification
-and the route's admission decision (section 14 has the details). This revision differs from revision 5 in the files
-`VERSION` lists; **those changes were verified offline only**, with temporary directories and stand-ins. No guarded
-run with a camera or a model has used the changed guard, and no launch has ever been made from this package.
+and the route's admission decision (section 14 has the details). Revision 6 changed the packaging (the
+installation's own cache locations, `guarded-build.sh`). This revision changed the documentation, added the licence
+and notice files and set the version string. `VERSION` lists the files; **those changes were verified offline
+only**, with temporary directories and stand-ins. No guarded run with a camera or a model has used the changed
+guard, and no launch has ever been made from this package.
 
 The steps, in order: prerequisites (2) → install (3) → environment and downloads (4) → the two builds (5) → your
-enrollment (6) → settings (7) → record and check (8) → launch (9). Sections 10 to 14: limits, uninstall, which
-steps touch a camera or face data, the bug report, and what was verified.
+enrollment (6) → settings (7) → record and check (8) → launch (9). Sections 10 to 15: limits, uninstall, which
+steps touch a camera or face data, reporting a problem, what was verified, and the licences.
 
 ## 1. Your own device: what the default refuses, and the opt-in route
 
@@ -146,12 +151,13 @@ build, the matching `python3-libnvinfer` version is the one to try; that was not
 
 ## 3. Install
 
-Check the archive against the checksum file that came with it, extract it anywhere, then, as your own user (never
-with sudo):
+Download the archive and its `.sha256` file from the release page
+(<https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases>) into one folder. Check the archive against
+the checksum file, extract it anywhere, then, as your own user (never with sudo):
 
 ```bash
-sha256sum -c sentinel-personal-beta-949da67-mod79c18d4-r6.tar.gz.sha256
-tar -xzf sentinel-personal-beta-949da67-mod79c18d4-r6.tar.gz && cd sentinel-personal-beta-949da67-mod79c18d4-r6
+sha256sum -c sentinel-personal-beta-949da67-mod191a193-r7.tar.gz.sha256
+tar -xzf sentinel-personal-beta-949da67-mod191a193-r7.tar.gz && cd sentinel-personal-beta-949da67-mod191a193-r7
 bash preflight.sh        # reads facts only; changes nothing
 bash install.sh          # defaults: ~/sentinel-beta (the installation) and ~/sentinel-beta-data (your data)
 ```
@@ -198,7 +204,7 @@ directories you chose.
   under your home directory and environment variables such as a proxy's are untouched.
 - **Not covered:** programs you start yourself outside these scripts, and what the camera or your browser keep.
 
-This part is new in this revision and was verified offline only (section 14).
+This part was new in revision 6 and was verified offline only (section 14).
 
 ## 4. The Python environment and the pinned downloads
 
@@ -490,9 +496,13 @@ window with `stop.sh` (section 9).
 
 Nothing is enrolled, opened or sent anywhere automatically. Snapshots and external notifications stay off.
 
-## 13. Bug report template
+## 13. Reporting a problem
 
-Keep it free of the camera address, passwords, the passphrase, the control key, names and pictures.
+Open an installation issue:
+<https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/issues/new?template=installation-issue.md>. It asks for
+what is below. **The tracker is public.** Keep the report free of the camera address, passwords, the passphrase, the
+control key, names, pictures, footage and your enrollment, and paste single lines rather than whole log files
+(`guard/run.err` can name your camera's host).
 
 ```text
 When (UTC):
@@ -518,10 +528,12 @@ under the monitor that is now `lib/guarded_run.py`; the device-artifacts record 
 verification, and the route's admission decision for that record. In that rehearsal the caches and temporary files
 were kept inside its own directory by a file of the rehearsal's, not by the package.
 
-**This revision's own changes, offline only** (temporary directories, synthetic files, stand-ins; the package's
-tests): the installation's own cache, settings and temporary locations in every script; `guarded-build.sh` and its
-front end, with the monitor unchanged; uninstall removing `cache/` and `tmp/`; this guide. **Nothing of this revision
-has run a download, a build, an export, a model or a camera on any device.**
+**Revision 6's and this revision's changes, offline only** (temporary directories, synthetic files, stand-ins; the
+package's tests). Revision 6: the installation's own cache, settings and temporary locations in every script;
+`guarded-build.sh` and its front end, with the monitor unchanged; uninstall removing `cache/` and `tmp/`. This
+revision: this guide's wording, `README.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md` and the application's version
+string. **Nothing that revision 6 or this revision changed has run a download, a build, an export, a model or a
+camera on any device.**
 
 **Not verified:** anything on another device; stock JetPack 6 on Ubuntu 22.04 (JetPack's `python3-libnvinfer`
 installed with apt, cuDSS from NVIDIA's repository); the complete `check.sh` on real builds (the rehearsal has no
@@ -531,3 +543,15 @@ processes is covered by synthetic tests and by tests with small stand-in process
 time the builds need; **any device's resources but the reference device's**: no resource profile, memory level,
 frame rate or stability figure exists for another Jetson. Tests with stand-ins are not an installation on a clean
 Jetson.
+
+## 15. Licences
+
+- **This package's own files** (the scripts, their helpers, the manifests, this guide and the application under
+  `app/`) are under the MIT License: `LICENSE`.
+- **Nothing else is in the archive.** The Python packages and model files that `setup-env.sh` and `fetch-assets.sh`
+  download, llama.cpp, and NVIDIA's software on your device keep their own licences. Read
+  `THIRD_PARTY_NOTICES.md` before you start: it names each item with its source and its licence as upstream states
+  it, among them AGPL-3.0 (Ultralytics and the detector weights), the LFM Open License v1.0 (the scene model, with
+  a condition on commercial use) and NVIDIA's licence agreements.
+- **Face embeddings are biometric data.** Enrol only yourself, and use a camera only where local privacy law
+  allows it.

@@ -465,7 +465,7 @@ def test_the_build_recipes_are_revision_5s_which_ran_on_the_reference_device(scr
     """What ran for real on the reference device was revision 5. Apart from comments, messages and the one call that
     sets the installation's own locations, the two build scripts are that revision's, line for line: the export call
     and its settings, the clone, the pinned commit, the options, the checks, the typed word, the note."""
-    was = build_archive.git("show", f"{build_archive.PREVIOUS_PACKAGE_COMMIT}:packaging/beta-install/{script}").decode()
+    was = build_archive.git("show", f"{build_archive.REAL_EVIDENCE_PACKAGE_COMMIT}:packaging/beta-install/{script}").decode()
     now = (REPO / "packaging/beta-install" / script).read_text()
     added = 'beta_local_env "$HERE"'
     assert now.count(added + "\n") == 1 and added not in was
@@ -533,7 +533,8 @@ def test_the_guide_describes_this_package_and_keeps_the_three_memory_figures_apa
     assert "**Nothing private comes with it:**" in flat and "no device-artifacts record" in flat
     # revision 5's evidence and this revision's verification are not mixed
     assert "**those changes were verified offline only**" in flat
-    assert "**Nothing of this revision has run a download, a build, an export, a model or a camera on any device.**" in flat
+    assert ("**Nothing that revision 6 or this revision changed has run a download, a build, an export, a model or a "
+            "camera on any device.**") in flat
     assert "Without an enrollment it stops at `there is no enrollment`: that is a refusal, not a pass" in flat
 
 

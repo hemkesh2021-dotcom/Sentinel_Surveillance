@@ -1,5 +1,10 @@
 # Sentinel v2 — EXPERIMENTAL ALPHA (v2.0.0-alpha.1 and the v2.0.0-alpha.2 candidate): notes
 
+> **2026-11-15: a v2.0.0-alpha.3 candidate is prepared** (package `2.0.0a3`; release notes:
+> [`RELEASE_NOTES_v2.0.0-alpha.3.md`](RELEASE_NOTES_v2.0.0-alpha.3.md)). It adds an experimental installation package
+> for testers and carries sessions 113 to 116. These notes were last revised for alpha.2 (2026-10-21) and are not
+> rewritten for it: no admission, threshold or experimental label has changed since, and the status record governs.
+
 **EXPERIMENTAL ALPHA. v2.0.0-alpha.1 and its successor candidate v2.0.0-alpha.2 are experimental pre-releases, not
 production releases.** Production acceptance and feature admission are separate decisions, and neither pre-release
 makes them: nothing is declared accepted, face recognition stays `PENDING_VALIDATION`, chat is not admitted, and

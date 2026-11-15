@@ -13,7 +13,7 @@
 *Person detection and tracking · zone rules · incidents and alerts · a local dashboard ·
 face recognition and scene analysis under validation*
 
-![Version](https://img.shields.io/badge/version-2.0.0--alpha.2-orange?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-2.0.0--alpha.3-orange?style=for-the-badge)
 ![Status](https://img.shields.io/badge/status-experimental_alpha-red?style=for-the-badge)
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Jetson](https://img.shields.io/badge/NVIDIA-Jetson_Orin_Nano-76B900?style=for-the-badge&logo=nvidia&logoColor=white)
@@ -22,10 +22,15 @@ face recognition and scene analysis under validation*
 
 ---
 
-> **EXPERIMENTAL ALPHA: Sentinel v2.0.0-alpha.2 is an experimental pre-release,** prepared for the 24 October review
-> checkpoint. It is published so that the work can be reviewed and tried. It is **not production-accepted**, and
-> **feature admission is a separate decision**: face recognition and chat are not admitted for normal use, and nothing
-> on this branch is merged into `master`.
+> **EXPERIMENTAL ALPHA: Sentinel v2.0.0-alpha.3 is an experimental pre-release.** It adds an installation package for
+> testers with their own Jetson ([Install on your own Jetson](#install-on-your-own-jetson-tester-package-experimental))
+> and carries the work since alpha.2. It is published so that the work can be reviewed and tried. It is **not
+> production-accepted**, and **feature admission is a separate decision**: face recognition and chat are not admitted
+> for normal use, and nothing on this branch is merged into `master`.
+>
+> **The installation package validates nothing.** One revision of it completed a camera-free build rehearsal on the
+> reference device; its later packaging changes were checked offline only; a complete launch from the package, and
+> any other Jetson, are unverified. The [release notes](docs/RELEASE_NOTES_v2.0.0-alpha.3.md) say exactly what ran.
 >
 > **The alpha's goal is not met yet.** The October alpha was set to centre on working face recognition and real local
 > chat with the vision-language model. Neither is done:
@@ -42,10 +47,14 @@ face recognition and scene analysis under validation*
 >
 > - **Known limitations:** [Status and limitations](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Status-and-limitations)
 >   (wiki) and [`docs/ALPHA_CANDIDATE_NOTES.md`](docs/ALPHA_CANDIDATE_NOTES.md)
-> - **Release:** [v2.0.0-alpha.2](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.2)
->   ([release notes](docs/RELEASE_NOTES_v2.0.0-alpha.2.md)); the earlier
+> - **Release:** [v2.0.0-alpha.3](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.3)
+>   ([release notes](docs/RELEASE_NOTES_v2.0.0-alpha.3.md)); the earlier
+>   [v2.0.0-alpha.2](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.2)
+>   ([release notes](docs/RELEASE_NOTES_v2.0.0-alpha.2.md)) and
 >   [v2.0.0-alpha.1](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.1)
 >   ([release notes](docs/RELEASE_NOTES_v2.0.0-alpha.1.md))
+> - **Installation problems:** the [installation issue form](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/issues/new?template=installation-issue.md)
+>   (public: no credentials, photos, footage or whole logs)
 > - **Wiki:** [github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki)
 > - **Evidence for every claim, session by session:** [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)
 > - **Legacy v1 (the original prototype):** [`docs/LEGACY_V1.md`](docs/LEGACY_V1.md)
@@ -56,7 +65,7 @@ Sentinel watches one camera from an NVIDIA Jetson Orin Nano. It detects and trac
 incidents in a local SQLite database and delivers alerts through a restart-safe outbox. A dashboard on the device's
 loopback address shows the live picture, the incidents with their snapshots and, in validation runs, face recognition
 per tracked person. Face recognition (DeepFace with Facenet512 and YuNet) and scene analysis with a local
-vision-language model (LFM2-VL through llama.cpp's `llama-server`) are optional lanes. They run only when the
+vision-language model (LFM3-VL-2B through llama.cpp's `llama-server`) are optional lanes. They run only when the
 configuration lists their adapters as admitted, or in guarded validation runs.
 
 v2 is a rewrite of the v1 prototype as a tested package (`src/sentinel/`, command `sentinel`). Every observation
@@ -117,31 +126,67 @@ its configuration checks and its tests run on any machine.
 | Scene analysis (local VLM) | yes | earlier scene checks; loaded beside face recognition in its validation runs, the integration runs and the one-hour trial, not validated together | needs an admitted adapter |
 
 The [known limitations](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Status-and-limitations) list
-everything still unresolved; none of it is waived by this pre-release.
+everything still unresolved; none of it is waived by this pre-release. The table above and the wiki were last revised
+for alpha.2. No admission status has changed since; what was added is in the
+[alpha.3 release notes](docs/RELEASE_NOTES_v2.0.0-alpha.3.md) and, session by session, in the status record.
 
 ## Getting started
 
 ### Portable development (CI runs on every push)
 
 Python 3.10 or newer. No camera, GPU or model is needed. A pre-release tag is placed only on a commit whose CI passed
-(Dashboard checks; v2 portable checks on Python 3.10 and 3.12). Locally on the device, not CI: the portable suite and
-the configuration check passed on Python 3.10 and 3.12 at `2004725`, and focused suites at the two later
-operator-tooling commits (`1231d7e`, `4e1d4f5`).
+(Dashboard checks; v2 portable checks on Python 3.10 and 3.12). Locally on the device, not CI: the full offline suite
+passed once under Python 3.10 at `1fac8d6` (3,931 passed, 7 skipped); the installation package's commits after it ran
+their own focused test files only.
 
 ```bash
-git clone --branch v2.0.0-alpha.2 https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance.git
+git clone --branch v2.0.0-alpha.3 https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance.git
 cd Sentinel_Surveillance
 python -m venv .venv && . .venv/bin/activate
 python -m pip install -e '.[dev]'
 python -m pytest                              # browser tests run when a Chromium-family browser is found
 sentinel config validate config/default.yaml  # checks a configuration file
-sentinel --version                            # sentinel 2.0.0a2
+sentinel --version                            # sentinel 2.0.0a3
 ```
+
+### Install on your own Jetson (tester package, experimental)
+
+The pre-release carries one archive, `sentinel-personal-beta-…-r7.tar.gz`, and its `.sha256` file
+([releases](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases)). It installs under your own
+account, without sudo, downloads the pinned Python packages and model files from their upstream sources, and builds
+llama.cpp and the detector engine on your device. Its guide is
+[`packaging/beta-install/QUICKSTART.md`](packaging/beta-install/QUICKSTART.md) (also inside the archive, with a
+`README.md`); the archive is built from this repository by `packaging/build_archive.py`.
+
+```bash
+sha256sum -c sentinel-personal-beta-*-r7.tar.gz.sha256      # then extract it and read README.md and QUICKSTART.md
+```
+
+Read this before you spend an evening on it:
+
+- **What ran, and what did not.** Revision 5 of the package completed a camera-free build rehearsal on the reference
+  device (installation, environment, downloads, both builds, the record of the built files and its verification).
+  Revision 6's packaging changes and revision 7's documentation, licence files and version string were checked
+  offline only. **A complete launch from the package has never been made, and no other Jetson has run it.**
+- **The default check and launch refuse on your device.** They admit only the reference device's own files. Your
+  files are used only through the opt-in `--device-artifacts` route, for experimental validation runs; it validates
+  nothing about your device's memory, speed or stability (resource validation is pending).
+- **Stock JetPack is unverified.** The reference device runs L4T R36.4.7 with an Ubuntu 24.04 userland. On stock
+  JetPack 6 the installer goes on only with `--accept-unverified-platform`.
+- **You supply your own** camera, configuration, enrollment (photos of yourself, sealed with your passphrase) and
+  device artifacts. Nobody's gallery, credentials, models, engine or recordings are in the archive.
+- **Face data and the camera.** Only `identity.sh enroll` reads your photos, and only `start.sh`, after you type
+  START, opens the camera. The guide's section 12 lists every step.
+- **Licences.** The archive holds Sentinel's own files (MIT). What it downloads keeps its own licences, among them
+  AGPL-3.0 and the LFM Open License v1.0:
+  [`THIRD_PARTY_NOTICES.md`](packaging/beta-install/THIRD_PARTY_NOTICES.md).
+
+Problems go to the [installation issue form](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/issues/new?template=installation-issue.md).
 
 ### On the device (as the recorded device checks ran it)
 
-**There is no complete, reproducible device installation guide yet.** What follows is only what the recorded checks
-used; anything not listed here is not documented.
+**Apart from the tester package above, there is no device installation guide.** What follows is only what the
+recorded checks used on the reference device; anything not listed here is not documented.
 
 - **Hardware and system:** one Jetson Orin Nano with JetPack 6 (L4T 36.4.7) and one RTSP camera, reached from a
   workstation over SSH.
@@ -186,6 +231,7 @@ More detail: [Getting started](https://github.com/hemkesh2021-dotcom/Sentinel_Su
 |---|---|
 | `src/sentinel/`, `tests/`, `config/`, `pyproject.toml` | Sentinel v2 |
 | `benchmarks/runner/` | v2 operator check tooling (memory guard, readings of saved evidence) |
+| `packaging/` | the tester installation package (`beta-install/`) and the tool that builds its archive |
 | `docs/` | v2 status record, requirements trace, alpha notes, release notes, legacy v1 README |
 | `surveillance4_1.py`, `dashboard.py`, `build_face_db.py`, `start_sentinel.sh`, `requirements.txt`, `.env.example`, `BUILD.md`, `SETUP_GUIDE.txt`, `tests/test_dashboard.py` | legacy v1, unchanged; see [`docs/LEGACY_V1.md`](docs/LEGACY_V1.md) |
 
@@ -196,6 +242,10 @@ V2 maintainer: Hemkesh ([@hemkesh2021-dotcom](https://github.com/hemkesh2021-dot
 Historical v1 contributor credits are kept in [`docs/LEGACY_V1.md`](docs/LEGACY_V1.md#authors).
 
 ## License
+
+Sentinel's own code is under the MIT License: see [`LICENSE`](LICENSE). Third-party software and model files are not
+part of this repository and keep their own licences; the tester package's
+[`THIRD_PARTY_NOTICES.md`](packaging/beta-install/THIRD_PARTY_NOTICES.md) lists the ones it downloads.
 
 This project is for personal / educational use. Do not deploy in public spaces without complying with local privacy
 laws — face embeddings are **biometric data** (see DPDP / GDPR / BIPA).
