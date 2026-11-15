@@ -2,9 +2,10 @@
 
 Nothing real is started: the runtime, the memory guard, sudo, systemctl, the process scan and llama-server are
 stand-ins made by this file; the camera address and the passphrase are invented strings. The launcher scripts
-themselves are the package's own, with two substitutions that the shipped package does not have: the memory reading
-comes from a fixture file (one line of start.sh) and the asset manifest lists small synthetic files. The package is
-then sealed again, so every integrity check still runs.
+themselves are the package's own, with three substitutions that the shipped package does not have: the memory reading
+comes from a fixture file (one line of start.sh), whether the L4T driver library is there is asked of the synthetic
+device instead of the machine the tests run on (one condition of start.sh; only a Jetson has that file), and the
+asset manifest lists small synthetic files. The package is then sealed again, so every integrity check still runs.
 
 Covered: the offline check passes without credentials, sudo, the camera or a model, and each thing that is missing
 or refused stops it with what to do; nothing opens the camera unless START is typed; the address and the passphrase
@@ -185,6 +186,12 @@ class Launch(World):
             text = (self.package / script).read_text()
             assert text.count("MEMINFO=/proc/meminfo\n") == 1
             (self.package / script).write_text(text.replace("MEMINFO=/proc/meminfo\n", f'MEMINFO="{tmp}/meminfo"\n'))
+        # Whether the L4T driver library is there is asked of the synthetic device (the fact World made), not of the
+        # machine the tests run on: only a Jetson has that file. What the runtime is given to preload stays the path.
+        start = (self.package / "start.sh").read_text()
+        assert start.count('[ -e "$L4T_LIBCUDA" ]') == 1
+        (self.package / "start.sh").write_text(
+            start.replace('[ -e "$L4T_LIBCUDA" ]', '[ -e "${SENTINEL_BETA_FACTS_ROOT:-}$L4T_LIBCUDA" ]'))
         files = {"scene_model": ("models/lfm3-vl/model.gguf", b"model"), "scene_mmproj": ("models/lfm3-vl/mmproj.gguf", b"mmproj"),
                  "face_weights": ("deepface-home/.deepface/weights/weights.h5", b"weights"),
                  "face_detector": ("deepface-home/.deepface/weights/detector.onnx", b"detector"),
@@ -419,6 +426,8 @@ def missing(launch: Launch, case: str) -> dict[str, str]:
         launch.fixture("llama.commit", "0123456789\n")
     elif case == "no_enrollment":
         (launch.data / "identity/gallery.sealed").unlink()
+    elif case == "no_l4t_library":
+        (launch.root / "usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1").unlink()
     elif case == "not_admitted":
         launch.fixture("admission.out", REFUSED)
         launch.fixture("admission.rc", "1\n")
@@ -448,6 +457,7 @@ def missing(launch: Launch, case: str) -> dict[str, str]:
     ("no_engine", "asset detector_engine: MISSING"),
     ("other_llama_build", "is not the llama.cpp build this package needs (it reports commit '0123456789'"),
     ("no_enrollment", "there is no enrollment at"),
+    ("no_l4t_library", "the L4T CUDA driver library is not at /usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1"),
     ("not_admitted", "an admission decision is not as this package expects"),
     ("telegram", "unset the Telegram variables first (external notifications stay off)"),
     ("edited_package", "differ from their checksums"),

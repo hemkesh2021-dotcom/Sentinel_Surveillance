@@ -34,11 +34,20 @@ def world(tmp_path: Path) -> World:
 
 
 def helper(world: World, name: str = "beta_under_test"):
-    """The package's helper as a module, so that a failure can be injected into one of its own steps."""
+    """The package's helper as a module, so that a failure can be injected into one of its own steps.
+
+    Imported as the package's scripts run it (``python3 -I -B``): no bytecode is written beside it. A cache folder
+    in the package is a file that is not part of it, and the package's own check then refuses to install from it.
+    """
     spec = importlib.util.spec_from_file_location(name, world.package / "lib" / "beta.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module  # dataclasses and typing look a module up by its name
-    spec.loader.exec_module(module)
+    written, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = written
+    assert not (world.package / "lib" / "__pycache__").exists()  # the package is still as it was extracted
     return module
 
 
@@ -68,12 +77,17 @@ class Sleepers:
         return process
 
     def named(self, folder: Path, name: str) -> subprocess.Popen:
-        """A sleeper whose process name is ``name`` (a link to `sleep` run under that name)."""
+        """A sleeper whose process name is ``name``: this interpreter, run through a link of that name.
+
+        Not a link to the system's `sleep`. That sleeps only where `sleep` is a program of its own. Where the core
+        utilities are one multi-call program, which picks the utility by the name it is run under (the Rust coreutils
+        package of Ubuntu 26.04 is built that way; BusyBox is another), a link of another name does not sleep.
+        """
         folder.mkdir(parents=True, exist_ok=True)
         link = folder / name
         if not link.exists():
-            link.symlink_to(shutil.which("sleep"))
-        process = subprocess.Popen([str(link), "300"], start_new_session=True)
+            link.symlink_to(sys.executable)
+        process = subprocess.Popen([str(link), "-c", SLEEP], start_new_session=True)
         self.started.append(process)
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and Path(f"/proc/{process.pid}/comm").read_text().strip() != name:
@@ -177,9 +191,10 @@ def test_the_runs_record_names_what_descends_from_its_guard_and_nothing_else_ir2
     observation = world.tmp / "obs [1]+"
     (observation / "guard").parent.mkdir(parents=True)
     child = ("import subprocess, sys, time; "
-             f"subprocess.Popen([{str(world.tmp / 'run' / 'llama-server')!r}, '300'], start_new_session=True); time.sleep(300)")
+             f"subprocess.Popen([{str(world.tmp / 'run' / 'llama-server')!r}, '-c', {SLEEP!r}], start_new_session=True); "
+             "time.sleep(300)")
     (world.tmp / "run").mkdir()
-    (world.tmp / "run" / "llama-server").symlink_to(shutil.which("sleep"))
+    (world.tmp / "run" / "llama-server").symlink_to(sys.executable)  # as Sleepers.named: never the system's `sleep`
     guard = subprocess.Popen([sys.executable, "-c", child, "benchmarks/runner/step5_guard.py", "--out", str(observation / "guard")],
                              start_new_session=True)
     sleepers.started.append(guard)

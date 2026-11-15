@@ -357,11 +357,13 @@ def test_the_shell_entry_runs_a_step_with_the_packages_own_stops_and_locations(g
 def test_a_model_server_a_runtime_or_another_build_refuses_the_start_and_is_never_signalled(guarded: Guarded) -> None:
     standins = guarded.tmp / "standins"
     (standins / "mod/sentinel").mkdir(parents=True)
-    shutil.copy2("/bin/sleep", standins / "llama-server")
+    # A process named llama-server: this interpreter through a link of that name. Not the system's `sleep` under
+    # that name: a multi-call `sleep` (the Rust coreutils package of Ubuntu 26.04, BusyBox) does not sleep under it.
+    (standins / "llama-server").symlink_to(sys.executable)
     (standins / "mod/sentinel/__init__.py").write_text("")
     (standins / "mod/sentinel/cli.py").write_text("import time\ntime.sleep(300)\n")
     (standins / "build-engine.sh").write_text("sleep 300\n")
-    cases = [("model server llama-server", [str(standins / "llama-server"), "300"], standins),
+    cases = [("model server llama-server", [str(standins / "llama-server"), "-c", "import time; time.sleep(300)"], standins),
              ("Sentinel runtime", [guarded.python, "-B", "-m", "sentinel.cli", "run"], standins / "mod"),
              ("build-engine.sh", ["bash", str(standins / "build-engine.sh")], standins)]
     for what, command, cwd in cases:
