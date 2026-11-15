@@ -1319,3 +1319,48 @@ def test_the_face_weights_stay_where_the_settings_put_them_and_nothing_is_moved_
     assert not (launch.tmp / "elsewhere").exists()
     assert list((launch.prefix / "cache/deepface-home").iterdir()) == []  # the cache place holds no weights
 
+
+GUARDED_DRIVER = r"""import json, sys
+sys.path.insert(0, sys.argv[1])
+import guarded_build as front_end
+front_end.STEPS["engine"].update(json.loads(sys.argv[2]))
+sys.exit(front_end.main(sys.argv[3:]))
+"""
+
+
+def test_an_engine_built_under_the_monitor_is_noted_and_recorded_as_the_scripts_own_build(routed: Launch) -> None:
+    """guarded-build's front end and the real monitor around the package's real build-engine.sh (the interpreter is the
+    stand-in: no GPU, no export). The memory figures of the front end are lowered from outside, because this test
+    must not depend on how much memory the test device has free; the script's own check reads the fixture."""
+    launch = routed
+    assert launch.build_llama().returncode == 0
+    (launch.prefix / "assets/engine/yolov8n.engine").unlink()
+    lowered = {"start_free_bytes": 0, "script_min_free_bytes": 0, "min_free_bytes": 0, "min_available_bytes": 64 * 1024 * 1024}
+    result = subprocess.run([launch.env["REAL_SYSTEM_PYTHON"], "-I", "-B", "-c", GUARDED_DRIVER, str(launch.installed / "lib"),
+                             json.dumps(lowered), "run", "--package", str(launch.installed), "--step", "engine"],
+                            env=launch.env, input="BUILD\n", capture_output=True, text=True, timeout=120, cwd=launch.tmp)
+    assert result.returncode == 0, said(result)
+    assert "Noted what this step built" in result.stdout  # the script's own lines, relayed
+    (record_folder,) = sorted((launch.data / "builds").glob("engine-*"))
+    monitor = json.loads((record_folder / "engine.result.json").read_text())
+    assert monitor["command"] == ["bash", str(launch.installed / "build-engine.sh")] and monitor["exit_code"] == 0
+    assert monitor["thresholds"]["timeout_s"] == 3600.0  # the hour, as packaged
+    weights, settings = (launch.tmp / "export.args").read_text().splitlines()
+    assert weights == str(launch.prefix / "assets/engine/yolov8n.pt") and json.loads(settings) == EXPORT  # the same call
+    engine = launch.prefix / "assets/engine/yolov8n.engine"
+    note = json.loads((launch.prefix / "assets/provenance/detector_engine.json").read_text())
+    assert (note["observed"], note["step"], note["export"]) == ("built_by_package_step", "build-engine.sh", EXPORT)
+    assert note["outputs"] == {"yolov8n.engine": {"sha256": digest(engine), "bytes": engine.stat().st_size}}
+    assert f"output={engine} bytes={engine.stat().st_size} sha256={digest(engine)}" in (record_folder / "RESULT.txt").read_text()
+    recorded = launch.record_artifacts()
+    assert recorded.returncode == 0, said(recorded)
+    document = json.loads(launch.record.read_text())
+    provenance = document["artifacts"]["detector_engine"]["provenance"]
+    assert provenance["observed"] == "built_by_package_step" and provenance["export"] == EXPORT
+    assert document["resource_validation"] == "pending"
+    verified = artifacts(launch, "verify", "--package", str(launch.installed), "--record", str(launch.record))
+    assert verified.returncode == 0 and "artifact_verification=passed" in verified.stdout, said(verified)
+    assert "resource_validation=pending" in verified.stdout
+    launch.fixture("admission.out", ROUTE_ADMITTED)
+    checked = launch.check("--device-artifacts", str(launch.record))
+    assert checked.returncode == 0 and "BETA_CHECK_ROUTE=device_artifacts" in checked.stdout, said(checked)

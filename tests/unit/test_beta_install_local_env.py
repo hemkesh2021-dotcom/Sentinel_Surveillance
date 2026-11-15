@@ -192,7 +192,7 @@ def test_every_script_that_downloads_builds_imports_or_launches_sets_the_locatio
     first_use = {"setup-env.sh": '-m venv --clear "$VENV"', "fetch-assets.sh": "fetch-assets --package",
                  "build-llama.sh": "git clone", "build-engine.sh": 'env PYTHONDONTWRITEBYTECODE=1 "$RT_PY" -B - <<',
                  "record-artifacts.sh": "lib/artifacts.py\" record", "identity.sh": "-m sentinel.cli identity",
-                 "start.sh": '"${RT[@]}" config validate'}
+                 "guarded-build.sh": "lib/guarded_build.py\" run", "start.sh": '"${RT[@]}" config validate'}
     for script, use in first_use.items():
         text = (world.installed / script).read_text()
         call = 'beta_local_env "$PKG"\n' if script == "start.sh" else 'beta_local_env "$HERE"\n'

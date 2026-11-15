@@ -117,6 +117,20 @@ PACKAGE_FILES_CHANGED = {
                        "manifest, the 1,500,000,000 B start check, the BUILD confirmation and the note are unchanged",
     "build-llama.sh": "calls beta_local_env before cloning and building. The repository, the pinned commit, the "
                       "options and the note are unchanged",
+    "guarded-build.sh": "a new file: runs build-llama.sh or build-engine.sh, unchanged, under the memory monitor "
+                        "(lib/guarded_build.py, lib/guarded_run.py), with --check, --status and --stop; it uses no "
+                        "sudo, stops no service and frees no memory",
+    "lib/guarded_build.py": "a new file: the front end of guarded-build.sh, reduced from the installation "
+                            "rehearsal's runner: start conditions (for the engine step a 5 GiB MemFree preparation "
+                            "figure, chosen and not measured; no model server, runtime or other build running), a "
+                            "typed BUILD, the monitor in a session of its own, a stop relayed to the step's first "
+                            "process, the result in <data dir>/builds/. Run with stand-in scripts only",
+    "lib/guarded_run.py": "a new file: the installation rehearsal's memory monitor, byte for byte (SHA-256 "
+                          "f7f23e4ae5db944d37bcc8db26ec53c4c96a2e9929566bfe0ddc8cb1b721045b): the file that "
+                          "supervised the reference device's engine export attempts of 2026-11-14 (stopped at its "
+                          "MemFree limit) and 2026-11-15 (completed). It samples memory five times a second, stops "
+                          "the step at the limits it is given and signals only the processes that step owns",
+    "install.sh": "its closing list of next steps names guarded-build.sh for the two builds; nothing else",
 }
 DEFAULT_REVISION = 6
 EXECUTABLE = (".sh",)

@@ -62,8 +62,10 @@ QUICKSTART.md, section 1, explains.
 Next, in this order (QUICKSTART.md explains each; all run from $PREFIX/package):
   bash setup-env.sh       the Python environment (downloads the pinned packages)
   bash fetch-assets.sh    the model files (downloads, each checked against its checksum)
-  bash build-llama.sh     llama.cpp at the pinned commit, built on this device
-  bash build-engine.sh    the detector's TensorRT engine, built on this device
+  bash guarded-build.sh llama --jobs 2   llama.cpp at the pinned commit, built on this device, under the memory monitor
+  bash guarded-build.sh engine           the detector's TensorRT engine, built on this device, under the memory monitor
+                          (prepare memory yourself first: QUICKSTART.md, 'Building on this device'; the two build
+                          scripts can also be run by themselves: bash build-llama.sh, bash build-engine.sh)
   bash identity.sh ...    your own enrollment, with your recorded consent
   bash record-artifacts.sh                the record of this device's own files (reads them; changes nothing)
   bash check.sh --device-artifacts FILE   everything checked offline; the camera stays closed

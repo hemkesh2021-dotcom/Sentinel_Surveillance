@@ -9,7 +9,8 @@
 #   <prefix>/assets/    model files, the llama.cpp build, the detector engine (fetch-assets.sh, build-*.sh)
 #   <prefix>/cache/     the installed libraries' caches and settings (pip, Ultralytics, torch, CUDA, ...); beta_local_env
 #   <prefix>/tmp/       temporary files of the scripts and of what they start; beta_local_env
-#   <data dir>/         config/, identity/ (the tester's own enrollment), observe/ (one folder per run)
+#   <data dir>/         config/, identity/ (the tester's own enrollment), observe/ (one folder per run),
+#                       builds/ (one folder per guarded build: guarded-build.sh)
 
 L4T_LIBCUDA=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1  # decision D27: the L4T driver library, loaded first
 

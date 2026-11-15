@@ -582,7 +582,7 @@ def test_a_release_with_no_usable_file_is_refused_by_the_lock_tool_ir8() -> None
 
 GUARD = "benchmarks/runner/step5_guard.py"
 ROUTE = ("src/sentinel/cli.py", "src/sentinel/demo_runtime.py", "src/sentinel/device_artifacts.py")
-NEW_PACKAGE_FILES: tuple = ()  # none yet since revision 5
+NEW_PACKAGE_FILES: tuple = ("guarded-build.sh", "lib/guarded_build.py", "lib/guarded_run.py")  # since revision 5
 REAL_RECORD = ("src/sentinel/demo_runtime.py", "src/sentinel/device_artifacts.py")  # ran once on a real record
 
 
