@@ -45,6 +45,12 @@ APP_TREE = "src/sentinel"
 # package ships the accepted code only.
 _ROUTE_RUN_WITH = ("synthetic tests on the reference device only (temporary directories, synthetic files, stand-ins); "
                    "never on another device, and no run with a camera or a model has used it")
+# The two files that read and judge a record: besides those tests, the same bytes ran once on real files.
+_ROUTE_RUN_ON_A_REAL_RECORD = (
+    "synthetic tests (temporary directories, synthetic files, stand-ins); and once on the reference device, with "
+    "revision 5 and these same bytes: the record of that device's own real builds was read and the route's "
+    "decisions made for it by lib/admission_check.py (2026-11-15; no camera, no model loaded, no launch). Never on "
+    "another device, and no run with a camera or a model has used it")
 CHANGED_SINCE_ACCEPTED = {
     "benchmarks/runner/step5_guard.py": (
         "process ownership in the memory guard (session 116, part 40): after a run it signals only processes that "
@@ -56,13 +62,14 @@ CHANGED_SINCE_ACCEPTED = {
         "a new file (session 116, part 41), the device-artifacts route: reads a record of the tester's own detector "
         "engine, llama.cpp build and model files, strictly; refuses a record that is malformed, that claims more "
         "than 'pending' for resource validation, or whose built files were not made by the package's own steps with "
-        "the pinned source, options and tools; it admits nothing and measures nothing", _ROUTE_RUN_WITH),
+        "the pinned source, options and tools; it admits nothing and measures nothing", _ROUTE_RUN_ON_A_REAL_RECORD),
     "src/sentinel/demo_runtime.py": (
         "the device-artifacts route (session 116, part 41): only with a record, and only in a --face-validation run, "
         "the engine, the llama.cpp build, the model files and the face weights are compared with the device's own "
         "record instead of the reference device's records, by the same startup rule; every other admission rule, "
         "the configuration checks against the accepted profile and the memory policy are unchanged; the starting "
-        "line then says that resource validation is pending. Without a record nothing differs", _ROUTE_RUN_WITH),
+        "line then says that resource validation is pending. Without a record nothing differs",
+        _ROUTE_RUN_ON_A_REAL_RECORD),
     "src/sentinel/cli.py": (
         "the device-artifacts route (session 116, part 41): the option --device-artifacts FILE of `sentinel run`, "
         "refused without --face --face-validation and for a record that cannot be read; the detector is then given "
@@ -72,23 +79,16 @@ CHANGED_SINCE_ACCEPTED = {
 }
 # The package's own files (under PACKAGE_SOURCE) that differ from the previous revision's, or that it did not have:
 # path -> what changed. The builder refuses unless exactly these differ from PREVIOUS_PACKAGE_COMMIT.
-PREVIOUS_PACKAGE_COMMIT = "5dfeb1097c518aafa38225e811928dad89cad412"
-PREVIOUS_PACKAGE_NAME = "sentinel-personal-beta-949da67-mod79c18d4-r3"
+PREVIOUS_PACKAGE_COMMIT = "34809141654f4d7729e72cb6a5ce0eb6fadf1125"
+PREVIOUS_PACKAGE_NAME = "sentinel-personal-beta-949da67-mod79c18d4-r5"
+_LOCAL = ("PIP_CACHE_DIR, XDG_CACHE_HOME, XDG_CONFIG_HOME, XDG_DATA_HOME, HF_HOME, TORCH_HOME, YOLO_CONFIG_DIR, "
+          "DEEPFACE_HOME, CUDA_CACHE_PATH, KERAS_HOME, MPLCONFIGDIR and TMPDIR")
 PACKAGE_FILES_CHANGED = {
-    "build-engine.sh": "reads free memory before the detector is loaded on the GPU and refuses below 1,500,000,000 B "
-                       "with what to do; a failed export says what free memory was. In the installation rehearsal "
-                       "the export failed in its first GPU allocations with the page cache full (MemFree 0.08 to "
-                       "0.84 GB, 4.6 to 5.5 GB 'available'). The minimum is the runtime's own for loading the "
-                       "detector; what the export needs was not measured. No export has completed with this package",
-    "QUICKSTART.md": "names this package and the build script's --jobs option",
-    "install.sh": "installing again over an installation uses the Python 3.10 interpreter and the TensorRT binding "
-                  "it was made with unless they are named anew (the rehearsal's re-installation from a later shell "
-                  "would otherwise have failed its preflight)",
-    "build-llama.sh": "a new option, --jobs N (1 to 8; four when it is not given, as before): the installation "
-                      "rehearsal on the reference device needed two compile jobs and the script offered no way to "
-                      "ask for them. The files built are the same either way",
+    "QUICKSTART.md": "names this package (revision 6) and the revision its own files are compared with (revision 5, "
+                     "the one that ran on the reference device); the guide itself is rewritten in a later change of "
+                     "this revision",
 }
-DEFAULT_REVISION = 5
+DEFAULT_REVISION = 6
 EXECUTABLE = (".sh",)
 REPO = Path(__file__).resolve().parents[1]
 
@@ -212,9 +212,18 @@ def package_members(revision: int, *, worktree: bool = False) -> tuple[str, dict
                "and model-file copies, and REFUSES on another Jetson. The opt-in device-artifacts route "
                "(QUICKSTART.md, section 1) identifies a tester's own files for experimental validation runs and "
                "validates nothing about that device's resources (resource validation pending)\n"
-               "route_verified=in synthetic tests on the reference device only; NEVER RUN ON ANOTHER DEVICE; never "
-               "with a camera or a model; build-llama.sh beyond its configure step and build-engine.sh have never "
-               "run\n")
+               "route_verified=with revision 5, once, on the reference device's own real builds: the record, its "
+               "verification and the route's decisions for that record (2026-11-15; no camera, no model loaded). "
+               "check.sh stopped there at the missing enrollment, as it must: the complete check and a launch through "
+               "the route have NEVER RUN. NEVER RUN ON ANOTHER DEVICE; never with a camera\n"
+               "real_device_evidence=revision 5 only, on the reference device, without a camera: installation, the "
+               "Python environment, the downloads, the llama.cpp build (53 minutes, two jobs), the engine export "
+               "(187 s, started with 6,950,408,192 B MemFree, lowest 2,622,537,728 B, no swap used; after one failure "
+               "and one monitor stop), the record and its verification. One device, one completed export: the least "
+               "memory and the time an export needs are not known\n"
+               "this_revision_verified=offline only: the package's tests, with temporary directories, synthetic "
+               "files and stand-ins. No file of this revision that differs from revision 5 (above) has run a "
+               "download, a build, an export, a model or a camera on any device\n")
     members["VERSION"] = version.encode()
     sums = "".join(f"{hashlib.sha256(members[path]).hexdigest()}  {path}\n" for path in sorted(members))
     members["SHA256SUMS"] = sums.encode()
@@ -251,6 +260,9 @@ def build(out: Path, revision: int) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     out.chmod(0o700)
     target = out / f"{name}.tar.gz"
+    for existing in (target, out / f"{name}.tar.gz.sha256"):
+        if existing.exists() or existing.is_symlink():  # an archive that was handed out is never replaced in place
+            raise SystemExit(f"STOP: {existing} already exists and is not replaced; choose another --out or revision")
     with target.open("wb") as handle, gzip.GzipFile(fileobj=handle, mode="wb", mtime=0, filename="") as packed:
         packed.write(raw.getvalue())
     target.chmod(0o600)

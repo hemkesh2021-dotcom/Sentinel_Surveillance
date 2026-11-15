@@ -582,7 +582,8 @@ def test_a_release_with_no_usable_file_is_refused_by_the_lock_tool_ir8() -> None
 
 GUARD = "benchmarks/runner/step5_guard.py"
 ROUTE = ("src/sentinel/cli.py", "src/sentinel/demo_runtime.py", "src/sentinel/device_artifacts.py")
-NEW_PACKAGE_FILES: tuple = ()  # none since revision 3
+NEW_PACKAGE_FILES: tuple = ()  # none yet since revision 5
+REAL_RECORD = ("src/sentinel/demo_runtime.py", "src/sentinel/device_artifacts.py")  # ran once on a real record
 
 
 def builder():
@@ -639,11 +640,20 @@ def test_the_version_names_every_file_of_the_route_and_every_package_file_that_c
         assert f"changed_file=app/{path} accepted_sha256={was} packaged_sha256={packaged}" in version, path
         assert any(line.startswith(f"changed_file_reason=app/{path}: ") and "device-artifacts route" in line
                    for line in version), path
-        assert (f"changed_file_run_with=app/{path}: synthetic tests on the reference device only (temporary "
-                "directories, synthetic files, stand-ins); never on another device, and no run with a camera or a "
-                "model has used it") in version, path
-    # the package's own files against revision 3's
-    assert build.PREVIOUS_PACKAGE_NAME == "sentinel-personal-beta-949da67-mod79c18d4-r3"
+        if path in REAL_RECORD:
+            # what read and judged the reference device's real record on 2026-11-15 was revision 5: the statement
+            # holds only while these are the same bytes that revision 5 packaged
+            assert packaged == sha256(build.git("show", f"{build.PREVIOUS_PACKAGE_COMMIT}:{path}")), path
+            run_with = next(line for line in version if line.startswith(f"changed_file_run_with=app/{path}: "))
+            assert ("synthetic tests (temporary directories, synthetic files, stand-ins); and once on the reference "
+                    "device, with revision 5 and these same bytes:") in run_with, path
+            assert "no camera, no model loaded, no launch" in run_with and "Never on another device" in run_with
+        else:
+            assert (f"changed_file_run_with=app/{path}: synthetic tests on the reference device only (temporary "
+                    "directories, synthetic files, stand-ins); never on another device, and no run with a camera or "
+                    "a model has used it") in version, path
+    # the package's own files against revision 5's: the revision that ran for real on the reference device
+    assert build.PREVIOUS_PACKAGE_NAME == "sentinel-personal-beta-949da67-mod79c18d4-r5"
     assert build.git("rev-parse", "--verify", f"{build.PREVIOUS_PACKAGE_COMMIT}^{{commit}}").decode().strip() == build.PREVIOUS_PACKAGE_COMMIT
     own = {path: content for path, content in members.items()
            if not path.startswith("app/") and path not in ("VERSION", "SHA256SUMS")}
@@ -659,21 +669,34 @@ def test_the_version_names_every_file_of_the_route_and_every_package_file_that_c
                sha256(build.git("show", f"{build.PREVIOUS_PACKAGE_COMMIT}:{build.PACKAGE_SOURCE}/{path}")))
         assert f"package_file_changed={path} previous_sha256={was} packaged_sha256={sha256(own[path])}" in version, path
         assert any(line.startswith(f"package_file_changed_reason={path}: ") and len(line) > len(path) + 40 for line in version)
-    for path in ("stop.sh", "preflight.sh", "setup-env.sh", "fetch-assets.sh", "lib/hostprep.py", "templates/live.yaml",
-                 "start.sh", "check.sh", "lib/artifacts.py", "record-artifacts.sh", "lib/admission_check.py"):
+    for path in ("stop.sh", "check.sh", "configure.sh", "lib/hostprep.py", "lib/features.py", "templates/live.yaml",
+                 "lib/artifacts.py", "lib/admission_check.py", "manifest/assets.json", "manifest/requirements-pypi.txt",
+                 "manifest/requirements-jetson.txt"):
         assert path in own and not any(line.startswith(f"package_file_changed={path} ") for line in version), path
+    # the recipe and the record's tools are revision 5's: the pins, the manifest and the record code did not change
+    for path in NEW_PACKAGE_FILES:
+        assert f"package_file_changed={path} previous_sha256=absent (a new file) packaged_sha256=" in "\n".join(version)
     launch = next(line for line in version if line.startswith("launch="))
     assert "REFUSES on another Jetson" in launch and "validates nothing about that device's resources" in launch
     assert "resource validation pending" in launch
     verified = next(line for line in version if line.startswith("route_verified="))
-    assert "in synthetic tests on the reference device only; NEVER RUN ON ANOTHER DEVICE" in verified
-    assert "never with a camera or a model" in verified and "build-engine.sh have never run" in verified
+    assert "with revision 5, once, on the reference device's own real builds" in verified
+    assert "check.sh stopped there at the missing enrollment" in verified and "have NEVER RUN" in verified
+    assert "NEVER RUN ON ANOTHER DEVICE; never with a camera" in verified
+    # what ran for real (revision 5, one device) is kept apart from how this revision was verified (offline only)
+    evidence = next(line for line in version if line.startswith("real_device_evidence="))
+    assert evidence.startswith("real_device_evidence=revision 5 only, on the reference device, without a camera")
+    assert "187 s, started with 6,950,408,192 B MemFree, lowest 2,622,537,728 B, no swap used" in evidence
+    assert "the least memory and the time an export needs are not known" in evidence
+    offline = next(line for line in version if line.startswith("this_revision_verified="))
+    assert offline.startswith("this_revision_verified=offline only") and "on any device" in offline
+    assert version.index(evidence) < version.index(offline) == len(version) - 1
     for claim in ("validated on", "verified on another", "admitted", "passes on any", "CANNOT LAUNCH ON ANOTHER JETSON YET"):
         assert claim not in "\n".join(version).replace("validates and admits nothing", ""), claim
     # the guide a tester reads names this package, and says what is not the accepted build's and what is not validated
     released, _ = build.package_members(build.DEFAULT_REVISION, worktree=True)
     released = released[:-len("-worktree")]
-    assert released.endswith("-r5")
+    assert released.endswith("-r6")
     guide = members["QUICKSTART.md"].decode()
     assert f"tar -xzf {released}.tar.gz && cd {released}\n" in guide
     assert "**Four application files are not the accepted build's.**" in guide and "stops every `llama-server`" not in guide
@@ -693,10 +716,9 @@ def test_the_version_names_every_file_of_the_route_and_every_package_file_that_c
      "as changed; changed but not declared: src/sentinel/cli.py"),
     ("CHANGED_SINCE_ACCEPTED", "drop:src/sentinel/device_artifacts.py", "changed but not declared: src/sentinel/device_artifacts.py"),
     ("CHANGED_SINCE_ACCEPTED", "add:src/sentinel/config.py", "declared but identical: src/sentinel/config.py"),
-    ("PACKAGE_FILES_CHANGED", "drop:build-llama.sh",
-     "the package's own files that differ from sentinel-personal-beta-949da67-mod79c18d4-r3 are not exactly the ones "
-     "this package declares as changed; changed but not declared: build-llama.sh"),
-    ("PACKAGE_FILES_CHANGED", "drop:QUICKSTART.md", "changed but not declared: QUICKSTART.md"),
+    ("PACKAGE_FILES_CHANGED", "drop:QUICKSTART.md",
+     "the package's own files that differ from sentinel-personal-beta-949da67-mod79c18d4-r5 are not exactly the ones "
+     "this package declares as changed; changed but not declared: QUICKSTART.md"),
     ("PACKAGE_FILES_CHANGED", "add:stop.sh", "declared but identical: stop.sh"),
 ])
 def test_the_builder_refuses_a_change_it_does_not_declare_and_a_declaration_without_a_change(
@@ -738,3 +760,40 @@ def test_only_a_package_without_changed_files_carries_the_accepted_name(monkeypa
     monkeypatch.undo()
     name, members = build.package_members(3, worktree=True)  # as this branch is: the mark is part of the name
     assert "-mod" in name and "application=the accepted code, unchanged" not in members["VERSION"].decode()
+
+
+# ---------------------------------------------------------------- an archive is written once, and the same again
+
+def test_the_builder_never_replaces_an_archive_and_builds_the_same_bytes_again(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Earlier archives are kept: a name that is already in the output directory stops the build, whatever is in
+    it. The same members give the same archive, byte for byte, in another directory."""
+    import tarfile
+
+    build = builder()
+    members = {"VERSION": b"a-package-r9\n", "install.sh": b"#!/bin/bash\n", "lib/beta.py": b"pass\n"}
+    monkeypatch.setattr(build, "package_members", lambda revision: (f"a-package-r{revision}", dict(members)))
+    first = build.build(tmp_path / "one", 9)
+    assert first == tmp_path / "one" / "a-package-r9.tar.gz" and first.stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "one").stat().st_mode & 0o777 == 0o700
+    sidecar = tmp_path / "one" / "a-package-r9.tar.gz.sha256"
+    assert sidecar.read_text() == f"{sha256(first.read_bytes())}  a-package-r9.tar.gz\n"
+    kept = first.read_bytes()
+    members["install.sh"] = b"#!/bin/bash\n# changed\n"
+    with pytest.raises(SystemExit) as stop:
+        build.build(tmp_path / "one", 9)
+    assert "already exists and is not replaced" in str(stop.value) and first.read_bytes() == kept
+    first.unlink()  # the checksum file alone also stops it: nothing of an earlier archive is overwritten
+    with pytest.raises(SystemExit):
+        build.build(tmp_path / "one", 9)
+    assert not first.exists() and sidecar.read_text().endswith("  a-package-r9.tar.gz\n")
+    members["install.sh"] = b"#!/bin/bash\n"
+    again = build.build(tmp_path / "two", 9)
+    assert again.read_bytes() == kept  # reproducible: the same inputs, the same archive
+    with tarfile.open(again) as archive:
+        entries = archive.getmembers()
+    assert [entry.name for entry in entries] == ["a-package-r9/VERSION", "a-package-r9/install.sh", "a-package-r9/lib/beta.py"]
+    assert all(entry.isfile() and entry.uid == entry.gid == 0 and entry.uname == entry.gname == "" for entry in entries)
+    assert {entry.name: entry.mode for entry in entries} == {
+        "a-package-r9/VERSION": 0o644, "a-package-r9/install.sh": 0o755, "a-package-r9/lib/beta.py": 0o644}
+    assert len({entry.mtime for entry in entries}) == 1

@@ -15,7 +15,7 @@ identity retention and chat run as experimental validation-run features, exactly
 
 **Four application files are not the accepted build's.** The package's name carries a modification mark (`-mod…`)
 for that reason, and `VERSION` names each of them with the accepted and the packaged SHA-256, and every file of the
-package itself that changed since revision 2. Everything else under `app/` equals `949da67`.
+package itself that changed since revision 5. Everything else under `app/` equals `949da67`.
 
 - The memory guard (`app/benchmarks/runner/step5_guard.py`): when a run ends it signals only the processes that run
   started, and no longer every `llama-server` of your user. Its memory limits, readiness checks and deadlines are
@@ -102,7 +102,7 @@ You install the system prerequisites yourself; the package never uses sudo for t
 Extract the archive anywhere, then, as your own user (never with sudo):
 
 ```bash
-tar -xzf sentinel-personal-beta-949da67-mod79c18d4-r5.tar.gz && cd sentinel-personal-beta-949da67-mod79c18d4-r5
+tar -xzf sentinel-personal-beta-949da67-mod79c18d4-r6.tar.gz && cd sentinel-personal-beta-949da67-mod79c18d4-r6
 bash preflight.sh        # reads facts only; changes nothing
 bash install.sh          # defaults: ~/sentinel-beta (the installation) and ~/sentinel-beta-data (your data)
 ```
