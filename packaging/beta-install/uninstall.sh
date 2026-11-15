@@ -5,8 +5,10 @@
 #   bash uninstall.sh --prefix DIR [--keep-assets] [--yes]   from anywhere, the extracted archive included
 #
 # Removes only what the installer's own record (<prefix>/install-manifest.txt) names: the package, its Python
-# environment, its model files and builds (unless --keep-assets) and its two record files. Your data directory
-# (configuration, enrollment, run records) is never removed or changed, and nothing else in the prefix is. No sudo.
+# environment, its model files and builds (unless --keep-assets), the libraries' caches and temporary files
+# (<prefix>/cache and <prefix>/tmp, in both forms) and its two record files. Your data directory (configuration,
+# the device-artifacts record, enrollment, run and build records) is never removed or changed, and nothing else in
+# the prefix is. No sudo.
 # It refuses while anything from the installation is running. It can always be finished: it first leaves
 # <prefix>/uninstall.sh, which removes whatever is still the installer's (kept assets, or the rest of an interrupted
 # uninstall) and then itself.

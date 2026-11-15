@@ -7,6 +7,8 @@
 #   <prefix>/package/   this package, checked against its SHA256SUMS before every use
 #   <prefix>/venv/      the runtime's Python environment (setup-env.sh)
 #   <prefix>/assets/    model files, the llama.cpp build, the detector engine (fetch-assets.sh, build-*.sh)
+#   <prefix>/cache/     the installed libraries' caches and settings (pip, Ultralytics, torch, CUDA, ...); beta_local_env
+#   <prefix>/tmp/       temporary files of the scripts and of what they start; beta_local_env
 #   <data dir>/         config/, identity/ (the tester's own enrollment), observe/ (one folder per run)
 
 L4T_LIBCUDA=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1  # decision D27: the L4T driver library, loaded first
@@ -37,4 +39,34 @@ beta_load_paths() {
     esac
   done <<<"$BETA_PATHS"
   [ -d "$DATA_DIR" ] || beta_stop "the data directory recorded at installation is not there: $DATA_DIR"
+}
+
+# beta_local_env PKG: after beta_load_paths, in every script that downloads, builds, imports a library or launches.
+# Every cache, settings and temporary location the installed libraries support is given a directory inside this
+# installation (<prefix>/cache/..., <prefix>/tmp; lib/beta.py local-env makes and checks them), exported for this
+# script and for everything it starts, before anything is imported. HOME and the shell's own files are not changed.
+# A value that was set in the shell is NOT used: here it is replaced, or removed where the package sets none, and
+# named once on standard error. BETA_LOCAL_LINES keeps "NAME=directory" for check.sh to print.
+beta_local_env() {
+  local line key value count=0 expected="" replaced=""
+  BETA_LOCAL_LINES="$(python3 -I -B "$1/lib/beta.py" local-env --package "$1")" || exit 1
+  while IFS= read -r line; do
+    key="${line%%=*}"; value="${line#*=}"
+    case "$key" in
+      PIP_CACHE_DIR|XDG_CACHE_HOME|XDG_CONFIG_HOME|XDG_DATA_HOME|HF_HOME|TORCH_HOME|YOLO_CONFIG_DIR|DEEPFACE_HOME|CUDA_CACHE_PATH|KERAS_HOME|MPLCONFIGDIR|TMPDIR)
+        [ -n "$value" ] && [ -d "$value" ] || beta_stop "this installation's own place for $key is not there ($value)"
+        if [ -n "${!key+set}" ] && [ "${!key}" != "$value" ]; then replaced="$replaced $key"; fi
+        export "$key=$value"; count=$((count + 1)) ;;
+      PYTHONPYCACHEPREFIX|TEMP|TMP|HF_HUB_CACHE|HUGGINGFACE_HUB_CACHE|TRANSFORMERS_CACHE|PYTORCH_KERNEL_CACHE_PATH)
+        [ -z "$value" ] || beta_stop "this package sets no $key"
+        if [ -n "${!key+set}" ]; then replaced="$replaced $key"; unset "$key"; fi
+        count=$((count + 1)) ;;
+      LOCAL_ENV_COUNT) expected="$value" ;;
+    esac
+  done <<<"$BETA_LOCAL_LINES"
+  [ -n "$expected" ] && [ "$count" = "$expected" ] \
+    || beta_stop "the installation's cache and temporary locations could not be set completely ($count of ${expected:-?}); nothing was started"
+  BETA_LOCAL_REPLACED="${replaced# }"
+  [ -z "$BETA_LOCAL_REPLACED" ] \
+    || echo "note: set in your shell, not used by this installation (it keeps its own under $PREFIX): $BETA_LOCAL_REPLACED" >&2
 }

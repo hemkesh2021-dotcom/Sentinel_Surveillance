@@ -6,8 +6,10 @@ touches anything outside the prefix and the data directory it is given. Sub-comm
 
   verify-package --package DIR               every listed file equals its checksum and no other file is there
   paths        --package DIR                 print every path the scripts use, one KEY=VALUE per line
+  local-env    --package DIR                 make (once) and print where the installed libraries keep their caches,
+                                             settings and temporary files: inside <prefix>/cache and <prefix>/tmp
   install      --source DIR --prefix DIR --data-dir DIR --python310 FILE [--tensorrt-python DIR]
-  own          --prefix DIR NAME             record that the installer made <prefix>/NAME (venv, assets)
+  own          --prefix DIR NAME             record that the installer made <prefix>/NAME (venv, assets, cache, tmp)
   uninstall    --prefix DIR [--keep-assets] [--yes]  remove what the installer owns; never the data directory
   active       --prefix DIR                  this user's processes started from this installation
   watch-run    --guard-pidfile FILE --out DIR --record FILE   record what descends from a run's guard
@@ -43,7 +45,24 @@ CONF_NAME = "install.conf"
 DATA_MARKER = ".sentinel-beta-data"
 DATA_MARKER_TEXT = "This directory holds one Sentinel personal-beta tester's own data. The installer never deletes it.\n"
 OWNED_ALWAYS = ("package", CONF_NAME, MANIFEST_NAME)  # what install itself makes
-OWNED_LATER = ("venv", "assets")  # what setup-env.sh, fetch-assets.sh and the build scripts make
+# what setup-env.sh, fetch-assets.sh and the build scripts make; cache and tmp: what local-env makes for every script
+OWNED_LATER = ("venv", "assets", "cache", "tmp")
+# Where the libraries this package installs keep caches, settings and temporary files: inside the installation, never
+# under the home directory. Each variable and the directory below <prefix>/ it is given (lib/common.sh exports them
+# for a script and for everything the script starts; HOME itself is never changed). DEEPFACE_HOME here is only the
+# place an incidental import may create its folders in: the face weights stay where the asset manifest and site.conf
+# put them (DEEPFACE_HOME_DIR), and start.sh and identity.sh name that place themselves.
+LOCAL_ENV = (
+    ("PIP_CACHE_DIR", "cache/pip"), ("XDG_CACHE_HOME", "cache/xdg-cache"), ("XDG_CONFIG_HOME", "cache/xdg-config"),
+    ("XDG_DATA_HOME", "cache/xdg-data"), ("HF_HOME", "cache/hf"), ("TORCH_HOME", "cache/torch"),
+    ("YOLO_CONFIG_DIR", "cache/yolo"), ("DEEPFACE_HOME", "cache/deepface-home"), ("CUDA_CACHE_PATH", "cache/cuda"),
+    ("KERAS_HOME", "cache/keras"), ("MPLCONFIGDIR", "cache/matplotlib"), ("TMPDIR", "tmp"),
+)
+# Variables that would take one of those locations elsewhere again, or move Python's bytecode out of the environment
+# that pip compiled it into (<prefix>/venv): removed for the script, never set.
+LOCAL_UNSET = ("PYTHONPYCACHEPREFIX", "TEMP", "TMP", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE",
+               "PYTORCH_KERNEL_CACHE_PATH")
+LOCAL_TOP = ("cache", "tmp")
 OWNED_TRANSIENT = ("package.new", "package.old")  # only while an installation is under way
 OWNED_CLEANUP = ("uninstall.sh", "uninstall-helper.py")  # only while an uninstall is unfinished, or assets are kept
 OWNED = OWNED_LATER + OWNED_TRANSIENT + OWNED_ALWAYS + OWNED_CLEANUP  # every name the manifest may hold
@@ -152,6 +171,10 @@ def command_paths(args: argparse.Namespace) -> int:
             raise Stop(f"{key} holds a line break")
         say(f"{key}={value}")
     return 0
+
+
+def local_locations(prefix: Path) -> dict[str, Path]:
+    return {variable: prefix / relative for variable, relative in LOCAL_ENV}
 
 
 # ---------------------------------------------------------------- what the installer owns
@@ -397,6 +420,47 @@ def command_own(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_local_env(args: argparse.Namespace) -> int:
+    """Makes, once, the installation's own places for caches, settings and temporary files, and prints one
+    NAME=directory line for each variable that lib/common.sh then exports (a line with nothing after the = names a
+    variable it removes). Recorded as the installer's before anything is made; a directory of that name that the
+    installer did not make, a link, or a place that resolves outside the installation is refused and left alone."""
+    paths = resolved_paths(Path(args.package))
+    prefix = Path(paths["PREFIX"])
+    names = read_manifest(prefix)
+    if names is None:
+        raise Stop(f"{prefix} holds no installation (no {MANIFEST_NAME}); install first: bash install.sh")
+    for name in LOCAL_TOP:
+        top = prefix / name
+        if os.path.lexists(top) and name not in names:
+            raise Stop(f"{top} exists and was not made by this installer: it is neither used nor removed. "
+                       "Move it away yourself, then run this again")
+    if not set(LOCAL_TOP) <= set(names):
+        write_manifest(prefix, set(names) | set(LOCAL_TOP))  # recorded before it is made
+    lines = []
+    for variable, folder in local_locations(prefix).items():
+        current = prefix
+        for part in folder.relative_to(prefix).parts:
+            current = current / part
+            if current.is_symlink() or (os.path.lexists(current) and not current.is_dir()):
+                raise Stop(f"{current} is a link or is not a directory: this installation keeps its caches and "
+                           "temporary files in directories of its own and writes nothing through a link. Remove it "
+                           "yourself (what it points at is left alone), then run this again")
+            if not os.path.lexists(current):
+                try:
+                    os.mkdir(current, 0o700)
+                    os.chmod(current, 0o700)
+                except FileExistsError:  # another script of this installation made it at the same moment
+                    if current.is_symlink() or not current.is_dir():
+                        raise Stop(f"{current} is a link or is not a directory; nothing was set") from None
+        if not inside(folder, prefix) or "\n" in str(folder):
+            raise Stop(f"{folder} does not resolve inside {prefix}: nothing was set")
+        lines.append(f"{variable}={folder}")
+    for line in lines + [f"{variable}=" for variable in LOCAL_UNSET] + [f"LOCAL_ENV_COUNT={len(lines) + len(LOCAL_UNSET)}"]:
+        say(line)
+    return 0
+
+
 CLEANUP_SCRIPT = """#!/bin/bash
 # Left here by the Sentinel personal-beta uninstaller. It removes what is still the installer's in this directory:
 # the assets you asked it to keep, or the rest of an uninstall that was interrupted. It removes nothing else, and
@@ -497,6 +561,11 @@ def command_configure(args: argparse.Namespace) -> int:
         say(f"  {key:<13} {paths[key]}  [{there}]")
     enrolled = (Path(paths["IDENT"]) / "gallery.sealed").exists()
     say(f"  enrollment    {'present' if enrolled else 'MISSING: enroll yourself first (QUICKSTART.md, Enrollment)'}")
+    # where the installed libraries keep caches, settings and temporary files (shown only; the scripts make them)
+    prefix = Path(paths["PREFIX"])
+    for name, what in (("cache", "library caches and settings"), ("tmp", "temporary files")):
+        there = "present" if (prefix / name).is_dir() and not (prefix / name).is_symlink() else "not made yet"
+        say(f"  {what + ':':<28} {prefix / name}  [{there}]")
     return 0
 
 
@@ -917,7 +986,7 @@ def command_stop(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Sentinel personal-beta package bookkeeping (see the module docstring).")
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("paths", "verify-package"):
+    for name in ("paths", "verify-package", "local-env"):
         commands.add_parser(name).add_argument("--package", required=True)
     install = commands.add_parser("install")
     install.add_argument("--source", required=True)
@@ -969,7 +1038,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    handlers = {"paths": command_paths, "verify-package": command_verify_package, "install": command_install, "own": command_own, "uninstall": command_uninstall,
+    handlers = {"paths": command_paths, "verify-package": command_verify_package, "local-env": command_local_env,
+                "install": command_install, "own": command_own, "uninstall": command_uninstall,
                 "active": command_active, "watch-run": command_watch, "after-guard": command_after_guard,
                 "stop-run": command_stop, "configure": command_configure, "fetch-assets": command_fetch, "verify-assets": command_verify,
                 "asset": command_asset}

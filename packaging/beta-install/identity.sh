@@ -16,6 +16,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 [ "$(id -u)" != 0 ] || beta_stop "run as your own user, without sudo"
 beta_verify_package "$HERE"
 beta_load_paths "$HERE"
+beta_local_env "$HERE"
 [ -x "$RT_PY" ] || beta_stop "the Python environment is not there ($VENV). Run: bash $PKG/setup-env.sh"
 [ $# -ge 1 ] || { sed -n '2,13p' "${BASH_SOURCE[0]}"; exit 2; }
 COMMAND="$1"; shift

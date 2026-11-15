@@ -19,6 +19,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 [ "$(id -u)" != 0 ] || beta_stop "run as your own user, without sudo"
 beta_verify_package "$HERE"
 beta_load_paths "$HERE"
+beta_local_env "$HERE"
 [ -x "$RT_PY" ] || beta_stop "the Python environment is not there ($VENV). Run: bash $PKG/setup-env.sh"
 WEIGHTS="$(python3 -I -B "$PKG/lib/beta.py" asset --package "$PKG" detector_weights target)" || exit 1
 # the export's settings: the asset manifest's, given to the export call as they are, and noted as given

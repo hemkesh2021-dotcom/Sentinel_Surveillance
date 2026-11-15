@@ -77,6 +77,9 @@ done
 [ -z "${SENTINEL_TELEGRAM_BOT_TOKEN:-}${SENTINEL_TELEGRAM_CHAT_ID:-}" ] || stop_now "unset the Telegram variables first (external notifications stay off)"
 grep -q '^THP_enabled:[[:space:]]*1$' /proc/self/status || stop_now "transparent huge pages are disabled for this shell; the memory policy needs them enabled before launch (open a new plain SSH shell)"
 beta_verify_package "$PKG"
+# caches, settings and temporary files of everything started below: inside this installation, not under HOME. The
+# runtime and the enrollment name the face weights' own place themselves (DEEPFACE_HOME in the site block above).
+beta_local_env "$PKG"
 [ -x "$RT_PY" ] || stop_now "the Python environment is not there ($VENV). Run: bash $PKG/setup-env.sh"
 [ -e "$L4T_LIBCUDA" ] || stop_now "the L4T CUDA driver library is not at $L4T_LIBCUDA (bash $PKG/preflight.sh explains)"
 [ -f "$CONFIG" ] || stop_now "your configuration is not at $CONFIG. Run install.sh again from the extracted archive: it writes the file when it is missing"
@@ -140,6 +143,9 @@ if [ "$MODE" = check ]; then
   echo "package=$(head -n 1 "$PKG/VERSION")"
   grep -m 1 '^application=' "$PKG/VERSION" || echo "application=not stated in $PKG/VERSION"
   echo "memfree_bytes=$(meminfo MemFree) launch_floor_bytes=$FLOOR display_manager=$(systemctl is-active display-manager 2>/dev/null || true)"
+  # where this installation keeps the libraries' caches, settings and temporary files, as just exported
+  sed -n 's/^\([A-Z_][A-Z_]*=..*\)$/local_env \1/p' <<<"$BETA_LOCAL_LINES" | grep -v '^local_env LOCAL_ENV_COUNT='
+  echo "local_env_set_in_your_shell_and_not_used=${BETA_LOCAL_REPLACED:-none}"
   if [ -n "$DEVICE_RECORD" ]; then
     echo "BETA_CHECK_ROUTE=device_artifacts (opt-in, experimental validation runs only: this device's files equal its record; its resources are NOT validated, resource_validation=pending; platform $PLATFORM_STATE)"
   fi

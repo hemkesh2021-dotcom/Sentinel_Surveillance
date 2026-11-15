@@ -31,6 +31,7 @@ while [ $# -gt 0 ]; do
 done
 beta_verify_package "$HERE"
 beta_load_paths "$HERE"
+beta_local_env "$HERE"
 asset() { python3 -I -B "$PKG/lib/beta.py" asset --package "$PKG" llama_server "$1"; }
 # the build target by its name in the manifest ("cmake_target"; the helper's "target" is where the binary is put)
 REPO_URL="$(asset repo)" && COMMIT="$(asset commit)" && TARGET="$(asset cmake_target)" || exit 1

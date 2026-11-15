@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 
 import pytest
-from beta_install_fixture import World, said
+from beta_install_fixture import World, said, tree
 
 URL = "rtsp://tester:s3cret-pw@10.9.8.7:554/main-stream-XYZ"
 PASSPHRASE = "an-invented-Passphrase-987"
@@ -1179,3 +1179,143 @@ def test_a_launch_with_a_record_keeps_every_gate_and_says_that_nothing_was_valid
                  "resource_validation=pending", "platform_preflight=verified_combination_test_fixture"):
         assert line in note.splitlines(), line
     assert launch.secrets_in_files() == [] and URL not in text and PASSPHRASE not in text
+
+
+# ---------------------------------------------------------------- the installation's own cache and temporary locations
+#
+# What a script starts is seen through a recorder put in front of each stand-in: the recorder writes down the
+# locations it was started with before the stand-in does anything, which is what the real program would have before
+# its first import. Synthetic: no pip, no download, no build, no model, no camera.
+
+LOCAL = {"PIP_CACHE_DIR": "cache/pip", "XDG_CACHE_HOME": "cache/xdg-cache", "XDG_CONFIG_HOME": "cache/xdg-config",
+         "XDG_DATA_HOME": "cache/xdg-data", "HF_HOME": "cache/hf", "TORCH_HOME": "cache/torch",
+         "YOLO_CONFIG_DIR": "cache/yolo", "DEEPFACE_HOME": "cache/deepface-home", "CUDA_CACHE_PATH": "cache/cuda",
+         "KERAS_HOME": "cache/keras", "MPLCONFIGDIR": "cache/matplotlib", "TMPDIR": "tmp"}
+LOCAL_REMOVED = ("PYTHONPYCACHEPREFIX", "TEMP", "TMP", "HF_HUB_CACHE")
+
+
+def recorded_starts(launch: Launch, path: Path, label: str) -> None:
+    original = path.with_name(path.name + ".stand-in")
+    path.rename(original)
+    names = " ".join((*LOCAL, *LOCAL_REMOVED, "HOME"))
+    launch.script(path, f"""#!/bin/bash
+{{ printf 'START {label} %s\\n' "$*"; for name in {names}; do printf '%s=%s\\n' "$name" "${{!name-<unset>}}"; done; }} >> "$FIXTURE/starts.txt"
+exec "{original}" "$@"
+""")
+
+
+def starts(launch: Launch) -> list[tuple[str, str, dict[str, str]]]:
+    found: list[tuple[str, str, dict[str, str]]] = []
+    for line in (launch.tmp / "starts.txt").read_text().splitlines():
+        if line.startswith("START "):
+            _, label, *rest = line.split(" ", 2)
+            found.append((label, rest[0] if rest else "", {}))
+        else:
+            name, _, value = line.partition("=")
+            found[-1][2][name] = value
+    return found
+
+
+def set_in_the_shell(launch: Launch) -> dict[str, str]:
+    return {name: str(launch.tmp / "elsewhere" / name.lower()) for name in (*LOCAL, *LOCAL_REMOVED)}
+
+
+def expect_the_installations_own(launch: Launch, entries, face_weights: Path | None = None) -> None:
+    assert entries
+    for label, arguments, seen in entries:
+        runtime = arguments.startswith("-m sentinel.cli ")
+        for variable, relative in LOCAL.items():
+            own = launch.prefix / relative
+            if variable == "DEEPFACE_HOME" and runtime:  # the weights' own place, named by the launcher itself
+                own = face_weights or launch.prefix / "assets/deepface-home"
+            assert seen[variable] == str(own), (label, arguments[:60], variable)
+        for variable in LOCAL_REMOVED:
+            assert seen[variable] == "<unset>", (label, arguments[:60], variable)
+        assert seen["HOME"] == str(launch.home), label
+
+
+def test_everything_the_scripts_start_gets_the_installations_own_locations_before_it_imports_anything(routed: Launch) -> None:
+    launch = routed
+    recorded_starts(launch, launch.prefix / "venv/bin/python", "interpreter")
+    recorded_starts(launch, launch.bin / "git", "git")
+    recorded_starts(launch, launch.bin / "cmake", "cmake")
+    shell = set_in_the_shell(launch)  # every one of them points somewhere else: none of it may be used
+    shutil.rmtree(launch.prefix / "assets/llama.cpp")
+    (launch.prefix / "assets/engine/yolov8n.engine").unlink()
+    for step in (launch.run("build-llama.sh", package=launch.installed, **shell),
+                 launch.run("build-engine.sh", package=launch.installed, stdin="BUILD\n", **shell),
+                 launch.run("record-artifacts.sh", package=launch.installed, **shell)):
+        assert step.returncode == 0, said(step)
+        assert (f"note: set in your shell, not used by this installation (it keeps its own under {launch.prefix}): "
+                + " ".join((*LOCAL, *LOCAL_REMOVED))) in step.stderr
+    launch.fixture("admission.out", ROUTE_ADMITTED)
+    checked = launch.check("--device-artifacts", str(launch.record), **shell)
+    assert checked.returncode == 0, said(checked)
+    entries = starts(launch)
+    expect_the_installations_own(launch, entries)
+    kinds = [(label, arguments) for label, arguments, _ in entries]
+    assert any(label == "git" and arguments.startswith("clone ") for label, arguments in kinds)
+    assert any(label == "cmake" and arguments.startswith("--build ") for label, arguments in kinds)
+    for shape in ("-B -", f"- {launch.prefix / 'assets/engine/yolov8n.pt'} ", "-I -B -c ", "-m sentinel.cli config validate ",
+                  f"-B {launch.installed / 'lib/admission_check.py'} ", "-m sentinel.cli run "):
+        assert any(label == "interpreter" and (arguments + " ").startswith(shape) for label, arguments in kinds), shape
+    assert not (launch.tmp / "elsewhere").exists()  # nothing was made or written where the shell pointed
+    assert list(launch.home.iterdir()) == []  # and nothing under the home directory
+    # the check says where things are, and what it did not use
+    for variable, relative in LOCAL.items():
+        assert f"local_env {variable}={launch.prefix / relative}" in checked.stdout.splitlines(), variable
+    assert ("local_env_set_in_your_shell_and_not_used=" + " ".join((*LOCAL, *LOCAL_REMOVED))) in checked.stdout.splitlines()
+    assert "local_env LOCAL_ENV_COUNT" not in checked.stdout
+    # the check's own temporary directory was inside the installation, and is gone
+    argv = json.loads((launch.tmp / "runtime-check.json").read_text())["argv"]
+    assert argv[argv.index("--data-dir") + 1].startswith(str(launch.prefix / "tmp") + "/")
+    assert list((launch.prefix / "tmp").iterdir()) == []
+    plain = launch.check("--device-artifacts", str(launch.record))  # nothing set in the shell: nothing to name
+    assert plain.returncode == 0 and "local_env_set_in_your_shell_and_not_used=none" in plain.stdout.splitlines()
+    assert "note: set in your shell" not in plain.stderr
+
+
+def test_a_launch_gives_the_guard_and_the_runtime_the_installations_own_locations(launch: Launch) -> None:
+    recorded_starts(launch, launch.prefix / "venv/bin/python", "interpreter")
+    launch.env = {**launch.env, **set_in_the_shell(launch)}
+    terminal = Terminal(launch)
+    to_the_start_prompt(terminal)
+    terminal.type("START")
+    assert terminal.wait_for(r"Features this run started with:", 30), terminal.text()
+    terminal.interrupt()
+    assert terminal.finish() == 0, terminal.text()
+    entries = starts(launch)
+    expect_the_installations_own(launch, entries)
+    arguments = [arguments for _, arguments, _ in entries]
+    assert any(text.startswith("benchmarks/runner/step5_guard.py --step4-headroom ") for text in arguments)  # the guard
+    runs = [text for text in arguments if text.startswith("-m sentinel.cli run ")]
+    assert len(runs) == 1 and "--data-dir " + str(launch.data / "observe") in runs[0]  # the one launch, in the data directory
+    assert json.loads((launch.tmp / "runtime.json").read_text())["deepface_home"] == str(launch.prefix / "assets/deepface-home")
+    assert not (launch.tmp / "elsewhere").exists() and launch.secrets_in_files() == []
+    assert "set in your shell, not used by this installation" in terminal.text()
+
+
+def test_the_face_weights_stay_where_the_settings_put_them_and_nothing_is_moved_or_fetched(launch: Launch) -> None:
+    """A cache default for DEEPFACE_HOME must not move the admitted weights: the launch and the enrollment name the
+    weights' own place (the installation's, or the tester's site.conf setting), whatever the shell holds."""
+    recorded_starts(launch, launch.prefix / "venv/bin/python", "interpreter")
+    weights = launch.prefix / "assets/deepface-home"
+    before = tree(weights)
+    shell = {"DEEPFACE_HOME": str(launch.tmp / "elsewhere/deepface")}
+    checked = launch.check(**shell)
+    assert checked.returncode == 0, said(checked)
+    assert json.loads((launch.tmp / "runtime-check.json").read_text())["deepface_home"] == str(weights)
+    custom = launch.tmp / "my weights home"
+    shutil.copytree(weights, custom)
+    configured = launch.run("configure.sh", "--set", f"DEEPFACE_HOME={custom}", package=launch.installed)
+    assert configured.returncode == 0, said(configured)
+    checked = launch.check(**shell)
+    assert checked.returncode == 0, said(checked)
+    assert json.loads((launch.tmp / "runtime-check.json").read_text())["deepface_home"] == str(custom)
+    expect_the_installations_own(launch, starts(launch)[-3:], face_weights=custom)
+    admission = (launch.tmp / "admission.args").read_text().splitlines()
+    assert admission[admission.index("--weights-dir") + 1] == str(custom / ".deepface/weights")
+    assert tree(weights) == before and tree(custom) == before  # neither copy was touched, and nothing was downloaded
+    assert not (launch.tmp / "elsewhere").exists()
+    assert list((launch.prefix / "cache/deepface-home").iterdir()) == []  # the cache place holds no weights
+

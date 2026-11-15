@@ -8,12 +8,16 @@
 # own TensorRT Python binding. It downloads about 1.5 GB and installs about 4 GB. No sudo, no system package, no other
 # environment is touched; no camera, no model. It ends by importing the GPU and face libraries once (no model is
 # loaded) to show that they load on this device; --no-import-check leaves that out.
+# pip's download cache and every library's own cache and settings go to <prefix>/cache, temporary files to
+# <prefix>/tmp (lib/common.sh, beta_local_env); nothing is written under your home directory. The packages' bytecode
+# stays where pip compiles it, inside <prefix>/venv.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 . "$HERE/lib/common.sh"
 [ "$(id -u)" != 0 ] || beta_stop "run as your own user, without sudo"
 beta_verify_package "$HERE"
 beta_load_paths "$HERE"
+beta_local_env "$HERE"
 IMPORT_CHECK=1
 case "${1:-}" in "") ;; --no-import-check) IMPORT_CHECK=0 ;; *) echo "usage: bash setup-env.sh [--no-import-check]"; exit 2 ;; esac
 
@@ -24,7 +28,7 @@ case "${1:-}" in "") ;; --no-import-check) IMPORT_CHECK=0 ;; *) echo "usage: bas
 # a directory of that name that the installer did not make is refused here and left alone
 python3 -I -B "$PKG/lib/beta.py" own --prefix "$PREFIX" venv || exit 1
 if [ ! -x "$RT_PY" ]; then
-  "$PYTHON310" -m venv --clear "$VENV" || beta_stop "the environment could not be made"
+  env PYTHONDONTWRITEBYTECODE=1 "$PYTHON310" -m venv --clear "$VENV" || beta_stop "the environment could not be made"
 fi
 PIP=(env PYTHONDONTWRITEBYTECODE=1 "$RT_PY" -m pip --disable-pip-version-check --no-input)
 "${PIP[@]}" install --no-deps --require-hashes -r "$PKG/manifest/requirements-jetson.txt" \
@@ -33,7 +37,7 @@ PIP=(env PYTHONDONTWRITEBYTECODE=1 "$RT_PY" -m pip --disable-pip-version-check -
   || beta_stop "a pinned package could not be installed (above). Nothing was installed anywhere else"
 
 # JetPack's TensorRT binding: linked in by name, so that no other system package becomes importable here.
-SITE="$("$RT_PY" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" || beta_stop "the environment's package directory could not be found"
+SITE="$("$RT_PY" -B -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" || beta_stop "the environment's package directory could not be found"
 for ITEM in "$TENSORRT_PYTHON"/tensorrt "$TENSORRT_PYTHON"/tensorrt-*.dist-info; do
   [ -e "$ITEM" ] || continue
   ln -sfn "$ITEM" "$SITE/$(basename "$ITEM")" || beta_stop "the TensorRT binding could not be linked"

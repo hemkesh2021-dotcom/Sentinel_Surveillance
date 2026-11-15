@@ -716,9 +716,10 @@ def test_the_version_names_every_file_of_the_route_and_every_package_file_that_c
      "as changed; changed but not declared: src/sentinel/cli.py"),
     ("CHANGED_SINCE_ACCEPTED", "drop:src/sentinel/device_artifacts.py", "changed but not declared: src/sentinel/device_artifacts.py"),
     ("CHANGED_SINCE_ACCEPTED", "add:src/sentinel/config.py", "declared but identical: src/sentinel/config.py"),
-    ("PACKAGE_FILES_CHANGED", "drop:QUICKSTART.md",
+    ("PACKAGE_FILES_CHANGED", "drop:build-llama.sh",
      "the package's own files that differ from sentinel-personal-beta-949da67-mod79c18d4-r5 are not exactly the ones "
-     "this package declares as changed; changed but not declared: QUICKSTART.md"),
+     "this package declares as changed; changed but not declared: build-llama.sh"),
+    ("PACKAGE_FILES_CHANGED", "drop:QUICKSTART.md", "changed but not declared: QUICKSTART.md"),
     ("PACKAGE_FILES_CHANGED", "add:stop.sh", "declared but identical: stop.sh"),
 ])
 def test_the_builder_refuses_a_change_it_does_not_declare_and_a_declaration_without_a_change(
