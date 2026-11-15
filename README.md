@@ -162,7 +162,7 @@ llama.cpp and the detector engine on your device. Its guide is
 sha256sum -c sentinel-personal-beta-*-r7.tar.gz.sha256      # then extract it and read README.md and QUICKSTART.md
 ```
 
-Read this before you spend an evening on it:
+Before you start:
 
 - **What ran, and what did not.** Revision 5 of the package completed a camera-free build rehearsal on the reference
   device (installation, environment, downloads, both builds, the record of the built files and its verification).
