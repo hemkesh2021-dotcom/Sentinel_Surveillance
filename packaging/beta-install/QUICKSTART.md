@@ -8,10 +8,11 @@
 > **never been run on another device**. Section 1 says exactly what it does and does not do. Nothing in this package
 > works around admission, and you must not either (no copied private files, no changed file times, no edited record).
 
-An experimental tester pre-release (Sentinel v2.0.0-alpha.3, application version `2.0.0a3`), under the MIT License
-(`LICENSE`; section 15). It validates and admits nothing: face recognition, identity retention and chat run as
-experimental validation-run features, exactly as in the build it was made from (code `949da67`). Snapshots and
-external notifications are off. Testing with more than one person is deferred.
+An experimental tester pre-release (Sentinel v2.0.0-beta.1, application version `2.0.0b1`), under the MIT License
+(`LICENSE`; section 15). **The beta name is a release designation, not a validation result.** It validates and
+admits nothing: face recognition, identity retention and chat run as experimental validation-run features, exactly
+as in the build it was made from (code `949da67`). Snapshots and external notifications are off. Testing with more
+than one person is deferred.
 
 **Nothing private comes with it:** no gallery or enrollment, no camera address or credential, no detector engine, no
 llama.cpp build, no device-artifacts record, no observation data. You download the pinned model files, build the
@@ -19,7 +20,7 @@ two device-specific files and record your own artifacts on your own device.
 
 **Five application files are not the accepted build's.** The package's name carries a modification mark (`-mod…`)
 for that reason, and `VERSION` names each of them with the accepted and the packaged SHA-256, and every file of the
-package itself that changed since revision 6. Everything else under `app/` equals `949da67`.
+package itself that changed since revision 7. Everything else under `app/` equals `949da67`.
 
 - The memory guard (`app/benchmarks/runner/step5_guard.py`): when a run ends it signals only the processes that run
   started, and no longer every `llama-server` of your user. Its memory limits, readiness checks and deadlines are
@@ -27,16 +28,17 @@ package itself that changed since revision 6. Everything else under `app/` equal
 - The device-artifacts route: `app/src/sentinel/device_artifacts.py` (a new file) and its wiring in
   `app/src/sentinel/demo_runtime.py` and `app/src/sentinel/cli.py`. Without `--device-artifacts` the runtime decides
   exactly as the accepted build does.
-- The version string (`app/src/sentinel/__init__.py`): `2.0.0a3`. `sentinel --version` prints it; nothing else
+- The version string (`app/src/sentinel/__init__.py`): `2.0.0b1`. `sentinel --version` prints it; nothing else
   reads it.
 
 **What has run where.** Revision 5 of this package ran for real on the reference device, without a camera: the
 installation, the Python environment, the downloads, both builds, the record of the built files, its verification
 and the route's admission decision (section 14 has the details). Revision 6 changed the packaging (the
-installation's own cache locations, `guarded-build.sh`). This revision changed the documentation, added the licence
-and notice files and set the version string. `VERSION` lists the files; **those changes were verified offline
-only**, with temporary directories and stand-ins. No guarded run with a camera or a model has used the changed
-guard, and no launch has ever been made from this package.
+installation's own cache locations, `guarded-build.sh`). Revision 7 changed the documentation and added the licence
+and notice files. This revision, 8, corrects the release designation and the version string, and how two documents
+name the licence file. `VERSION` lists the files; **those changes were verified offline only**, with temporary
+directories and stand-ins. No guarded run with a camera or a model has used the changed guard, and no launch has
+ever been made from this package.
 
 The steps, in order: prerequisites (2) → install (3) → environment and downloads (4) → the two builds (5) → your
 enrollment (6) → settings (7) → record and check (8) → launch (9). Sections 10 to 15: limits, uninstall, which
@@ -156,8 +158,8 @@ Download the archive and its `.sha256` file from the release page
 the checksum file, extract it anywhere, then, as your own user (never with sudo):
 
 ```bash
-sha256sum -c sentinel-personal-beta-949da67-mod191a193-r7.tar.gz.sha256
-tar -xzf sentinel-personal-beta-949da67-mod191a193-r7.tar.gz && cd sentinel-personal-beta-949da67-mod191a193-r7
+sha256sum -c sentinel-personal-beta-949da67-mod9ff5262-r8.tar.gz.sha256
+tar -xzf sentinel-personal-beta-949da67-mod9ff5262-r8.tar.gz && cd sentinel-personal-beta-949da67-mod9ff5262-r8
 bash preflight.sh        # reads facts only; changes nothing
 bash install.sh          # defaults: ~/sentinel-beta (the installation) and ~/sentinel-beta-data (your data)
 ```
@@ -528,12 +530,12 @@ under the monitor that is now `lib/guarded_run.py`; the device-artifacts record 
 verification, and the route's admission decision for that record. In that rehearsal the caches and temporary files
 were kept inside its own directory by a file of the rehearsal's, not by the package.
 
-**Revision 6's and this revision's changes, offline only** (temporary directories, synthetic files, stand-ins; the
+**The changes of revisions 6, 7 and 8, offline only** (temporary directories, synthetic files, stand-ins; the
 package's tests). Revision 6: the installation's own cache, settings and temporary locations in every script;
-`guarded-build.sh` and its front end, with the monitor unchanged; uninstall removing `cache/` and `tmp/`. This
-revision: this guide's wording, `README.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md` and the application's version
-string. **Nothing that revision 6 or this revision changed has run a download, a build, an export, a model or a
-camera on any device.**
+`guarded-build.sh` and its front end, with the monitor unchanged; uninstall removing `cache/` and `tmp/`. Revision 7:
+this guide's wording, `README.md`, `LICENSE` and `THIRD_PARTY_NOTICES.md`. This revision, 8: the release designation
+`v2.0.0-beta.1` with the version string `2.0.0b1`, and how two documents name the licence file. **Nothing that
+revisions 6, 7 or 8 changed has run a download, a build, an export, a model or a camera on any device.**
 
 **Not verified:** anything on another device; stock JetPack 6 on Ubuntu 22.04 (JetPack's `python3-libnvinfer`
 installed with apt, cuDSS from NVIDIA's repository); the complete `check.sh` on real builds (the rehearsal has no

@@ -96,14 +96,18 @@ def test_the_entry_page_says_what_ran_what_did_not_and_what_a_tester_supplies() 
             "**yes, only after you type START**", "**yes: reads your photos and writes your sealed enrollment**",
             "ssh -N -o ExitOnForwardFailure=yes -L 18090:127.0.0.1:18090 <user>@<jetson>",
             "http://127.0.0.1:18090/dashboard", "Ctrl-C once, or `bash stop.sh`",
-            "[`LICENSE`](LICENSE)", "[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)", "AGPL-3.0",
+            "see `LICENSE`, the repository's own licence file, at the top of the archive",
+            "[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)", "AGPL-3.0",
+            "experimental pre-release **v2.0.0-beta.1** of Sentinel (application version `2.0.0b1`)",
+            "**The beta name is a release designation, not a validation result.**",
             "**The issue tracker is public.**", ISSUES):
         assert statement in page, statement
     for claim in ("validated on", "works on any", "supported on stock", "has been admitted"):
         assert claim not in page, claim
     guide = flat(PACKAGE / "QUICKSTART.md")
     assert "## 15. Licences" in guide and ISSUES in guide and "**The tracker is public.**" in guide
-    assert "An experimental tester pre-release (Sentinel v2.0.0-alpha.3, application version `2.0.0a3`)" in guide
+    assert "An experimental tester pre-release (Sentinel v2.0.0-beta.1, application version `2.0.0b1`)" in guide
+    assert "**The beta name is a release designation, not a validation result.**" in guide
     assert "https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases" in guide
 
 
@@ -131,9 +135,33 @@ def test_one_version_everywhere() -> None:
 
     project = re.search(r'^version = "([^"]+)"$', (REPO / "pyproject.toml").read_text(), re.M).group(1)
     _, members = build_archive.package_members(build_archive.DEFAULT_REVISION, worktree=True)
-    assert sentinel.__version__ == project == "2.0.0a3"
+    assert sentinel.__version__ == project == "2.0.0b1"
     assert f"application_version={project}\n" in members["VERSION"].decode()
     readme = (REPO / "README.md").read_text()
-    assert "git clone --branch v2.0.0-alpha.3 " in readme and "# sentinel 2.0.0a3" in readme
-    assert "docs/RELEASE_NOTES_v2.0.0-alpha.3.md" in readme and "packaging/beta-install/QUICKSTART.md" in readme
+    assert "git clone --branch v2.0.0-beta.1 " in readme and "# sentinel 2.0.0b1" in readme
+    assert "docs/RELEASE_NOTES_v2.0.0-beta.1.md" in readme and "packaging/beta-install/QUICKSTART.md" in readme
     assert "see [`LICENSE`](LICENSE)" in readme
+    assert "The beta name is a release designation, not a validation" in " ".join(readme.split())
+    for stale in ("alpha.3", "2.0.0a3"):  # the name that was prepared first and never published
+        for path in ("README.md", "pyproject.toml", "src/sentinel/__init__.py", "packaging/build_archive.py",
+                     "packaging/beta-install/README.md", "packaging/beta-install/QUICKSTART.md",
+                     "packaging/beta-install/THIRD_PARTY_NOTICES.md", "docs/ALPHA_CANDIDATE_NOTES.md"):
+            assert stale not in (REPO / path).read_text(), (path, stale)
+
+
+def test_every_link_in_the_packages_documents_leads_somewhere_in_the_repository_and_in_the_archive() -> None:
+    """A packaged document is read in two places: in the repository's folder and in the extracted archive. A relative
+    link must exist in both. The licence file is at the top of each, so the documents name it without a link."""
+    _, members = build_archive.package_members(build_archive.DEFAULT_REVISION, worktree=True)
+    checked = 0
+    for document in ("README.md", "THIRD_PARTY_NOTICES.md", "QUICKSTART.md"):
+        text = (PACKAGE / document).read_text()
+        assert members[document].decode() == text
+        for target in re.findall(r"\]\(([^)#]+)(?:#[^)]*)?\)", text):
+            if re.match(r"https://", target):
+                continue
+            checked += 1
+            assert (PACKAGE / target).is_file(), (document, target, "missing in the repository's folder")
+            assert target in members, (document, target, "missing in the archive")
+        assert "](LICENSE)" not in text, document
+    assert checked == 2 and "LICENSE" in members  # the entry page's two links were looked at; the licence file travels

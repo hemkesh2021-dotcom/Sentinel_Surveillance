@@ -1,8 +1,10 @@
 # Sentinel personal beta: installation package for testers
 
 This archive installs Sentinel v2 on your own NVIDIA Jetson, for experimental testing. It belongs to the
-experimental pre-release **v2.0.0-alpha.3** of Sentinel (application version `2.0.0a3`):
+experimental pre-release **v2.0.0-beta.1** of Sentinel (application version `2.0.0b1`):
 <https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases>
+
+**The beta name is a release designation, not a validation result.**
 
 **Start with [`QUICKSTART.md`](QUICKSTART.md).** It is the installation guide, in the order to follow. This page is
 only the summary.
@@ -20,9 +22,10 @@ only the summary.
   - Revision 5 of this package completed a camera-free build rehearsal on the reference device (one Jetson Orin
     Nano 8 GB): installation, the Python environment, the downloads, the llama.cpp build, the detector engine
     export, the record of those files and its verification.
-  - Revision 6's packaging changes (the installation's own cache locations, `guarded-build.sh`) and this
-    revision's changes (documentation, licence and notice files, the version string) were checked **offline
-    only**, with tests, temporary directories and stand-ins.
+  - Revision 6's packaging changes (the installation's own cache locations, `guarded-build.sh`), revision 7's
+    documents, licence and notice files, and this revision's corrections (the release name and version string,
+    how two documents name the licence file) were checked **offline only**, with tests, temporary directories and
+    stand-ins.
   - **Never run:** a complete launch from this package; the complete check on real builds; anything on another
     Jetson.
 - **Stock JetPack is unverified.** The reference device runs L4T R36.4.7 with an Ubuntu 24.04 userland. On stock
@@ -65,7 +68,8 @@ no script does it for you. The dashboard is reached through an SSH tunnel
 
 ## Licence
 
-Sentinel's own files in this archive are under the MIT License: see [`LICENSE`](LICENSE). The Python packages and
+Sentinel's own files in this archive are under the MIT License: see `LICENSE`, the repository's own licence file,
+at the top of the archive. The Python packages and
 model files the scripts download, and the software you build, are **not** part of this archive and keep their own
 licences, among them AGPL-3.0 (Ultralytics and the detector weights), the LFM Open License v1.0 (the scene model)
 and NVIDIA's licence agreements. [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) lists each with its source.

@@ -2,7 +2,8 @@
 
 **None of what is listed here is inside this package.** The archive holds Sentinel's own files only: the scripts,
 their helpers, the manifests, the guide and the application source under `app/`. Those are licensed under the MIT
-License ([`LICENSE`](LICENSE), copyright Hemkesh and V S Yogeshvar).
+License (`LICENSE`, the repository's own licence file, at the top of the archive; copyright Hemkesh and V S
+Yogeshvar).
 
 The package's scripts download or build everything else on your device, from the upstream sources named below, and
 each item keeps its upstream licence. This file repeats what each upstream states, as read on 2026-11-15. It grants

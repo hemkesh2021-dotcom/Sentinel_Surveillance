@@ -82,36 +82,31 @@ CHANGED_SINCE_ACCEPTED = {
         "difference in how it is typed: the abbreviation --d, which used to select --data-dir, is now ambiguous",
         _ROUTE_RUN_WITH),
     VERSION_FILE: (
-        "the version string only (session 116, part 48): 2.0.0a3, for the experimental pre-release v2.0.0-alpha.3, "
-        "where the accepted commit has 2.0.0a2. `sentinel --version` prints it and nothing else reads it; no "
-        "behaviour, threshold, guard or admission rule is changed",
+        "the version string only (session 116, parts 48 and 49): 2.0.0b1, for the pre-release v2.0.0-beta.1, where "
+        "the accepted commit has 2.0.0a2. The beta name is a release designation, not a validation result. "
+        "`sentinel --version` prints it and nothing else reads it; no behaviour, threshold, guard or admission rule "
+        "is changed",
         "the package's tests only; no run on any device with a camera or a model has used it"),
 }
 # The package's own files (under PACKAGE_SOURCE) that differ from the previous revision's, or that it did not have:
 # path -> what changed. The builder refuses unless exactly these differ from PREVIOUS_PACKAGE_COMMIT.
-PREVIOUS_PACKAGE_COMMIT = "f283632a8f85440ab279d34dcf3eeabe968a0b7c"
-PREVIOUS_PACKAGE_NAME = "sentinel-personal-beta-949da67-mod79c18d4-r6"
+PREVIOUS_PACKAGE_COMMIT = "8ef4d027af92a99987d671bcbf88cb7ad369fc04"
+PREVIOUS_PACKAGE_NAME = "sentinel-personal-beta-949da67-mod191a193-r7"
 # The one revision that ran for real (the camera-free rehearsal on the reference device, 2026-11-13 to 2026-11-15).
 # VERSION names every file of the package that differs from it: those files have real-device evidence from nobody.
 REAL_EVIDENCE_PACKAGE_COMMIT = "34809141654f4d7729e72cb6a5ce0eb6fadf1125"
 REAL_EVIDENCE_PACKAGE_NAME = "sentinel-personal-beta-949da67-mod79c18d4-r5"
 PACKAGE_FILES_CHANGED = {
-    "QUICKSTART.md": "the guide for the public tester pre-release: the line that restricted who may receive the "
-                     "package is replaced by its status and licence; where the archive is downloaded "
-                     "from; the fifth changed application file (the version string); which revision ran for real "
-                     "(5), which packaging changes were checked offline (6) and what this revision changes; the "
-                     "problem report now points to the public issue form and says what must stay out of it; a "
-                     "section on licences. No step, command, limit or figure of the procedure is changed",
-    "README.md": "a new file: the archive's entry point. What the package is and is not, what has and has not been "
-                 "run, what a tester supplies, which steps touch a camera or face data, the licence, how to report "
-                 "a problem",
-    "THIRD_PARTY_NOTICES.md": "a new file: the Python packages and model files the scripts download and the software "
-                              "built on the device, none of them in the archive, each with its upstream source, "
-                              "pinned revision and licence as upstream states it (AGPL-3.0 for Ultralytics and the "
-                              "detector weights, the LFM Open License v1.0, NVIDIA's agreements, MIT, BSD, Apache-2.0, "
-                              "MPL-2.0 and others)",
+    "QUICKSTART.md": "the release designation corrected to v2.0.0-beta.1 (application version 2.0.0b1), with the "
+                     "sentence that the beta name is a release designation and not a validation result; this "
+                     "revision's name in the two lines that check and unpack the archive; which revision changed "
+                     "what. No step, command, limit or figure of the procedure is changed",
+    "README.md": "the release designation corrected to v2.0.0-beta.1 (2.0.0b1), with the same sentence; what "
+                 "revisions 6, 7 and 8 changed; the licence file is named without a link, because a link to it "
+                 "led somewhere in the archive and nowhere in the repository's own folder",
+    "THIRD_PARTY_NOTICES.md": "the licence file is named without a link, for the same reason; nothing else",
 }
-DEFAULT_REVISION = 7
+DEFAULT_REVISION = 8
 EXECUTABLE = (".sh",)
 REPO = Path(__file__).resolve().parents[1]
 
@@ -249,6 +244,8 @@ def package_members(revision: int, *, worktree: bool = False) -> tuple[str, dict
                f"package_revision={revision}\n"
                f"application_version={app_version}\n"
                "status=experimental tester pre-release; validates and admits nothing; not accepted for production\n"
+               "release_designation=v2.0.0-beta.1: the name of a pre-release only. It records no new validation "
+               "result, no acceptance and no change of any feature's status\n"
                f"license=MIT for the files in this package ({LICENSE_FILE}, sha256 {hashlib.sha256(licence).hexdigest()}: "
                "the repository's own licence file at the package commit). The Python packages and model files that "
                "its scripts download, and what is built on the device, are not in this package and keep their own "
@@ -269,8 +266,9 @@ def package_members(revision: int, *, worktree: bool = False) -> tuple[str, dict
                "memory and the time an export needs are not known\n"
                "this_revision_verified=offline only: the package's tests, with temporary directories, synthetic "
                "files and stand-ins. That holds for revision 6's packaging changes (the installation's own cache "
-               "locations, guarded-build.sh) and for this revision's (documentation, licence and notice files, the "
-               "version string) alike: no file of this revision that differs from revision 5 "
+               "locations, guarded-build.sh), for revision 7's documents, licence and notice files, and for this "
+               "revision's corrections (the release designation and version string, how two documents name the "
+               "licence file) alike: no file of this revision that differs from revision 5 "
                "(package_files_without_real_device_evidence above, and the application's version file) has run a "
                "download, a build, an export, a model or a camera on any device\n")
     members["VERSION"] = version.encode()

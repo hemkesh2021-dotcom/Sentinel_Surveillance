@@ -13,8 +13,8 @@
 *Person detection and tracking · zone rules · incidents and alerts · a local dashboard ·
 face recognition and scene analysis under validation*
 
-![Version](https://img.shields.io/badge/version-2.0.0--alpha.3-orange?style=for-the-badge)
-![Status](https://img.shields.io/badge/status-experimental_alpha-red?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-2.0.0--beta.1-orange?style=for-the-badge)
+![Status](https://img.shields.io/badge/status-experimental_pre--release-red?style=for-the-badge)
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Jetson](https://img.shields.io/badge/NVIDIA-Jetson_Orin_Nano-76B900?style=for-the-badge&logo=nvidia&logoColor=white)
 
@@ -22,15 +22,16 @@ face recognition and scene analysis under validation*
 
 ---
 
-> **EXPERIMENTAL ALPHA: Sentinel v2.0.0-alpha.3 is an experimental pre-release.** It adds an installation package for
-> testers with their own Jetson ([Install on your own Jetson](#install-on-your-own-jetson-tester-package-experimental))
-> and carries the work since alpha.2. It is published so that the work can be reviewed and tried. It is **not
+> **EXPERIMENTAL PRE-RELEASE: Sentinel v2.0.0-beta.1.** The beta name is a release designation, not a validation
+> result: no feature's status, threshold or admission changed for it. It adds an installation package for testers
+> with their own Jetson ([Install on your own Jetson](#install-on-your-own-jetson-tester-package-experimental)) and
+> carries the work since alpha.2. It is published so that the work can be reviewed and tried. It is **not
 > production-accepted**, and **feature admission is a separate decision**: face recognition and chat are not admitted
 > for normal use, and nothing on this branch is merged into `master`.
 >
 > **The installation package validates nothing.** One revision of it completed a camera-free build rehearsal on the
 > reference device; its later packaging changes were checked offline only; a complete launch from the package, and
-> any other Jetson, are unverified. The [release notes](docs/RELEASE_NOTES_v2.0.0-alpha.3.md) say exactly what ran.
+> any other Jetson, are unverified. The [release notes](docs/RELEASE_NOTES_v2.0.0-beta.1.md) say exactly what ran.
 >
 > **The alpha's goal is not met yet.** The October alpha was set to centre on working face recognition and real local
 > chat with the vision-language model. Neither is done:
@@ -47,8 +48,8 @@ face recognition and scene analysis under validation*
 >
 > - **Known limitations:** [Status and limitations](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Status-and-limitations)
 >   (wiki) and [`docs/ALPHA_CANDIDATE_NOTES.md`](docs/ALPHA_CANDIDATE_NOTES.md)
-> - **Release:** [v2.0.0-alpha.3](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.3)
->   ([release notes](docs/RELEASE_NOTES_v2.0.0-alpha.3.md)); the earlier
+> - **Release:** [v2.0.0-beta.1](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-beta.1)
+>   ([release notes](docs/RELEASE_NOTES_v2.0.0-beta.1.md)); the earlier
 >   [v2.0.0-alpha.2](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.2)
 >   ([release notes](docs/RELEASE_NOTES_v2.0.0-alpha.2.md)) and
 >   [v2.0.0-alpha.1](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.1)
@@ -128,7 +129,7 @@ its configuration checks and its tests run on any machine.
 The [known limitations](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Status-and-limitations) list
 everything still unresolved; none of it is waived by this pre-release. The table above and the wiki were last revised
 for alpha.2. No admission status has changed since; what was added is in the
-[alpha.3 release notes](docs/RELEASE_NOTES_v2.0.0-alpha.3.md) and, session by session, in the status record.
+[beta.1 release notes](docs/RELEASE_NOTES_v2.0.0-beta.1.md) and, session by session, in the status record.
 
 ## Getting started
 
@@ -140,18 +141,18 @@ passed once under Python 3.10 at `1fac8d6` (3,931 passed, 7 skipped); the instal
 their own focused test files only.
 
 ```bash
-git clone --branch v2.0.0-alpha.3 https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance.git
+git clone --branch v2.0.0-beta.1 https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance.git
 cd Sentinel_Surveillance
 python -m venv .venv && . .venv/bin/activate
 python -m pip install -e '.[dev]'
 python -m pytest                              # browser tests run when a Chromium-family browser is found
 sentinel config validate config/default.yaml  # checks a configuration file
-sentinel --version                            # sentinel 2.0.0a3
+sentinel --version                            # sentinel 2.0.0b1
 ```
 
 ### Install on your own Jetson (tester package, experimental)
 
-The pre-release carries one archive, `sentinel-personal-beta-…-r7.tar.gz`, and its `.sha256` file
+The pre-release carries one archive, `sentinel-personal-beta-…-r8.tar.gz`, and its `.sha256` file
 ([releases](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases)). It installs under your own
 account, without sudo, downloads the pinned Python packages and model files from their upstream sources, and builds
 llama.cpp and the detector engine on your device. Its guide is
@@ -159,15 +160,16 @@ llama.cpp and the detector engine on your device. Its guide is
 `README.md`); the archive is built from this repository by `packaging/build_archive.py`.
 
 ```bash
-sha256sum -c sentinel-personal-beta-*-r7.tar.gz.sha256      # then extract it and read README.md and QUICKSTART.md
+sha256sum -c sentinel-personal-beta-*-r8.tar.gz.sha256      # then extract it and read README.md and QUICKSTART.md
 ```
 
 Before you start:
 
 - **What ran, and what did not.** Revision 5 of the package completed a camera-free build rehearsal on the reference
   device (installation, environment, downloads, both builds, the record of the built files and its verification).
-  Revision 6's packaging changes and revision 7's documentation, licence files and version string were checked
-  offline only. **A complete launch from the package has never been made, and no other Jetson has run it.**
+  The packaging changes of revision 6 and the documents, licence files and version string of revisions 7 and 8
+  were checked offline only. **A complete launch from the package has never been made, and no other Jetson has run
+  it.**
 - **The default check and launch refuse on your device.** They admit only the reference device's own files. Your
   files are used only through the opt-in `--device-artifacts` route, for experimental validation runs; it validates
   nothing about your device's memory, speed or stability (resource validation is pending).
