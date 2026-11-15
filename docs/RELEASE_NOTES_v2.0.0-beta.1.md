@@ -1,10 +1,11 @@
-# Sentinel v2.0.0-alpha.3 — Experimental Alpha (tester installation package)
+# Sentinel v2.0.0-beta.1 — Experimental Beta (tester installation package)
 
-Git tag `v2.0.0-alpha.3` · Python package `sentinel-surveillance` `2.0.0a3` · November 2026 · branch
-`alpha-candidate-2026-11`
+Git tag `v2.0.0-beta.1` · Python package `sentinel-surveillance` `2.0.0b1` · November 2026 · branch
+`beta-candidate-2026-11`
 
-**An experimental pre-release that adds an installation package for testers with their own Jetson.** Like alpha.1
-and alpha.2, it is **not production-accepted**, and it makes **no admission decision**: face recognition stays
+**An experimental pre-release that adds an installation package for testers with their own Jetson. The beta name
+is a release designation, not a new validation result.** Like alpha.1 and alpha.2, it is **not
+production-accepted**, and it makes **no admission decision**: face recognition stays
 `PENDING_VALIDATION`, chat is not admitted, and no threshold, gallery, identity rule, admission or memory-guard limit
 was changed for it. Nothing is merged into `master`. Evidence for every claim is in
 [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md), by session (113 to 116); the alpha.2 notes
@@ -14,10 +15,10 @@ was changed for it. Nothing is merged into `master`. Evidence for every claim is
 
 | | |
 |---|---|
-| Release assets | `sentinel-personal-beta-949da67-mod191a193-r7.tar.gz` and `sentinel-personal-beta-949da67-mod191a193-r7.tar.gz.sha256` |
-| Size, files | 720,936 B; 126 files |
-| SHA-256 | `51a717d4b92823afa033d9fb5ecf022be43c7dac01417ba8a4f2d2f9a130dcde` |
-| Built from | commit `8ef4d027af92a99987d671bcbf88cb7ad369fc04`, by `packaging/build_archive.py` (the same commit gives the same bytes) |
+| Release assets | `sentinel-personal-beta-949da67-mod9ff5262-r8.tar.gz` and `sentinel-personal-beta-949da67-mod9ff5262-r8.tar.gz.sha256` |
+| Size, files | 721,131 B; 126 files |
+| SHA-256 | `6e9d20ecc70e0ff04229d1a58335c4555695afdd053abc56039a039e5f818279` |
+| Built from | commit `705eddb449743551fd993871dfb4812f30f1d623`, by `packaging/build_archive.py` (the same commit gives the same bytes) |
 | Guide | [`packaging/beta-install/QUICKSTART.md`](../packaging/beta-install/QUICKSTART.md); entry page [`README.md`](../packaging/beta-install/README.md); both are in the archive |
 
 It installs under the tester's own account without sudo: a preflight, the installation, a Python environment from
@@ -37,10 +38,11 @@ own files only (text): no model, engine, gallery, enrollment, credential, record
   stopped at the missing enrollment, as it must: that is a refusal, not a passing check.
 - **Revision 6's packaging changes were checked offline only:** the installation's own cache, settings and temporary
   locations, and `guarded-build.sh` with the rehearsal's memory monitor.
-- **Revision 7, this asset, differs from revision 6 in documents only** (the guide's wording, an entry page, the
-  licence and notice files) and in the application's version string. Checked offline only: the package's tests,
-  the archive's own checks, and an installation, check and uninstall of the real archive in a scratch folder on the
-  reference device, without network, camera, model or build.
+- **Revisions 7 and 8 differ from revision 6 in documents only** (the guide's wording, an entry page, the licence
+  and notice files) and in the application's version string. Revision 8 is this asset; revision 7 was prepared
+  under another release name and was not published. Checked offline only: the package's tests, the archive's own
+  checks, and an installation, check and uninstall of the real archive in a scratch folder on the reference device,
+  without network, camera, model or build.
 - **Unverified:** a complete launch from the package (none has ever been made); the complete check on real builds;
   an enrollment made with the package; any other Jetson; the least memory and the time the builds need.
 - **Stock JetPack 6 on Ubuntu 22.04 is unverified.** The reference device runs L4T R36.4.7 with an Ubuntu 24.04
@@ -90,7 +92,8 @@ own files only (text): no model, engine, gallery, enrollment, credential, record
   at their stated time, a waiting question ends when chat is turned off, one zoom picture at a time.
 - **The memory guard of the installation package** signals only the processes its own run started. It is covered by
   synthetic and stand-in tests; no guarded run with a camera or a model has used it.
-- **Version** `2.0.0a3` (`sentinel --version` prints it; nothing else reads it).
+- **Version** `2.0.0b1` (`sentinel --version` prints it; nothing else reads it). No feature's status changed with
+  the name.
 
 ## Still pending (unchanged by this pre-release)
 
@@ -108,4 +111,6 @@ own files only (text): no model, engine, gallery, enrollment, credential, record
 This tag is placed only on a commit whose GitHub CI passed: Dashboard checks, and v2 portable checks on Python 3.10
 and 3.12 (the portable job now fetches the branch's history, which the package's tests compare against). Locally on
 the device, not CI: the full offline suite once at `1fac8d6` (3,931 passed, 7 skipped; Python 3.10.14); at the
-release preparation only the package's focused test files (330 passed, none skipped, under Python 3.10.14, and the same files, 330 passed, in a fresh clone of the package commit under Python 3.12.3).
+release preparation the package's focused test files (330 passed, none skipped, under Python 3.10.14, and 330
+in a fresh clone under Python 3.12.3; both before the release was named beta.1), and after the renaming only the
+checks it affects (82 passed).
