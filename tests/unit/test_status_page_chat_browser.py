@@ -993,6 +993,19 @@ def tap_key(page: Page) -> int:
     raise AssertionError("three taps on the information key made no click")
 
 
+def click_key(page: Page) -> int:
+    """A press on the key, pressed again only when no click reached the key at all: just after the page opens, its
+    first update can add a line above the panel between the measurement and the press, and the press then lands
+    beside the key. A click that reached the key is never repeated, so a page that ignores it still fails.
+    Returns how many presses it took."""
+    for attempt in range(1, 4):
+        before = page.evaluate(KEY_CLICKS)
+        click(page, *key_point(page))
+        if wait_until(lambda: page.evaluate(KEY_CLICKS) > before, 1.0):
+            return attempt
+    raise AssertionError("three presses on the information key made no click on it")
+
+
 def wording(reason: str | None) -> list[str]:
     """The card's paragraphs as the server writes them: the runtime's reason (only while chat is available), then
     the scene model's advisory and the recorded-questions hint, each worded as before."""
@@ -1017,7 +1030,7 @@ def test_the_information_key_beside_the_heading_shows_the_explanations_over_the_
         for text in wording(AVAILABLE):
             assert text not in closed["body"]
         assert "Experimental" not in closed["row"]  # an admitted chat (this fixture), not a validation run's
-        click(page, *key_point(page))
+        click_key(page)  # the first press after the page opened: its first update may still be moving the panel
         assert wait_until(lambda: is_open(page), 3.0)
         shown = about(page)
         assert shown["expanded"] == "true" and shown["paragraphs"] == wording(AVAILABLE)
