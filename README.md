@@ -159,6 +159,11 @@ llama.cpp and the detector engine on your device. Its guide is
 [`packaging/beta-install/QUICKSTART.md`](packaging/beta-install/QUICKSTART.md) (also inside the archive, with a
 `README.md`); the archive is built from this repository by `packaging/build_archive.py`.
 
+**The package's files in this repository are one revision ahead of that archive.** After revision 8 was built, one
+file of the application was corrected (the dashboard's script: the Ask panel's conversation while a window is
+resized), and `packaging/` now describes revision 9, which has not been built. Revision 8 does not contain that
+correction; its own guide and entry page are the ones inside the archive.
+
 ```bash
 sha256sum -c sentinel-personal-beta-*-r8.tar.gz.sha256      # then extract it and read README.md and QUICKSTART.md
 ```

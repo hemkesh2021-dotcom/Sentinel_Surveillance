@@ -44,6 +44,10 @@ own files only (text): no model, engine, gallery, enrollment, credential, record
   under another release name and was not published. Checked offline only: the package's tests, the archive's own
   checks, and an installation, check and uninstall of the real archive in a scratch folder on the reference device,
   without network, camera, model or build.
+- **The repository is one revision ahead of this asset.** After revision 8 was built, one file of the application
+  was corrected: the dashboard's script (the Ask panel's conversation while a window is resized). `packaging/` now
+  describes revision 9, **which has not been built**. Revision 8, this asset, does not contain that correction, and
+  the guide and entry page inside it are revision 8's, not the ones linked above.
 - **Unverified:** a complete launch from the package (none has ever been made); the complete check on real builds;
   an enrollment made with the package; any other Jetson; the least memory and the time the builds need.
 - **Stock JetPack 6 on Ubuntu 22.04 is unverified.** The reference device runs L4T R36.4.7 with an Ubuntu 24.04
