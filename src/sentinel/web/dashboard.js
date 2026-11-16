@@ -934,25 +934,49 @@
       reading.past = !!exchange && log.scrollTop > startOf(exchange) + 1;
       reading.atEnd = extent() - log.scrollTop <= 8;
     };
+    let owed = null;  // where the page itself has just put the view: the scroll event of that is still to come
+    const put = (top) => {  // the page's own scroll of the list; true when the view really moved
+      const from = log.scrollTop;
+      log.scrollTop = top;
+      if (log.scrollTop === from) return false;
+      owed = log.scrollTop;
+      return true;
+    };
     const follow = () => {
       if (!log.clientHeight) return;
       const exchange = followed();
+      let moved = false;
       if (reading.following && exchange) {
         const end = extent();
         let target = log.scrollTop;
         if (!reading.past) target = Math.min(startOf(exchange), Math.max(target, low(exchange)));
         else if (reading.atEnd) target = end;
         target = Math.max(0, Math.min(end, target));
-        if (Math.abs(log.scrollTop - target) > 1) log.scrollTop = target;
+        if (Math.abs(log.scrollTop - target) > 1) moved = put(target);
       }
-      remember();
+      // Where the page's own scroll has taken the view is judged at once, in the layout it was made in, as its
+      // scroll event used to be: a card asked again is not followed further once the view has gone past its end.
+      if (moved) settle();
+      else remember();
     };
     // The reader's own scrolling: where they are now decides what is followed. Still at a card they asked again
     // (and not above where following puts it), that card; at the newest exchange or further down in it, the
     // newest; above it, nothing.
-    const settle = () => {
+    // The page's own scroll is not the reader's, and it is judged where it is made (`follow`), not when its
+    // scroll event comes. That event comes with the next frame, and by then the list may have been resized (a
+    // window being resized; a frame delivers its scroll events before it reports its resizes): judged then,
+    // against cards laid out anew and before that resize is followed, the view the page had put at the exchange's
+    // start looked like a reader who has read on past it, or who is above it or at the very end, and it stopped
+    // following (in a browser that does not keep the view in place itself). So the event of the page's own
+    // scroll is not judged again, where it finds the view as the page put it, or at the list's end if that place
+    // now lies past the end. Any other scroll event is the reader's, as before.
+    const settle = (event) => {
+      const scrolled = !!event && event.type === "scroll";
+      const own = scrolled ? owed : null;  // a frame brings one scroll event: it is the one that was owed
+      if (scrolled) owed = null;
       if (!log.clientHeight) return;
       const top = log.scrollTop;
+      if (own !== null && Math.abs(top - Math.min(own, extent())) <= 1) return;
       const newest = log.lastElementChild;
       const at = (exchange) => top >= Math.min(startOf(exchange), low(exchange)) - 8;
       const asked = reading.asked && reading.asked.isConnected && reading.asked !== newest ? reading.asked : null;
@@ -978,7 +1002,7 @@
     const showFromStart = (exchange) => {  // a card asked again: its new state and answer appear at its start
       Object.assign(reading, {following: true, asked: exchange === log.lastElementChild ? null : exchange});
       const start = startOf(exchange);
-      if (log.scrollTop > start) log.scrollTop = start;
+      if (log.scrollTop > start) put(start);
       remember();  // now, not at the scroll event: the card changes before that event is delivered
     };
     const STATES = {

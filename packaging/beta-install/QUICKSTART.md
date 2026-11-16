@@ -18,9 +18,9 @@ than one person is deferred.
 llama.cpp build, no device-artifacts record, no observation data. You download the pinned model files, build the
 two device-specific files and record your own artifacts on your own device.
 
-**Five application files are not the accepted build's.** The package's name carries a modification mark (`-mod…`)
+**Six application files are not the accepted build's.** The package's name carries a modification mark (`-mod…`)
 for that reason, and `VERSION` names each of them with the accepted and the packaged SHA-256, and every file of the
-package itself that changed since revision 7. Everything else under `app/` equals `949da67`.
+package itself that changed since revision 8. Everything else under `app/` equals `949da67`.
 
 - The memory guard (`app/benchmarks/runner/step5_guard.py`): when a run ends it signals only the processes that run
   started, and no longer every `llama-server` of your user. Its memory limits, readiness checks and deadlines are
@@ -30,15 +30,20 @@ package itself that changed since revision 7. Everything else under `app/` equal
   exactly as the accepted build does.
 - The version string (`app/src/sentinel/__init__.py`): `2.0.0b1`. `sentinel --version` prints it; nothing else
   reads it.
+- The dashboard's script (`app/src/sentinel/web/dashboard.js`): in the Ask panel, a scroll that the page makes
+  itself is no longer taken for your own scrolling. Before, while a window was being resized in a browser that does
+  not keep the view in place itself, the newest question could be left above the view. Nothing else of the page is
+  changed.
 
 **What has run where.** Revision 5 of this package ran for real on the reference device, without a camera: the
 installation, the Python environment, the downloads, both builds, the record of the built files, its verification
 and the route's admission decision (section 14 has the details). Revision 6 changed the packaging (the
 installation's own cache locations, `guarded-build.sh`). Revision 7 changed the documentation and added the licence
-and notice files. This revision, 8, corrects the release designation and the version string, and how two documents
-name the licence file. `VERSION` lists the files; **those changes were verified offline only**, with temporary
-directories and stand-ins. No guarded run with a camera or a model has used the changed guard, and no launch has
-ever been made from this package.
+and notice files. Revision 8 corrected the release designation and the version string, and how two documents name
+the licence file. This revision, 9, changes one file of the application: the dashboard's script (above). `VERSION`
+lists the files; **those changes were verified offline only**, with temporary directories and stand-ins, and the
+dashboard's script in a test browser. No guarded run with a camera or a model has used the changed guard, and no
+launch has ever been made from this package.
 
 The steps, in order: prerequisites (2) → install (3) → environment and downloads (4) → the two builds (5) → your
 enrollment (6) → settings (7) → record and check (8) → launch (9). Sections 10 to 15: limits, uninstall, which
@@ -158,8 +163,8 @@ Download the archive and its `.sha256` file from the release page
 the checksum file, extract it anywhere, then, as your own user (never with sudo):
 
 ```bash
-sha256sum -c sentinel-personal-beta-949da67-mod9ff5262-r8.tar.gz.sha256
-tar -xzf sentinel-personal-beta-949da67-mod9ff5262-r8.tar.gz && cd sentinel-personal-beta-949da67-mod9ff5262-r8
+sha256sum -c sentinel-personal-beta-949da67-mod960fcc3-r9.tar.gz.sha256
+tar -xzf sentinel-personal-beta-949da67-mod960fcc3-r9.tar.gz && cd sentinel-personal-beta-949da67-mod960fcc3-r9
 bash preflight.sh        # reads facts only; changes nothing
 bash install.sh          # defaults: ~/sentinel-beta (the installation) and ~/sentinel-beta-data (your data)
 ```
@@ -530,12 +535,14 @@ under the monitor that is now `lib/guarded_run.py`; the device-artifacts record 
 verification, and the route's admission decision for that record. In that rehearsal the caches and temporary files
 were kept inside its own directory by a file of the rehearsal's, not by the package.
 
-**The changes of revisions 6, 7 and 8, offline only** (temporary directories, synthetic files, stand-ins; the
+**The changes of revisions 6, 7, 8 and 9, offline only** (temporary directories, synthetic files, stand-ins; the
 package's tests). Revision 6: the installation's own cache, settings and temporary locations in every script;
 `guarded-build.sh` and its front end, with the monitor unchanged; uninstall removing `cache/` and `tmp/`. Revision 7:
-this guide's wording, `README.md`, `LICENSE` and `THIRD_PARTY_NOTICES.md`. This revision, 8: the release designation
-`v2.0.0-beta.1` with the version string `2.0.0b1`, and how two documents name the licence file. **Nothing that
-revisions 6, 7 or 8 changed has run a download, a build, an export, a model or a camera on any device.**
+this guide's wording, `README.md`, `LICENSE` and `THIRD_PARTY_NOTICES.md`. Revision 8: the release designation
+`v2.0.0-beta.1` with the version string `2.0.0b1`, and how two documents name the licence file. This revision, 9:
+the dashboard's script, checked in a test browser with synthetic data (headless Chromium with its own scroll
+anchoring switched off for the conversation; not in a browser that has no scroll anchoring). **Nothing that
+revisions 6, 7, 8 or 9 changed has run a download, a build, an export, a model or a camera on any device.**
 
 **Not verified:** anything on another device; stock JetPack 6 on Ubuntu 22.04 (JetPack's `python3-libnvinfer`
 installed with apt, cuDSS from NVIDIA's repository); the complete `check.sh` on real builds (the rehearsal has no

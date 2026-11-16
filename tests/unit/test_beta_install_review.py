@@ -599,7 +599,8 @@ def test_a_release_with_no_usable_file_is_refused_by_the_lock_tool_ir8() -> None
 GUARD = "benchmarks/runner/step5_guard.py"
 ROUTE = ("src/sentinel/cli.py", "src/sentinel/demo_runtime.py", "src/sentinel/device_artifacts.py")
 VERSION_FILE = "src/sentinel/__init__.py"  # the fifth changed file: the version string only
-NEW_PACKAGE_FILES: tuple = ()  # since revision 7: none; three documents changed
+PAGE_SCRIPT = "src/sentinel/web/dashboard.js"  # the sixth: one rule of the Ask panel's conversation, while it is resized
+NEW_PACKAGE_FILES: tuple = ()  # since revision 8: none; two documents changed
 SINCE_REAL_EVIDENCE: tuple = (  # the package's own files that revision 5, which ran for real, did not have in this form
     "QUICKSTART.md", "README.md", "THIRD_PARTY_NOTICES.md", "build-engine.sh", "build-llama.sh", "fetch-assets.sh",
     "guarded-build.sh", "identity.sh", "install.sh", "lib/beta.py", "lib/common.sh", "lib/guarded_build.py",
@@ -628,12 +629,12 @@ def test_the_package_ships_the_corrected_guard_and_names_it_as_changed() -> None
     assert b"PR_SET_CHILD_SUBREAPER" in packaged and b"llama_server_unresolved" in packaged
     assert b"backend.kill(pid, signum)" in accepted and b"backend.kill(" not in packaged  # the cleanup by name is gone
     version = members["VERSION"].decode().splitlines()
-    changed = sorted([GUARD, *ROUTE, VERSION_FILE])
+    changed = sorted([GUARD, *ROUTE, VERSION_FILE, PAGE_SCRIPT])
     assert sorted(build.CHANGED_SINCE_ACCEPTED) == changed
     mark = build.modification_mark({path: sha256(members[f"app/{path}"]) for path in changed})
     assert name == f"sentinel-personal-beta-949da67-mod{mark[:7]}-r0-worktree" and version[0] == name
     assert f"accepted_code_commit={build.ACCEPTED}" in version and f"modification_mark={mark}" in version
-    assert ("application=the accepted code with 5 file(s) changed or added after acceptance (below); this is NOT the "
+    assert ("application=the accepted code with 6 file(s) changed or added after acceptance (below); this is NOT the "
             "unchanged accepted build") in version
     assert f"changed_file=app/{GUARD} accepted_sha256={sha256(accepted)} packaged_sha256={sha256(packaged)}" in version
     assert any(line.startswith(f"changed_file_reason=app/{GUARD}: process ownership") for line in version)
@@ -643,7 +644,7 @@ def test_the_package_ships_the_corrected_guard_and_names_it_as_changed() -> None
     # every other application file is the accepted commit's, by content
     application = {path[len("app/"):]: content for path, content in members.items() if path.startswith("app/")}
     assert build.differing(build.blobs(build.ACCEPTED, build.APP_TREE, *build.GUARD_FILES), application) == changed
-    assert (f"unchanged_from_accepted={len(application) - 5} application files: every other file under app/src/sentinel "
+    assert (f"unchanged_from_accepted={len(application) - 6} application files: every other file under app/src/sentinel "
             "and app/benchmarks/runner") in version
     # the fifth: one line of one file, the version string, and the package says so
     was, now = build.git("show", f"{build.ACCEPTED}:{VERSION_FILE}").decode(), members[f"app/{VERSION_FILE}"].decode()
@@ -651,6 +652,18 @@ def test_the_package_ships_the_corrected_guard_and_names_it_as_changed() -> None
     assert any(line.startswith(f"changed_file_reason=app/{VERSION_FILE}: the version string only") and
                "nothing else reads it" in line for line in version)
     assert "application_version=2.0.0b1" in version
+    # the sixth: the dashboard's script, in one rule of the Ask panel's conversation; the package says what was
+    # changed, that nothing else of the page was, and that only a test browser has run it
+    script, script_accepted = members[f"app/{PAGE_SCRIPT}"], build.git("show", f"{build.ACCEPTED}:{PAGE_SCRIPT}")
+    assert script == (REPO / PAGE_SCRIPT).read_bytes() != script_accepted
+    assert (f"changed_file=app/{PAGE_SCRIPT} accepted_sha256={sha256(script_accepted)} "
+            f"packaged_sha256={sha256(script)}") in version
+    assert any(line.startswith(f"changed_file_reason=app/{PAGE_SCRIPT}: the Ask panel's conversation on the dashboard")
+               and "is no longer taken for the reader's own scrolling" in line
+               and "Nothing else of the page is changed" in line for line in version)
+    assert any(line.startswith(f"changed_file_run_with=app/{PAGE_SCRIPT}: browser tests on the reference device only")
+               and "not run in a browser that has no scroll anchoring" in line
+               and "no run with a camera or a model has used it" in line for line in version)
     # the beta name is a release designation: the package says so, and its status line is what it was
     assert ("release_designation=v2.0.0-beta.1: the name of a pre-release only. It records no new validation result, "
             "no acceptance and no change of any feature's status") in version
@@ -682,8 +695,8 @@ def test_the_version_names_every_file_of_the_route_and_every_package_file_that_c
             assert (f"changed_file_run_with=app/{path}: synthetic tests on the reference device only (temporary "
                     "directories, synthetic files, stand-ins); never on another device, and no run with a camera or "
                     "a model has used it") in version, path
-    # the package's own files against revision 7's (the previous one), and against revision 5's (which ran for real)
-    assert build.PREVIOUS_PACKAGE_NAME == "sentinel-personal-beta-949da67-mod191a193-r7"
+    # the package's own files against revision 8's (the previous one), and against revision 5's (which ran for real)
+    assert build.PREVIOUS_PACKAGE_NAME == "sentinel-personal-beta-949da67-mod9ff5262-r8"
     assert build.REAL_EVIDENCE_PACKAGE_NAME == "sentinel-personal-beta-949da67-mod79c18d4-r5"
     for commit in (build.PREVIOUS_PACKAGE_COMMIT, build.REAL_EVIDENCE_PACKAGE_COMMIT):
         assert build.git("rev-parse", "--verify", f"{commit}^{{commit}}").decode().strip() == commit
@@ -702,8 +715,8 @@ def test_the_version_names_every_file_of_the_route_and_every_package_file_that_c
                sha256(build.git("show", f"{build.PREVIOUS_PACKAGE_COMMIT}:{build.PACKAGE_SOURCE}/{path}")))
         assert f"package_file_changed={path} previous_sha256={was} packaged_sha256={sha256(own[path])}" in version, path
         assert any(line.startswith(f"package_file_changed_reason={path}: ") and len(line) > len(path) + 40 for line in version)
-    assert differs == ["QUICKSTART.md", "README.md", "THIRD_PARTY_NOTICES.md"]  # documents only: every script, helper and pin is revision 7's
-    for path in ("stop.sh", "check.sh", "configure.sh", "lib/hostprep.py", "lib/features.py", "templates/live.yaml",
+    assert differs == ["QUICKSTART.md", "README.md"]  # two documents only: every script, helper and pin is revision 8's
+    for path in ("THIRD_PARTY_NOTICES.md", "stop.sh", "check.sh", "configure.sh", "lib/hostprep.py", "lib/features.py", "templates/live.yaml",
                  "lib/artifacts.py", "lib/admission_check.py", "manifest/assets.json", "manifest/requirements-pypi.txt",
                  "manifest/requirements-jetson.txt", "start.sh", "install.sh", "uninstall.sh", "setup-env.sh",
                  "fetch-assets.sh", "build-llama.sh", "build-engine.sh", "guarded-build.sh", "record-artifacts.sh",
@@ -749,10 +762,11 @@ def test_the_version_names_every_file_of_the_route_and_every_package_file_that_c
     # the guide a tester reads names this package, and says what is not the accepted build's and what is not validated
     released, _ = build.package_members(build.DEFAULT_REVISION, worktree=True)
     released = released[:-len("-worktree")]
-    assert released.endswith("-r8") and build.DEFAULT_REVISION == 8
+    assert released.endswith("-r9") and build.DEFAULT_REVISION == 9
     guide = members["QUICKSTART.md"].decode()
-    assert f"tar -xzf {released}.tar.gz && cd {released}\n" in guide
-    assert "**Five application files are not the accepted build's.**" in guide and "stops every `llama-server`" not in guide
+    assert f"sha256sum -c {released}.tar.gz.sha256\ntar -xzf {released}.tar.gz && cd {released}\n" in guide
+    assert "**Six application files are not the accepted build's.**" in guide and "stops every `llama-server`" not in guide
+    assert "`app/src/sentinel/web/dashboard.js`" in guide and "mod9ff5262" not in guide  # revision 8's name is not this one's
     for said_in_the_guide in ("**never been run on another device**", "**It does not validate your device.**",
                               "**The launch gates and the guard's limits are limits, not evidence**",
                               "**Only typing START opens the camera.**", "bash record-artifacts.sh",
@@ -768,9 +782,10 @@ def test_the_version_names_every_file_of_the_route_and_every_package_file_that_c
      "the application files that differ from the accepted commit 949da67 are not exactly the ones this package declares "
      "as changed; changed but not declared: src/sentinel/cli.py"),
     ("CHANGED_SINCE_ACCEPTED", "drop:src/sentinel/device_artifacts.py", "changed but not declared: src/sentinel/device_artifacts.py"),
+    ("CHANGED_SINCE_ACCEPTED", "drop:src/sentinel/web/dashboard.js", "changed but not declared: src/sentinel/web/dashboard.js"),
     ("CHANGED_SINCE_ACCEPTED", "add:src/sentinel/config.py", "declared but identical: src/sentinel/config.py"),
     ("PACKAGE_FILES_CHANGED", "drop:README.md",
-     "the package's own files that differ from sentinel-personal-beta-949da67-mod191a193-r7 are not exactly the ones "
+     "the package's own files that differ from sentinel-personal-beta-949da67-mod9ff5262-r8 are not exactly the ones "
      "this package declares as changed; changed but not declared: README.md"),
     ("PACKAGE_FILES_CHANGED", "drop:QUICKSTART.md", "changed but not declared: QUICKSTART.md"),
     ("PACKAGE_FILES_CHANGED", "add:stop.sh", "declared but identical: stop.sh"),

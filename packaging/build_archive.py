@@ -87,26 +87,34 @@ CHANGED_SINCE_ACCEPTED = {
         "`sentinel --version` prints it and nothing else reads it; no behaviour, threshold, guard or admission rule "
         "is changed",
         "the package's tests only; no run on any device with a camera or a model has used it"),
+    "src/sentinel/web/dashboard.js": (
+        "the Ask panel's conversation on the dashboard (session 116, part 52): the scroll event of a scroll that "
+        "the page made itself is no longer taken for the reader's own scrolling. Before, when the conversation's "
+        "list was resized before that event arrived (a window being resized) in a browser that does not keep the "
+        "view in place itself, the view could stop following the newest exchange: its question was left above the "
+        "view, or the view stayed behind. Nothing else of the page is changed: its texts, style, controls, updates "
+        "and every other rule of the conversation's scrolling are the accepted commit's",
+        "browser tests on the reference device only (headless Chromium with its own scroll anchoring switched off "
+        "for the list, synthetic data); not run in a browser that has no scroll anchoring, and no run with a camera "
+        "or a model has used it"),
 }
 # The package's own files (under PACKAGE_SOURCE) that differ from the previous revision's, or that it did not have:
 # path -> what changed. The builder refuses unless exactly these differ from PREVIOUS_PACKAGE_COMMIT.
-PREVIOUS_PACKAGE_COMMIT = "8ef4d027af92a99987d671bcbf88cb7ad369fc04"
-PREVIOUS_PACKAGE_NAME = "sentinel-personal-beta-949da67-mod191a193-r7"
+PREVIOUS_PACKAGE_COMMIT = "705eddb449743551fd993871dfb4812f30f1d623"
+PREVIOUS_PACKAGE_NAME = "sentinel-personal-beta-949da67-mod9ff5262-r8"
 # The one revision that ran for real (the camera-free rehearsal on the reference device, 2026-11-13 to 2026-11-15).
 # VERSION names every file of the package that differs from it: those files have real-device evidence from nobody.
 REAL_EVIDENCE_PACKAGE_COMMIT = "34809141654f4d7729e72cb6a5ce0eb6fadf1125"
 REAL_EVIDENCE_PACKAGE_NAME = "sentinel-personal-beta-949da67-mod79c18d4-r5"
 PACKAGE_FILES_CHANGED = {
-    "QUICKSTART.md": "the release designation corrected to v2.0.0-beta.1 (application version 2.0.0b1), with the "
-                     "sentence that the beta name is a release designation and not a validation result; this "
-                     "revision's name in the two lines that check and unpack the archive; which revision changed "
-                     "what. No step, command, limit or figure of the procedure is changed",
-    "README.md": "the release designation corrected to v2.0.0-beta.1 (2.0.0b1), with the same sentence; what "
-                 "revisions 6, 7 and 8 changed; the licence file is named without a link, because a link to it "
-                 "led somewhere in the archive and nowhere in the repository's own folder",
-    "THIRD_PARTY_NOTICES.md": "the licence file is named without a link, for the same reason; nothing else",
+    "QUICKSTART.md": "six application files, not five, are named as not the accepted build's: the dashboard's "
+                     "script is the sixth, with what was changed in it; this revision's name in the two lines that "
+                     "check and unpack the archive; which revision changed what. No step, command, limit or figure "
+                     "of the procedure is changed",
+    "README.md": "what revisions 6, 7, 8 and 9 changed: this revision's change is one file of the application, the "
+                 "dashboard's script, checked in a test browser only",
 }
-DEFAULT_REVISION = 8
+DEFAULT_REVISION = 9
 EXECUTABLE = (".sh",)
 REPO = Path(__file__).resolve().parents[1]
 
@@ -265,12 +273,14 @@ def package_members(revision: int, *, worktree: bool = False) -> tuple[str, dict
                "and one monitor stop), the record and its verification. One device, one completed export: the least "
                "memory and the time an export needs are not known\n"
                "this_revision_verified=offline only: the package's tests, with temporary directories, synthetic "
-               "files and stand-ins. That holds for revision 6's packaging changes (the installation's own cache "
-               "locations, guarded-build.sh), for revision 7's documents, licence and notice files, and for this "
-               "revision's corrections (the release designation and version string, how two documents name the "
-               "licence file) alike: no file of this revision that differs from revision 5 "
-               "(package_files_without_real_device_evidence above, and the application's version file) has run a "
-               "download, a build, an export, a model or a camera on any device\n")
+               "files and stand-ins, and for the dashboard's script the repository's tests in a test browser. That "
+               "holds for revision 6's packaging changes (the installation's own cache locations, guarded-build.sh), "
+               "for revision 7's documents, licence and notice files, for revision 8's corrections (the release "
+               "designation and version string, how two documents name the licence file) and for this revision's "
+               "change (one file of the application, the dashboard's script: how the Ask panel's conversation is "
+               "followed while it is resized) alike: no file of this revision that differs from revision 5 "
+               "(package_files_without_real_device_evidence above, the application's version file and the "
+               "dashboard's script) has run a download, a build, an export, a model or a camera on any device\n")
     members["VERSION"] = version.encode()
     sums = "".join(f"{hashlib.sha256(members[path]).hexdigest()}  {path}\n" for path in sorted(members))
     members["SHA256SUMS"] = sums.encode()

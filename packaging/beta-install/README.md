@@ -23,9 +23,10 @@ only the summary.
     Nano 8 GB): installation, the Python environment, the downloads, the llama.cpp build, the detector engine
     export, the record of those files and its verification.
   - Revision 6's packaging changes (the installation's own cache locations, `guarded-build.sh`), revision 7's
-    documents, licence and notice files, and this revision's corrections (the release name and version string,
-    how two documents name the licence file) were checked **offline only**, with tests, temporary directories and
-    stand-ins.
+    documents, licence and notice files, revision 8's corrections (the release name and version string, how two
+    documents name the licence file) and this revision's change (one file of the application, the dashboard's
+    script: how the Ask panel's conversation is followed while a window is resized) were checked **offline only**,
+    with tests, temporary directories and stand-ins; the dashboard's script in a test browser.
   - **Never run:** a complete launch from this package; the complete check on real builds; anything on another
     Jetson.
 - **Stock JetPack is unverified.** The reference device runs L4T R36.4.7 with an Ubuntu 24.04 userland. On stock

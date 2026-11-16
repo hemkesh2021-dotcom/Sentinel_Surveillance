@@ -802,6 +802,206 @@ def test_without_the_browsers_own_scroll_anchoring_the_newest_exchange_is_still_
         page.close()
 
 
+# In one task: an earlier card grows, the page's mutation observer follows it with a scroll of its own (awaited: that
+# scroll's event is owed now, and comes with the next frame), and then something else happens before that frame.
+OWED = """(async () => {
+  const log = document.getElementById('chat-log');
+  const seen = {top: log.scrollTop, width: log.clientWidth};
+  log.firstElementChild.querySelector('.answer').append(' ' + 'One more synthetic sentence. '.repeat(%d));
+  await null;  // the page's mutation observer has run: the page has scrolled, and that scroll's event is owed
+  seen.put = log.scrollTop;
+  %s;
+  return seen;
+})()"""
+GROW_FIRST = "document.querySelector('#chat-log > li:first-child .answer').append(' Another sentence. '.repeat(8))"
+
+
+@pytest.mark.parametrize("resized,by,sentences,past_the_end", [
+    ("wider", 60, 8, False), ("so much wider that the view lies past the new end", 160, 24, True),
+    ("narrower", -60, 8, False)])
+def test_the_event_of_the_pages_own_scroll_is_not_taken_for_the_readers_when_the_list_was_resized_before_it_came(
+        browser: Browser, served: dict[str, Any], resized: str, by: int, sentences: int, past_the_end: bool) -> None:
+    """Session 116, part 52, from a failure in CI. The page follows a change with a scroll of its own, and that
+    scroll's event comes a frame later. Here the list changes its width before that frame, as it does with every
+    frame while a window is being resized. The event then arrives with the cards laid out anew and the resize not
+    yet followed: a frame delivers its scroll events before it reports its resizes. Taken for the reader's
+    scrolling, it stopped the view from following: "the reader has read on" (wider: the newest question was left
+    above the view), "the reader is at the very end" (much wider: the browser had moved the view to the new end)
+    or "the reader is above it" (narrower). Without the browser's own scroll anchoring, as in the test above: a
+    browser that keeps the view in place itself hides this."""
+    served["chat"]["service"] = Scripted(long_reply(), long_reply())
+    page = opened(browser, f"{served['url']}/", width=1280, height=900)
+    try:
+        page.evaluate("document.getElementById('chat-log').style.overflowAnchor = 'none'")
+        for n in (1, 2):
+            ask_scripted(page, n)
+        assert wait_until(lambda: from_its_start(scroll(page)), 3.0), scroll(page)
+        frames(page)  # every event of the two answers has been delivered: nothing is owed yet
+        # the list's new width is seen by the resize observer only, a frame later
+        seen = page.evaluate(OWED % (sentences, "log.style.width = (seen.width + %d) + 'px'" % by))
+        frames(page)
+        after = scroll(page)
+        # the scenario arose: the page had scrolled by itself, and the list was resized before that scroll's event
+        assert seen["put"] > seen["top"] + 1, (resized, seen)
+        assert (page.evaluate("document.getElementById('chat-log').clientWidth") - seen["width"]) * by > 0, seen
+        if past_the_end:  # where the page had put the view is no place of the resized list
+            assert seen["put"] > after["content"] - after["height"] + 1, (resized, seen, after)
+        assert from_its_start(after), (resized, seen, after)
+        # and it still follows: the next change of an earlier card is followed again
+        page.evaluate(GROW_FIRST)
+        frames(page)
+        assert from_its_start(scroll(page)), (resized, after, scroll(page))
+    finally:
+        page.close()
+
+
+class Held(Scripted):
+    """Keeps a question's reply back while the test holds it: the card reads "Sending…" until it is let go."""
+
+    def __init__(self, *documents: dict[str, Any]) -> None:
+        super().__init__(*documents)
+        self.let_go = threading.Event()
+        self.let_go.set()
+
+    def ask(self, question: Any) -> tuple[int, dict[str, Any]]:
+        self.let_go.wait(6.0)  # less than the page's own 8 s for a request
+        return super().ask(question)
+
+
+def test_a_card_asked_again_is_shown_from_its_start_when_the_list_was_resized_before_that_scrolls_event_came(
+        browser: Browser, served: dict[str, Any]) -> None:
+    """The page's other scroll of its own: a card asked again from its end is shown from its start. The same event,
+    owed across a resize of the list, read "the reader has read on" and left the question above the view. The
+    server's reply is held until that event has been delivered: a reply shown before it would be followed first,
+    and would hide the defect."""
+    scripted = Held(long_reply(), long_reply(), long_reply())
+    served["chat"]["service"] = scripted
+    page = opened(browser, f"{served['url']}/", width=1280, height=900)
+    try:
+        page.evaluate("document.getElementById('chat-log').style.overflowAnchor = 'none'")
+        for n in (1, 2):
+            ask_scripted(page, n)
+        assert wait_until(lambda: from_its_start(scroll(page)), 3.0), scroll(page)
+        page.evaluate(TO_END)  # the reader reads on to the end of the newest exchange, where its controls are
+        assert wait_until(lambda: scroll(page)["bottom"] <= 1, 3.0)
+        frames(page)
+        scripted.let_go.clear()  # the next question's reply waits
+        seen = page.evaluate("""(async () => {
+          const log = document.getElementById('chat-log');
+          const seen = {top: log.scrollTop, width: log.clientWidth};
+          log.lastElementChild.querySelector('button[data-again=latest]').click();
+          await null;  // the page has put the view at the card's start: that scroll's event is owed
+          seen.put = log.scrollTop;
+          log.style.width = (seen.width + 60) + 'px';
+          return seen;
+        })()""")
+        frames(page)
+        # the scenario arose: the page had scrolled by itself, up to the card's start; the list was resized before
+        # that scroll's event; and the event has been delivered with the reply still to come
+        assert seen["put"] < seen["top"] - 1, seen
+        assert page.evaluate("document.getElementById('chat-log').clientWidth") > seen["width"], seen
+        assert last(read(page))["state"] == "sending" and len(scripted.asked) == 2, read(page)
+        scripted.let_go.set()
+        wait_chat(page, lambda s: len(scripted.asked) == 3 and last(s)["state"] == "answered" and s["note"] == "", 8.0)
+        frames(page)
+        assert from_its_start(scroll(page)), (seen, scroll(page))
+    finally:
+        scripted.let_go.set()
+        page.close()
+
+
+def test_a_card_asked_again_is_no_longer_followed_once_the_pages_own_scroll_has_taken_the_view_past_it(
+        browser: Browser, served: dict[str, Any]) -> None:
+    """Where the page's own scroll takes the view is judged when the page makes it. A reader at the list's very end
+    is kept there as the list grows, and that can take the view past a card they had asked again: from then on
+    the newest exchange is the one followed, and when it outgrows the list it is shown from its start. (Before
+    session 116, part 52 this was judged at that scroll's event; left unjudged, the view stayed at the list's end
+    with the newest question above it.) The two cards below the asked one are cut down to their questions, so
+    that the heights do not depend on the machine's font."""
+    ended = {"state": "cancelled", "reason": "monitoring comes first", "frame": ASKED}
+    scripted = Scripted(long_reply(), ended, dict(ended), long_reply())
+    served["chat"]["service"] = scripted
+    page = opened(browser, f"{served['url']}/", width=1280, height=900)
+    asked_ends = ("(() => { const log = document.getElementById('chat-log'); return log.firstElementChild"
+                  ".getBoundingClientRect().bottom - log.getBoundingClientRect().top; })()")  # below the view's top
+    try:
+        page.evaluate("document.getElementById('chat-log').style.overflowAnchor = 'none'")
+        ask_scripted(page, 1)
+        type_question(page, "Is the door open?")
+        press_ask(page)
+        wait_chat(page, lambda s: len(s["log"]) == 2 and last(s)["state"] == "cancelled", 8.0)
+        press_ask(page)  # the question came back into the box: sent again as it is, a third card
+        wait_chat(page, lambda s: len(s["log"]) == 3 and last(s)["state"] == "cancelled" and s["note"] == "", 8.0)
+        page.evaluate("document.querySelectorAll('#chat-log > li:not(:first-child)').forEach((card) =>"
+                      " [...card.children].slice(1).forEach((row) => row.remove()))")
+        page.evaluate("document.querySelector('#chat-log > li:first-child button[data-again=latest]').click()")
+        assert wait_until(lambda: len(scripted.asked) == 4 and page.evaluate(
+            "document.querySelector('#chat-log > li:first-child').dataset.state") == "answered", 8.0)
+        frames(page)
+        page.evaluate(TO_END)  # the reader goes on to the list's very end; the asked card's last lines are in view
+        frames(page)
+        at_end = scroll(page)
+        assert at_end["bottom"] <= 1 and page.evaluate(asked_ends) > 40, (at_end, page.evaluate(asked_ends))
+        # the card between them grows: the page keeps the view at the end, which is now past the asked card
+        page.evaluate("document.querySelector('#chat-log > li:nth-child(2) .question')"
+                      ".append(' and more words'.repeat(60))")
+        frames(page)
+        past_it = scroll(page)
+        assert past_it["bottom"] <= 1 and page.evaluate(asked_ends) < -40, (past_it, page.evaluate(asked_ends))
+        assert past_it["newest"]["height"] < past_it["height"] - 100, past_it  # the newest is still a short card
+        # the newest outgrows the list, with nothing done by the reader: it is shown from its start
+        page.evaluate(f"{NEWEST}.querySelector('.question').append(' and still more words'.repeat(120))")
+        frames(page)
+        seen = scroll(page)
+        assert seen["newest"]["height"] > seen["height"] + 100, seen
+        assert 0 <= seen["newest"]["offset"] <= 12 and seen["newest"]["question"], (past_it, seen)
+    finally:
+        page.close()
+
+
+def test_a_scroll_of_the_readers_is_still_theirs_while_the_event_of_the_pages_own_scroll_is_owed(
+        browser: Browser, served: dict[str, Any]) -> None:
+    """The other side of the two tests above: a scroll of the reader's to another place is still judged. While
+    the page's own scroll is owed, the reader goes up to an earlier exchange: the one scroll event that comes is
+    the reader's, and they are left there. Back where the page had put the view, at the newest exchange's start,
+    they are followed again. And where the page follows a change without moving the view, nothing is owed: a move
+    of the reader's made before the page has seen that change is theirs too."""
+    served["chat"]["service"] = Scripted(long_reply(), long_reply())
+    page = opened(browser, f"{served['url']}/", width=1280, height=900)
+    try:
+        page.evaluate("document.getElementById('chat-log').style.overflowAnchor = 'none'")
+        for n in (1, 2):
+            ask_scripted(page, n)
+        assert wait_until(lambda: from_its_start(scroll(page)), 3.0), scroll(page)
+        frames(page)
+        seen = page.evaluate(OWED % (8, "log.scrollTop = 60"))  # the reader goes up before that event arrives
+        frames(page)
+        assert seen["put"] > seen["top"] + 1 and abs(scroll(page)["top"] - 60) <= 1, (seen, scroll(page))
+        # back at the newest exchange's start, exactly where the page had put the view: followed again
+        page.evaluate("document.getElementById('chat-log').scrollTop = %r" % seen["put"])
+        frames(page)
+        page.evaluate(GROW_FIRST)
+        frames(page)
+        assert from_its_start(scroll(page)), (seen, scroll(page))
+        # and up again while the page's own scroll is owed: left there through the next change
+        again = page.evaluate(OWED % (8, "log.scrollTop = 60"))
+        frames(page)
+        page.evaluate(GROW_FIRST)
+        frames(page)
+        assert again["put"] > again["top"] + 1 and abs(scroll(page)["top"] - 60) <= 1, (again, scroll(page))
+        # an earlier card grows, which the page (following nothing now) does not move for, and in the same task
+        # the reader goes to the list's end: followed again, and kept at the end as the newest answer grows
+        page.evaluate("(() => { %s; const log = document.getElementById('chat-log');"
+                      " log.scrollTop = log.scrollHeight; })()" % GROW_FIRST)
+        frames(page)
+        assert scroll(page)["bottom"] <= 1, scroll(page)
+        page.evaluate(f"{NEWEST}.querySelector('.answer').append(' Still more of the answer. '.repeat(30))")
+        frames(page)
+        assert scroll(page)["bottom"] <= 1, scroll(page)
+    finally:
+        page.close()
+
+
 @pytest.mark.parametrize("theme", ["light", "dark"])
 def test_the_conversations_scrollbar_is_visible_on_its_track_in_every_palette(
         browser: Browser, served: dict[str, Any], theme: str) -> None:

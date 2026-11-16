@@ -535,8 +535,9 @@ def test_the_guide_describes_this_package_and_keeps_the_three_memory_figures_apa
     assert "**Nothing private comes with it:**" in flat and "no device-artifacts record" in flat
     # revision 5's evidence and this revision's verification are not mixed
     assert "**those changes were verified offline only**" in flat
-    assert ("**Nothing that revisions 6, 7 or 8 changed has run a download, a build, an export, a model or a camera "
+    assert ("**Nothing that revisions 6, 7, 8 or 9 changed has run a download, a build, an export, a model or a camera "
             "on any device.**") in flat
+    assert "This revision, 9: the dashboard's script, checked in a test browser with synthetic data" in flat
     assert "Without an enrollment it stops at `there is no enrollment`: that is a refusal, not a pass" in flat
 
 
