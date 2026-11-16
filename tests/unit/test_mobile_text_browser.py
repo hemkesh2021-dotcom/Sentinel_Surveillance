@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from browser_harness import Browser, Page, headless_browser, wait_until
+from browser_harness import ARIAL_METRIC_SANS, Browser, Page, headless_browser, wait_until
 from status_fixtures import Camera, Runtime, face_row, incident_store
 
 from sentinel import status_page
@@ -35,7 +35,11 @@ WIDE_TEXTS = """(() => [...document.querySelectorAll('p.wide-only')].map(p => ({
 
 @pytest.fixture(scope="module")
 def browser() -> Iterator[Browser]:
-    with headless_browser() as connection:
+    # This module's heights count wrapped lines of text, and how text wraps follows the font's width. The machine's
+    # default sans differs from machine to machine (with DejaVu Sans the phone's freshness bar is one line taller
+    # than with Noto Sans), so the browser is given Arial's widths, which the page's own font list names as its
+    # fallback. On the device where the heights were measured (Noto Sans) they are the same with it.
+    with headless_browser(sans=ARIAL_METRIC_SANS) as connection:
         yield connection
 
 

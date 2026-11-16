@@ -5,6 +5,11 @@ NUL-terminated JSON over ``--remote-debugging-pipe`` (fds 3 and 4 of the browser
 home and temporary directory, removed afterwards; every host name resolves to nothing, so it reaches only loopback
 pages; LCD text smoothing is off, so text has no coloured fringes. Tests skip, with the reason and the browser log's
 last line, when no Chromium-family browser is found or it does not start; SENTINEL_TEST_BROWSER names one.
+
+The page's text is drawn with the machine's own default sans-serif font, and that differs from machine to machine
+(Noto Sans on one, the wider DejaVu Sans on another): the same text then wraps into a different number of lines. A
+test module whose assertions count on how text wraps names the families the browser is to prefer (``sans``); they
+apply to this browser only, through a fontconfig file in its own home directory.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ import zlib
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
+from xml.sax.saxutils import escape
 
 import pytest
 
@@ -34,6 +40,24 @@ BROWSER_ENV = "SENTINEL_TEST_BROWSER"
 SNAP_CHROMIUM = "/snap/chromium/current/usr/lib/chromium-browser/chrome"
 BROWSER_NAMES = ("google-chrome", "google-chrome-stable", "chromium")
 SHOTS_ENV = "SENTINEL_TEST_SCREENSHOTS"  # a directory: tests may save the screenshots they take there, for review
+# Families with Arial's advance widths, in the order to prefer them: the same text wraps the same way with any of
+# them. Arial is what the dashboard's own font list falls back to by name; Liberation Sans is its metric twin on
+# Linux (Chrome's package depends on it), Arimo and Nimbus Sans are the others in common use.
+ARIAL_METRIC_SANS = ("Liberation Sans", "Arimo", "Arial", "Helvetica", "Nimbus Sans", "Nimbus Sans L")
+FONTS_CONF = """<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+{aliases}
+</fontconfig>
+"""
+FONT_ALIAS = '  <alias binding="same"><family>{generic}</family><prefer>{families}</prefer></alias>'
+
+
+def fonts_conf(sans: tuple[str, ...]) -> str:
+    """A fontconfig file that puts ``sans`` first for the default sans-serif families (CSS ``system-ui`` too)."""
+    families = "".join(f"<family>{escape(name)}</family>" for name in sans)
+    aliases = [FONT_ALIAS.format(generic=generic, families=families) for generic in ("system-ui", "sans-serif", "sans")]
+    return FONTS_CONF.format(aliases="\n".join(aliases))
 
 
 class DevToolsError(RuntimeError):
@@ -223,11 +247,12 @@ def wait_until(predicate: Callable[[], bool], timeout_s: float) -> bool:
 
 
 @contextlib.contextmanager
-def headless_browser(executable: str | None = None) -> Iterator[Browser]:
+def headless_browser(executable: str | None = None, *, sans: tuple[str, ...] = ()) -> Iterator[Browser]:
     """A headless browser of its own, in its own session; DevTools on fds 3 (commands) and 4 (replies).
 
     Its files are in a short temporary directory: the browser makes a Unix socket under TMPDIR, and a socket's
-    path must stay under 108 bytes, which a deep pytest directory can exceed.
+    path must stay under 108 bytes, which a deep pytest directory can exceed. ``sans``: the sans-serif families this
+    browser prefers, first one installed first (see the module's text); none named, the machine's own default.
     """
     executable = executable or find_browser()
     if executable is None:
@@ -235,13 +260,16 @@ def headless_browser(executable: str | None = None) -> Iterator[Browser]:
     if not (hasattr(os, "posix_spawn") and hasattr(os, "waitid")):
         pytest.skip("needs os.posix_spawn and os.waitid")
     with tempfile.TemporaryDirectory(prefix="sentinel-browser-") as name:
-        yield from _browser(executable, Path(name))
+        yield from _browser(executable, Path(name), sans)
 
 
-def _browser(executable: str, root: Path) -> Iterator[Browser]:
+def _browser(executable: str, root: Path, sans: tuple[str, ...] = ()) -> Iterator[Browser]:
     home, profile = root / "home", root / "profile"
     home.mkdir()
     profile.mkdir()
+    if sans:  # read by fontconfig as the user's own file: HOME is this browser's, so it reaches no other program
+        (home / ".config" / "fontconfig").mkdir(parents=True)
+        (home / ".config" / "fontconfig" / "fonts.conf").write_text(fonts_conf(sans))
     to_browser, commands = os.pipe()
     replies, from_browser = os.pipe()
     child_in = fcntl.fcntl(to_browser, fcntl.F_DUPFD_CLOEXEC, 10)  # above 4, so the dup2s below never collide
