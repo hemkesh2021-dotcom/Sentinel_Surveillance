@@ -217,6 +217,7 @@ def test_the_runs_record_names_what_descends_from_its_guard_and_nothing_else_ir2
     finally:
         if watcher.poll() is None:
             watcher.kill()
+            watcher.wait()  # reaped here: left to the collector, its warning fails whichever test is running then
         for line in (observation / "processes.txt").read_text().splitlines() if (observation / "processes.txt").exists() else []:
             try:
                 os.kill(int(line.split()[0]), signal.SIGKILL)
