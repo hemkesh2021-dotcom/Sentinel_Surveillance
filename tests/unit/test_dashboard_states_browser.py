@@ -119,13 +119,22 @@ REVEAL = """((selector, close) => {
       document.querySelector(`#sidebar .nav a[data-nav=${part.id}]`).click();
     }
   } else if (close && dialog.open && node && !dialog.contains(node)) {
+    window.settingsClosed = false;  // set by a listener added after the page's own: it runs after it
+    dialog.addEventListener('close', () => { window.settingsClosed = true; }, {once: true});
     dialog.close();
+    return 'closing';
   }
 })"""
 
 
 def reveal(page: Page, selector: str, *, close: bool = True) -> None:
-    page.evaluate(f"({REVEAL})({selector!r}, {'true' if close else 'false'})")
+    """Opens the dialog on the control's section, or closes it for a control on the page behind.
+
+    After closing it, waits for the dialog's ``close`` event. The page finishes closing there: it sends the focus
+    back to what opened the dialog. The browser delivers that event a frame after ``open`` turned false, so a focus
+    that a test sets at once can come before it and is then taken away again."""
+    if page.evaluate(f"({REVEAL})({selector!r}, {'true' if close else 'false'})") == "closing":
+        assert wait_until(lambda: page.evaluate("window.settingsClosed === true"), 3.0), "the dialog did not close"
 
 
 def style(page: Page, selector: str) -> dict[str, Any]:
@@ -534,6 +543,10 @@ def test_a_selection_made_under_the_pointer_or_from_the_keyboard_shows_the_selec
             page.call("Fetch.disable")
         assert wait_until(lambda: attribute(page, switch, "aria-checked") == "false"
                           and not page.evaluate(f"document.querySelector({switch!r}).disabled"), 8.0)
+        # The note above the switches says what was asked, then what was answered. When its number of lines changes,
+        # the switches move under a pointer that does not, and whether they come back to it depends on how the font
+        # wraps the two texts. So the pointer is aimed again, as hover() does after any update of the page.
+        hover(page, switch)
         time.sleep(SETTLED_S)
         off = style(page, switch)
         assert off["edge"] == "trace" and all(h in off["shadow"] for h in halo), off  # off and hovered: the hover
