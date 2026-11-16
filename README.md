@@ -20,6 +20,26 @@ face recognition and scene analysis under validation*
 
 </div>
 
+## Dashboard preview
+
+![Sentinel dashboard tour showing the local interface, Ask panel, and appearance settings](docs/media/dashboard-tour.gif)
+
+Recorded from the beta.1 dashboard with synthetic demonstration data. No camera or model was running;
+the example status, incidents and answers illustrate the interface, not measured recognition or model performance.
+
+<details>
+<summary>View still screenshots in light and dark mode</summary>
+
+### Light mode
+
+![Sentinel dashboard in light mode, using synthetic demonstration data](docs/media/dashboard-light.png)
+
+### Dark mode
+
+![Sentinel dashboard in dark mode, using synthetic demonstration data](docs/media/dashboard-dark.png)
+
+</details>
+
 ---
 
 > **EXPERIMENTAL PRE-RELEASE: Sentinel v2.0.0-beta.1.** The beta name is a release designation, not a validation
