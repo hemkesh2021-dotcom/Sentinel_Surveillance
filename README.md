@@ -97,23 +97,50 @@ explicitly.
 
 ## Architecture
 
+```mermaid
+flowchart TB
+    CAMERA["RTSP camera"] --> CAPTURE
+
+    subgraph JETSON["NVIDIA Jetson — local inference and storage"]
+        CAPTURE["Capture and buffers<br/>One stream · frame stamps"]
+        DETECT["YOLOv8n / TensorRT<br/>ByteTrack"]
+        RULES["Zone and scene rules"]
+        STATE["Track state and history<br/>Bounded RAM"]
+        DB[("SQLite incidents<br/>Delivery outbox")]
+        OUTBOX["Alert worker<br/>Retries and delivery status"]
+        GALLERY[("Sealed gallery")]
+        FACE["Face matching<br/>YuNet · Facenet512<br/>Track association"]
+        VLM["LFM3-VL-2B / llama.cpp<br/>Shared scene and chat worker"]
+        DASH["Dashboard / status API<br/>127.0.0.1:18090"]
+
+        CAPTURE --> DETECT --> RULES
+        RULES --> STATE
+        RULES --> DB --> OUTBOX
+        DETECT -. frames and tracked people .-> FACE
+        GALLERY -. matching .-> FACE
+        FACE -. track identity .-> STATE
+        CAPTURE -. frames .-> VLM
+        VLM -. scene reports .-> RULES
+        CAPTURE -. live preview .-> DASH
+        STATE --> DASH
+        DB --> DASH
+        VLM -. visual answers .-> DASH
+    end
+
+    OUTBOX -. when configured .-> TELEGRAM["Telegram alerts"]
+    DASH <-->|SSH tunnel| BROWSER["Operator browser"]
 ```
-camera (RTSP; URL from SENTINEL_RTSP_URL, never a file)
-  │
-  ▼
-capture: one stream, frames stamped with stream epoch, sequence and ingest time
-  │
-  ├─► person detector (YOLOv8n TensorRT engine) ─► tracker (ByteTrack) ─► zone rules
-  │                                                                          │
-  │                                                                          ▼
-  │                                       incidents (SQLite, one writer) ─► alert outbox ─► Telegram
-  │                                                                          │
-  ├─► face worker (optional, 1 Hz; sealed gallery) ──► identity state ──────┤
-  ├─► scene lane (optional; llama-server on 127.0.0.1) ─► scene reports ─────┤
-  │                                                                          ▼
-  └────────────────────────────────────────────► status page and dashboard on 127.0.0.1:18090
-                                                  (live view, snapshots, chat and feature controls opt-in)
-```
+
+Solid arrows show the core data flow; dashed arrows show optional paths. Face recognition and visual chat retain
+their experimental admission status. The preview reuses captured frames; it does not open another camera connection.
+
+- **Two Ask paths:** visual questions use the shared local scene model, with scene monitoring taking priority and
+  chat bounded and cancellable. Questions about recorded activity use current track state, bounded RAM history and
+  read-only SQLite queries; that path does not call the model.
+- **Controls:** appearance stays in the browser. Operator-key-protected feature controls pause or resume the
+  runtime's available lanes.
+- **Guarded sessions:** the validation launcher supervises the runtime with the memory guard. This is an external
+  supervisor for those sessions, not an always-running component of every installation.
 
 | Area | Package path |
 |---|---|
