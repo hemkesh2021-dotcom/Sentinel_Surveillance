@@ -30,7 +30,7 @@ face recognition and scene analysis under validation*
 > for normal use. This beta is released from `master`; the published v1 and alpha tags remain available.
 >
 > **The installation package validates nothing.** One revision of it completed a camera-free build rehearsal on the
-> reference device; its later packaging changes were checked offline only; a complete launch from the package, and
+> reference device; its later changes were checked offline only; a complete launch from the package, and
 > any other Jetson, are unverified. The [release notes](docs/RELEASE_NOTES_v2.0.0-beta.1.md) say exactly what ran.
 >
 > **The alpha's goal is not met yet.** The October alpha was set to centre on working face recognition and real local
@@ -136,9 +136,12 @@ for alpha.2. No admission status has changed since; what was added is in the
 ### Portable development (CI runs on every push)
 
 Python 3.10 or newer. No camera, GPU or model is needed. A pre-release tag is placed only on a commit whose CI passed
-(Dashboard checks; v2 portable checks on Python 3.10 and 3.12). Locally on the device, not CI: the full offline suite
-passed once under Python 3.10 at `1fac8d6` (3,931 passed, 7 skipped); the installation package's commits after it ran
-their own focused test files only.
+(Dashboard checks; v2 portable checks on Python 3.10 and 3.12). On the commit the release's archive was built from,
+`5a1238a`, CI ran the whole suite under both versions: 4,224 passed, 78 skipped in each
+([Dashboard checks](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/actions/runs/43871694511),
+[v2 portable checks](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/actions/runs/43871694570)). Locally on
+the device, not CI: the full offline suite passed once under Python 3.10 at `1fac8d6` (3,931 passed, 7 skipped); the
+commits after it ran the test files they affect.
 
 ```bash
 git clone --branch v2.0.0-beta.1 https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance.git
@@ -152,20 +155,22 @@ sentinel --version                            # sentinel 2.0.0b1
 
 ### Install on your own Jetson (tester package, experimental)
 
-The pre-release carries one archive, `sentinel-personal-beta-…-r8.tar.gz`, and its `.sha256` file
+The pre-release carries one archive, revision 9 of the package, and its `.sha256` file
 ([releases](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases)). It installs under your own
 account, without sudo, downloads the pinned Python packages and model files from their upstream sources, and builds
 llama.cpp and the detector engine on your device. Its guide is
 [`packaging/beta-install/QUICKSTART.md`](packaging/beta-install/QUICKSTART.md) (also inside the archive, with a
-`README.md`); the archive is built from this repository by `packaging/build_archive.py`.
+`README.md`).
 
-**The package's files in this repository are one revision ahead of that archive.** After revision 8 was built, one
-file of the application was corrected (the dashboard's script: the Ask panel's conversation while a window is
-resized), and `packaging/` now describes revision 9, which has not been built. Revision 8 does not contain that
-correction; its own guide and entry page are the ones inside the archive.
+| | |
+|---|---|
+| Archive | `sentinel-personal-beta-949da67-mod960fcc3-r9.tar.gz` |
+| Size, files | 722,378 B; 126 files |
+| SHA-256 | `3b5dde56d1926d6be5391bf8a49c313ca952f8693452c56ebf334bf3929f2d1c` |
+| Built from | commit `5a1238a10d764b54a184969734715298338bf43d`, by `packaging/build_archive.py` |
 
 ```bash
-sha256sum -c sentinel-personal-beta-*-r8.tar.gz.sha256      # then extract it and read README.md and QUICKSTART.md
+sha256sum -c sentinel-personal-beta-949da67-mod960fcc3-r9.tar.gz.sha256   # then extract it and read README.md and QUICKSTART.md
 ```
 
 Before you start:
@@ -173,8 +178,11 @@ Before you start:
 - **What ran, and what did not.** Revision 5 of the package completed a camera-free build rehearsal on the reference
   device (installation, environment, downloads, both builds, the record of the built files and its verification).
   The packaging changes of revision 6 and the documents, licence files and version string of revisions 7 and 8
-  were checked offline only. **A complete launch from the package has never been made, and no other Jetson has run
-  it.**
+  were checked offline only. Revision 9, this archive, differs from revision 8 in one file of the application, the
+  dashboard's script (the Ask panel's conversation while a window is resized), which was checked in a test browser
+  only. The archive itself was installed, checked and uninstalled in a scratch folder on the reference device,
+  without network, camera, model or build. **A complete launch from the package has never been made, and no other
+  Jetson has run it.**
 - **The default check and launch refuse on your device.** They admit only the reference device's own files. Your
   files are used only through the opt-in `--device-artifacts` route, for experimental validation runs; it validates
   nothing about your device's memory, speed or stability (resource validation is pending).
