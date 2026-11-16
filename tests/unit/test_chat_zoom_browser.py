@@ -91,14 +91,21 @@ class Site:
         self.server.start()
         self.url = f"http://127.0.0.1:{self.server.address[1]}"
         self.stop = threading.Event()
+        # The camera is live before a page can ask: its first frame is here when the site is. A hold that reaches the
+        # service before any frame is refused, rightly, as "the camera is not live", and the page does not ask again;
+        # a page that is quicker than the 0.1 s to the video's first pass would meet that.
+        self.frame()
         threading.Thread(target=self.video, daemon=True).start()
+
+    def frame(self) -> None:
+        self.clock.advance(0.1)
+        self.n += 1
+        frame = self.stamper.stamp(native_width=NATIVE[0], native_height=NATIVE[1], pixel_format=PixelFormat.BGR)
+        self.pins.latest(frame, Picture(f"work{self.n}", *WORK), Picture(f"main{self.n}", *NATIVE), self.people)
 
     def video(self) -> None:
         while not self.stop.wait(0.1):  # live video: a new frame every 0.1 s, the fake clock keeping pace
-            self.clock.advance(0.1)
-            self.n += 1
-            frame = self.stamper.stamp(native_width=NATIVE[0], native_height=NATIVE[1], pixel_format=PixelFormat.BGR)
-            self.pins.latest(frame, Picture(f"work{self.n}", *WORK), Picture(f"main{self.n}", *NATIVE), self.people)
+            self.frame()
 
     def encode(self, image: Any, pixel_format: Any, *, max_width: int, max_height: int, quality: int) -> EncodedJpeg:
         height, width = image.shape[:2]
