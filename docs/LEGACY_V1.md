@@ -1,15 +1,15 @@
 # Legacy v1 (prototype): the original README
 
-> **This is the legacy v1 documentation, kept unchanged for reference.** It describes the v1 prototype files in the
-> repository root (`surveillance4_1.py`, `dashboard.py`, `build_face_db.py`, `start_sentinel.sh`, `requirements.txt`,
-> `.env.example`, `BUILD.md`, `SETUP_GUIDE.txt`), which the v2 alpha branch leaves unchanged. **It does not describe
-> Sentinel v2**: for v2 see the [README](../README.md) and the
-> [wiki](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki).
+> **Historical v1 documentation.** The prototype uses the root-level scripts
+> `surveillance4_1.py`, `dashboard.py`, `build_face_db.py` and `start_sentinel.sh`.
+> Their implementation is separate from v2. For **v2.0.0-beta.1**, now released from `master`, use the
+> [current README](../README.md), [Wiki](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki)
+> and [tester installer](../packaging/beta-install/QUICKSTART.md).
 >
-> Moved here from `README.md` for the v2 alpha. The text below is `README.md` as it is on `master`, with two kinds of
-> change: the three relative paths adjusted for this folder, and the Telegram chat ID example replaced by the
-> placeholder `<YOUR_TELEGRAM_CHAT_ID>` (as in the alpha branch's commit `8732244`). Its history and authorship are in
-> `git log -- README.md`; `master` keeps its README unchanged.
+> The text below was moved from the v1 README during the v2 alpha, with relative links adjusted and a Telegram
+> chat-ID example replaced by a placeholder. It is a historical snapshot, not the current `master` README.
+> The original [v1.1.0 release](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v1.1.0)
+> and its [tagged source](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/tree/v1.1.0) remain available.
 
 ---
 

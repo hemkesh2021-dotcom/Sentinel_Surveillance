@@ -1,5 +1,33 @@
 # Sentinel v2 — implementation status
 
+## Published beta and documentation checkpoint — 2026-11-17 (Codex)
+
+**v2.0.0-beta.1 was published on 2026-11-16.** The annotated tag identifies
+`59be4065060b3a755dca86ee1852d20ffa47d42a`; the release contains the r9 archive
+`sentinel-personal-beta-949da67-mod960fcc3-r9.tar.gz` (722,378 bytes) and its checksum file.
+Archive SHA-256: `3b5dde56d1926d6be5391bf8a49c313ca952f8693452c56ebf334bf3929f2d1c`.
+The archive was built from `5a1238a`; packaged files at the tag are identical. The release is a pre-release;
+v1.1.0 remains the latest stable release. No admission or validation status changed.
+
+The released commit's Dashboard and portable CI passed (4,224 passed, 78 skipped on each of Python 3.10 and
+3.12). The later README/media/architecture commits `0bec764` and `d90077b` changed documentation only;
+both workflows at `d90077b` were confirmed successful on 17 November. The retired candidate branches' commits
+remain in `master`, and both alpha tags and releases remain accessible.
+
+At the maintainer's request, current public documentation is updated from base `d90077b`: README feature/status
+summary and version history; Wiki Home, Getting started, Dashboard and controls, Status and limitations, sidebar
+and a new Architecture page; contribution/security guidance, issue/PR templates, and navigation notices on the
+historical/private guides. Repository About metadata is aligned with beta.1, LFM3 and the v2 dashboard.
+Historical session entries below retain their original dates and claims; earlier "nothing published" statements
+describe their own sessions, not the current release.
+
+Verification in an isolated Mac worktree: the six existing release-documentation tests passed; Markdown local
+links and issue-form YAML checked; application, tests, configuration, benchmarks, installer files, LICENSE and
+package version compared with the beta tag and unchanged. No Jetson connection, camera session, model workload,
+artifact rebuild, tag move or release-asset replacement is part of this documentation update.
+
+## Earlier implementation record
+
 Last updated 2026-11-16, session 116, part 53 (Claude; parts 50 to 53 are on branch `beta-ci-fix-2026-11`, worktree `~/sentinel-worktrees/v2-beta-ci-fix`, made from the pushed candidate `7a10718`; parts 39 to 49 are on branch `v2-beta-install`, worktree `~/sentinel-worktrees/v2-install`, made from `11e4484`); parts up to 38 on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.
 
 **Session 116, part 53 (branch `beta-ci-fix-2026-11`): GitHub's CI passed on part 52's commits (`5a1238a`, pushed by the maintainer): the dashboard checks, and the whole suite under Python 3.10 and 3.12 with 4,224 passed and 78 skipped in each. On the maintainer's authorization, revision 9 of the tester package was then built from that commit with the committed builder (`sentinel-personal-beta-949da67-mod960fcc3-r9.tar.gz`, 722,378 B, 126 files, SHA-256 `3b5dde56d1926d6be5391bf8a49c313ca952f8693452c56ebf334bf3929f2d1c`), checked from the outside, compared with revision 8 (five files differ, the five expected, the corrected dashboard script among them) and installed, checked and uninstalled offline in a scratch folder. `README.md` and the release notes name revision 9 and the checks that ran (`3acb94d`); no packaged file changed after the commit the archive was built from. Revision 8 is unchanged and was not published. Committed locally. Nothing was pushed, tagged or published from this device in this part, because it is not signed in to GitHub: the push of these commits, CI on the final commit, the update of `master`, the tag and the pre-release are still to come.** The archive's check in the scratch folder ended, as it must, at the missing Python environment: a refusal, not a device validation. Like revisions 6 to 8, revision 9 has run no download, build, export, model or camera on any device.

@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Beta installation guide
+    url: https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Getting-started
+    about: Current beta installer, platform limits, dashboard access and clean stop.
   - name: Security vulnerability
     url: https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/security/advisories/new
     about: Report security issues privately — do not open a public issue.

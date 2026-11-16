@@ -4,10 +4,15 @@ Sentinel is a self-hosted surveillance system. It processes live camera feeds, s
 
 ## Supported versions
 
-| Version | Supported |
-| ------- | --------- |
-| v2.x (current development) | Yes |
+| Version | Security reporting |
+| ------- | ------------------ |
+| v2.0.0-beta.1 and current `master` | Reports accepted; experimental beta, not production-accepted |
+| Earlier v2 alphas | Reproduce against the current beta where possible; historical tags remain available |
 | v1.x | Security fixes only, best effort |
+
+The [beta release](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-beta.1)
+and [current limitations](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Status-and-limitations)
+describe feature validation separately from this reporting policy.
 
 ## Reporting a vulnerability
 
@@ -40,25 +45,33 @@ This is a student-maintained project with no bug bounty. Response times are best
 
 In scope:
 
-- Flask dashboard (authentication, session handling, MJPEG stream exposure)
-- Face database storage and loading (serialization, file permissions)
-- RTSP / camera input handling
-- Telegram alerting (token handling, message injection)
+- v2 dashboard/status server: loopback access, request validation, chat and operator-key-protected feature controls
+- Sealed enrollment storage, file permissions, consent/revocation and artifact verification
+- RTSP input, live preview and optional incident snapshots
+- SQLite incidents and delivery outbox; Telegram credentials and notification handling
+- Installer downloads, checksums, local file handling and process cleanup
 - Configuration and secrets handling
-- Any code in this repository
+- Legacy v1 Flask dashboard and pickle-loading paths, identified explicitly as v1
+- Any other code in this repository
 
-Out of scope:
+Upstream defects should also be reported to the dependency's maintainers; tell us if Sentinel's usage makes them
+exploitable. Physical-access-only issues and social engineering remain outside this policy's scope.
 
-- Vulnerabilities in upstream dependencies (YOLOv8, llama.cpp, DeepFace, Flask) — report those upstream, but let us know if Sentinel's usage makes them exploitable
-- Issues requiring physical access to the Jetson
-- Social engineering
+## Current security boundaries
 
-## Known limitations (as of v2 development)
+**v2.0.0-beta.1** uses a loopback-only dashboard (`127.0.0.1:18090`) reached through an SSH tunnel.
+It does not provide general user login, roles or HTTPS itself. Do not publish the status port to the LAN or Internet.
+The operator key authorizes runtime feature changes; it is not authentication for reading the dashboard.
+Chat and feature requests enforce their page token and same-origin checks, and feature changes additionally require
+the run's operator key.
 
-These are acknowledged and on the hardening roadmap; reports that only restate them will be closed as duplicates:
+The v2 gallery is **sealed with a passphrase**, using authenticated encryption; it is not a pickle file.
+Its identity directory and files use owner-only permissions. Incidents, run records and optional snapshots are
+separate data and should not be assumed to be encrypted by the gallery's encryption.
+v2 does not import the legacy `face_db.pkl`.
 
-- Dashboard has no authentication or TLS by default — run it only on a trusted LAN
-- Face database uses Python pickle serialization
-- Runtime files may be created with permissive permissions
+**Legacy v1** has a separate Flask/dashboard and pickle-gallery implementation. Do not load an untrusted v1 pickle
+or apply its networking/setup instructions to v2. The [legacy guide](docs/LEGACY_V1.md) identifies those files.
 
-See the project roadmap in the README for hardening status.
+These boundaries do not claim complete hardening. Report defects in them privately even if a related limitation
+is documented. Never include real credentials, face data or footage in a public issue.

@@ -1,3 +1,9 @@
+LEGACY V1 GUIDE — NOT THE v2.0.0-beta.1 INSTALLATION GUIDE
+For the current beta use:
+https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-beta.1
+and packaging/beta-install/QUICKSTART.md (also inside the tester archive).
+The original v1 instructions below are retained for reference.
+
 ================================================================================
   SENTINEL SURVEILLANCE SYSTEM — COMPLETE SETUP & USAGE GUIDE
   Version 0.1.0  |  Engine: surveillance4_1.py  |  Authors: Hemkesh & V S Yogeshvar

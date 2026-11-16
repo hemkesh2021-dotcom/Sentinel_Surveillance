@@ -1,73 +1,79 @@
 # Contributing to Sentinel
 
-Thanks for your interest in Sentinel — a self-hosted edge AI surveillance system for the NVIDIA Jetson Orin Nano Super.
-
-This is a small project maintained by students. Contributions are welcome, but please read this first so your time (and ours) is well spent.
+Sentinel v2.0.0-beta.1 is the current experimental beta. Development and documentation live on **`master`**.
+The [Wiki](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki) and
+[beta release notes](docs/RELEASE_NOTES_v2.0.0-beta.1.md) describe the current scope.
+This is a small student-maintained project.
 
 ## Before you start
 
-- **Search existing issues** before opening a new one.
-- **Open an issue before a large PR.** Describe the change and get a go-ahead; this avoids wasted effort on work that doesn't fit the roadmap.
-- **Hardware reality:** the maintainer has the only Jetson used for testing. If your change touches TensorRT, CUDA, llama.cpp, or the camera pipeline, say what hardware you tested on. Untested changes to the inference path will be merged only after on-device verification by the maintainer.
-
-## Ways to contribute
-
-- Bug reports (use the Bug report issue template)
-- Feature requests (use the Feature request template)
-- Documentation fixes — README accuracy, setup steps, BUILD notes
-- Camera compatibility reports — which RTSP cameras work or don't
-- Performance findings on Jetson (FPS, memory, latency) with the exact command and model used
+- Search existing issues. Discuss a large change before implementing it.
+- Use the installation issue form for the tester package, the bug form for runtime/UI defects, and private
+  vulnerability reporting for security issues.
+- Keep device observations separate from portable tests. Only one reference Jetson has been used for the recorded
+  checks; report your hardware and versions rather than assuming compatibility.
+- Preserve matching thresholds, gallery data, admission records and existing resource profiles unless the change
+  explicitly addresses them. A passing synthetic test does not establish recognition accuracy or device acceptance.
 
 ## Development setup
 
-1. Fork the repo and clone your fork.
-2. Create a branch from `main`:
-   ```bash
-   git checkout -b fix/short-description
-   ```
-3. Follow the README setup steps (Python environment, model downloads, `llama-server` launch).
-4. Make your change.
-5. Test it. For Jetson-specific work, include:
-   - JetPack / L4T version
-   - `llama-server` launch command (including `GGML_CUDA_ENABLE_UNIFIED_MEMORY=1` if used)
-   - Memory state (`free -h` or `tegrastats`) before and during the run
+Fork and clone the repository, then branch from current `master`:
+
+```bash
+git switch master
+git pull --ff-only
+git switch -c fix/short-description
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[dev]'
+sentinel config validate config/default.yaml
+python -m pytest tests/unit/<affected-test-file>.py
+```
+
+Python 3.10 or newer is required. The portable package and tests do not need a camera or a model;
+browser tests need a Chromium-family browser. Run tests appropriate to the change.
+CI runs the v2 suite on Python 3.10 and 3.12 and the legacy dashboard checks separately.
+The [tester installation guide](packaging/beta-install/QUICKSTART.md) is for device setup, not a prerequisite
+for documentation or portable development.
+
+Keep application code in `src/sentinel/`; the root `surveillance4_1.py`, `dashboard.py` and their setup guides
+are legacy v1. The tester archive has its own pinned contents and revision record. Changes to a packaged path
+must identify the affected archive revision; never replace a published asset silently.
+
+## Useful contributions
+
+- Reproducible runtime, dashboard or installer bug reports
+- Documentation corrections and clearer setup/recovery steps
+- Camera/platform compatibility observations with exact versions
+- Focused regression tests for confirmed failures
+- Measured performance reports with configuration, method and limits stated
 
 ## Pull request checklist
 
-- [ ] One logical change per PR
-- [ ] Branch is up to date with `main`
-- [ ] Code runs on Jetson Orin Nano (or clearly marked as untested on device)
-- [ ] No hardcoded secrets, tokens, chat IDs, or RTSP credentials
-- [ ] README / docs updated if behaviour or setup changed
-- [ ] Performance claims are measured, not estimated — state the method
+- [ ] One logical change, based on current `master`
+- [ ] Relevant tests run; failures and skipped checks explained
+- [ ] Device checks, if performed, identify hardware, L4T/JetPack, Python, artifacts and configuration
+- [ ] No credentials, control keys, enrollment, face photos, footage or private run folders
+- [ ] Documentation updated where behavior or setup changes
+- [ ] Resource/accuracy claims are measured and scoped; no admission implied by CI
+- [ ] Packaged-file changes identify their installer impact
 
-## Code style
+Reports and commands must be sanitized. Include short relevant error excerpts, not complete run logs or secrets.
+Do not start a camera/model workload merely to verify a documentation-only change.
 
-- Python: follow PEP 8. Keep functions small; the main loop is latency-sensitive.
-- Don't add dependencies without a reason stated in the PR.
-- Don't write to `/tmp` or other SD-card-heavy paths in hot loops.
-- Prefer atomic file writes (write to temp, then rename).
+## Code and commits
 
-## Commit messages
+Keep functions focused, hot paths bounded and device-only imports out of portable import paths.
+Use atomic file writes where needed. Explain new dependencies.
+Use concise commit subjects such as `fix: preserve Ask scrolling during resize` or
+`docs: update beta installation guidance`.
 
-Use short imperative subjects:
+## Licensing and conduct
 
-```
-fix: prevent identity bleed across tracks in multi-face recognition
-docs: correct unified memory env var in README step 6
-feat: add dashboard auth middleware
-```
+Sentinel's own code is MIT; see [LICENSE](LICENSE). Contributions use the same terms.
+Downloaded software and models keep their own terms, listed in
+[THIRD_PARTY_NOTICES.md](packaging/beta-install/THIRD_PARTY_NOTICES.md).
+Do not add or redistribute third-party files without checking their terms.
 
-## Licensing
-
-- Sentinel is released under the MIT License (see `LICENSE`).
-- By contributing, you agree your contribution is licensed under the same terms.
-- Note: YOLOv8 (Ultralytics) is AGPL-3.0 and LFM2-VL has its own license. Do not add code or weights that change the project's licensing position without discussing it in an issue first.
-
-## Reporting security issues
-
-Do **not** open a public issue for vulnerabilities. See [SECURITY.md](SECURITY.md).
-
-## Code of Conduct
-
-This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md).
+Read [SECURITY.md](SECURITY.md) for private vulnerability reporting and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations.

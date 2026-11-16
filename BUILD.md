@@ -1,5 +1,8 @@
 # BUILD.md — Engine Export & Inference Setup
 
+> **Legacy v1 build guide.** For **v2.0.0-beta.1**, use the [tester installer guide](packaging/beta-install/QUICKSTART.md)
+> and its pinned, guarded build steps. The older commands below are preserved for the v1 prototype.
+
 This document covers the two build steps the Quick Start glosses over:
 
 1. Exporting YOLOv8n to a **TensorRT `.engine`** for accelerated detection on Jetson.

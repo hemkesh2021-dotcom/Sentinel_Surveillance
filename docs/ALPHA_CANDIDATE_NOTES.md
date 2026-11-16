@@ -1,10 +1,13 @@
 # Sentinel v2 — EXPERIMENTAL ALPHA (v2.0.0-alpha.1 and the v2.0.0-alpha.2 candidate): notes
 
-> **2026-11-15: the next pre-release is prepared as v2.0.0-beta.1** (package `2.0.0b1`; release notes:
-> [`RELEASE_NOTES_v2.0.0-beta.1.md`](RELEASE_NOTES_v2.0.0-beta.1.md)). The beta name is a release designation, not a
-> validation result. It adds an experimental installation package for testers and carries sessions 113 to 116. These
-> notes were last revised for alpha.2 (2026-10-21) and are not rewritten for it: no admission, threshold or
-> experimental label has changed since, and the status record governs.
+> **Historical alpha notes; current beta published 16 November 2026.** See
+> [v2.0.0-beta.1 release notes](RELEASE_NOTES_v2.0.0-beta.1.md) and the
+> [current Wiki](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki).
+> The alpha-specific text below remains as recorded on 21 October; its branch and "not merged" statements describe
+> that time. The obsolete candidate branches have since been removed, with their commits retained in `master`.
+> [alpha.1](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.1) and
+> [alpha.2](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.2) tags and releases
+> remain available. The beta name changes no admission, threshold or recorded validation result.
 
 **EXPERIMENTAL ALPHA. v2.0.0-alpha.1 and its successor candidate v2.0.0-alpha.2 are experimental pre-releases, not
 production releases.** Production acceptance and feature admission are separate decisions, and neither pre-release

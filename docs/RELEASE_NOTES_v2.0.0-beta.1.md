@@ -116,7 +116,7 @@ own files only (text): no model, engine, gallery, enrollment, credential, record
 - **The installation package:** everything listed under "Unverified" above, and device resource validation, for
   which no procedure exists yet.
 - **From the earlier notes:** whatever the alpha.1 and alpha.2 notes list as open stays open unless the status
-  record says otherwise. The wiki was last revised for alpha.2.
+  record says otherwise. At publication the wiki still described an earlier alpha; the [current Wiki](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki) was updated for beta.1 on 17 November.
 
 ## Checks
 

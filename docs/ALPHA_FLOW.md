@@ -1,5 +1,9 @@
 # Alpha flow: inspect, stop, acknowledge, restart, inspect
 
+> **Current beta note:** the stopped-runtime incident acknowledgment flow below still applies in beta.1.
+> The dashboard now also has advisory Ask and operator-key feature controls; those cannot acknowledge incidents.
+> Use the [tester guide](../packaging/beta-install/QUICKSTART.md) for installation and guarded launch.
+
 This is the Review 1 alpha's incident flow on the device (D67, D68 in
 `docs/IMPLEMENTATION_STATUS.md`). It covers the guide's journey steps "inspect
 an incident and evidence → acknowledge it → see the notification outcome →
@@ -14,7 +18,7 @@ restart … and retain the incident" in their alpha form.
 
 ## Why monitoring has to stop
 
-The status page is read only and bound to 127.0.0.1 (D45); it has no
+The incident view is read only and the status server is bound to 127.0.0.1 (D45); it has no
 acknowledge button. Acknowledging is a write to the incident database, and
 that database has exactly one writer at a time. The writer lock is a
 kernel `flock` on `sentinel.db.lock`, taken without waiting:

@@ -42,43 +42,33 @@ the example status, incidents and answers illustrate the interface, not measured
 
 ---
 
-> **EXPERIMENTAL PRE-RELEASE: Sentinel v2.0.0-beta.1.** The beta name is a release designation, not a validation
-> result: no feature's status, threshold or admission changed for it. It adds an installation package for testers
-> with their own Jetson ([Install on your own Jetson](#install-on-your-own-jetson-tester-package-experimental)) and
-> carries the work since alpha.2. It is published so that the work can be reviewed and tried. It is **not
-> production-accepted**, and **feature admission is a separate decision**: face recognition and chat are not admitted
-> for normal use. This beta is released from `master`; the published v1 and alpha tags remain available.
+> **Current release: [Sentinel v2.0.0-beta.1](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-beta.1)**,
+> published 16 November 2026, with revision 9 of the tester installation package.
+> **The beta name is a release designation, not a validation result.** Face recognition, identity retention and chat
+> retain their experimental validation status; the release is not production-accepted.
 >
-> **The installation package validates nothing.** One revision of it completed a camera-free build rehearsal on the
-> reference device; its later changes were checked offline only; a complete launch from the package, and
-> any other Jetson, are unverified. The [release notes](docs/RELEASE_NOTES_v2.0.0-beta.1.md) say exactly what ran.
->
-> **The alpha's goal is not met yet.** The October alpha was set to centre on working face recognition and real local
-> chat with the vision-language model. Neither is done:
-> - face recognition's formal validation (F2) has never passed, and there is no false-acceptance data;
-> - chat is not admitted;
-> - the two have run together only in validation-only runs: two eight-minute integration checks (20 October) and a
->   one-hour live-dashboard trial with the operator's own questions (21 October). All passed, but they judged no
->   recognition accuracy and no answer's correctness. The second integration check asked four grounding questions,
->   judged by the maintainer against the staged room (two consistent, one unverifiable, one cancelled and untested).
->   None is the combined validation, which still needs a passing F2, and they admit nothing.
->
-> Face recognition is shown only as an experimental demonstration in guarded validation runs. See the
-> [alpha notes](docs/ALPHA_CANDIDATE_NOTES.md).
->
-> - **Known limitations:** [Status and limitations](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Status-and-limitations)
->   (wiki) and [`docs/ALPHA_CANDIDATE_NOTES.md`](docs/ALPHA_CANDIDATE_NOTES.md)
-> - **Release:** [v2.0.0-beta.1](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-beta.1)
->   ([release notes](docs/RELEASE_NOTES_v2.0.0-beta.1.md)); the earlier
->   [v2.0.0-alpha.2](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.2)
->   ([release notes](docs/RELEASE_NOTES_v2.0.0-alpha.2.md)) and
->   [v2.0.0-alpha.1](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.1)
->   ([release notes](docs/RELEASE_NOTES_v2.0.0-alpha.1.md))
-> - **Installation problems:** the [installation issue form](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/issues/new?template=installation-issue.md)
->   (public: no credentials, photos, footage or whole logs)
-> - **Wiki:** [github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki)
-> - **Evidence for every claim, session by session:** [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)
-> - **Legacy v1 (the original prototype):** [`docs/LEGACY_V1.md`](docs/LEGACY_V1.md)
+> Start with [Install on your own Jetson](#install-on-your-own-jetson-tester-package-experimental) or the
+> [Wiki](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki).
+> One earlier installer revision completed a camera-free build rehearsal on the reference Jetson; the later changes
+> were checked offline. A complete launch from the package and another Jetson remain unverified.
+> [Status and limitations](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Status-and-limitations)
+> separates implementation, operator observations and formal validation.
+
+## New in beta.1
+
+- **Tester installer:** pinned downloads, guarded device builds, your own enrollment and device-artifacts record,
+  manual launch, clean stop and uninstall.
+- **LFM3-VL-2B scene analysis and visual chat**, through the pinned llama.cpp build.
+- **Identity retention:** an established identity can be retained on the same continuous track life, with explicit
+  expiry and clearing conditions; raw matching thresholds are unchanged.
+- **A more useful Ask panel:** supported records questions, follow-ups, reanalysis, opt-in automatic refresh,
+  crop-based zoom and a scan of one held picture's visible regions. Its conversation scrolls within the panel.
+- **Settings:** browser-local appearance and operator-key-protected runtime controls in one dialog.
+- **r9 correction:** the Ask conversation keeps following the newest exchange while its list is resized.
+
+See the [beta release notes](docs/RELEASE_NOTES_v2.0.0-beta.1.md) for the exact changes and checks,
+[dashboard guide](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Dashboard-and-controls) for use,
+and [version history](#earlier-releases) for the preserved alpha and v1 releases.
 
 ## Overview
 
@@ -160,23 +150,30 @@ its configuration checks and its tests run on any machine.
 
 ## Feature status
 
-| Feature | Implemented, portable-tested | On the device | Admitted for normal use |
-|---|---|---|---|
-| Core monitoring: capture, detection, tracking, zone rules, incidents, alert outbox | yes | one guarded check passed within its bounded scope, with one real Telegram send | core path; no production acceptance |
-| Incident page and acknowledgment (while monitoring is stopped) | yes | checked | core path |
-| Live view and incident snapshots | yes | checked | opt-in flags |
-| Dashboard (live picture, recognition panel, incidents, appearance) | yes | checked in validation runs, including a one-hour trial with face recognition, scene analysis and chat; Safari observed by the operator | opt-in flags |
-| Face recognition | yes | described in validation runs, **not accepted**: no F2 has validated (three attempts on the normal path since alpha.1); in ordinary seated use recognition is intermittent (a single non-matching vote ends it; it lapses when no face is detected for longer than the 30 s vote lifetime) | **no** (`PENDING_VALIDATION`) |
-| Validation-only diagnostics (tracking, landmarks, a launch-memory check for operator packages) | yes | each ran in device sessions, descriptive only | not features; guarded validation runs only |
-| Identity continuity rule (proposed) | yes | ran in one session; not validated | **no** (validation runs only) |
-| Feature controls (pause and resume lanes) | yes | partly exercised; not validated | opt-in flag |
-| Chat about the live frame (local VLM) | yes | runtime checks passed in two earlier runs, and with face recognition in two validation-only integration runs and a one-hour dashboard trial (answers judged for form only, or by the operator's report) | **no**: admission, factual accuracy and combined face/VLM validation pending |
-| Scene analysis (local VLM) | yes | earlier scene checks; loaded beside face recognition in its validation runs, the integration runs and the one-hour trial, not validated together | needs an admitted adapter |
+Updated for **v2.0.0-beta.1**, 17 November 2026. Implemented behavior, a successful observation and formal
+acceptance are different claims.
 
-The [known limitations](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Status-and-limitations) list
-everything still unresolved; none of it is waived by this pre-release. The table above and the wiki were last revised
-for alpha.2. No admission status has changed since; what was added is in the
-[beta.1 release notes](docs/RELEASE_NOTES_v2.0.0-beta.1.md) and, session by session, in the status record.
+| Feature | Implemented and checked | Availability and remaining limits |
+|---|---|---|
+| Detection, tracking, zone rules, incidents and alert outbox | Portable tests; bounded reference-device checks, including one real Telegram send | Core monitoring; no production acceptance |
+| Dashboard, live preview and incident details | Browser tests and reference-device observations; light/dark appearance and Settings | Preview is opt-in; snapshots and notifications are off in the tester profile |
+| Face recognition | YuNet / Facenet512, track association and single-person observations; satisfactory behavior reported by the maintainer on 11 November | Validation runs only; F2 has never passed, false-acceptance data and multiple-person testing are pending |
+| Identity retention | Separate established-identity ledger, bounded by track life, evidence and time; regression tests and operator feedback | Opt-in `--identity-retention`; proposed values, not validated wrong-identity retention rates |
+| Visual Ask, follow-ups, refresh, zoom and scan | Local LFM3 model path with scene priority, bounded held frames and cancellation; offline/browser checks and operator feedback | Chat remains not admitted; answer accuracy and combined formal validation are pending |
+| Ask from records | Supported questions use track state, bounded RAM history and read-only incident/delivery queries; coverage and gaps are stated | Shares chat availability; no model inference on this path and no arbitrary database queries |
+| Scene analysis | Capped LFM3 profile and guarded integration observations on the reference device | Requires the configured admitted profile or validation route; no general device/resource guarantee |
+| Runtime feature controls | Same-origin/page-token protections and operator key; pause/resume the run's existing lanes | Opt-in; controls do not load or admit new features |
+| Tester installer r9 | r5 completed a camera-free build rehearsal on one device; later changes and r9 archive checks were offline | Complete package launch, package enrollment, stock JetPack and another Jetson are unverified |
+
+The default face-vote rule is unchanged. With retention enabled, **Known · current match** and **Known · retained**
+are distinct: a numeric track ID alone never establishes continuity. The model cannot establish a person's identity;
+supported “who” questions report the system's recognition records.
+
+Face, scene and chat **have run together** in guarded reference-device observations. In the capped LFM3 integration
+check, execution, recognition-execution and memory passed, but the overall reading did not pass because cancellation
+was not exercised. A separate cancellation check is separate evidence. The
+[Wiki status page](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Status-and-limitations) and
+[session record](docs/IMPLEMENTATION_STATUS.md) preserve those limits.
 
 ## Getting started
 
@@ -245,38 +242,15 @@ Before you start:
 
 Problems go to the [installation issue form](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/issues/new?template=installation-issue.md).
 
-### On the device (as the recorded device checks ran it)
+### Choose the right device guide
 
-**Apart from the tester package above, there is no device installation guide.** What follows is only what the
-recorded checks used on the reference device; anything not listed here is not documented.
+For a new tester installation, use the [tagged installer guide](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/blob/v2.0.0-beta.1/packaging/beta-install/QUICKSTART.md).
+It covers prerequisites, memory preparation, guarded builds, enrollment, artifact checks, the SSH tunnel and clean stop.
+**The launch's final START prompt is the step that permits the camera to open.**
 
-- **Hardware and system:** one Jetson Orin Nano with JetPack 6 (L4T 36.4.7) and one RTSP camera, reached from a
-  workstation over SSH.
-- **Python with the device libraries:** the checks ran the package from the repository with an existing Python
-  environment that already held the device libraries (TensorRT, Ultralytics, OpenCV and, for face recognition,
-  DeepFace). That environment was built for v1; how to build one for v2 is not documented.
-- **Detector engine:** a profiled `yolov8n.engine` (TensorRT). The engine used was built for v1 (see
-  [`BUILD.md`](BUILD.md), legacy); a v2 build procedure is not documented.
-- **The command shape** (core monitoring, with the dashboard's live view):
-
-  ```bash
-  read -rs SENTINEL_RTSP_URL && export SENTINEL_RTSP_URL   # typed, never stored in a file
-  LD_PRELOAD=/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1 PYTHONPATH=src <device-python> -m sentinel.cli \
-    run <config>.yaml --data-dir <data-dir> --engine <path>/yolov8n.engine --live-preview --snapshots
-  ```
-
-  `config/default.yaml` is the core-only starting point (`sentinel config validate` checks a file); the device checks
-  used their own configuration files, kept with their private evidence and not in the repository.
-
-  The checks ran under the memory guard (`benchmarks/runner/step5_guard.py`) and added
-  `--workload-thp-disable --post-load-release`. `sentinel run --help` lists every option. Face recognition, scene
-  analysis and chat need admitted adapters in the configuration; the device checks used them only through guarded
-  validation packages.
-- **Opening the dashboard:** the page listens on 127.0.0.1 only. From the workstation:
-  `ssh -N -L 18090:127.0.0.1:18090 <user>@<device>`, then open `http://127.0.0.1:18090/dashboard`.
-
-More detail: [Getting started](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Getting-started) and
-[Dashboard and controls](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki/Dashboard-and-controls).
+[`docs/BETA_QUICKSTART.md`](docs/BETA_QUICKSTART.md) records the maintainer's separate private launcher and existing
+device setup. It is not an installation recipe for another account. The root `BUILD.md`, `SETUP_GUIDE.txt` and v1
+scripts are legacy documentation/code, not the v2 tester installation path.
 
 ## Data and privacy
 
@@ -284,7 +258,8 @@ More detail: [Getting started](https://github.com/hemkesh2021-dotcom/Sentinel_Su
   written to the repository or the database. Configuration files must hold none.
 - The face gallery is sealed with a passphrase, needs recorded consent to enroll, and can be revoked and purged
   (`sentinel identity`). Face embeddings are biometric data.
-- No page, log or record shows a person's name. Face recognition is context only: it never grants or denies anything.
+- The gallery holds no names. Dashboard labels are anonymous by default; optional operator-configured display labels
+  can appear in records answers. Face recognition is context only: it never grants or denies anything.
 - Never commit galleries, photos, footage, run evidence or credentials.
 
 ## Repository layout
@@ -295,12 +270,25 @@ More detail: [Getting started](https://github.com/hemkesh2021-dotcom/Sentinel_Su
 | `benchmarks/runner/` | v2 operator check tooling (memory guard, readings of saved evidence) |
 | `packaging/` | the tester installation package (`beta-install/`) and the tool that builds its archive |
 | `docs/` | v2 status record, requirements trace, alpha notes, release notes, legacy v1 README |
-| `surveillance4_1.py`, `dashboard.py`, `build_face_db.py`, `start_sentinel.sh`, `requirements.txt`, `.env.example`, `BUILD.md`, `SETUP_GUIDE.txt`, `tests/test_dashboard.py` | legacy v1, unchanged; see [`docs/LEGACY_V1.md`](docs/LEGACY_V1.md) |
+| `surveillance4_1.py`, `dashboard.py`, `build_face_db.py`, `start_sentinel.sh`, `requirements.txt`, `.env.example`, `BUILD.md`, `SETUP_GUIDE.txt`, `tests/test_dashboard.py` | legacy v1; the setup guides carry v2 navigation notices; see [`docs/LEGACY_V1.md`](docs/LEGACY_V1.md) |
+
+## Earlier releases
+
+`master` now carries v2 development and current documentation. Use release tags for an exact historical version:
+
+| Release | Source |
+|---|---|
+| [v2.0.0-beta.1](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-beta.1) | [Tagged beta source](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/tree/v2.0.0-beta.1) |
+| [v2.0.0-alpha.2](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.2) | [Tagged alpha.2 source](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/tree/v2.0.0-alpha.2) |
+| [v2.0.0-alpha.1](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-alpha.1) | [Tagged alpha.1 source](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/tree/v2.0.0-alpha.1) |
+| [v1.1.0](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v1.1.0) | [Legacy guide](docs/LEGACY_V1.md); GitHub's latest stable release |
+
+The obsolete candidate branches were removed after their commits were included in `master`.
+The alpha tags, releases and source downloads are preserved; link to those instead of deleted branch names.
 
 ## Maintainer
 
 V2 maintainer: Hemkesh ([@hemkesh2021-dotcom](https://github.com/hemkesh2021-dotcom)).
-
 Historical v1 contributor credits are kept in [`docs/LEGACY_V1.md`](docs/LEGACY_V1.md#authors).
 
 ## License

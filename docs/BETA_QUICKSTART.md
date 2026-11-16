@@ -1,9 +1,10 @@
-# Sentinel personal beta: quick start
+# Maintainer personal beta: historical private-launcher guide
 
-> **2026-11-15: this page describes the maintainer's own device and private launcher, as written on 2026-11-11.** For
-> installing on another Jetson, use the tester package and its guide instead:
-> [`packaging/beta-install/QUICKSTART.md`](../packaging/beta-install/QUICKSTART.md). That package is experimental and
-> validates nothing; the statements below about what cannot be reproduced refer to this private launcher.
+> **For the public v2.0.0-beta.1 tester package, use
+> [packaging/beta-install/QUICKSTART.md](../packaging/beta-install/QUICKSTART.md).**
+> This page preserves the maintainer's private setup as documented on 11 November 2026. Its fixed paths and
+> launcher are not supplied to testers, and its statements about missing installation support describe that older
+> private setup. The public beta now supplies a separate installer with an opt-in device-artifacts route.
 
 Private, local use only. This is the build the maintainer accepted for personal use on 2026-11-11: code `949da67` on
 branch `v2-ui-refresh`, run by the private launcher `live-observe-949da67`. It **validates and admits nothing**: face
