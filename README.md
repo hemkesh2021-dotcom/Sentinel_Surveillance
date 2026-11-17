@@ -17,6 +17,7 @@ face recognition and scene analysis under validation*
 ![Status](https://img.shields.io/badge/status-experimental_pre--release-red?style=for-the-badge)
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Jetson](https://img.shields.io/badge/NVIDIA-Jetson_Orin_Nano-76B900?style=for-the-badge&logo=nvidia&logoColor=white)
+[![Website](https://img.shields.io/badge/website-live_demo-76B900?style=for-the-badge)](https://hemkesh2021-dotcom.github.io/sentinel-site/)
 
 </div>
 
@@ -51,6 +52,18 @@ the example status, incidents and answers illustrate the interface, not measured
 ![Sentinel dashboard in dark mode, using synthetic demonstration data](docs/media/dashboard-dark.png)
 
 </details>
+
+## Try it
+
+| If you have | Do this |
+|---|---|
+| A browser | Open the [project website](https://hemkesh2021-dotcom.github.io/sentinel-site/): a hardware tour and a [demo dashboard](https://hemkesh2021-dotcom.github.io/sentinel-site/dashboard.html) running the real dashboard code on a scripted scene. No device is involved. |
+| Any computer with Python 3.10+ | Clone the beta, run `pip install -e '.[dev]'`, then `pytest` ([Portable development](#portable-development-ci-runs-on-every-push)). No camera, GPU or model needed. |
+| A Jetson Orin Nano | Try the experimental [tester package](packaging/beta-install/QUICKSTART.md), and report problems with the [installation issue form](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/issues/new?template=installation-issue.md). |
+
+## Read more
+
+- [Your slowest model shouldn't make your fastest decisions: lessons from an edge AI camera on a Jetson](https://dev.to/hemkesh2021dotcom/your-slowest-model-shouldnt-make-your-fastest-decisions-lessons-from-an-edge-ai-camera-on-a-jetson-5ep6) (dev.to; also on [Hashnode](https://hemkesh.hashnode.dev/slowest-model-fastest-decisions-edge-ai-jetson))
 
 ---
 
