@@ -26,6 +26,15 @@ links and issue-form YAML checked; application, tests, configuration, benchmarks
 package version compared with the beta tag and unchanged. No Jetson connection, camera session, model workload,
 artifact rebuild, tag move or release-asset replacement is part of this documentation update.
 
+### Project website and browser demo — 2026-11-17 (Codex)
+
+From documentation base `d8721a4`, added the project website and direct interactive-demo links to the README,
+Wiki navigation and onboarding, and repository homepage metadata. The site explains the project; its dashboard
+uses synthetic scenes and scripted answers, with no camera or model connected. Browser inspection covered
+incident preview, a scripted chat response, demo-key unlock and appearance settings with Escape dismissal.
+The six existing release-documentation tests passed. This is documentation and navigation work only;
+the website source, runtime, installer, release assets, tags and device setup are unchanged.
+
 ## Earlier implementation record
 
 Last updated 2026-11-16, session 116, part 53 (Claude; parts 50 to 53 are on branch `beta-ci-fix-2026-11`, worktree `~/sentinel-worktrees/v2-beta-ci-fix`, made from the pushed candidate `7a10718`; parts 39 to 49 are on branch `v2-beta-install`, worktree `~/sentinel-worktrees/v2-install`, made from `11e4484`); parts up to 38 on branch `v2-ui-refresh` (worktree `~/sentinel-worktrees/v2-ui`; not merged into `v2-beta`). **Session 115: LFM2.5-VL-1.6B is the default scene and chat model set, LFM2-VL kept as the rollback, D46 unchanged; local only.** The code is `f77b0ff` (the migration `378ae85`, step 4's set option `f77b0ff`); this record follows it. `LiquidAI/LFM2.5-VL-1.6B-GGUF` at `36fc16bc…` (Q4_0 with its own Q8_0 projector; sizes and SHA-256 equal to the Hub's) is in `~/models/lfm2.5-vl/`, beside the untouched LFM2-VL files, and the installed llama.cpp b8932 runs it fully offloaded (no new build). By the maintainer's decision (D104; D46 unchanged) `sentinel run --scene` refuses it, and chat with it, until a step-4 profile measures it and they accept that profile; `--scene-model-set lfm2-vl` keeps the admitted configuration. Guarded smoke tests with a synthetic picture passed for both sets; step 4 can measure a set, and the candidate package for LFM2.5-VL is prepared, not launched. Nothing pushed or published.

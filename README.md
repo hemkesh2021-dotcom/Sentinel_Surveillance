@@ -20,6 +20,18 @@ face recognition and scene analysis under validation*
 
 </div>
 
+## Explore Sentinel in your browser
+
+**[Understand the project](https://hemkesh2021-dotcom.github.io/sentinel-site/)** ·
+**[Try the interactive dashboard](https://hemkesh2021-dotcom.github.io/sentinel-site/dashboard.html)**
+
+The project site explains how a camera observation becomes a local incident and shows the hardware and processing flow.
+The interactive demo lets you explore incidents, the Ask panel, appearance settings and scripted scenarios such as
+an arrival, retained identity and a stalled stream — **no Jetson, installation or camera is needed**.
+It uses synthetic scenes and scripted answers; it demonstrates the interface, not recognition accuracy or live model performance.
+For a real device, continue with the [beta installer](#install-on-your-own-jetson-tester-package-experimental)
+and [Wiki](https://github.com/hemkesh2021-dotcom/Sentinel_Surveillance/wiki).
+
 ## Dashboard preview
 
 ![Sentinel dashboard tour showing the local interface, Ask panel, and appearance settings](docs/media/dashboard-tour.gif)
