@@ -1,8 +1,8 @@
 # Repository traffic — hemkesh2021-dotcom/Sentinel_Surveillance
 
-Last successful collection: **2026-11-18T04:41:56.866643Z**. Daily dates are UTC.
+Last successful collection: **2026-11-19T04:29:21.035887Z**. Daily dates are UTC.
 
-Observed daily coverage: **2026-10-05 → 2026-11-16**. Missing dates are unknown, not zero.
+Observed daily coverage: **2026-10-05 → 2026-11-17**. Missing dates are unknown, not zero.
 
 This report measures repository interest, not product usage or validated adoption. Clones may include automation and development activity. The collector uses API calls only, with no git clone/fetch/checkout.
 
@@ -12,8 +12,8 @@ GitHub supplies approximately the last 14 days. These window-level unique counts
 
 | Metric | Events | Unique visitors/cloners in API window | Latest daily bucket |
 | --- | ---: | ---: | --- |
-| Views | 103 | 6 | 2026-11-16 |
-| Clones | 208 | 76 | 2026-11-16 |
+| Views | 116 | 8 | 2026-11-17 |
+| Clones | 215 | 73 | 2026-11-17 |
 
 ## Totals across recorded days
 
@@ -21,8 +21,8 @@ These cover only observed dates, not the repository's lifetime. Daily unique cou
 
 | Metric | Recorded events | Sum of daily uniques | Observed dates |
 | --- | ---: | ---: | ---: |
-| Views | 230 | 38 | 43 |
-| Clones | 610 | 291 | 43 |
+| Views | 258 | 41 | 44 |
+| Clones | 634 | 301 | 44 |
 
 ## Monthly summary
 
@@ -30,7 +30,7 @@ Months may be partial. Separate coverage counts expose gaps in either metric.
 
 | Month | View dates | Views | Visitor-days | Clone dates | Clones | Cloner-days |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 2026-11 | 16 | 114 | 15 | 16 | 230 | 102 |
+| 2026-11 | 17 | 142 | 18 | 17 | 254 | 112 |
 | 2026-10 | 27 | 116 | 23 | 27 | 380 | 189 |
 
 ## Referrers in latest response
@@ -39,7 +39,8 @@ Absence from the top 10 does not establish zero traffic.
 
 | Referrer | Rolling-window views | Rolling-window uniques |
 | --- | ---: | ---: |
-| github.com | 21 | 1 |
+| github.com | 25 | 2 |
+| hemkesh2021-dotcom.github.io | 3 | 1 |
 | forums.developer.nvidia.com | 1 | 1 |
 
 ## Historically observed referrer peaks
@@ -49,23 +50,24 @@ Peaks refer to overlapping rolling windows; they are not cumulative totals or cu
 | Referrer | Peak window views | Peak window uniques | Last observed UTC |
 | --- | ---: | ---: | --- |
 | Google | 3 | 2 | 2026-10-30T02:56:06.645220Z |
-| forums.developer.nvidia.com | 1 | 1 | 2026-11-18T04:41:56.866643Z |
-| github.com | 21 | 3 | 2026-11-18T04:41:56.866643Z |
+| forums.developer.nvidia.com | 1 | 1 | 2026-11-19T04:29:21.035887Z |
+| github.com | 25 | 3 | 2026-11-19T04:29:21.035887Z |
+| hemkesh2021-dotcom.github.io | 3 | 1 | 2026-11-19T04:29:21.035887Z |
 
 ## Popular paths in latest response
 
 | Path | Views | Uniques |
 | --- | ---: | ---: |
-| /hemkesh2021-dotcom/Sentinel_Surveillance | 50 | 6 |
-| /hemkesh2021-dotcom/Sentinel_Surveillance/releases | 5 | 1 |
-| /hemkesh2021-dotcom/Sentinel_Surveillance/graphs/traffic | 4 | 1 |
-| /hemkesh2021-dotcom/Sentinel_Surveillance/pulse | 4 | 1 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance | 53 | 7 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance/graphs/traffic | 11 | 1 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance/pulse | 6 | 1 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance/releases | 4 | 1 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-beta.1 | 4 | 1 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/actions | 3 | 1 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance/discussions | 3 | 1 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/pulls | 3 | 1 |
-| /hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-beta.1 | 3 | 1 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance/blob/master/packaging/beta-install/QUICKSTART.md | 2 | 2 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/actions/runs/43800086076 | 2 | 1 |
-| /hemkesh2021-dotcom/Sentinel_Surveillance/actions/workflows/v2-portable.yml | 2 | 1 |
-| /hemkesh2021-dotcom/Sentinel_Surveillance/branches | 2 | 1 |
 
 ## Daily breakdown
 
@@ -73,6 +75,7 @@ Recent dates may be partial or revised by GitHub. A later response replaces the 
 
 | UTC date | Views | Daily unique visitors | Clones | Daily unique cloners |
 | --- | ---: | ---: | ---: | ---: |
+| 2026-11-17 | 28 | 3 | 24 | 10 |
 | 2026-11-16 | 48 | 3 | 72 | 25 |
 | 2026-11-15 | 14 | 1 | 25 | 11 |
 | 2026-11-14 | 0 | 0 | 6 | 3 |
