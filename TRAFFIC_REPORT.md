@@ -1,8 +1,8 @@
 # Repository traffic — hemkesh2021-dotcom/Sentinel_Surveillance
 
-Last successful collection: **2026-11-20T04:16:02.575874Z**. Daily dates are UTC.
+Last successful collection: **2026-11-21T04:15:42.921383Z**. Daily dates are UTC.
 
-Observed daily coverage: **2026-10-05 → 2026-11-18**. Missing dates are unknown, not zero.
+Observed daily coverage: **2026-10-05 → 2026-11-19**. Missing dates are unknown, not zero.
 
 This report measures repository interest, not product usage or validated adoption. Clones may include automation and development activity. The collector uses API calls only, with no git clone/fetch/checkout.
 
@@ -12,8 +12,8 @@ GitHub supplies approximately the last 14 days. These window-level unique counts
 
 | Metric | Events | Unique visitors/cloners in API window | Latest daily bucket |
 | --- | ---: | ---: | --- |
-| Views | 116 | 12 | 2026-11-18 |
-| Clones | 279 | 96 | 2026-11-18 |
+| Views | 111 | 14 | 2026-11-19 |
+| Clones | 276 | 95 | 2026-11-19 |
 
 ## Totals across recorded days
 
@@ -21,8 +21,8 @@ These cover only observed dates, not the repository's lifetime. Daily unique cou
 
 | Metric | Recorded events | Sum of daily uniques | Observed dates |
 | --- | ---: | ---: | ---: |
-| Views | 262 | 45 | 45 |
-| Clones | 699 | 326 | 45 |
+| Views | 265 | 47 | 46 |
+| Clones | 705 | 329 | 46 |
 
 ## Monthly summary
 
@@ -30,7 +30,7 @@ Months may be partial. Separate coverage counts expose gaps in either metric.
 
 | Month | View dates | Views | Visitor-days | Clone dates | Clones | Cloner-days |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 2026-11 | 18 | 146 | 22 | 18 | 319 | 137 |
+| 2026-11 | 19 | 149 | 24 | 19 | 325 | 140 |
 | 2026-10 | 27 | 116 | 23 | 27 | 380 | 189 |
 
 ## Referrers in latest response
@@ -39,8 +39,8 @@ Absence from the top 10 does not establish zero traffic.
 
 | Referrer | Rolling-window views | Rolling-window uniques |
 | --- | ---: | ---: |
-| github.com | 24 | 2 |
-| hemkesh2021-dotcom.github.io | 4 | 2 |
+| github.com | 21 | 2 |
+| hemkesh2021-dotcom.github.io | 5 | 3 |
 | forums.developer.nvidia.com | 1 | 1 |
 | reddit.com | 1 | 1 |
 
@@ -51,20 +51,20 @@ Peaks refer to overlapping rolling windows; they are not cumulative totals or cu
 | Referrer | Peak window views | Peak window uniques | Last observed UTC |
 | --- | ---: | ---: | --- |
 | Google | 3 | 2 | 2026-10-30T02:56:06.645220Z |
-| forums.developer.nvidia.com | 1 | 1 | 2026-11-20T04:16:02.575874Z |
-| github.com | 25 | 3 | 2026-11-20T04:16:02.575874Z |
-| hemkesh2021-dotcom.github.io | 4 | 2 | 2026-11-20T04:16:02.575874Z |
-| reddit.com | 1 | 1 | 2026-11-20T04:16:02.575874Z |
+| forums.developer.nvidia.com | 1 | 1 | 2026-11-21T04:15:42.921383Z |
+| github.com | 25 | 3 | 2026-11-21T04:15:42.921383Z |
+| hemkesh2021-dotcom.github.io | 5 | 3 | 2026-11-21T04:15:42.921383Z |
+| reddit.com | 1 | 1 | 2026-11-21T04:15:42.921383Z |
 
 ## Popular paths in latest response
 
 | Path | Views | Uniques |
 | --- | ---: | ---: |
-| /hemkesh2021-dotcom/Sentinel_Surveillance | 55 | 11 |
-| /hemkesh2021-dotcom/Sentinel_Surveillance/graphs/traffic | 10 | 1 |
-| /hemkesh2021-dotcom/Sentinel_Surveillance/pulse | 5 | 1 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance | 53 | 12 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance/graphs/traffic | 8 | 1 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-beta.1 | 5 | 2 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance/pulse | 4 | 1 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/releases | 4 | 1 |
-| /hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-beta.1 | 4 | 1 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/actions | 3 | 1 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/discussions | 3 | 1 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/pulls | 3 | 1 |
@@ -77,6 +77,7 @@ Recent dates may be partial or revised by GitHub. A later response replaces the 
 
 | UTC date | Views | Daily unique visitors | Clones | Daily unique cloners |
 | --- | ---: | ---: | ---: | ---: |
+| 2026-11-19 | 3 | 2 | 6 | 3 |
 | 2026-11-18 | 4 | 4 | 65 | 25 |
 | 2026-11-17 | 28 | 3 | 24 | 10 |
 | 2026-11-16 | 48 | 3 | 72 | 25 |
