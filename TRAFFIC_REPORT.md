@@ -1,8 +1,8 @@
 # Repository traffic — hemkesh2021-dotcom/Sentinel_Surveillance
 
-Last successful collection: **2026-11-23T03:59:19.447748Z**. Daily dates are UTC.
+Last successful collection: **2026-11-24T07:05:27.112750Z**. Daily dates are UTC.
 
-Observed daily coverage: **2026-10-05 → 2026-11-21**. Missing dates are unknown, not zero.
+Observed daily coverage: **2026-10-05 → 2026-11-22**. Missing dates are unknown, not zero.
 
 This report measures repository interest, not product usage or validated adoption. Clones may include automation and development activity. The collector uses API calls only, with no git clone/fetch/checkout.
 
@@ -12,8 +12,8 @@ GitHub supplies approximately the last 14 days. These window-level unique counts
 
 | Metric | Events | Unique visitors/cloners in API window | Latest daily bucket |
 | --- | ---: | ---: | --- |
-| Views | 131 | 20 | 2026-11-21 |
-| Clones | 297 | 105 | 2026-11-21 |
+| Views | 147 | 26 | 2026-11-22 |
+| Clones | 281 | 103 | 2026-11-22 |
 
 ## Totals across recorded days
 
@@ -21,8 +21,8 @@ These cover only observed dates, not the repository's lifetime. Daily unique cou
 
 | Metric | Recorded events | Sum of daily uniques | Observed dates |
 | --- | ---: | ---: | ---: |
-| Views | 285 | 54 | 48 |
-| Clones | 730 | 346 | 48 |
+| Views | 304 | 61 | 49 |
+| Clones | 735 | 351 | 49 |
 
 ## Monthly summary
 
@@ -30,7 +30,7 @@ Months may be partial. Separate coverage counts expose gaps in either metric.
 
 | Month | View dates | Views | Visitor-days | Clone dates | Clones | Cloner-days |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 2026-11 | 21 | 169 | 31 | 21 | 350 | 157 |
+| 2026-11 | 22 | 188 | 38 | 22 | 355 | 162 |
 | 2026-10 | 27 | 116 | 23 | 27 | 380 | 189 |
 
 ## Referrers in latest response
@@ -39,7 +39,7 @@ Absence from the top 10 does not establish zero traffic.
 
 | Referrer | Rolling-window views | Rolling-window uniques |
 | --- | ---: | ---: |
-| github.com | 24 | 2 |
+| github.com | 29 | 2 |
 | hemkesh2021-dotcom.github.io | 5 | 3 |
 | reddit.com | 2 | 2 |
 | com.reddit.frontpage | 1 | 1 |
@@ -52,26 +52,26 @@ Peaks refer to overlapping rolling windows; they are not cumulative totals or cu
 | Referrer | Peak window views | Peak window uniques | Last observed UTC |
 | --- | ---: | ---: | --- |
 | Google | 3 | 2 | 2026-10-30T02:56:06.645220Z |
-| com.reddit.frontpage | 1 | 1 | 2026-11-23T03:59:19.447748Z |
-| forums.developer.nvidia.com | 1 | 1 | 2026-11-23T03:59:19.447748Z |
-| github.com | 25 | 3 | 2026-11-23T03:59:19.447748Z |
-| hemkesh2021-dotcom.github.io | 5 | 3 | 2026-11-23T03:59:19.447748Z |
-| reddit.com | 2 | 2 | 2026-11-23T03:59:19.447748Z |
+| com.reddit.frontpage | 1 | 1 | 2026-11-24T07:05:27.112750Z |
+| forums.developer.nvidia.com | 1 | 1 | 2026-11-24T07:05:27.112750Z |
+| github.com | 29 | 3 | 2026-11-24T07:05:27.112750Z |
+| hemkesh2021-dotcom.github.io | 5 | 3 | 2026-11-24T07:05:27.112750Z |
+| reddit.com | 2 | 2 | 2026-11-24T07:05:27.112750Z |
 
 ## Popular paths in latest response
 
 | Path | Views | Uniques |
 | --- | ---: | ---: |
-| /hemkesh2021-dotcom/Sentinel_Surveillance | 62 | 18 |
-| /hemkesh2021-dotcom/Sentinel_Surveillance/graphs/traffic | 10 | 1 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance | 70 | 19 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance/graphs/traffic | 11 | 1 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/forks | 6 | 1 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/releases/tag/v2.0.0-beta.1 | 5 | 2 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/pulse | 5 | 1 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/releases | 4 | 1 |
+| /hemkesh2021-dotcom/Sentinel_Surveillance/blob/master/packaging/beta-install/QUICKSTART.md | 3 | 3 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/actions | 3 | 1 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/discussions | 3 | 1 |
 | /hemkesh2021-dotcom/Sentinel_Surveillance/pulls | 3 | 1 |
-| /hemkesh2021-dotcom/Sentinel_Surveillance/blob/master/packaging/beta-install/QUICKSTART.md | 2 | 2 |
 
 ## Daily breakdown
 
@@ -79,6 +79,7 @@ Recent dates may be partial or revised by GitHub. A later response replaces the 
 
 | UTC date | Views | Daily unique visitors | Clones | Daily unique cloners |
 | --- | ---: | ---: | ---: | ---: |
+| 2026-11-22 | 19 | 7 | 5 | 5 |
 | 2026-11-21 | 16 | 4 | 17 | 10 |
 | 2026-11-20 | 4 | 3 | 8 | 7 |
 | 2026-11-19 | 3 | 2 | 6 | 3 |
