@@ -1,6 +1,6 @@
 # Repository traffic — hemkesh2021-dotcom/Sentinel_Surveillance
 
-Last successful collection: **2026-11-25T05:39:52.629205Z**. Daily dates are UTC.
+Last successful collection: **2026-11-26T05:26:42.465833Z**. Daily dates are UTC.
 
 Observed daily coverage: **2026-10-05 → 2026-11-24**. Missing dates are unknown, not zero.
 
@@ -51,11 +51,11 @@ Peaks refer to overlapping rolling windows; they are not cumulative totals or cu
 | Referrer | Peak window views | Peak window uniques | Last observed UTC |
 | --- | ---: | ---: | --- |
 | Google | 3 | 2 | 2026-10-30T02:56:06.645220Z |
-| com.reddit.frontpage | 1 | 1 | 2026-11-25T05:39:52.629205Z |
+| com.reddit.frontpage | 1 | 1 | 2026-11-26T05:26:42.465833Z |
 | forums.developer.nvidia.com | 1 | 1 | 2026-11-24T07:05:27.112750Z |
-| github.com | 32 | 3 | 2026-11-25T05:39:52.629205Z |
-| hemkesh2021-dotcom.github.io | 5 | 3 | 2026-11-25T05:39:52.629205Z |
-| reddit.com | 2 | 2 | 2026-11-25T05:39:52.629205Z |
+| github.com | 32 | 3 | 2026-11-26T05:26:42.465833Z |
+| hemkesh2021-dotcom.github.io | 5 | 3 | 2026-11-26T05:26:42.465833Z |
+| reddit.com | 2 | 2 | 2026-11-26T05:26:42.465833Z |
 
 ## Popular paths in latest response
 
